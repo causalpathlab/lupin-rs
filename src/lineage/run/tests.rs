@@ -215,7 +215,11 @@ fn end_to_end_run_writes_forest_outputs() {
         "the y-bridge is cut → ≥2 trees, got {}",
         trees.mat.nrows()
     );
-    let pt = DMatrix::<f32>::from_parquet(&format!("{prefix}.pseudotime.parquet")).unwrap();
+    let pt = DMatrix::<f32>::from_parquet(&format!(
+        "{prefix}{}",
+        crate::lineage::write::CELL_PSEUDOTIME
+    ))
+    .unwrap();
     assert_eq!(pt.mat.nrows(), n, "one pseudotime row per cell");
     assert!(
         (0..n).any(|i| pt.mat[(i, 0)].is_finite()),

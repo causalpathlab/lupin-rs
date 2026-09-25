@@ -90,13 +90,14 @@ impl ClusterEvidence {
 }
 
 pub fn run_describe(args: &DescribeArgs) -> Result<()> {
-    let prefix = annotate_prefix(&args.from);
+    let files = EvidenceFiles::locate(&args.from);
     let out: &str = &args.out;
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
 
-    let mut enriched = load_evidence(&prefix, args.fdr_alpha)?;
-    attach_second_best(&mut enriched, &prefix, args.fdr_alpha)?;
-    let markers_by_type = load_markers_by_type(&prefix, args.markers.as_deref())?;
+    let mut enriched = load_evidence(&files, args.fdr_alpha)?;
+    attach_second_best(&mut enriched, &files, args.fdr_alpha)?;
+    let markers_tsv = args.markers.as_deref().or(files.markers_tsv.as_deref());
+    let markers_by_type = load_markers_by_type(&files, markers_tsv)?;
     attach_markers(&mut enriched, &markers_by_type);
     if let Some(emb) = args.feature_embedding.as_deref() {
         attach_embedding_neighbours(&mut enriched, emb, args.neighbour_k)?;
@@ -154,42 +155,80 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     Ok(())
 }
 
-/// Where the annotate artifacts live. `--from` may be a run manifest or a
-/// prefix; a manifest that recorded `annotate.argmax` pins the annotate output
-/// prefix even when annotate ran with its own `-o`.
-fn annotate_prefix(from: &str) -> String {
-    if let Ok(crate::run_manifest::Loaded { manifest, dir, .. }) = crate::run_manifest::load(from) {
-        if let Some(argmax) = manifest.annotate.argmax.as_deref() {
-            let path = crate::run_manifest::resolve(&dir, argmax);
-            if let Some(p) = path.strip_suffix(ARGMAX_TSV) {
-                return p.to_string();
+/// Where each piece of annotate evidence lives.
+#[derive(Default)]
+struct EvidenceFiles {
+    /// Per-cell table with `community` / `coarse_label` (projection, or `lineage --markers`).
+    annot: Option<String>,
+    /// Enrichment's cluster × cell-type FDR q-values.
+    enrichment_q: Option<String>,
+    /// Projection's cluster × term FDR q-values.
+    term_q: Option<String>,
+    argmax: Option<String>,
+    marker_support: Option<String>,
+    marker_embedding: Option<String>,
+    /// The marker panel annotate was run with.
+    markers_tsv: Option<String>,
+}
+
+impl EvidenceFiles {
+    /// From the manifest's `annotate.*` slots when `--from` is a run
+    /// manifest (or its prefix) — those point at the latest pass, whatever its
+    /// `-o` was. Otherwise `--from` is an annotate / lineage output prefix and
+    /// the files are looked for by name.
+    fn locate(from: &str) -> Self {
+        match crate::run_manifest::load(from) {
+            Ok(loaded) => {
+                let a = &loaded.manifest.annotate;
+                let at = |slot: &Option<String>| {
+                    slot.as_deref()
+                        .map(|rel| crate::run_manifest::resolve(&loaded.dir, rel))
+                };
+                let term_q = at(&a.cluster_term_q);
+                Self {
+                    // `annotation` holds projection's per-cell table only on a projection pass.
+                    annot: term_q.is_some().then(|| at(&a.annotation)).flatten(),
+                    enrichment_q: at(&a.cluster_celltype_q_values),
+                    term_q,
+                    argmax: at(&a.argmax),
+                    marker_support: at(&a.marker_support),
+                    marker_embedding: at(&a.marker_embedding),
+                    markers_tsv: a.markers.clone().filter(|m| !m.is_empty()),
+                }
+            }
+            Err(_) => {
+                let found = |suffix: &str| {
+                    let p = format!("{from}{suffix}");
+                    Path::new(&p).exists().then_some(p)
+                };
+                Self {
+                    annot: found(ANNOT_PARQUET)
+                        .or_else(|| found(&format!(".lineage_annot{ANNOT_PARQUET}"))),
+                    enrichment_q: found(CLUSTER_CELLTYPE_Q_VALUES),
+                    term_q: found(CLUSTER_TERM_Q),
+                    argmax: found(ARGMAX_TSV),
+                    marker_support: found(".marker_support.parquet"),
+                    marker_embedding: found(".marker_embedding.parquet"),
+                    markers_tsv: None,
+                }
             }
         }
     }
-    crate::run_manifest::derive_out_prefix(from)
 }
 
-fn load_evidence(prefix: &str, fdr_alpha: f32) -> Result<Vec<ClusterEvidence>> {
-    let annot = format!("{prefix}{ANNOT_PARQUET}");
-    let lineage_annot = format!("{prefix}.lineage_annot{ANNOT_PARQUET}");
-    let enrichment_q = format!("{prefix}{CLUSTER_CELLTYPE_Q_VALUES}");
-    let argmax = format!("{prefix}{ARGMAX_TSV}");
-
-    if Path::new(&annot).exists() {
-        return load_from_annot_parquet(&annot);
+fn load_evidence(files: &EvidenceFiles, fdr_alpha: f32) -> Result<Vec<ClusterEvidence>> {
+    if let Some(p) = &files.annot {
+        return load_from_annot_parquet(p);
     }
-    if Path::new(&lineage_annot).exists() {
-        return load_from_annot_parquet(&lineage_annot);
+    if let Some(p) = &files.enrichment_q {
+        return load_from_enrichment_q(p, fdr_alpha);
     }
-    if Path::new(&enrichment_q).exists() {
-        return load_from_enrichment_q(&enrichment_q, fdr_alpha);
-    }
-    if Path::new(&argmax).exists() {
-        return load_from_argmax_tsv(&argmax);
+    if let Some(p) = &files.argmax {
+        return load_from_argmax_tsv(p);
     }
     bail!(
-        "no annotate artifacts under `{prefix}` (expected `{annot}`, `{lineage_annot}`, \
-         `{enrichment_q}`, or `{argmax}`)"
+        "no annotate evidence found: need a projection annot table, an enrichment \
+         q-value table, or an argmax TSV (run `lupin annotate` first)"
     );
 }
 
@@ -333,27 +372,22 @@ fn load_from_argmax_tsv(path: &str) -> Result<Vec<ClusterEvidence>> {
 
 /// Load panel markers keyed by cell-type name.
 ///
-/// Preference: `{from}.marker_support.parquet` (bootstrap live genes),
-/// then `{from}.marker_embedding.parquet`, then optional `--markers` TSV.
+/// Preference: projection's `marker_support` (bootstrap live genes), then its
+/// `marker_embedding`, then a marker TSV (`--markers`, else the one annotate used).
 fn load_markers_by_type(
-    from: &str,
+    files: &EvidenceFiles,
     markers_tsv: Option<&str>,
 ) -> Result<BTreeMap<String, Vec<String>>> {
-    let support = format!("{from}.marker_support.parquet");
-    if Path::new(&support).exists() {
-        return load_markers_from_support_parquet(&support);
+    if let Some(p) = &files.marker_support {
+        return load_markers_from_support_parquet(p);
     }
-    let embed = format!("{from}.marker_embedding.parquet");
-    if Path::new(&embed).exists() {
-        return load_markers_from_embedding_parquet(&embed);
+    if let Some(p) = &files.marker_embedding {
+        return load_markers_from_embedding_parquet(p);
     }
     if let Some(path) = markers_tsv {
         return load_markers_from_tsv(path);
     }
-    info!(
-        "describe: no marker_support / marker_embedding under `{from}`; \
-         pass --markers for a gene<TAB>celltype TSV"
-    );
+    info!("describe: no marker_support / marker_embedding; pass --markers for a gene<TAB>celltype TSV");
     Ok(BTreeMap::new())
 }
 
@@ -497,18 +531,14 @@ fn attach_markers(clusters: &mut [ClusterEvidence], by_type: &BTreeMap<String, V
 /// primary call. Omitted when the runner-up is nonsignificant or the matrix is absent.
 fn attach_second_best(
     clusters: &mut [ClusterEvidence],
-    prefix: &str,
+    files: &EvidenceFiles,
     fdr_alpha: f32,
 ) -> Result<()> {
-    let Some(path) = [CLUSTER_TERM_Q, CLUSTER_CELLTYPE_Q_VALUES]
-        .iter()
-        .map(|s| format!("{prefix}{s}"))
-        .find(|p| Path::new(p).exists())
-    else {
-        info!("describe: no cluster q table under {prefix}; skipping significant runner-up");
+    let Some(path) = files.term_q.as_ref().or(files.enrichment_q.as_ref()) else {
+        info!("describe: no cluster q table; skipping significant runner-up");
         return Ok(());
     };
-    let loaded = read_q_table(&path)?;
+    let loaded = read_q_table(path)?;
     let row_of: BTreeMap<&str, usize> = loaded
         .rows
         .iter()

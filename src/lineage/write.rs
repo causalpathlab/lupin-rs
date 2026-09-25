@@ -1,5 +1,10 @@
 //! Every table `lupin lineage` puts on disk.
 
+/// `{out}{CELL_PSEUDOTIME}`: lineage's per-cell `pseudotime` / `branch` table.
+/// Named apart from `lupin pseudotime`'s `{out}.pseudotime.parquet` so the two
+/// commands never overwrite each other.
+pub const CELL_PSEUDOTIME: &str = ".cell_pseudotime.parquet";
+
 use anyhow::{Context, Result};
 use legume_numeric::matrix::dense_mat_io::axis_id_names;
 use log::info;

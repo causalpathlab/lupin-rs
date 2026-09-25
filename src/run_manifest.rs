@@ -301,6 +301,22 @@ pub struct RunAnnotate {
     pub ontology_signature: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ontology_term_effect: Option<String>,
+    /// Enrichment: nClusters × C FDR q-values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_celltype_q_values: Option<String>,
+    /// Projection: nClusters × term FDR q-values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_term_q: Option<String>,
+    /// Projection: per-marker bootstrap support (live markers per type).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_support: Option<String>,
+    /// Projection: the marker panel's gene embedding per type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_embedding: Option<String>,
+    /// Effective settings of the latest run of each annotate method
+    /// (`enrichment` / `projection` / `ontology`), constants included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Value>,
     #[serde(flatten)]
     pub extra: Extra,
 }

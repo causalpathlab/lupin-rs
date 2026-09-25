@@ -66,7 +66,7 @@ pub struct AssocArgs {
     #[arg(
         long,
         short = 'f',
-        help = "lineage output prefix (reads {from}.pseudotime.parquet)"
+        help = "lineage output prefix (reads {from}.cell_pseudotime.parquet)"
     )]
     pub from: Box<str>,
 

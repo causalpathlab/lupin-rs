@@ -11,7 +11,7 @@
 //! - `{from}.curves_2d.parquet`           — Slingshot principal curves (polylines)
 //! - `{from}.nodes_2d.parquet`            — MST node positions
 //! - `{from}.trajectory_annotation.parquet` — node → role → cell_type → confidence
-//! - `{from}.pseudotime.parquet`          — cell × pseudotime (for `--color-by pseudotime`)
+//! - `{from}.cell_pseudotime.parquet`     — cell × pseudotime (for `--color-by pseudotime`)
 //!
 //! The render follows the shared `legume-plot` pipeline (also used by `senna
 //! plot`): each colour group is rasterized to a transparent PNG layer
@@ -157,7 +157,7 @@ pub struct LineagePlotArgs {
         short = 'f',
         help = "lineage output prefix",
         long_help = "lineage output prefix. It reads {from}.cells_2d.parquet, .curves_2d,\n\
-                     .nodes_2d, .lineage_annot.annot, .trajectory_annotation and .pseudotime."
+                     .nodes_2d, .lineage_annot.annot, .trajectory_annotation and .cell_pseudotime."
     )]
     pub from: Box<str>,
 

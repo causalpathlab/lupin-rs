@@ -7,7 +7,9 @@
 //! over the sparse count backend; [`crate::annotate`] receives the resulting
 //! cluster × gene expression.
 
-use crate::annotate::args::{AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs};
+use crate::annotate::args::{
+    fixed_settings, AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, BLOCK_SIZE,
+};
 use crate::annotate::by_enrichment::{self, EnrichmentPlan};
 use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
@@ -69,7 +71,7 @@ pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &mut Loaded) -> Resul
     } else {
         Pass::Markers(&args.markers)
     };
-    record(loaded, pass, &outputs)
+    record(loaded, pass, &outputs, "enrichment", settings(args)?)
 }
 
 /// `lupin annotate --method projection`: score the run's co-embedded gene
@@ -95,7 +97,13 @@ pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &mut Loaded
             cell_embedding: &cell,
         },
     )?;
-    record(loaded, Pass::Markers(&args.markers), &outputs)
+    record(
+        loaded,
+        Pass::Markers(&args.markers),
+        &outputs,
+        "projection",
+        settings(args)?,
+    )
 }
 
 /// `lupin annotate` without markers: walk the CL tree over the cluster ×
@@ -115,7 +123,22 @@ pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &mut Loaded) -> Re
         })?;
     let q_abs = resolve(&loaded.dir, q_rel);
     let outputs = ontology::run(args, &q_abs)?;
-    record(loaded, Pass::Ontology, &outputs)
+    record(
+        loaded,
+        Pass::Ontology,
+        &outputs,
+        "ontology",
+        settings(args)?,
+    )
+}
+
+/// A pass's effective settings: its own arguments plus the fixed constants.
+fn settings(args: &impl serde::Serialize) -> Result<serde_json::Value> {
+    let mut v = serde_json::to_value(args)?;
+    if let serde_json::Value::Object(m) = &mut v {
+        m.insert("fixed".into(), fixed_settings());
+    }
+    Ok(v)
 }
 
 ////////////////////////////////////
@@ -134,9 +157,16 @@ enum Pass<'a> {
     Ontology,
 }
 
-/// Record a pass's artifacts in the manifest, relative to its directory, and
-/// save it back to the file it was read from.
-fn record(loaded: &mut Loaded, pass: Pass<'_>, out: &AnnotationOutputs) -> Result<()> {
+/// Record a pass's artifacts in the manifest, relative to its directory, plus
+/// the settings it ran with under `annotate.settings.{method}`, and save it
+/// back to the file it was read from.
+fn record(
+    loaded: &mut Loaded,
+    pass: Pass<'_>,
+    out: &AnnotationOutputs,
+    method: &str,
+    settings: serde_json::Value,
+) -> Result<()> {
     let dir = &loaded.dir;
     let rel = |p: &Option<String>| {
         p.as_deref()
@@ -153,6 +183,10 @@ fn record(loaded: &mut Loaded, pass: Pass<'_>, out: &AnnotationOutputs) -> Resul
             a.cluster_expression = rel(&out.cluster_expression);
             a.ontology_assignment = rel(&out.ontology_assignment);
             a.ontology_node_mass = rel(&out.ontology_node_mass);
+            a.cluster_celltype_q_values = rel(&out.cluster_celltype_q_values);
+            a.cluster_term_q = rel(&out.cluster_term_q);
+            a.marker_support = rel(&out.marker_support);
+            a.marker_embedding = rel(&out.marker_embedding);
             loaded.manifest.defaults.colour_by = Some("annotation".into());
         }
         Pass::GeneSets => {
@@ -164,6 +198,14 @@ fn record(loaded: &mut Loaded, pass: Pass<'_>, out: &AnnotationOutputs) -> Resul
             a.ontology_assignment = rel(&out.ontology_assignment);
             a.ontology_node_mass = rel(&out.ontology_node_mass);
         }
+    }
+    let recorded = loaded
+        .manifest
+        .annotate
+        .settings
+        .get_or_insert_with(|| serde_json::json!({}));
+    if let serde_json::Value::Object(m) = recorded {
+        m.insert(method.into(), settings);
     }
     loaded.manifest.save(&loaded.file)
 }
@@ -177,11 +219,7 @@ fn record(loaded: &mut Loaded, pass: Pass<'_>, out: &AnnotationOutputs) -> Resul
 /// multiome layout it recorded — a multiome run's files are modalities of one
 /// cell set, glued by barcode and namespaced as training did. No cell QC:
 /// annotation maps onto the run's existing cells.
-fn raw_counts_load(
-    manifest: &RunManifest,
-    manifest_dir: &Path,
-    preload: bool,
-) -> Result<ReadSharedRowsArgs> {
+fn raw_counts_load(manifest: &RunManifest, manifest_dir: &Path) -> Result<ReadSharedRowsArgs> {
     let to_box = |s: &String| resolve(manifest_dir, s).into_boxed_str();
     let data_files: Vec<Box<str>> = manifest.data.input.iter().map(to_box).collect();
     let batch_files =
@@ -189,7 +227,6 @@ fn raw_counts_load(
     let mut args = ReadSharedRowsArgs {
         data_files,
         batch_files,
-        preload,
         keep_empty_barcodes: true,
         ..Default::default()
     };
@@ -257,7 +294,7 @@ fn load_enrichment_inputs(
         "manifest.data.input is empty; cannot re-open raw counts for cluster aggregation"
     );
 
-    let load = raw_counts_load(manifest, manifest_dir, args.preload_data)?;
+    let load = raw_counts_load(manifest, manifest_dir)?;
     info!("Re-opening raw counts: {} file(s)", load.data_files.len());
     let SparseDataWithBatch {
         data: data_vec,
@@ -297,9 +334,8 @@ fn load_enrichment_inputs(
         (annot.membership_ga, annot.annot_names)
     };
 
-    let nb_fisher = nb_fisher_weights(args, &loaded.run_prefix(), data_vec, &gene_names)?;
+    let nb_fisher = nb_fisher_weights(&loaded.run_prefix(), data_vec, &gene_names)?;
     let (profile_gk, pb_gene_gp) = aggregate_expression(
-        args,
         plan,
         data_vec,
         &cluster_labels,
@@ -375,7 +411,6 @@ fn resolve_clusters(
 /// Per-gene NB-Fisher weights: the cached parquet from training first, falling
 /// back to recomputing them off the counts.
 fn nb_fisher_weights(
-    args: &AnnotateArgs,
     fisher_prefix: &str,
     data_vec: &data_beans::sparse_io_vector::SparseIoVec,
     gene_names: &[Box<str>],
@@ -396,9 +431,9 @@ fn nb_fisher_weights(
                 cached_genes.len(),
                 gene_names.len()
             );
-            compute_nb_fisher_weights(data_vec, Some(args.block_size))?
+            compute_nb_fisher_weights(data_vec, Some(BLOCK_SIZE))?
         }
-        None => compute_nb_fisher_weights(data_vec, Some(args.block_size))?,
+        None => compute_nb_fisher_weights(data_vec, Some(BLOCK_SIZE))?,
     };
     let (w_min, w_max, w_sum) = nb_fisher.par_iter().map(|&w| (w, w, w)).reduce(
         || (f32::INFINITY, 0.0f32, 0.0f32),
@@ -419,7 +454,6 @@ fn nb_fisher_weights(
 /// the cluster sums.
 #[allow(clippy::too_many_arguments)]
 fn aggregate_expression(
-    args: &AnnotateArgs,
     plan: &EnrichmentPlan,
     data_vec: &data_beans::sparse_io_vector::SparseIoVec,
     cluster_labels: &[usize],
@@ -430,8 +464,7 @@ fn aggregate_expression(
     nb_fisher: &[f32],
 ) -> Result<(Mat, Option<Mat>)> {
     if plan.ontology_mode {
-        let gene_sum_kg =
-            accumulate_gene_sum(data_vec, cluster_labels, n_clusters, g, args.block_size)?;
+        let gene_sum_kg = accumulate_gene_sum(data_vec, cluster_labels, n_clusters, g, BLOCK_SIZE)?;
         // μ[g, c] = w_NBF[g] · (Σ counts[g, n ∈ c]) / size_sum[c]; Simplex
         // specificity downstream supplies the cross-cluster housekeeping
         // suppression.
@@ -448,7 +481,7 @@ fn aggregate_expression(
         batch_labels,
         n_batches,
         g,
-        args.block_size,
+        BLOCK_SIZE,
     )?;
     Ok((
         weighted_mean_profile(&gene_sum_kg, n_clusters, g, nb_fisher),

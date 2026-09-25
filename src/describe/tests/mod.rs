@@ -159,15 +159,43 @@ fn enrichment_q_table_calls_each_cluster_by_its_lowest_q() {
     q.to_parquet_with_names(&path, (Some(&rows), Some("cluster")), Some(&cols))
         .unwrap();
 
-    let mut ev = load_evidence(&prefix, 0.1).unwrap();
+    let files = EvidenceFiles::locate(&prefix);
+    assert_eq!(files.enrichment_q.as_deref(), Some(path.as_str()));
+    let mut ev = load_evidence(&files, 0.1).unwrap();
     assert_eq!(ev[0].coarse_label, "B_cells");
     assert!(ev[0].best_significant);
     assert_eq!(ev[1].coarse_label, UNASSIGNED_LABEL);
     assert_eq!(ev[1].best_label, "T_cells");
 
-    attach_second_best(&mut ev, &prefix, 0.1).unwrap();
+    attach_second_best(&mut ev, &files, 0.1).unwrap();
     assert_eq!(
         ev[0].second.as_ref().map(|(l, _)| l.as_str()),
         Some("T_cells")
     );
+}
+
+#[test]
+fn a_manifest_points_describe_at_the_latest_pass_not_stale_files() {
+    use crate::run_manifest::{RunKind, RunManifest};
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("run").to_string_lossy().into_owned();
+    // A stale projection table from an earlier pass on the same prefix...
+    std::fs::write(format!("{prefix}{ANNOT_PARQUET}"), b"stale").unwrap();
+    // ...while the manifest records the latest (enrichment) pass.
+    let mut m = RunManifest::new(RunKind::Topic, &prefix);
+    m.annotate.argmax = Some("run.argmax.tsv".into());
+    m.annotate.cluster_celltype_q_values = Some("run.cluster_celltype_q_values.parquet".into());
+    m.save(std::path::Path::new(&format!("{prefix}.senna.json")))
+        .unwrap();
+
+    let files = EvidenceFiles::locate(&format!("{prefix}.senna.json"));
+    assert!(
+        files.annot.is_none(),
+        "stale projection table must be ignored"
+    );
+    assert!(files
+        .enrichment_q
+        .as_deref()
+        .is_some_and(|p| p.ends_with("run.cluster_celltype_q_values.parquet")));
+    assert!(files.term_q.is_none());
 }

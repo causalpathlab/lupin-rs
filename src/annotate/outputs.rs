@@ -77,4 +77,8 @@ pub struct AnnotationOutputs {
     pub ontology_node_mass: Option<String>,
     pub ontology_signature: Option<String>,
     pub ontology_term_effect: Option<String>,
+    pub cluster_celltype_q_values: Option<String>,
+    pub cluster_term_q: Option<String>,
+    pub marker_support: Option<String>,
+    pub marker_embedding: Option<String>,
 }

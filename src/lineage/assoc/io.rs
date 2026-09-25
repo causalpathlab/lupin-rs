@@ -22,7 +22,7 @@ pub struct Lineage {
     pub n_branches: usize,
 }
 
-/// Read `{prefix}.pseudotime.parquet` (columns `pseudotime`, `branch`; rows = cells).
+/// Read `{prefix}.cell_pseudotime.parquet` (columns `pseudotime`, `branch`; rows = cells).
 ///
 /// **Cells the lineage could not place on any tree are dropped here.** `lupin lineage`
 /// writes a NaN pseudotime for them (a cell on a trivial tree — a lone centroid, or a tree
@@ -36,7 +36,7 @@ pub struct Lineage {
 /// The drop is safe to do at the boundary because everything downstream is keyed off the
 /// returned `cell_names`: [`load_sites`] and [`load_celltypes`] align to it by name.
 pub fn load_lineage(prefix: &str) -> Result<Lineage> {
-    let path = format!("{prefix}.pseudotime.parquet");
+    let path = format!("{prefix}{}", crate::lineage::write::CELL_PSEUDOTIME);
     let m = DMatrix::<f32>::from_parquet(&path).with_context(|| format!("reading {path}"))?;
     let col = |name: &str| {
         m.cols

@@ -1,4 +1,42 @@
-#[derive(Debug)]
+//! Settings for the three annotation passes, built from the `lupin annotate`
+//! flags. Values nobody tunes per run are the constants below; every pass
+//! records its settings (these included) in `manifest.annotate.settings`.
+
+/// Gene sets smaller than this are dropped (GO/GMT mode).
+pub const MIN_GENE_SET: usize = 15;
+/// Gene sets larger than this are dropped (GO/GMT mode).
+pub const MAX_GENE_SET: usize = 500;
+/// Keep IEA (electronic) GAF annotations.
+pub const KEEP_IEA: bool = true;
+/// Cells per block when streaming the raw counts.
+pub const BLOCK_SIZE: usize = 1024;
+/// Random gene sets for the enrichment restandardization moments.
+pub const NUM_DRAWS: usize = 1000;
+/// Random gene sets per bootstrap draw for the restandardization moments.
+pub const BOOT_NUM_DRAWS: usize = 100;
+/// Minimum per-cell label confidence (0 = keep every call).
+pub const MIN_CONFIDENCE: f32 = 0.0;
+
+/// The constants above, for the manifest record.
+#[must_use]
+pub fn fixed_settings() -> serde_json::Value {
+    serde_json::json!({
+        "min_gene_set": MIN_GENE_SET,
+        "max_gene_set": MAX_GENE_SET,
+        "keep_iea": KEEP_IEA,
+        "block_size": BLOCK_SIZE,
+        "num_draws": NUM_DRAWS,
+        "boot_num_draws": BOOT_NUM_DRAWS,
+        "min_confidence": MIN_CONFIDENCE,
+        "empirical_specificity": true,
+        "gene_strata": true,
+        "recluster": true,
+        "panel_perm": 0,
+        "support_perm": 0,
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct AnnotateArgs {
     /// Cluster parquet (cells × 1 cluster column); overrides `manifest.cluster.clusters`
     pub clusters: Option<Box<str>>,
@@ -27,23 +65,8 @@ pub struct AnnotateArgs {
     /// MSigDB GMT gene-sets (`term<TAB>desc<TAB>genes…`); gene-set mode, like `gaf`
     pub gmt: Option<Box<str>>,
 
-    /// GAF only: drop IEA (electronic) annotations — the low-confidence bulk
-    pub no_iea: bool,
-
-    /// Ontology mode: minimum matched members for a term to be scored
-    pub min_gene_set: usize,
-
-    /// Ontology mode: maximum matched members per term
-    pub max_gene_set: usize,
-
     /// Output prefix for annotation artifacts
     pub out: Box<str>,
-
-    /// Cells per CSC read block when streaming raw counts for per-cluster aggregation
-    pub block_size: usize,
-
-    /// Random gene-set draws per cell type (Efron–Tibshirani moments)
-    pub num_draws: usize,
 
     /// Number of PB-level sample permutations for the correlation-preserving null
     pub num_perm: usize,
@@ -57,9 +80,6 @@ pub struct AnnotateArgs {
     /// Softmax temperature used when row-normalizing Q over significant entries
     pub q_temperature: f32,
 
-    /// Minimum cell-level confidence to emit a concrete label
-    pub min_confidence: f32,
-
     /// RNG seed (deterministic; affects row randomization)
     pub seed: u64,
 
@@ -67,12 +87,6 @@ pub struct AnnotateArgs {
     /// By default the explicit annotation set is erased first,
     /// never the embedding or manifest, for a fresh re-run.
     pub no_clean: bool,
-
-    /// Preload columns into memory after opening the zarr/h5 backend
-    pub preload_data: bool,
-
-    /// Disable data-aware specificity re-weighting of marker genes
-    pub no_empirical_specificity: bool,
 
     // ── optional inline ontology annotation (TreeBH) ──
     /// Cell Ontology .obo, e.g. cl-basic.obo
@@ -88,18 +102,9 @@ pub struct AnnotateArgs {
     /// Ontology TreeBH: Benjamini–Yekutieli within families (any dependence; more conservative)
     pub ontology_by: bool,
 
-    /// Draw the null gene sets uniformly instead of within gene-abundance strata
-    pub no_gene_strata: bool,
-
     // ── marker-panel stability bootstrap ──
-    /// Turn OFF the stability bootstrap and ship a bare point estimate
-    pub no_bootstrap_markers: bool,
-
     /// Bootstrap resamples (0 disables the bootstrap)
     pub n_boot: usize,
-
-    /// Random gene sets per bootstrap draw for the restandardization moments
-    pub boot_num_draws: usize,
 
     /// Minimum fraction of resamples the top label must win for a cluster to be called
     pub min_support: f32,
@@ -121,7 +126,7 @@ pub struct AnnotateArgs {
 /// onto a co-embedded feature space (bge / fne / resolve-embedding-space).
 /// Embedding-grounded (no raw-count re-read), complementary to
 /// `annotate --method enrichment`. Drives the shared firm term-ORA core.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct AnnotateProjectionArgs {
     /// Marker-gene TSV: `gene<TAB>celltype` per line (tab/comma/space delimited)
     pub markers: Box<str>,
@@ -173,20 +178,8 @@ pub struct AnnotateProjectionArgs {
     /// Ontology TreeBH: Benjamini–Yekutieli within families (any dependence; more conservative)
     pub ontology_by: bool,
 
-    /// Marker-panel permutation null (the BIAS guard). 0 = off; try 200
-    pub panel_perm: usize,
-
-    /// Support permutation null: turns label_support into a p-value/FDR. 0 = off
-    pub support_perm: usize,
-
-    /// Turn OFF the stability bootstrap and ship a bare point estimate
-    pub no_bootstrap_markers: bool,
-
     /// Bootstrap resamples (0 disables the bootstrap)
     pub n_boot: usize,
-
-    /// Hold the clustering fixed across resamples (weakens the bootstrap)
-    pub no_recluster: bool,
 
     /// Minimum fraction of resamples the top label must win to be called
     pub min_support: f32,
@@ -210,7 +203,7 @@ pub struct AnnotateProjectionArgs {
 /// Ontology follow-up of `lupin annotate` — hierarchical multi-resolution cell-type calling
 /// (TreeBH) on the Cell Ontology, post-processing an `annotate --method enrichment`
 /// run's cluster × celltype matrix.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct AnnotateOntologyArgs {
     /// Curated `label<TAB>CL:id` TSV mapping celltypes to Cell Ontology terms
     pub label_cl: Box<str>,

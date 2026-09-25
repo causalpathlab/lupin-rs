@@ -20,7 +20,7 @@
 //! outputs are directly comparable.
 
 use super::args::AnnotateProjectionArgs;
-use super::outputs::{clean_outputs, AnnotationOutputs};
+use super::outputs::{clean_outputs, AnnotationOutputs, CLUSTER_TERM_Q};
 use anyhow::Result;
 use graph_embedding_util::type_annotation::{
     annotate_embeddings_ora, Abstain, InputEmbeddings, MarkerBootstrapConfig, TermOraConfig,
@@ -76,23 +76,21 @@ pub fn run(
         label_cl: args.label_cl.as_deref().map(str::to_owned),
         ontology_fdr_q: args.ontology_fdr_q,
         ontology_by: args.ontology_by,
-        panel_perm: args.panel_perm,
-        support_perm: args.support_perm,
+        panel_perm: 0,
+        support_perm: 0,
         // ON by default, as in `lupin annotate --method projection`: a bare `argmin` over marker centroids always
         // returns something, and returns it with no error bar.
-        bootstrap: (!args.no_bootstrap_markers && args.n_boot > 0).then_some(
-            MarkerBootstrapConfig {
-                n_boot: args.n_boot,
-                abstain: if args.abstain_separable {
-                    Abstain::Separable(args.abstain_alpha)
-                } else {
-                    Abstain::Support(args.min_support)
-                },
-                set_coverage: args.set_coverage,
-                max_set_size: args.max_set_size,
-                recluster: !args.no_recluster,
+        bootstrap: (args.n_boot > 0).then_some(MarkerBootstrapConfig {
+            n_boot: args.n_boot,
+            abstain: if args.abstain_separable {
+                Abstain::Separable(args.abstain_alpha)
+            } else {
+                Abstain::Support(args.min_support)
             },
-        ),
+            set_coverage: args.set_coverage,
+            max_set_size: args.max_set_size,
+            recluster: true,
+        }),
     };
 
     annotate_embeddings_ora(
@@ -114,6 +112,10 @@ pub fn run(
     let onto_assign = format!("{out}.ontology_assignment.tsv");
     let onto_mass = format!("{out}.ontology_node_mass.parquet");
     let has_onto = Path::new(&onto_assign).exists();
+    let written = |suffix: &str| {
+        let p = format!("{out}{suffix}");
+        Path::new(&p).exists().then_some(p)
+    };
 
     info!("annotate --method projection complete → {out}.*");
     Ok(AnnotationOutputs {
@@ -123,6 +125,9 @@ pub fn run(
         // those manifest fields stay None for this pass.
         ontology_assignment: has_onto.then_some(onto_assign),
         ontology_node_mass: has_onto.then_some(onto_mass),
+        cluster_term_q: written(CLUSTER_TERM_Q),
+        marker_support: written(".marker_support.parquet"),
+        marker_embedding: written(".marker_embedding.parquet"),
         ..AnnotationOutputs::default()
     })
 }

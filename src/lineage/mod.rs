@@ -28,7 +28,7 @@ mod root;
 pub mod run;
 mod traj_annotation;
 mod velocity_grid;
-mod write;
+pub(crate) mod write;
 
 /// What the producing run promised about its per-cell tables. Read from a run
 /// manifest by [`crate::lineage_manifest`].

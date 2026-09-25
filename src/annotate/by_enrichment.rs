@@ -2,7 +2,9 @@
 //! expression matrix (NB-Fisher adjusted, re-aggregated from raw counts by the
 //! caller — see [`crate::annotate_manifest`]).
 
-use super::args::AnnotateArgs;
+use super::args::{
+    AnnotateArgs, BOOT_NUM_DRAWS, KEEP_IEA, MAX_GENE_SET, MIN_CONFIDENCE, MIN_GENE_SET, NUM_DRAWS,
+};
 use super::inputs::EnrichmentInputs;
 use super::outputs::{clean_outputs, AnnotationOutputs, ENRICHMENT_OUTPUT_SUFFIXES};
 use super::outputs::{ARGMAX_TSV, CLUSTER_CELLTYPE_Q_VALUES};
@@ -124,9 +126,7 @@ pub fn run(
     // attenuated; cluster-exclusive markers (NCAM1 in NK only) keep full
     // weight. This complements the IDF that already runs on the marker TSV.
     let mut markers_gc = inputs.markers_gc.clone();
-    if !args.no_empirical_specificity {
-        apply_empirical_specificity_weights(&mut markers_gc, profile_gk);
-    }
+    apply_empirical_specificity_weights(&mut markers_gc, profile_gk);
 
     // The per-batch β̃ profile backs the sample-permutation null, so only the
     // marker path — past the GO/GMT early return above — asks for it.
@@ -145,7 +145,7 @@ pub fn run(
 
     let config = AnnotateConfig {
         specificity: SpecificityMode::Simplex,
-        num_row_randomization: args.num_draws,
+        num_row_randomization: NUM_DRAWS,
         num_sample_perm: args.num_perm,
         // pb_membership_pk's rows ARE batches (one pseudobulk per batch),
         // so the sample-permutation null shuffles batches directly with no
@@ -154,26 +154,24 @@ pub fn run(
         batch_labels: None,
         fdr_alpha: args.fdr_alpha,
         q_softmax_temperature: args.q_temperature,
-        min_confidence: args.min_confidence,
+        min_confidence: MIN_CONFIDENCE,
         seed: args.seed,
         min_markers: args.min_markers,
-        stratify_null: !args.no_gene_strata,
+        stratify_null: true,
         // ON by default, as in `lupin annotate --method projection`. A single pass over one marker panel always
         // returns a winner, and returns it with a softmaxed `confidence` that says nothing
         // about whether the panel could have said otherwise.
-        bootstrap: (!args.no_bootstrap_markers && args.n_boot > 0).then_some(
-            EnrichmentBootstrapConfig {
-                n_boot: args.n_boot,
-                abstain: if args.abstain_separable {
-                    Abstain::Separable(args.abstain_alpha)
-                } else {
-                    Abstain::Support(args.min_support)
-                },
-                set_coverage: args.set_coverage,
-                max_set_size: args.max_set_size,
-                boot_num_draws: args.boot_num_draws,
+        bootstrap: (args.n_boot > 0).then_some(EnrichmentBootstrapConfig {
+            n_boot: args.n_boot,
+            abstain: if args.abstain_separable {
+                Abstain::Separable(args.abstain_alpha)
+            } else {
+                Abstain::Support(args.min_support)
             },
-        ),
+            set_coverage: args.set_coverage,
+            max_set_size: args.max_set_size,
+            boot_num_draws: BOOT_NUM_DRAWS,
+        }),
     };
 
     info!(
@@ -181,7 +179,7 @@ pub fn run(
          row-rand B={}, sample-perm B={}",
         n_clusters,
         inputs.celltype_names.len(),
-        args.num_draws,
+        NUM_DRAWS,
         args.num_perm,
     );
 
@@ -323,6 +321,7 @@ pub fn run(
 
     info!("annotate --method enrichment complete");
     Ok(AnnotationOutputs {
+        cluster_celltype_q_values: Some(q_val_path),
         argmax: Some(argmax_path),
         annotation: Some(annotation_path),
         cluster_celltype_q: Some(q_path),
@@ -355,9 +354,9 @@ fn run_ontology_gene_sets(
         obo,
         args.gaf.as_deref(),
         args.gmt.as_deref(),
-        args.no_iea,
-        args.min_gene_set,
-        args.max_gene_set,
+        !KEEP_IEA,
+        MIN_GENE_SET,
+        MAX_GENE_SET,
         gene_names,
     )?;
 

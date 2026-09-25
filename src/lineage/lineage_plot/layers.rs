@@ -312,7 +312,7 @@ pub(super) fn build_pseudotime_layer(
     args: &LineagePlotArgs,
     layers: &mut Vec<TopicLayer>,
 ) -> Result<(f32, f32)> {
-    let pt_path = format!("{prefix}.pseudotime.parquet");
+    let pt_path = format!("{prefix}{}", crate::lineage::write::CELL_PSEUDOTIME);
     let pt = crate::lineage::pseudotime::read_pseudotime_for(&pt_path, cells.names)?;
     let (lo, span) = crate::lineage::pseudotime::finite_range(&pt)?;
     let hi = lo + span;

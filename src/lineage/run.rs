@@ -299,7 +299,7 @@ pub fn run_lineage(args: &LineageArgs, inputs: &LineageInputs) -> Result<()> {
         &forest.cell_tree,
         &forest.order_conf,
         &cell_names,
-        &format!("{out}.pseudotime.parquet"),
+        &format!("{out}{CELL_PSEUDOTIME}"),
     )?;
     write_cell_matrix(
         &curves.weights,
