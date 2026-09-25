@@ -8,6 +8,7 @@ authors = ["Yongjin Park <ypp@stat.ubc.ca> <yongjin.park@ubc.ca>"]
 description = "Cell-type annotation (projection, enrichment, ontology)"
 repository = "https://github.com/causalpathlab/lupin-rs"
 homepage = "https://github.com/causalpathlab/lupin-rs"
+readme = "README.md"
 keywords = ["genomics", "single-cell", "annotation", "cell-type"]
 categories = ["science"]
 exclude = [

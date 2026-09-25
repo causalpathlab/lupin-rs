@@ -8,6 +8,7 @@ authors = ["Yongjin Park <ypp@stat.ubc.ca> <yongjin.park@ubc.ca>"]
 description = "Lineage inference, pseudotime, dyn-assoc, and lineage plots"
 repository = "https://github.com/causalpathlab/lupin-rs"
 homepage = "https://github.com/causalpathlab/lupin-rs"
+readme = "README.md"
 keywords = ["genomics", "single-cell", "lineage", "pseudotime"]
 categories = ["science"]
 exclude = [
