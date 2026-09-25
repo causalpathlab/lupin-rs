@@ -1,0 +1,51 @@
+[package]
+name = "lupin-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+license = "MIT"
+authors = ["Yongjin Park <ypp@stat.ubc.ca> <yongjin.park@ubc.ca>"]
+description = "Label, Unfold, Place, Interpret, Narrate — annotation, lineage, pseudotime, association, description"
+repository = "https://github.com/causalpathlab/lupin-rs"
+homepage = "https://github.com/causalpathlab/lupin-rs"
+readme = "README.md"
+keywords = ["genomics", "single-cell", "annotation", "lineage"]
+categories = ["science", "command-line-utilities"]
+exclude = [
+    "**/.claude/**",
+    "**/.DS_Store",
+]
+
+[[bin]]
+name = "lupin"
+path = "src/main.rs"
+
+[features]
+default = []
+hdf5 = ["senna/hdf5", "gene-text/hdf5"]
+cuda = ["senna/cuda", "gene-text/cuda"]
+metal = ["senna/metal", "gene-text/metal"]
+
+[dependencies]
+anyhow = { workspace = true }
+base64 = { workspace = true }
+clap = { workspace = true }
+enrichment = { workspace = true }
+env_logger = { workspace = true }
+genomic-data = { workspace = true }
+log = { workspace = true }
+annotate = { package = "legume-annotate", path = "../annotate", version = "0.1.0" }
+lineage = { package = "legume-lineage", path = "../lineage", version = "0.1.0" }
+gene-text = { package = "legume-gene-text", path = "../gene-text", version = "0.1.0" }
+senna = { workspace = true }
+data-beans = { workspace = true, features = ["aux", "alg"] }
+graph-embedding-util = { workspace = true }
+legume-numeric = { workspace = true, features = ["matrix"] }
+legume-plot = { workspace = true }
+rayon = { workspace = true }
+rustc-hash = { workspace = true }
+serde_json = { workspace = true }
+tiny-skia = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
