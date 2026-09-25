@@ -189,16 +189,12 @@ pub struct AssocArgs {
     #[arg(long, help = "skip the cell-type-level aggregation report")]
     pub no_celltype: bool,
 
-    #[arg(
-        long,
-        short = 'o',
-        help = "Output prefix (default: the lineage prefix)"
-    )]
-    pub out: Option<Box<str>>,
+    #[arg(long, short = 'o', help = "Output prefix")]
+    pub out: Box<str>,
 }
 
 pub fn run_assoc(args: &AssocArgs) -> Result<()> {
-    let out = args.out.as_deref().unwrap_or(&args.from).to_string();
+    let out = args.out.to_string();
     mkdir_parent(&out)?;
 
     let lin = load_lineage(&args.from)?;

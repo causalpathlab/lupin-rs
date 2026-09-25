@@ -13,7 +13,7 @@ use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
 use crate::annotate::ontology;
 use crate::annotate::outputs::AnnotationOutputs;
-use crate::run_manifest::{self, resolve};
+use crate::run_manifest::{self, resolve, Loaded};
 
 use crate::annotate::aggregate::{
     accumulate_gene_sum, accumulate_gene_sum_pair, weighted_mean_profile,
@@ -57,132 +57,115 @@ impl Default for LeidenArgs {
     }
 }
 
-/// `lupin annotate --method enrichment`:
-/// re-open the raw counts the manifest points at, aggregate them per cluster,
-/// run the marker enrichment, and record what it wrote.
-pub fn annotate_by_enrichment(args: &AnnotateArgs) -> Result<()> {
-    let plan = by_enrichment::plan(args, &run_manifest::derive_out_prefix(&args.from))?;
-    let mut loaded = run_manifest::load(&args.from)?;
-    let inputs = load_enrichment_inputs(args, &plan, &loaded.manifest, &loaded.dir)?;
+/// `lupin annotate --method enrichment`: re-open the raw counts the manifest
+/// points at, aggregate them per cluster, run the enrichment, and record what
+/// it wrote.
+pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &mut Loaded) -> Result<()> {
+    let plan = by_enrichment::plan(args)?;
+    let inputs = load_enrichment_inputs(args, &plan, loaded)?;
     let outputs = by_enrichment::run(args, &plan, &inputs)?;
-
-    if plan.ontology_mode {
-        record_gene_set_signature(&mut loaded, &outputs)
+    let pass = if plan.ontology_mode {
+        Pass::GeneSets
     } else {
-        record_annotation(&mut loaded, &args.markers, &outputs)
-    }
+        Pass::Markers(&args.markers)
+    };
+    record(loaded, pass, &outputs)
 }
 
-/// `lupin annotate --method projection`: load
-/// the co-embedded gene space + the cell embedding off the manifest, score them
-/// against the marker panel, and record what it wrote.
-pub fn annotate_by_projection(args: &AnnotateProjectionArgs) -> Result<()> {
-    let mut loaded = run_manifest::load(&args.from)?;
-    let (manifest, manifest_dir) = (&loaded.manifest, &loaded.dir);
-
-    // Feature side: genes on the cell manifold (required for projection). Reads
-    // `outputs.feature_coembedding` off the manifest and, for a `gem` run, keeps
-    // only the spliced rows re-keyed by gene — see [`crate::marker_embedding`].
-    let feat = load_marker_feature_embedding(manifest, manifest_dir, &args.from)
-        .with_context(|| {
-            "projection needs a co-embedded gene space (a `senna gem` / `bge` / `fne` / \
-         `resolve-embedding-space` run). For topic/svd runs use `lupin annotate --method enrichment`."
-        })?;
-    // Cell side: prefer the explicit cell_embedding; fall back to latent for
-    // manifests written before Z moved there unconditionally.
-    let cell_rel = manifest.outputs.geometry_latent().ok_or_else(|| {
-        anyhow!("manifest has neither `outputs.cell_embedding` nor `outputs.latent`")
-    })?;
-    let cell_path = resolve(manifest_dir, cell_rel);
+/// `lupin annotate --method projection`: score the run's co-embedded gene
+/// space and cell embedding against the marker panel, and record what it wrote.
+pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &mut Loaded) -> Result<()> {
+    let run = loaded.file.display().to_string();
+    // Genes on the cell manifold; for a `gem` run only the spliced rows,
+    // re-keyed by gene — see [`crate::marker_embedding`].
+    let feat = load_marker_feature_embedding(&loaded.manifest, &loaded.dir, &run).with_context(
+        || {
+            "projection needs a co-embedded gene space (a senna `gem` / `bge` / `fne` / \
+             `resolve-embedding-space` run). For topic/svd runs use `lupin annotate --method enrichment`."
+        },
+    )?;
+    let cell_path = loaded.geometry_latent_path()?;
     let cell = DMatrix::<f32>::from_parquet(&cell_path)
         .with_context(|| format!("reading cell embedding {cell_path}"))?;
 
     let outputs = by_projection::run(
         args,
-        &run_manifest::derive_out_prefix(&args.from),
         &ProjectionInputs {
             feature_embedding: &feat,
             cell_embedding: &cell,
         },
     )?;
-
-    record_annotation(&mut loaded, &args.markers, &outputs)
+    record(loaded, Pass::Markers(&args.markers), &outputs)
 }
 
-/// `lupin annotate` without markers: walk the CL
-/// tree over the cluster × celltype matrix an earlier enrichment run recorded.
-pub fn annotate_ontology(args: &AnnotateOntologyArgs) -> Result<()> {
-    let run_manifest::Loaded {
-        mut manifest,
-        dir: manifest_dir,
-        file,
-    } = run_manifest::load(&args.from)?;
-    let q_rel = manifest
+/// `lupin annotate` without markers: walk the CL tree over the cluster ×
+/// cell-type matrix an earlier enrichment run recorded.
+pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &mut Loaded) -> Result<()> {
+    let q_rel = loaded
+        .manifest
         .annotate
         .cluster_celltype_q
-        .clone()
+        .as_deref()
         .ok_or_else(|| {
             anyhow!(
-                "manifest has no `annotate.cluster_celltype_q` — run \
-             `lupin annotate --method enrichment --from {} -m <markers>` first",
-                args.from
-            )
+            "{} has no `annotate.cluster_celltype_q` — run `lupin annotate --method enrichment \
+             -m <markers>` on it first",
+            loaded.file.display()
+        )
         })?;
-    let q_abs = resolve(&manifest_dir, &q_rel);
-
-    let outputs = ontology::run(args, &run_manifest::derive_out_prefix(&args.from), &q_abs)?;
-
-    let rel = |abs: &str| run_manifest::rel_to_manifest(&manifest_dir, abs);
-    manifest.annotate.ontology_assignment = outputs.ontology_assignment.as_deref().map(&rel);
-    manifest.annotate.ontology_node_mass = outputs.ontology_node_mass.as_deref().map(&rel);
-    manifest.save(&file)
+    let q_abs = resolve(&loaded.dir, q_rel);
+    let outputs = ontology::run(args, &q_abs)?;
+    record(loaded, Pass::Ontology, &outputs)
 }
 
 ////////////////////////////////////
-// manifest → annotation outputs  //
+// annotation outputs → manifest  //
 ////////////////////////////////////
 
-/// Wire the artifacts into the manifest as paths relative to `manifest_dir`,
-/// flip the default plot colour to `annotation`, and save back to the manifest file. Both
-/// marker passes land here, so they keep the same `manifest.annotate.*`
-/// contract.
-fn record_annotation(
-    loaded: &mut run_manifest::Loaded,
-    markers: &str,
-    out: &AnnotationOutputs,
-) -> Result<()> {
-    let manifest = &mut loaded.manifest;
-    let rel = |abs: &str| run_manifest::rel_to_manifest(&loaded.dir, abs);
-    manifest.annotate.argmax = out.argmax.as_deref().map(&rel);
-    manifest.annotate.markers = Some(markers.to_string());
-    // Always assign (including None) so a projection re-run clears enrichment
-    // paths left by an earlier annotate --method enrichment, matching the ontology
-    // clear semantics below.
-    manifest.annotate.annotation = out.annotation.as_deref().map(&rel);
-    manifest.annotate.cluster_celltype_q = out.cluster_celltype_q.as_deref().map(&rel);
-    manifest.annotate.cluster_celltype_es = out.cluster_celltype_es.as_deref().map(&rel);
-    manifest.annotate.cluster_expression = out.cluster_expression.as_deref().map(&rel);
-    // Overwrite (not conditionally set) so a re-run without ontology clears any
-    // stale pointers from a previous standalone `annotate-ontology`.
-    manifest.annotate.ontology_assignment = out.ontology_assignment.as_deref().map(&rel);
-    manifest.annotate.ontology_node_mass = out.ontology_node_mass.as_deref().map(&rel);
-    manifest.defaults.colour_by = Some("annotation".into());
-    manifest.save(&loaded.file)
+/// Which annotation pass ran, which decides the `manifest.annotate.*` slots it
+/// owns. A pass writes every slot it owns — `None` clears a stale pointer
+/// left by an earlier run — and leaves the rest alone.
+enum Pass<'a> {
+    /// Per-cell cell-type labels from a marker panel (enrichment or projection).
+    Markers(&'a str),
+    /// GO/GMT gene-set signature per cluster.
+    GeneSets,
+    /// CL ontology walk over an earlier enrichment.
+    Ontology,
 }
 
-/// The GO/GMT gene-set pass records a per-cluster signature, not cell types:
-/// no `argmax`, no `colour_by` flip, and the CL ontology pointers are left
-/// alone because this pass never had anything to say about them.
-fn record_gene_set_signature(
-    loaded: &mut run_manifest::Loaded,
-    out: &AnnotationOutputs,
-) -> Result<()> {
-    let manifest = &mut loaded.manifest;
-    let rel = |abs: &str| run_manifest::rel_to_manifest(&loaded.dir, abs);
-    manifest.annotate.cluster_expression = out.cluster_expression.as_deref().map(&rel);
-    manifest.annotate.ontology_signature = out.ontology_signature.as_deref().map(&rel);
-    manifest.annotate.ontology_term_effect = out.ontology_term_effect.as_deref().map(&rel);
-    manifest.save(&loaded.file)
+/// Record a pass's artifacts in the manifest, relative to its directory, and
+/// save it back to the file it was read from.
+fn record(loaded: &mut Loaded, pass: Pass<'_>, out: &AnnotationOutputs) -> Result<()> {
+    let dir = &loaded.dir;
+    let rel = |p: &Option<String>| {
+        p.as_deref()
+            .map(|abs| run_manifest::rel_to_manifest(dir, abs))
+    };
+    let a = &mut loaded.manifest.annotate;
+    match pass {
+        Pass::Markers(markers) => {
+            a.markers = Some(markers.to_string());
+            a.argmax = rel(&out.argmax);
+            a.annotation = rel(&out.annotation);
+            a.cluster_celltype_q = rel(&out.cluster_celltype_q);
+            a.cluster_celltype_es = rel(&out.cluster_celltype_es);
+            a.cluster_expression = rel(&out.cluster_expression);
+            a.ontology_assignment = rel(&out.ontology_assignment);
+            a.ontology_node_mass = rel(&out.ontology_node_mass);
+            loaded.manifest.defaults.colour_by = Some("annotation".into());
+        }
+        Pass::GeneSets => {
+            a.cluster_expression = rel(&out.cluster_expression);
+            a.ontology_signature = rel(&out.ontology_signature);
+            a.ontology_term_effect = rel(&out.ontology_term_effect);
+        }
+        Pass::Ontology => {
+            a.ontology_assignment = rel(&out.ontology_assignment);
+            a.ontology_node_mass = rel(&out.ontology_node_mass);
+        }
+    }
+    loaded.manifest.save(&loaded.file)
 }
 
 /////////////////////////////////////
@@ -266,9 +249,9 @@ fn drop_small_clusters(labels: &mut [usize], min_size: usize) -> usize {
 fn load_enrichment_inputs(
     args: &AnnotateArgs,
     plan: &EnrichmentPlan,
-    manifest: &RunManifest,
-    manifest_dir: &Path,
+    loaded: &Loaded,
 ) -> Result<EnrichmentInputs> {
+    let (manifest, manifest_dir) = (&loaded.manifest, loaded.dir.as_path());
     anyhow::ensure!(
         !manifest.data.input.is_empty(),
         "manifest.data.input is empty; cannot re-open raw counts for cluster aggregation"
@@ -314,7 +297,7 @@ fn load_enrichment_inputs(
         (annot.membership_ga, annot.annot_names)
     };
 
-    let nb_fisher = nb_fisher_weights(args, manifest, manifest_dir, data_vec, &gene_names)?;
+    let nb_fisher = nb_fisher_weights(args, &loaded.run_prefix(), data_vec, &gene_names)?;
     let (profile_gk, pb_gene_gp) = aggregate_expression(
         args,
         plan,
@@ -393,15 +376,13 @@ fn resolve_clusters(
 /// back to recomputing them off the counts.
 fn nb_fisher_weights(
     args: &AnnotateArgs,
-    manifest: &RunManifest,
-    manifest_dir: &Path,
+    fisher_prefix: &str,
     data_vec: &data_beans::sparse_io_vector::SparseIoVec,
     gene_names: &[Box<str>],
 ) -> Result<Vec<f32>> {
     use data_beans::alg::gene_weighting::{compute_nb_fisher_weights, load_fisher_weights};
 
-    let fisher_prefix = resolve(manifest_dir, &manifest.prefix);
-    let nb_fisher: Vec<f32> = match load_fisher_weights(&fisher_prefix)? {
+    let nb_fisher: Vec<f32> = match load_fisher_weights(fisher_prefix)? {
         Some((cached_genes, cached_w)) if cached_genes == gene_names => {
             info!(
                 "Loaded {} NB-Fisher weights from {fisher_prefix}.fisher_weights.parquet",

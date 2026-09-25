@@ -1,7 +1,7 @@
 //! Entry point for `lupin lineage` — velocity-informed lineage inference over a
 //! `senna gem` embedding.
 //!
-//! Reads θ (and, on an embedding run, δ) by prefix — `cell_embedding` +
+//! Reads θ (and, on an embedding run, δ) from the run's tables — `cell_embedding` +
 //! `velocity` on an embedding run, `latent` alone (geometry-only) on a topic
 //! one (see [`super::input`]) — fits
 //! **K k-means centroids** on θ and an **MST**
@@ -48,11 +48,10 @@ use super::write::*;
 /// The manifest-derived inputs `run_lineage` cannot read for itself.
 ///
 /// Everything here needs a run manifest, so [`crate::lineage_manifest`]
-/// resolves it from a prefix and hands the results in.
+/// resolves it and hands the results in.
 pub struct LineageInputs {
-    /// The run's output prefix (`--from` with any `.senna.json` stripped):
-    /// the per-cell tables are read as `{prefix}.{table}.parquet`.
-    pub prefix: String,
+    /// Where the run's per-cell tables (θ, δ) are.
+    pub tables: RunTables,
     /// What the producing run says about its per-cell tables.
     pub contract: LatentContract,
     /// Co-embedded gene vectors for the `--markers` node calls. Required
@@ -61,8 +60,7 @@ pub struct LineageInputs {
 }
 
 pub fn run_lineage(args: &LineageArgs, inputs: &LineageInputs) -> Result<()> {
-    let prefix = inputs.prefix.as_str();
-    let out = args.out.as_deref().unwrap_or(prefix).to_string();
+    let out = args.out.to_string();
     mkdir_parent(&out)?;
     anyhow::ensure!(
         args.root_type.is_none() || args.markers.is_some(),
@@ -85,7 +83,7 @@ pub fn run_lineage(args: &LineageArgs, inputs: &LineageInputs) -> Result<()> {
     }
     let theta_from = resolve_theta_from(args.theta_from, &inputs.contract)?;
     let geometry = resolve_geometry(args.latent_geometry, theta_from);
-    let loaded = load_theta(prefix, theta_from, args.no_orient_velocity)?;
+    let loaded = load_theta(&inputs.tables, theta_from, args.no_orient_velocity)?;
     let LoadedTheta {
         cell_names,
         theta: theta_native,
@@ -113,7 +111,7 @@ pub fn run_lineage(args: &LineageArgs, inputs: &LineageInputs) -> Result<()> {
     let raw_theta: Option<DMatrix<f32>> = if args.markers.is_some() {
         Some(match theta_from {
             ThetaFrom::CellEmbedding => theta_native.clone(),
-            _ => load_marker_theta(prefix, &cell_names)?,
+            _ => load_marker_theta(&inputs.tables.cell_embedding, &cell_names)?,
         })
     } else {
         None

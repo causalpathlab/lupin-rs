@@ -97,12 +97,12 @@ pub struct PlotArgs {
     #[arg(
         long,
         short = 'o',
-        help = "Output prefix (defaults to the manifest's `prefix` when --from is used)",
+        help = "Output prefix",
         long_help = "Writes {out}.plot.pdf.\n\
                      Pass --svg / --png to additionally emit {out}.plot.svg / {out}.plot.png;\n\
                      --no-pdf suppresses the PDF."
     )]
-    pub out: Option<Box<str>>,
+    pub out: Box<str>,
 
     #[arg(
         long = "colour-by",
@@ -675,12 +675,7 @@ fn resolve_inputs(args: &PlotArgs) -> anyhow::Result<ResolvedInputs> {
             .map(resolve_opt)
     });
 
-    let out = args
-        .out
-        .as_deref()
-        .map(String::from)
-        .or_else(|| manifest.as_ref().map(|m| m.prefix.clone()))
-        .ok_or_else(|| anyhow::anyhow!("no --out given and no manifest prefix available"))?;
+    let out = args.out.to_string();
 
     // Colour-by precedence:
     //   1. explicit CLI flag

@@ -470,6 +470,28 @@ pub struct Loaded {
     pub file: PathBuf,
 }
 
+impl Loaded {
+    /// `{dir}/{name}` for a manifest at `{dir}/{name}.senna.json`: where the
+    /// run's artifacts that the manifest does not record (NB-Fisher weights,
+    /// velocity) sit. Derived from where the manifest IS, never from its
+    /// `prefix` field, which holds the training machine's absolute path.
+    #[must_use]
+    pub fn run_prefix(&self) -> String {
+        derive_out_prefix(&self.file.to_string_lossy())
+    }
+
+    /// The cell table for geometry (`cell_embedding`, else `latent`), resolved.
+    pub fn geometry_latent_path(&self) -> anyhow::Result<String> {
+        let rel = self.manifest.outputs.geometry_latent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} has neither `outputs.cell_embedding` nor `outputs.latent`",
+                self.file.display()
+            )
+        })?;
+        Ok(resolve(&self.dir, rel))
+    }
+}
+
 /// Load `--from`, given as a manifest path or a bare prefix.
 pub fn load(from: &str) -> anyhow::Result<Loaded> {
     let file = manifest_file(from);

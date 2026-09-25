@@ -176,6 +176,8 @@ fn end_to_end_run_writes_forest_outputs() {
         "t",
         "--from",
         &prefix,
+        "--out",
+        &prefix,
         "--layout",
         "none",
         // This fixture is a CARTESIAN grid (two chains at y=0 and y=100), not a cell
@@ -199,7 +201,7 @@ fn end_to_end_run_writes_forest_outputs() {
     run_lineage(
         &w.a,
         &LineageInputs {
-            prefix: prefix.clone(),
+            tables: RunTables::at_prefix(&prefix),
             contract: LatentContract::unknown(format!("{prefix}.senna.json")),
             feature_embedding: None,
         },

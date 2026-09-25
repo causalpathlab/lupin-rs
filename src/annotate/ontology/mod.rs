@@ -73,15 +73,8 @@ pub(crate) fn annotate_ontology_with_obo(
 /// `annotate --method enrichment` run wrote. `q_abs` is that file — resolving it out
 /// of a manifest is the caller's job — and the sibling score matrix is found
 /// next to it.
-pub fn run(
-    args: &AnnotateOntologyArgs,
-    default_out: &str,
-    q_abs: &str,
-) -> Result<AnnotationOutputs> {
-    let out: String = match args.out.as_deref() {
-        Some(o) => o.to_string(),
-        None => default_out.to_string(),
-    };
+pub fn run(args: &AnnotateOntologyArgs, q_abs: &str) -> Result<AnnotationOutputs> {
+    let out = args.out.to_string();
     mkdir_parent(&out)?;
 
     // Score preference: explicit --use-perm-p → pooled count p; otherwise the

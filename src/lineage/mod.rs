@@ -32,4 +32,4 @@ mod write;
 
 /// What the producing run promised about its per-cell tables. Read from a run
 /// manifest by [`crate::lineage_manifest`].
-pub use input::LatentContract;
+pub use input::{LatentContract, RunTables};

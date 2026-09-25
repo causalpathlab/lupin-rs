@@ -54,8 +54,12 @@ pub struct AnnotateCliArgs {
     )]
     pub markers: Box<str>,
 
-    #[arg(long, short = 'o', help = "Output prefix")]
-    pub out: Option<Box<str>>,
+    #[arg(
+        long,
+        short = 'o',
+        help = "Output prefix for every file this command writes"
+    )]
+    pub out: Box<str>,
 
     // ── shared clustering / stats ──
     // Default is method-specific when omitted: enrichment 15, projection/ORA 30.
@@ -158,15 +162,34 @@ pub struct AnnotateCliArgs {
 }
 
 pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
+    // One manifest load per invocation; every route below reuses it.
+    let mut loaded = args.from.as_deref().map(run_manifest::load).transpose()?;
+
     if is_ontology_followup(args) {
-        return run_ontology_followup(args);
+        let loaded = loaded
+            .as_mut()
+            .context("--from required for ontology follow-up")?;
+        return annotate_ontology(&build_ontology_args(args)?, loaded);
     }
 
-    match route(args)? {
-        Route::Enrichment => run_enrichment(args),
-        Route::Projection => run_projection(args),
-        Route::EmbeddingFiles { feat, cell, prefix } => {
-            run_projection_from_files(args, &feat, &cell, &prefix)
+    match route(args, loaded.as_ref()) {
+        Route::EmbeddingFiles { feat, cell } => run_projection_from_files(args, feat, cell),
+        Route::Enrichment => {
+            anyhow::ensure!(
+                !args.markers.is_empty() || args.gaf.is_some() || args.gmt.is_some(),
+                "enrichment needs --markers, --gaf, or --gmt"
+            );
+            let loaded = loaded
+                .as_mut()
+                .context("--from is required for enrichment annotation")?;
+            annotate_by_enrichment(&build_enrichment_args(args), loaded)
+        }
+        Route::Projection => {
+            anyhow::ensure!(!args.markers.is_empty(), "projection needs --markers");
+            let loaded = loaded
+                .as_mut()
+                .context("--from is required for projection annotation")?;
+            annotate_by_projection(&build_projection_args(args), loaded)
         }
     }
 }
@@ -180,17 +203,10 @@ fn is_ontology_followup(args: &AnnotateCliArgs) -> bool {
         && args.label_cl.is_some()
 }
 
-fn run_ontology_followup(args: &AnnotateCliArgs) -> Result<()> {
-    let from = args
-        .from
-        .as_ref()
-        .context("--from required for ontology follow-up")?;
-    let obo = args.obo.as_ref().context("--obo required")?;
-    let label_cl = args.label_cl.as_ref().context("--label-cl required")?;
-    annotate_ontology(&AnnotateOntologyArgs {
-        from: from.clone(),
-        label_cl: label_cl.clone(),
-        obo: obo.clone(),
+fn build_ontology_args(args: &AnnotateCliArgs) -> Result<AnnotateOntologyArgs> {
+    Ok(AnnotateOntologyArgs {
+        label_cl: args.label_cl.clone().context("--label-cl required")?,
+        obo: args.obo.clone().context("--obo required")?,
         out: args.out.clone(),
         fdr_q: args.ontology_fdr_q,
         by: args.ontology_by,
@@ -198,54 +214,38 @@ fn run_ontology_followup(args: &AnnotateCliArgs) -> Result<()> {
     })
 }
 
-enum Route {
+enum Route<'a> {
     Enrichment,
     /// Co-embed projection through the run manifest.
     Projection,
     /// Projection over an explicit `--feature-embedding` / `--cell-embedding` pair.
     EmbeddingFiles {
-        feat: String,
-        cell: String,
-        prefix: String,
+        feat: &'a str,
+        cell: &'a str,
     },
 }
 
-/// Pick the backend. An explicit embedding pair always wins; otherwise the
-/// run manifest decides between co-embed projection and enrichment.
-fn route(args: &AnnotateCliArgs) -> Result<Route> {
+/// Pick the backend. An explicit embedding pair wins; otherwise the run
+/// manifest decides between co-embed projection and enrichment.
+fn route<'a>(args: &'a AnnotateCliArgs, loaded: Option<&run_manifest::Loaded>) -> Route<'a> {
     if let (Some(feat), Some(cell)) = (
         args.feature_embedding.as_deref(),
         args.cell_embedding.as_deref(),
     ) {
-        if args.method == AnnotateMethod::Enrichment {
-            return Ok(Route::Enrichment);
+        if args.method != AnnotateMethod::Enrichment {
+            return Route::EmbeddingFiles { feat, cell };
         }
-        let prefix = args
-            .out
-            .as_deref()
-            .or(args.from.as_deref())
-            .map(run_manifest::derive_out_prefix)
-            .unwrap_or_else(|| "annot".into());
-        return Ok(Route::EmbeddingFiles {
-            feat: feat.to_string(),
-            cell: cell.to_string(),
-            prefix,
-        });
     }
     let projection = match args.method {
         AnnotateMethod::Enrichment => false,
         AnnotateMethod::Projection => true,
-        AnnotateMethod::Auto => args
-            .from
-            .as_deref()
-            .and_then(|f| run_manifest::load(f).ok())
-            .is_some_and(|l| manifest_prefers_projection(&l.manifest)),
+        AnnotateMethod::Auto => loaded.is_some_and(|l| manifest_prefers_projection(&l.manifest)),
     };
-    Ok(if projection {
+    if projection {
         Route::Projection
     } else {
         Route::Enrichment
-    })
+    }
 }
 
 /// A run with a co-embedded gene space annotates by projection.
@@ -254,45 +254,21 @@ fn manifest_prefers_projection(manifest: &RunManifest) -> bool {
         || (manifest.kind.coembeds() && manifest.outputs.feature_embedding.is_some())
 }
 
-fn run_enrichment(args: &AnnotateCliArgs) -> Result<()> {
-    let from = args
-        .from
-        .clone()
-        .context("--from is required for enrichment annotation")?;
-    anyhow::ensure!(
-        !args.markers.is_empty() || args.gaf.is_some() || args.gmt.is_some(),
-        "enrichment needs --markers, --gaf, or --gmt"
-    );
-    annotate_by_enrichment(&build_enrichment_args(args, from))
-}
-
-fn run_projection(args: &AnnotateCliArgs) -> Result<()> {
-    let from = args
-        .from
-        .clone()
-        .context("--from is required for projection annotation")?;
-    anyhow::ensure!(!args.markers.is_empty(), "projection needs --markers");
-    annotate_by_projection(&build_projection_args(args, from))
-}
-
 /// Explicit embedding pair: the same projection pass as the manifest route
 /// (bootstrap and abstention included), fed from the two parquets directly.
+/// No manifest is touched.
 fn run_projection_from_files(
     args: &AnnotateCliArgs,
     feat_path: &str,
     cell_path: &str,
-    prefix: &str,
 ) -> Result<()> {
     anyhow::ensure!(!args.markers.is_empty(), "projection needs --markers");
-
     let feat = DMatrix::<f32>::from_parquet(feat_path)
         .with_context(|| format!("reading feature embedding {feat_path}"))?;
     let cell = DMatrix::<f32>::from_parquet(cell_path)
         .with_context(|| format!("reading cell embedding {cell_path}"))?;
-
     by_projection::run(
-        &build_projection_args(args, prefix.into()),
-        prefix,
+        &build_projection_args(args),
         &ProjectionInputs {
             feature_embedding: &feat,
             cell_embedding: &cell,
@@ -301,9 +277,8 @@ fn run_projection_from_files(
     Ok(())
 }
 
-fn build_enrichment_args(args: &AnnotateCliArgs, from: Box<str>) -> AnnotateArgs {
+fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
     AnnotateArgs {
-        from,
         clusters: args.clusters.clone(),
         knn: args.knn.unwrap_or(15),
         resolution: args.resolution,
@@ -344,9 +319,8 @@ fn build_enrichment_args(args: &AnnotateCliArgs, from: Box<str>) -> AnnotateArgs
     }
 }
 
-fn build_projection_args(args: &AnnotateCliArgs, from: Box<str>) -> AnnotateProjectionArgs {
+fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
     AnnotateProjectionArgs {
-        from,
         markers: args.markers.clone(),
         out: args.out.clone(),
         knn: args.knn.unwrap_or(30),

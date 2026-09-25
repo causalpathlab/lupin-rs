@@ -283,7 +283,7 @@ mod tests {
             from: None,
             gtf: gtf.into(),
             activity: None,
-            out: None,
+            out: "strand_test".into(),
             chromosomes: None,
             bins: 10,
             top_genes: 0,

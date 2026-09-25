@@ -164,10 +164,9 @@ pub struct LineagePlotArgs {
     #[arg(
         long,
         short = 'o',
-        help = "Output prefix (default: the --from prefix);\n\
-                writes {out}.plot.pdf (+ .png / .svg with --png / --svg)"
+        help = "Output prefix; writes {out}.plot.pdf (+ .png / .svg with --png / --svg)"
     )]
-    pub out: Option<Box<str>>,
+    pub out: Box<str>,
 
     #[arg(
         long = "color-by",
@@ -338,7 +337,7 @@ pub struct LineagePlotArgs {
 
 pub fn run_lineage_plot(args: &LineagePlotArgs) -> Result<()> {
     let prefix = args.from.as_ref();
-    let out = args.out.as_deref().unwrap_or(prefix).to_string();
+    let out = args.out.to_string();
     mkdir_parent(&out)?;
 
     /////////////////////////////////

@@ -120,12 +120,8 @@ pub struct PlotTopicArgs {
     )]
     pub dictionary: Option<Box<str>>,
 
-    #[arg(
-        long,
-        short = 'o',
-        help = "Output prefix (defaults to manifest's `prefix` when --from is used)"
-    )]
-    pub out: Option<Box<str>>,
+    #[arg(long, short = 'o', help = "Output prefix")]
+    pub out: Box<str>,
 
     #[arg(
         long,
@@ -312,12 +308,7 @@ fn resolve_inputs(args: &PlotTopicArgs) -> anyhow::Result<ResolvedInputs> {
 
     let resolve_str = |s: &str| resolve(&manifest_dir, s);
 
-    let out = args
-        .out
-        .as_deref()
-        .map(String::from)
-        .or_else(|| manifest.as_ref().map(|m| m.prefix.clone()))
-        .ok_or_else(|| anyhow::anyhow!("no --out given and no manifest prefix available"))?;
+    let out = args.out.to_string();
 
     let latent = args
         .latent

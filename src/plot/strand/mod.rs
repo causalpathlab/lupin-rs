@@ -74,11 +74,11 @@ pub struct PlotStrandArgs {
     #[arg(
         long,
         short = 'o',
-        help = "Output prefix (defaults to the manifest `prefix`)",
-        long_help = "Output prefix (defaults to the manifest `prefix`).\n\
+        help = "Output prefix",
+        long_help = "Output prefix.\n\
                      Writes {out}.strand/<celltype>.pdf."
     )]
-    pub out: Option<Box<str>>,
+    pub out: Box<str>,
 
     #[arg(
         long,
@@ -331,11 +331,7 @@ fn resolve_inputs(args: &PlotStrandArgs) -> anyhow::Result<(String, String)> {
         let activity = args.activity.as_deref().ok_or_else(|| {
             anyhow::anyhow!("--activity PATH is required when --from is not given")
         })?;
-        let out = args
-            .out
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("--out PREFIX is required when --from is not given"))?;
-        return Ok((activity.to_string(), out.to_string()));
+        return Ok((activity.to_string(), args.out.to_string()));
     };
 
     let crate::run_manifest::Loaded {
@@ -343,13 +339,8 @@ fn resolve_inputs(args: &PlotStrandArgs) -> anyhow::Result<(String, String)> {
     } = crate::run_manifest::load(from)?;
     let resolve = |s: &str| resolve(&dir, s);
 
-    // Out prefix first (CLI wins) — the derived activity is written next
-    // to it, not next to `m.prefix`, which may be an absolute path from
-    // the machine the run was trained on.
-    let out = args
-        .out
-        .as_deref()
-        .map_or_else(|| m.prefix.clone(), String::from);
+    // The derived activity is written next to `--out`.
+    let out = args.out.to_string();
 
     // --activity wins; else derive a gene × cell-type matrix from annotate.
     let activity = if let Some(p) = args.activity.as_deref() {

@@ -111,9 +111,9 @@ pub struct LineageArgs {
         long,
         short = 'o',
         help_heading = "Input/output",
-        help = "Output prefix (default: the gem prefix)"
+        help = "Output prefix"
     )]
-    pub out: Option<Box<str>>,
+    pub out: Box<str>,
 
     #[arg(
         long,

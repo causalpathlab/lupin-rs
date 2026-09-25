@@ -43,13 +43,9 @@ pub struct ProjectionInputs<'a> {
 
 pub fn run(
     args: &AnnotateProjectionArgs,
-    default_out: &str,
     inputs: &ProjectionInputs<'_>,
 ) -> Result<AnnotationOutputs> {
-    let out: String = match args.out.as_deref() {
-        Some(o) => o.to_string(),
-        None => default_out.to_string(),
-    };
+    let out = args.out.to_string();
     mkdir_parent(&out)?;
     if !args.no_clean {
         clean_outputs(&out, TERM_ORA_OUTPUT_SUFFIXES);

@@ -11,7 +11,7 @@ use crate::lineage::pseudotime::{
     run_pseudotime, PseudotimeArgs, PseudotimeInputs, PseudotimeOutputs,
 };
 use crate::lineage::run::{run_lineage, LineageInputs};
-use crate::lineage::LatentContract;
+use crate::lineage::{LatentContract, RunTables};
 
 use crate::marker_embedding::load_marker_feature_embedding;
 use crate::run_manifest::{derive_out_prefix, load, manifest_file, rel_to_manifest, Loaded};
@@ -42,27 +42,45 @@ fn load_contract(prefix: &str) -> (LatentContract, Option<Loaded>) {
 pub fn run_lineage_from_manifest(args: &LineageArgs) -> Result<()> {
     let prefix = args.from.as_ref();
     let (contract, manifest) = load_contract(prefix);
-    let feature_embedding = match manifest {
-        Some(Loaded { manifest, dir, .. }) => args
-            .markers
-            .is_some()
-            .then(|| load_marker_feature_embedding(&manifest, &dir, prefix))
-            .transpose()?,
+    let (tables, feature_embedding) = match manifest {
+        Some(loaded) => {
+            let feature_embedding = args
+                .markers
+                .is_some()
+                .then(|| load_marker_feature_embedding(&loaded.manifest, &loaded.dir, prefix))
+                .transpose()?;
+            (run_tables(&loaded), feature_embedding)
+        }
         None => {
             anyhow::ensure!(
                 args.markers.is_none(),
                 "--markers needs a readable run.senna.json under {prefix} to locate \
                  feature_coembedding"
             );
-            None
+            (RunTables::at_prefix(&derive_out_prefix(prefix)), None)
         }
     };
     let inputs = LineageInputs {
-        prefix: derive_out_prefix(prefix),
+        tables,
         contract,
         feature_embedding,
     };
     run_lineage(args, &inputs)
+}
+
+/// The per-cell tables the manifest records, resolved against its directory;
+/// a slot it leaves empty, and velocity (never recorded), fall back to the
+/// file-name convention next to the manifest itself.
+fn run_tables(loaded: &Loaded) -> RunTables {
+    let guess = RunTables::at_prefix(&loaded.run_prefix());
+    let out = &loaded.manifest.outputs;
+    let pick =
+        |rel: Option<&str>, fallback: String| rel.map_or(fallback, |r| resolve(&loaded.dir, r));
+    RunTables {
+        latent: pick(out.latent.as_deref(), guess.latent),
+        cell_embedding: pick(out.cell_embedding.as_deref(), guess.cell_embedding),
+        velocity: guess.velocity,
+    }
 }
 
 /// `lupin pseudotime`: resolve `--latent` / `--from`,

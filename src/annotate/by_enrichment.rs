@@ -25,14 +25,9 @@ pub struct EnrichmentPlan {
     pub ontology_mode: bool,
 }
 
-/// Validate the gene-set source flags, settle the output prefix, and erase a
-/// previous run's artifacts. `default_out` is what `{out}` becomes when
-/// `--out` is absent; deriving it from a manifest is the caller's job.
-pub fn plan(args: &AnnotateArgs, default_out: &str) -> anyhow::Result<EnrichmentPlan> {
-    let out: Box<str> = match args.out.as_deref() {
-        Some(o) => Box::from(o),
-        None => Box::from(default_out),
-    };
+/// Validate the gene-set source flags and erase a previous run's artifacts.
+pub fn plan(args: &AnnotateArgs) -> anyhow::Result<EnrichmentPlan> {
+    let out = args.out.clone();
     mkdir_parent(&out)?;
     // Exactly one gene-set source. --markers → curated cell-type annotation
     // (+ optional inline CL ontology via --obo/--label-cl); --gaf/--gmt → ontology

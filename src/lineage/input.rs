@@ -153,6 +153,27 @@ pub(super) fn apply_geometry(theta: &DMatrix<f32>, geometry: LatentGeometry) -> 
     }
 }
 
+/// Where a run's per-cell tables are. The manifest adapter fills this from the
+/// recorded outputs; [`RunTables::at_prefix`] is the `{prefix}.{table}.parquet`
+/// convention for a run with no manifest (and for velocity, which senna does
+/// not record).
+pub struct RunTables {
+    pub latent: String,
+    pub cell_embedding: String,
+    pub velocity: String,
+}
+
+impl RunTables {
+    #[must_use]
+    pub fn at_prefix(prefix: &str) -> Self {
+        Self {
+            latent: format!("{prefix}.latent.parquet"),
+            cell_embedding: format!("{prefix}.cell_embedding.parquet"),
+            velocity: format!("{prefix}.velocity.parquet"),
+        }
+    }
+}
+
 /// Read θ (and, when present, its δ partner) named by `from`.
 ///
 /// On the `latent` path `latent.parquet` holds LOG θ, so it is exponentiated
@@ -161,14 +182,17 @@ pub(super) fn apply_geometry(theta: &DMatrix<f32>, geometry: LatentGeometry) -> 
 /// velocity file, so only `{prefix}.velocity.parquet` is ever looked for; on
 /// the `latent` path it is ordinarily absent, and the lookup below falls
 /// through to the "absent" warning exactly as `--no-orient-velocity` would.
-pub(super) fn load_theta(prefix: &str, from: ThetaFrom, no_velocity: bool) -> Result<LoadedTheta> {
-    let (theta_file, space) = match from {
-        ThetaFrom::Latent => ("latent", "K (topic simplex)"),
-        _ => ("cell_embedding", "H (gene-embedding)"),
+pub(super) fn load_theta(
+    tables: &RunTables,
+    from: ThetaFrom,
+    no_velocity: bool,
+) -> Result<LoadedTheta> {
+    let (theta_path, space) = match from {
+        ThetaFrom::Latent => (&tables.latent, "K (topic simplex)"),
+        _ => (&tables.cell_embedding, "H (gene-embedding)"),
     };
 
-    let theta_path = format!("{prefix}.{theta_file}.parquet");
-    let cell = DMatrix::<f32>::from_parquet(&theta_path)
+    let cell = DMatrix::<f32>::from_parquet(theta_path)
         .with_context(|| format!("reading θ from {theta_path}"))?;
     let cell_names = cell.rows;
     let theta = if from == ThetaFrom::Latent {
@@ -183,11 +207,11 @@ pub(super) fn load_theta(prefix: &str, from: ThetaFrom, no_velocity: bool) -> Re
         theta.ncols()
     );
 
-    let velocity_path = format!("{prefix}.velocity.parquet");
+    let velocity_path = &tables.velocity;
     let velocity = if no_velocity {
         None
-    } else if Path::new(&velocity_path).exists() {
-        let vel = DMatrix::<f32>::from_parquet(&velocity_path)
+    } else if Path::new(velocity_path).exists() {
+        let vel = DMatrix::<f32>::from_parquet(velocity_path)
             .with_context(|| format!("reading velocity {velocity_path}"))?;
         anyhow::ensure!(
             vel.mat.nrows() == n,
@@ -220,9 +244,8 @@ pub(super) fn load_theta(prefix: &str, from: ThetaFrom, no_velocity: bool) -> Re
 /// this table even when the trajectory itself was fitted on the K-space simplex:
 /// the two answer different questions and only one of them needs the gene
 /// vectors to share a metric with the cells.
-pub(super) fn load_marker_theta(prefix: &str, cell_names: &[Box<str>]) -> Result<DMatrix<f32>> {
-    let path = format!("{prefix}.cell_embedding.parquet");
-    let emb = DMatrix::<f32>::from_parquet(&path)
+pub(super) fn load_marker_theta(path: &str, cell_names: &[Box<str>]) -> Result<DMatrix<f32>> {
+    let emb = DMatrix::<f32>::from_parquet(path)
         .with_context(|| format!("reading {path} for --markers (marker scoring is H-space)"))?;
     anyhow::ensure!(
         emb.mat.nrows() == cell_names.len(),

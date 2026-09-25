@@ -61,12 +61,8 @@ pub struct DescribeArgs {
     )]
     pub fdr_alpha: f32,
 
-    #[arg(
-        long,
-        short = 'o',
-        help = "Output prefix (default: the annotate output prefix)"
-    )]
-    pub out: Option<Box<str>>,
+    #[arg(long, short = 'o', help = "Output prefix")]
+    pub out: Box<str>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,7 +91,7 @@ impl ClusterEvidence {
 
 pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     let prefix = annotate_prefix(&args.from);
-    let out = args.out.as_deref().unwrap_or(&prefix);
+    let out: &str = &args.out;
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
 
     let mut enriched = load_evidence(&prefix, args.fdr_alpha)?;

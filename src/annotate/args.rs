@@ -1,8 +1,5 @@
 #[derive(Debug)]
 pub struct AnnotateArgs {
-    /// Run manifest (or its prefix) of a topic / SVD run
-    pub from: Box<str>,
-
     /// Cluster parquet (cells × 1 cluster column); overrides `manifest.cluster.clusters`
     pub clusters: Option<Box<str>>,
 
@@ -40,7 +37,7 @@ pub struct AnnotateArgs {
     pub max_gene_set: usize,
 
     /// Output prefix for annotation artifacts
-    pub out: Option<Box<str>>,
+    pub out: Box<str>,
 
     /// Cells per CSC read block when streaming raw counts for per-cluster aggregation
     pub block_size: usize,
@@ -126,14 +123,11 @@ pub struct AnnotateArgs {
 /// `annotate --method enrichment`. Drives the shared firm term-ORA core.
 #[derive(Debug)]
 pub struct AnnotateProjectionArgs {
-    /// Run manifest, or run prefix, from a co-embedding run
-    pub from: Box<str>,
-
     /// Marker-gene TSV: `gene<TAB>celltype` per line (tab/comma/space delimited)
     pub markers: Box<str>,
 
-    /// Output prefix (default: the run prefix)
-    pub out: Option<Box<str>>,
+    /// Output prefix
+    pub out: Box<str>,
 
     /// k for the cosine cell kNN graph fed to Leiden clustering
     pub knn: usize,
@@ -218,17 +212,14 @@ pub struct AnnotateProjectionArgs {
 /// run's cluster × celltype matrix.
 #[derive(Debug)]
 pub struct AnnotateOntologyArgs {
-    /// Run manifest already annotated by `lupin annotate --method enrichment`
-    pub from: Box<str>,
-
     /// Curated `label<TAB>CL:id` TSV mapping celltypes to Cell Ontology terms
     pub label_cl: Box<str>,
 
     /// Cell Ontology OBO file (e.g. cl-basic.obo)
     pub obo: Box<str>,
 
-    /// Output prefix (default: the run prefix)
-    pub out: Option<Box<str>>,
+    /// Output prefix
+    pub out: Box<str>,
 
     /// Per-level selective-FDR target (TreeBH).
     /// Lower → descends less, abstains more
