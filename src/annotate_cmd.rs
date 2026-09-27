@@ -32,7 +32,7 @@ pub struct AnnotateCliArgs {
     #[arg(
         long,
         short = 'f',
-        help = "Run manifest (`run.senna.json`) or its output prefix"
+        help = "Run manifest (`run.senna.json` or pinto's `run.pinto.json`) or its output prefix"
     )]
     pub from: Option<Box<str>>,
 

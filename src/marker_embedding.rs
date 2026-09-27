@@ -42,7 +42,9 @@ pub fn load_marker_feature_embedding(
     let path = resolve(dir, rel);
     let feat = Mat::from_parquet(&path)
         .with_context(|| format!("reading gene embedding {path} (`outputs.{slot}`)"))?;
-    if manifest.kind == RunKind::Gem {
+    // `gem` and splice-channelized pinto runs keep a spliced and an unspliced
+    // row per gene; markers score against the spliced ones.
+    if manifest.kind == RunKind::Gem || feat.rows.iter().any(|r| split_count_row(r).is_some()) {
         select_spliced_rows(feat, &path)
     } else {
         Ok(feat)

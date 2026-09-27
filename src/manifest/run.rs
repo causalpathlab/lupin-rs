@@ -356,8 +356,7 @@ pub struct RunDefaults {
 }
 
 impl RunManifest {
-    /// A bare manifest stating only the kind (test fixtures).
-    #[cfg(test)]
+    /// A bare manifest stating only the kind.
     #[must_use]
     pub fn new(kind: RunKind, prefix: &str) -> Self {
         Self {
@@ -493,6 +492,7 @@ pub fn rebase_paths(value: &mut Value, from_dir: &Path, to_dir: &Path) {
 #[must_use]
 pub fn derive_out_prefix(from: &str) -> String {
     from.strip_suffix(".senna.json")
+        .or_else(|| from.strip_suffix(super::pinto::SUFFIX))
         .or_else(|| from.strip_suffix(".json"))
         .unwrap_or(from)
         .to_string()
@@ -505,14 +505,21 @@ pub fn default_path(prefix: &str) -> String {
 }
 
 /// The manifest file `--from` names: the path itself when it is a file,
-/// otherwise `{prefix}.senna.json`.
+/// otherwise `{prefix}.senna.json`, or `{prefix}.pinto.json` when only that
+/// exists.
 #[must_use]
 pub fn manifest_file(from: &str) -> PathBuf {
     let direct = Path::new(from);
     if direct.is_file() {
-        direct.to_path_buf()
+        return direct.to_path_buf();
+    }
+    let prefix = derive_out_prefix(from);
+    let senna = PathBuf::from(default_path(&prefix));
+    let pinto = PathBuf::from(format!("{prefix}{}", super::pinto::SUFFIX));
+    if !senna.is_file() && pinto.is_file() {
+        pinto
     } else {
-        PathBuf::from(default_path(&derive_out_prefix(from)))
+        senna
     }
 }
 
@@ -589,6 +596,9 @@ impl Loaded {
 /// Load `--from`, given as a manifest path or a bare prefix.
 pub fn load(from: &str) -> anyhow::Result<Loaded> {
     let file = manifest_file(from);
+    if super::pinto::is_pinto(&file) {
+        return super::pinto::load(&file);
+    }
     let (manifest, dir) = RunManifest::load(&file).map_err(|e| {
         anyhow::anyhow!(
             "{e}\n\n`{from}` is neither a readable run manifest nor the prefix of one \

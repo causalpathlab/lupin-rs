@@ -12,7 +12,13 @@ prefix. `lupin annotate` leaves that manifest untouched and writes a new one,
 `{out}.senna.json`: a copy of the run with its paths rebased onto the new
 location, every field lupin does not use preserved, and an `annotate` section
 added, so viewers open the annotated run directly. `lineage` and `pseudotime`
-record their outputs back in the manifest they read. Every command that writes files
+record their outputs back in the manifest they read.
+
+`lupin annotate` also reads a pinto run (`run.pinto.json`, or its prefix): its
+count files, the final level's `cluster` column in the propensity table, and,
+for `cage`, the shared cell and feature embeddings, which it annotates by
+projection. The pinto manifest is never written; the result is a new
+`{out}.senna.json`. Every command that writes files
 takes an explicit `-o/--out` prefix; lupin never writes to a location derived
 from the manifest, so a run copied to another machine works as is.
 
