@@ -19,6 +19,14 @@ pub fn build_annotation_matrix(
     row_names: &[Box<str>],
 ) -> anyhow::Result<AnnotInfo> {
     let marker_pairs = data_beans::aux::gene_sets::read_membership_pairs(marker_gene_path)?;
+    annotation_matrix_from_pairs(&marker_pairs, row_names)
+}
+
+/// [`build_annotation_matrix`] for `(gene, cell type)` pairs already in memory.
+pub fn annotation_matrix_from_pairs(
+    marker_pairs: &[(Box<str>, Box<str>)],
+    row_names: &[Box<str>],
+) -> anyhow::Result<AnnotInfo> {
     anyhow::ensure!(
         !marker_pairs.is_empty(),
         "empty/invalid marker gene information"

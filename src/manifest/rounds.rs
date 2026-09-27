@@ -26,9 +26,11 @@ use enrichment::UNASSIGNED_LABEL;
 use legume_numeric::matrix::common_io::{mkdir_parent, write_lines};
 use legume_numeric::matrix::dense_mat_io::{read_mat, Mat};
 use legume_numeric::matrix::traits::IoOps;
+use legume_numeric::matrix::traits::MatWithNames;
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -339,6 +341,14 @@ pub struct RelabelArgs {
 
     #[arg(
         long,
+        conflicts_with_all = ["next", "out", "watch"],
+        help = "Validate as --next would, write nothing, and print what the decisions would \
+                change as JSON (marker edits re-rank cell types approximately)"
+    )]
+    pub preview: bool,
+
+    #[arg(
+        long,
         conflicts_with_all = ["next", "out"],
         help = "Keep running: each batch of lines appended to the decisions file becomes the next \
                 round of -f's chain; every decision must name its `round`"
@@ -373,6 +383,15 @@ pub fn run_relabel(args: &RelabelArgs) -> Result<()> {
     };
     let decisions = parse_decisions(numbered(&raw), &args.decisions)?;
     let source = run::load(&args.from)?;
+    if args.preview {
+        let (_, latest) = Chain::of(&source.file).latest();
+        ensure_latest(&source.file, &latest)?;
+        println!(
+            "{}",
+            serde_json::to_string(&preview(&source, decisions, &decisions_dir)?)?
+        );
+        return Ok(());
+    }
     let written = match &args.out {
         Some(out) => relabel(&source, decisions, &decisions_dir, out)?,
         None if args.next => {
@@ -493,12 +512,7 @@ impl Chain {
         decisions_dir: &Path,
     ) -> Result<PathBuf> {
         let (k, latest) = self.latest();
-        anyhow::ensure!(
-            same_file(made_on, &latest),
-            "{} is not the latest round (that is {}); reload and decide again",
-            made_on.display(),
-            latest.display()
-        );
+        ensure_latest(made_on, &latest)?;
         let source = run::load(&latest.to_string_lossy())?;
         relabel(&source, decisions, decisions_dir, &self.round_prefix(k + 1))
     }
@@ -543,6 +557,17 @@ impl Chain {
     }
 }
 
+/// Refuse decisions made on `made_on` when the chain has moved past it.
+fn ensure_latest(made_on: &Path, latest: &Path) -> Result<()> {
+    anyhow::ensure!(
+        same_file(made_on, latest),
+        "{} is not the latest round (that is {}); reload and decide again",
+        made_on.display(),
+        latest.display()
+    );
+    Ok(())
+}
+
 /// `X.rK` as `(X, K)`.
 fn split_round(stem: &str) -> Option<(&str, usize)> {
     let (prefix, k) = stem.rsplit_once(".r")?;
@@ -559,12 +584,54 @@ pub struct ChainLock {
     _file: fs::File,
 }
 
+/// A round with decisions applied, in memory.
+struct Planned {
+    /// Stamped with their timestamps, as the log keeps them.
+    decisions: Vec<Decision>,
+    cells: Cells,
+    history: History,
+    markers: Vec<(String, String)>,
+    /// Every round's marker edits, when this one made any.
+    marker_history: Option<MarkerHistory>,
+}
+
+/// Apply `decisions` to the round `source` in memory, as round `round`.
+/// Every refusal happens here, before anything is written.
+fn plan(
+    source: &Loaded,
+    mut decisions: Vec<Decision>,
+    decisions_dir: &Path,
+    round: &str,
+) -> Result<Planned> {
+    check_round(source, &decisions, decisions_dir)?;
+    let mut cells = read_cells(source)?;
+    let older = read_history(source)?;
+    let next_id = next_cluster_id(&cells.clusters, &older);
+    let newer = apply(
+        &mut decisions,
+        &mut cells.clusters,
+        &mut cells.labels,
+        next_id,
+        round,
+        &now(),
+    )?;
+    let (mut markers, older_markers) = read_markers(source)?;
+    let (edited, newer_markers) = apply_markers(&decisions, &mut markers, round)?;
+    Ok(Planned {
+        decisions,
+        cells,
+        history: prepend_history(older, newer),
+        markers,
+        marker_history: edited.then(|| prepend_history(older_markers, newer_markers)),
+    })
+}
+
 /// Apply `decisions` to the round `source` and write the next round at
 /// `out`; returns its manifest. Nothing is written if a decision is refused,
 /// and an existing round is never overwritten.
 fn relabel(
     source: &Loaded,
-    mut decisions: Vec<Decision>,
+    decisions: Vec<Decision>,
     decisions_dir: &Path,
     out: &str,
 ) -> Result<PathBuf> {
@@ -574,59 +641,48 @@ fn relabel(
         "{} exists; rounds are never overwritten",
         manifest_path.display()
     );
-    check_round(source, &decisions, decisions_dir)?;
+    let round = file_name(&manifest_path);
+    let p = plan(source, decisions, decisions_dir, &round)?;
+    info!("applied {} decision(s)", p.decisions.len());
     mkdir_parent(out)?;
-    let round = manifest_path
-        .file_name()
-        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-
-    let mut cells = read_cells(source)?;
-    let older = read_history(source)?;
-    let next_id = next_cluster_id(&cells.clusters, &older);
-    let newer = apply(
-        &mut decisions,
-        &mut cells.clusters,
-        &mut cells.labels,
-        next_id,
-        &round,
-        &now(),
-    )?;
-    let (mut markers, older_markers) = read_markers(source)?;
-    let (markers_edited, newer_markers) = apply_markers(&decisions, &mut markers, &round)?;
-    info!("applied {} decision(s)", decisions.len());
 
     let clusters_path = format!("{out}{CLUSTERS}");
-    write_clusters(&clusters_path, &cells.names, &cells.clusters)?;
+    write_clusters(&clusters_path, &p.cells.names, &p.cells.clusters)?;
     let argmax_path = format!("{out}.argmax.tsv");
-    write_argmax(&argmax_path, &cells.names, &cells.labels, &cells.probs)?;
+    write_argmax(
+        &argmax_path,
+        &p.cells.names,
+        &p.cells.labels,
+        &p.cells.probs,
+    )?;
     let log_path = format!("{out}{LOG}");
-    let log: Vec<Box<str>> = decisions
+    let log: Vec<Box<str>> = p
+        .decisions
         .iter()
         .map(|d| serde_json::to_string(d).map(String::into_boxed_str))
         .collect::<Result<_, _>>()?;
     write_lines(&log, &log_path)?;
     let history_path = format!("{out}{HISTORY}");
-    let history = prepend_history(older, newer);
-    fs::write(&history_path, serde_json::to_string_pretty(&history)?)?;
+    fs::write(&history_path, serde_json::to_string_pretty(&p.history)?)?;
     info!("wrote {history_path}");
 
-    let marker_paths = if markers_edited {
-        let panel = format!("{out}{MARKERS}");
-        let mut lines: Vec<Box<str>> = vec!["gene\tcelltype".into()];
-        lines.extend(
-            markers
-                .iter()
-                .map(|(g, t)| format!("{g}\t{t}").into_boxed_str()),
-        );
-        write_lines(&lines, &panel)?;
-        info!("wrote {panel}");
-        let hist = format!("{out}{MARKER_HISTORY}");
-        let merged = prepend_history(older_markers, newer_markers);
-        fs::write(&hist, serde_json::to_string_pretty(&merged)?)?;
-        info!("wrote {hist}");
-        Some((panel, hist))
-    } else {
-        None
+    let marker_paths = match &p.marker_history {
+        Some(merged) => {
+            let panel = format!("{out}{MARKERS}");
+            let mut lines: Vec<Box<str>> = vec!["gene\tcelltype".into()];
+            lines.extend(
+                p.markers
+                    .iter()
+                    .map(|(g, t)| format!("{g}\t{t}").into_boxed_str()),
+            );
+            write_lines(&lines, &panel)?;
+            info!("wrote {panel}");
+            let hist = format!("{out}{MARKER_HISTORY}");
+            fs::write(&hist, serde_json::to_string_pretty(merged)?)?;
+            info!("wrote {hist}");
+            Some((panel, hist))
+        }
+        None => None,
     };
 
     let mut next = source.copy_to(manifest_path)?;
@@ -642,6 +698,245 @@ fn relabel(
     write_summary(&mut next, out)?;
     next.manifest.save(&next.file)?;
     Ok(next.file)
+}
+
+/////////////
+// preview //
+/////////////
+
+/// How many ranked calls a preview shows per cluster.
+const PREVIEW_CALLS: usize = 5;
+
+/// What `decisions` would do to `source`, written nowhere: per cluster the
+/// label before and after and, when the round records a cluster expression
+/// profile, the cell types re-ranked against the edited marker panel (an
+/// approximation of the next `lupin annotate`, see [`approx_calls`]).
+fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> Result<Value> {
+    let before = read_cells(source)?;
+    let (panel_before, _) = read_markers(source)?;
+    let named: BTreeSet<ClusterId> = decisions.iter().flat_map(|d| d.cluster.clone()).collect();
+    let after = plan(source, decisions, decisions_dir, "preview")?;
+
+    // Grouped the way the new round would be, so a merged cluster's
+    // "before" is what its cells were called before.
+    let label_before = digest(&after.cells.clusters, &before.labels, &Evidence::default());
+    let label_after = digest(
+        &after.cells.clusters,
+        &after.cells.labels,
+        &Evidence::default(),
+    );
+    let touched: BTreeSet<ClusterId> = before
+        .clusters
+        .iter()
+        .zip(&after.cells.clusters)
+        .filter_map(|(b, a)| b.filter(|b| named.contains(b)).and(*a))
+        .collect();
+
+    let profile = expression_profile(source, &after.cells)?;
+    let (calls_before, calls_after) = match &profile {
+        Some((table, groups)) => (
+            approx_calls(table, groups, &panel_before)?,
+            approx_calls(table, groups, &after.markers)?,
+        ),
+        None => {
+            // No profile: the round's recorded calls, which marker edits do
+            // not move.
+            let recorded = digest(&before.clusters, &before.labels, &read_evidence(source)?);
+            let calls: RankedCalls = recorded
+                .into_iter()
+                .map(|(id, d)| (id, d.calls.into_iter().map(|c| (c.label, None)).collect()))
+                .collect();
+            (calls.clone(), calls)
+        }
+    };
+    let top = |calls: &RankedCalls, id: &ClusterId| {
+        calls
+            .get(id)
+            .and_then(|c| c.first())
+            .map(|(l, _)| l.clone())
+    };
+
+    let mut clusters = serde_json::Map::new();
+    for (id, after_d) in &label_after {
+        let before_label = label_before.get(id).and_then(|d| d.label.clone());
+        let (top_before, top_after) = (top(&calls_before, id), top(&calls_after, id));
+        if !(touched.contains(id) || before_label != after_d.label || top_before != top_after) {
+            continue;
+        }
+        let calls: Vec<Value> = calls_after
+            .get(id)
+            .into_iter()
+            .flatten()
+            .take(PREVIEW_CALLS)
+            .map(|(label, score)| json!({"label": label, "score": score, "q": null, "support": null}))
+            .collect();
+        clusters.insert(
+            id.to_string(),
+            json!({
+                "label_before": before_label,
+                "label_after": after_d.label,
+                "top_before": top_before,
+                "calls": calls,
+            }),
+        );
+    }
+    let cells_changed = before
+        .labels
+        .iter()
+        .zip(&after.cells.labels)
+        .filter(|(b, a)| b != a)
+        .count();
+    Ok(json!({
+        "rescored": profile.is_some(),
+        "clusters": clusters,
+        "cells_changed": cells_changed,
+        "markers": marker_diff(&panel_before, &after.markers),
+    }))
+}
+
+/// Per cell type, the features the edits add and drop.
+fn marker_diff(before: &[(String, String)], after: &[(String, String)]) -> Value {
+    let key = |(g, t): &(String, String)| (t.trim().replace(' ', "_"), g.clone());
+    let b: BTreeSet<_> = before.iter().map(key).collect();
+    let a: BTreeSet<_> = after.iter().map(key).collect();
+    let mut out: BTreeMap<String, (Vec<String>, Vec<String>)> = BTreeMap::new();
+    for (t, g) in a.difference(&b) {
+        out.entry(t.clone()).or_default().0.push(g.clone());
+    }
+    for (t, g) in b.difference(&a) {
+        out.entry(t.clone()).or_default().1.push(g.clone());
+    }
+    out.into_iter()
+        .map(|(t, (added, dropped))| (t, json!({"added": added, "dropped": dropped})))
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
+/// The round's gene × cluster expression profile, and for each cluster of
+/// `after` how many of its cells come from each of the profile's clusters.
+/// `None` when the round records no profile.
+type Groups = BTreeMap<ClusterId, BTreeMap<ClusterId, usize>>;
+fn expression_profile(
+    source: &Loaded,
+    after: &Cells,
+) -> Result<Option<(MatWithNames<Mat>, Groups)>> {
+    let a = &source.manifest.annotate;
+    let Some(profile_rel) = a.cluster_expression.as_deref() else {
+        return Ok(None);
+    };
+    let ids_rel = a
+        .expression_clusters
+        .as_deref()
+        .or(source.manifest.cluster.clusters.as_deref())
+        .context("no cluster table for the expression profile")?;
+    let (names, ids) = read_clusters(&resolve(&source.dir, ids_rel))?;
+    let original: HashMap<&str, ClusterId> = names
+        .iter()
+        .zip(&ids)
+        .filter_map(|(n, id)| id.map(|id| (n.as_ref(), id)))
+        .collect();
+    let mut groups = Groups::new();
+    for (cell, id) in after.names.iter().zip(&after.clusters) {
+        if let (Some(id), Some(&from)) = (id, original.get(cell.as_ref())) {
+            *groups.entry(*id).or_default().entry(from).or_default() += 1;
+        }
+    }
+    let path = resolve(&source.dir, profile_rel);
+    let table = Mat::from_parquet_with_row_names(&path, Some(0))
+        .with_context(|| format!("reading {path}"))?;
+    Ok(Some((table, groups)))
+}
+
+/// Per cluster, cell types best first with their score (`None` when the
+/// ranking comes from recorded evidence rather than a score).
+type RankedCalls = BTreeMap<ClusterId, Vec<(String, Option<f32>)>>;
+
+/// Cell types ranked per cluster by a marker module score: each cluster's
+/// profile is the cell-weighted mean of the profile columns its cells come
+/// from; genes are `log1p`, z-scored across clusters; a type scores the
+/// IDF-weighted mean z of its markers. It ranks as enrichment would, in
+/// milliseconds, but carries no q or support.
+fn approx_calls(
+    table: &MatWithNames<Mat>,
+    groups: &Groups,
+    panel: &[(String, String)],
+) -> Result<RankedCalls> {
+    if panel.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let col: HashMap<ClusterId, usize> = table
+        .cols
+        .iter()
+        .enumerate()
+        .filter_map(|(j, c)| parse_cluster_id(c).map(|id| (id, j)))
+        .collect();
+    let g = table.mat.nrows();
+    // Per cluster: log1p of its cell-weighted mean profile.
+    let profiles: Vec<(ClusterId, Vec<f32>)> = groups
+        .iter()
+        .filter_map(|(id, from)| {
+            let parts: Vec<(usize, f32)> = from
+                .iter()
+                .filter_map(|(f, n)| col.get(f).map(|&j| (j, *n as f32)))
+                .collect();
+            let total: f32 = parts.iter().map(|(_, n)| n).sum();
+            (total > 0.0).then(|| {
+                let v = (0..g)
+                    .map(|r| {
+                        let m: f32 = parts.iter().map(|&(j, n)| n * table.mat[(r, j)]).sum();
+                        (m / total).max(0.0).ln_1p()
+                    })
+                    .collect();
+                (*id, v)
+            })
+        })
+        .collect();
+    let k = profiles.len() as f32;
+    if profiles.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    // Per gene: mean and sd across clusters, for the z-score.
+    let stats: Vec<(f32, f32)> = (0..g)
+        .map(|r| {
+            let mean = profiles.iter().map(|(_, v)| v[r]).sum::<f32>() / k;
+            let var = profiles
+                .iter()
+                .map(|(_, v)| (v[r] - mean).powi(2))
+                .sum::<f32>()
+                / k;
+            (mean, var.sqrt())
+        })
+        .collect();
+    let pairs: Vec<(Box<str>, Box<str>)> = panel
+        .iter()
+        .map(|(g, t)| (g.as_str().into(), t.as_str().into()))
+        .collect();
+    let annot = crate::annotate::markers::annotation_matrix_from_pairs(&pairs, &table.rows)?;
+    let w = &annot.membership_ga;
+    Ok(profiles
+        .iter()
+        .map(|(id, v)| {
+            let mut scored: Vec<(String, Option<f32>)> = annot
+                .annot_names
+                .iter()
+                .enumerate()
+                .filter_map(|(t, name)| {
+                    let (mut num, mut den) = (0.0f32, 0.0f32);
+                    for (r, &(mean, sd)) in stats.iter().enumerate() {
+                        let wt = w[(r, t)];
+                        if wt > 0.0 {
+                            let z = if sd > 0.0 { (v[r] - mean) / sd } else { 0.0 };
+                            num += wt * z;
+                            den += wt;
+                        }
+                    }
+                    (den > 0.0).then(|| (name.to_string(), Some(num / den)))
+                })
+                .collect();
+            scored.sort_by(|a, b| b.1.unwrap_or(0.0).total_cmp(&a.1.unwrap_or(0.0)));
+            (*id, scored)
+        })
+        .collect())
 }
 
 /// Refuse decisions that name a round other than `source`, the one they are

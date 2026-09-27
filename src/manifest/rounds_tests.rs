@@ -423,3 +423,128 @@ fn review_prints_the_names_decisions_files_use() {
         assert_eq!(json!(d), json!(d.as_str()));
     }
 }
+
+/// `first_round` plus an expression profile (genes × K0..K2) and a panel:
+/// GENE1 marks CT1 and peaks in K0, GENE2 marks CT2 and peaks in K1, GENE3
+/// marks CT3 and peaks in K2; GENE4, on no panel, also peaks in K1.
+fn round_with_profile(root: &Path) -> PathBuf {
+    let src = first_round(root);
+    let r0 = root.join("r0");
+    let genes: Vec<Box<str>> = ["GENE1", "GENE2", "GENE3", "GENE4"]
+        .iter()
+        .map(|s| Box::from(*s))
+        .collect();
+    let cols: Vec<Box<str>> = ["K0", "K1", "K2"].iter().map(|s| Box::from(*s)).collect();
+    let mut m = Mat::zeros(4, 3);
+    for (g, k) in [(0, 0), (1, 1), (2, 2), (3, 1)] {
+        m[(g, k)] = 50.0;
+    }
+    for g in 0..4 {
+        for k in 0..3 {
+            m[(g, k)] += 1.0;
+        }
+    }
+    let profile = r0.join("run.cluster_expression.parquet");
+    m.to_parquet_with_names(
+        &profile.to_string_lossy(),
+        (Some(&genes), Some("gene")),
+        Some(&cols),
+    )
+    .unwrap();
+    fs::write(
+        r0.join("markers.tsv"),
+        "gene\tcelltype\nGENE1\tCT1\nGENE2\tCT2\nGENE3\tCT3\n",
+    )
+    .unwrap();
+    let mut man = RunManifest::load(&src).unwrap().0;
+    man.annotate.cluster_expression = Some("run.cluster_expression.parquet".into());
+    man.annotate.expression_clusters = Some("run.clusters.parquet".into());
+    man.annotate.markers = Some("markers.tsv".into());
+    man.save(&src).unwrap();
+    src
+}
+
+fn preview_of(src: &Path, text: &str) -> Value {
+    let source = run::load(&src.to_string_lossy()).unwrap();
+    let ds = parse_decisions(numbered(text), "test").unwrap();
+    preview(&source, ds, Path::new(".")).unwrap()
+}
+
+#[test]
+fn preview_rescores_marker_edits_and_writes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let src = round_with_profile(root.path());
+    let before: Vec<_> = fs::read_dir(root.path().join("r0")).unwrap().collect();
+
+    let p = preview_of(
+        &src,
+        &lines(&[
+            json!({"cluster": 0, "action": "label", "label": "CT4", "rationale": "r", "decided_by": "user"}),
+            json!({"action": "markers_drop", "label": "CT2", "features": ["GENE2"], "rationale": "r", "decided_by": "user"}),
+            json!({"action": "markers_add", "label": "CT3", "features": ["GENE4"], "rationale": "r", "decided_by": "user"}),
+        ]),
+    );
+    assert_eq!(p["rescored"], true);
+    assert_eq!(p["cells_changed"], 2);
+    // The named cluster: its label changes; its top call does not.
+    assert_eq!(p["clusters"]["0"]["label_before"], "CT1");
+    assert_eq!(p["clusters"]["0"]["label_after"], "CT4");
+    assert_eq!(p["clusters"]["0"]["calls"][0]["label"], "CT1");
+    // Not named, but the edited panel moves its top call.
+    assert_eq!(p["clusters"]["1"]["top_before"], "CT2");
+    assert_eq!(p["clusters"]["1"]["calls"][0]["label"], "CT3");
+    assert_eq!(
+        p["clusters"]["1"]["label_before"],
+        p["clusters"]["1"]["label_after"]
+    );
+    // Untouched and unmoved: left out.
+    assert!(p["clusters"].get("2").is_none(), "{p}");
+    assert_eq!(p["markers"]["CT2"]["dropped"], json!(["GENE2"]));
+    assert_eq!(p["markers"]["CT3"]["added"], json!(["GENE4"]));
+
+    let after: Vec<_> = fs::read_dir(root.path().join("r0")).unwrap().collect();
+    assert_eq!(before.len(), after.len(), "preview writes nothing");
+}
+
+#[test]
+fn preview_shows_a_merge_under_its_new_id() {
+    let root = tempfile::tempdir().unwrap();
+    let src = round_with_profile(root.path());
+    let p = preview_of(
+        &src,
+        &line(
+            json!({"clusters": [1, 2], "action": "merge", "label": "CT2", "rationale": "r", "decided_by": "user"}),
+        ),
+    );
+    let merged = &p["clusters"]["3"];
+    assert_eq!(merged["label_after"], "CT2");
+    assert!(
+        merged["calls"].as_array().is_some_and(|c| !c.is_empty()),
+        "{p}"
+    );
+    assert_eq!(p["cells_changed"], 1);
+}
+
+#[test]
+fn preview_refuses_a_stale_round_and_reports_unscored_rounds() {
+    let root = tempfile::tempdir().unwrap();
+    let src = first_round(root.path());
+    // No profile: labels only.
+    let p = preview_of(&src, &keep0(None));
+    assert_eq!(p["rescored"], false);
+    assert!(
+        p["clusters"].get("0").is_some(),
+        "a named cluster is always shown"
+    );
+
+    next_from(&src, &keep0(None)).unwrap();
+    let d = root.path().join("d.jsonl");
+    fs::write(&d, keep0(None)).unwrap();
+    let err = run_relabel(&RelabelArgs {
+        preview: true,
+        ..args(&src, &d, None)
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("not the latest round"), "{err}");
+}

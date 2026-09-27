@@ -85,6 +85,13 @@ echo '{"cluster": 3, "action": "label", "label": "CT1", "rationale": "...", "dec
 lupin relabel --watch -f r0 -d decisions.jsonl
 ```
 
+`--preview` takes the same input and checks as `--next` but writes nothing: it
+prints, as JSON, each affected cluster's label before and after and the cells
+that would change. When the round records a cluster expression profile
+(enrichment), cell types are also re-ranked against the edited marker panel by
+a marker module score, a quick approximation of what the next `lupin annotate`
+would call.
+
 A round is never overwritten, whichever way it is written.
 
 Decisions can also revise the marker panel: `markers_add` / `markers_drop`

@@ -242,7 +242,11 @@ fn record(
         }
     }
     if let Some(c) = &out.clusters {
-        loaded.manifest.cluster.clusters = Some(crate::manifest::run::rel_to_manifest(dir, c));
+        let c = crate::manifest::run::rel_to_manifest(dir, c);
+        if out.cluster_expression.is_some() {
+            loaded.manifest.annotate.expression_clusters = Some(c.clone());
+        }
+        loaded.manifest.cluster.clusters = Some(c);
     }
     // The previous round's decisions are in its own log; this round made none.
     loaded.manifest.annotate.log = None;
