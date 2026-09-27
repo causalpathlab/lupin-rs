@@ -9,6 +9,7 @@
 //!
 //! Nothing here reads or writes files; [`crate::manifest::rounds`] does.
 
+use crate::annotate::markers::label_key;
 use anyhow::{bail, ensure, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -489,11 +490,6 @@ pub fn apply(
 /// Marker history: every round's marker edits per cell type, newest first.
 pub type MarkerHistory = BTreeMap<String, Vec<HistoryEntry>>;
 
-/// How a scored panel names a cell type: spaces become `_`.
-fn type_key(t: &str) -> String {
-    t.trim().replace(' ', "_")
-}
-
 /// Apply the marker edits among `decisions` (already validated and stamped
 /// by [`apply`]) to `(feature, cell type)` pairs, in place. Adding a pair
 /// already there changes nothing; dropping one that is not there is refused,
@@ -511,7 +507,7 @@ pub fn apply_markers(
             continue;
         }
         let ty = d.label.as_deref().unwrap_or_default();
-        let key = type_key(ty);
+        let key = label_key(ty);
         let features: Vec<&str> = d
             .features
             .iter()
@@ -519,11 +515,11 @@ pub fn apply_markers(
             .filter(|f| !f.is_empty())
             .collect();
         let has =
-            |m: &[(String, String)], f: &str| m.iter().any(|(g, t)| g == f && type_key(t) == key);
+            |m: &[(String, String)], f: &str| m.iter().any(|(g, t)| g == f && label_key(t) == key);
         if d.action == Action::MarkersAdd {
             for f in &features {
                 if !has(markers, f) {
-                    markers.push(((*f).to_string(), ty.trim().to_string()));
+                    markers.push(((*f).to_string(), key.clone()));
                 }
             }
         } else {
@@ -533,13 +529,13 @@ pub fn apply_markers(
                 "decision {}: {missing:?} are not markers of `{ty}`",
                 n + 1
             );
-            markers.retain(|(g, t)| !(type_key(t) == key && features.contains(&g.as_str())));
+            markers.retain(|(g, t)| !(label_key(t) == key && features.contains(&g.as_str())));
         }
         edited = true;
-        history.entry(key).or_default().push(HistoryEntry {
+        history.entry(key.clone()).or_default().push(HistoryEntry {
             round: round.to_string(),
             action: d.action,
-            label: Some(ty.trim().to_string()),
+            label: Some(key.clone()),
             rationale: d.rationale.clone(),
             decided_by: d.decided_by,
             timestamp: d.timestamp.clone().unwrap_or_default(),

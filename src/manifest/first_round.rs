@@ -41,7 +41,7 @@ pub fn prepare(
     obo: Option<&str>,
     label_cl: Option<&str>,
 ) -> Result<Prepared> {
-    let panel: Vec<(String, String)> = data_beans::aux::gene_sets::read_membership_pairs(markers)?
+    let panel: Vec<(String, String)> = crate::annotate::markers::read_marker_pairs(markers)?
         .into_iter()
         .map(|(g, t)| (g.into_string(), t.into_string()))
         .collect();
@@ -54,16 +54,13 @@ pub fn prepare(
     let label_cl = match label_cl {
         Some(l) => Some(l.to_string()),
         None if tree.source == TreeSource::CellOntology => {
-            // Both spellings: panels are scored with spaces as `_`.
+            // Labels are already in the form the pass scores them under.
             let path = format!("{out}{LABEL_CL}");
-            let mut lines: Vec<Box<str>> = Vec::new();
-            for (label, id) in &tree.label_cl {
-                lines.push(format!("{label}\t{id}").into_boxed_str());
-                let scored = label.replace(' ', "_");
-                if scored != *label {
-                    lines.push(format!("{scored}\t{id}").into_boxed_str());
-                }
-            }
+            let lines: Vec<Box<str>> = tree
+                .label_cl
+                .iter()
+                .map(|(label, id)| format!("{label}\t{id}").into_boxed_str())
+                .collect();
             write_lines(&lines, &path)?;
             Some(path)
         }

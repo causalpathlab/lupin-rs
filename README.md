@@ -44,6 +44,13 @@ lupin plot --from run.senna.json -o out/plot
 lupin describe -f run.senna.json --text-prefix run -o out
 ```
 
+## Cell-type labels
+
+Spaces, commas and underscores in a cell-type label are interchangeable:
+`CT 1, a`, `CT_1_a` and `CT,1 a` name one type, written `CT_1_a` in every
+output. Marker panels split on the tab (or, with none, on a line's first
+comma), so labels may contain commas.
+
 ## First round: high-level calls
 
 A marker pass calls each cluster by a broad group of the panel's cell types,
@@ -53,8 +60,8 @@ refine in later rounds. `--fine` calls the fine types directly.
 
 The groups come from the Cell Ontology: `--obo`, else a copy cached under the
 user cache directory, else a download into that cache (`LUPIN_OFFLINE=1`
-skips it). Panel labels are matched to terms by name or exact synonym, and
-each type goes under its nearest analysis class (the ontology's upper slims
+skips it). Panel labels are matched to terms by name or exact synonym,
+ignoring case, and each type goes under its nearest analysis class (the ontology's upper slims
 and `cellxgene_subset`) shared with another panel type. With the ontology
 found, its walk runs by default with the matched labels (`--label-cl`
 overrides). Without it, types that share marker genes are grouped instead.

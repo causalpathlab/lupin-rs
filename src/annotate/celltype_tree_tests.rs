@@ -96,7 +96,7 @@ fn ontology_groups_are_the_nearest_shared_classes() {
     ]);
     let tree = TypeTree::from_ontology(&t, &p).unwrap();
     assert_eq!(tree.source, TreeSource::CellOntology);
-    assert_eq!(members(&tree, "group a"), ["CT1", "CT2"]);
+    assert_eq!(members(&tree, "group_a"), ["CT1", "CT2"]);
     // CT3 shares group b with no other type, so it stands as itself; CT_4
     // matches no term but shares a marker with CT3.
     assert_eq!(members(&tree, "CT3"), ["CT3", "CT_4"]);

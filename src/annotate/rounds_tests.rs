@@ -198,7 +198,7 @@ fn marker_edits_add_new_types_and_refuse_dropping_absent_markers() {
         vec![
             ("GENE4".to_string(), "CT1".to_string()),
             ("GENE1".to_string(), "CT_5".to_string()),
-            ("GENE2".to_string(), "CT 5".to_string()),
+            ("GENE2".to_string(), "CT_5".to_string()),
         ],
         "an existing pair is not added twice, whatever the type's spacing"
     );

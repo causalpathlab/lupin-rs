@@ -13,6 +13,7 @@
 //!
 //! Pure: [`crate::manifest`] finds the ontology and the evidence.
 
+use crate::annotate::markers::label_key;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -67,12 +68,11 @@ impl Stanza {
     }
 }
 
-/// How labels and CL names are compared: case, `_`/space and a plural
-/// `cells` do not matter.
+/// How labels and CL names are compared: case, the separators
+/// [`label_key`] ignores (whitespace, `,`, `_`) and a plural `cells` do not
+/// matter.
 fn normalise(s: &str) -> String {
-    let lower = s.trim().to_lowercase().replace('_', " ");
-    let words: Vec<&str> = lower.split_whitespace().collect();
-    let mut s = words.join(" ");
+    let mut s = label_key(&s.to_lowercase()).replace('_', " ");
     if let Some(stem) = s.strip_suffix(" cells") {
         s = format!("{stem} cell");
     }
@@ -212,10 +212,10 @@ impl TypeTree {
     /// The group a fine type belongs to.
     #[must_use]
     pub fn group_of(&self, label: &str) -> Option<&str> {
-        let key = type_key(label);
+        let key = label_key(label);
         self.groups
             .iter()
-            .find(|g| g.members.iter().any(|m| type_key(m) == key))
+            .find(|g| g.members.iter().any(|m| label_key(m) == key))
             .map(|g| g.name.as_str())
     }
 
@@ -264,7 +264,7 @@ impl TypeTree {
         let mut groups: Vec<TypeGroup> = groups
             .into_iter()
             .map(|(id, members)| TypeGroup {
-                name: terms.name(&id).unwrap_or(&id).to_string(),
+                name: label_key(terms.name(&id).unwrap_or(&id)),
                 cl_id: Some(id),
                 members,
             })
@@ -327,17 +327,12 @@ impl TypeTree {
     }
 }
 
-/// How a scored panel names a type: spaces become `_`.
-fn type_key(t: &str) -> String {
-    t.trim().replace(' ', "_")
-}
-
 /// The panel's cell types, in first-seen order, one per scoring name.
 fn panel_types(panel: &[(String, String)]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     panel
         .iter()
-        .filter(|(_, t)| seen.insert(type_key(t)))
+        .filter(|(_, t)| seen.insert(label_key(t)))
         .map(|(_, t)| t.trim().to_string())
         .collect()
 }
@@ -345,11 +340,11 @@ fn panel_types(panel: &[(String, String)]) -> Vec<String> {
 fn marker_sets(panel: &[(String, String)]) -> BTreeMap<String, BTreeSet<String>> {
     let names: BTreeMap<String, String> = panel_types(panel)
         .into_iter()
-        .map(|t| (type_key(&t), t))
+        .map(|t| (label_key(&t), t))
         .collect();
     let mut sets: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (g, t) in panel {
-        let t = names[&type_key(t)].clone();
+        let t = names[&label_key(t)].clone();
         sets.entry(t).or_default().insert(g.trim().to_string());
     }
     sets

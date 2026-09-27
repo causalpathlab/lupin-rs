@@ -282,7 +282,7 @@ pub fn write_summary(loaded: &mut Loaded, out_prefix: &str) -> Result<BTreeMap<C
 fn read_markers(loaded: &Loaded) -> Result<(Vec<(String, String)>, MarkerHistory)> {
     let a = &loaded.manifest.annotate;
     let pairs = match a.markers.as_deref().filter(|m| !m.is_empty()) {
-        Some(rel) => data_beans::aux::gene_sets::read_membership_pairs(&resolve(&loaded.dir, rel))?
+        Some(rel) => crate::annotate::markers::read_marker_pairs(&resolve(&loaded.dir, rel))?
             .into_iter()
             .map(|(g, t)| (g.into_string(), t.into_string()))
             .collect(),
@@ -796,7 +796,7 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
 
 /// Per cell type, the features the edits add and drop.
 fn marker_diff(before: &[(String, String)], after: &[(String, String)]) -> Value {
-    let key = |(g, t): &(String, String)| (t.trim().replace(' ', "_"), g.clone());
+    let key = |(g, t): &(String, String)| (crate::annotate::markers::label_key(t), g.clone());
     let b: BTreeSet<_> = before.iter().map(key).collect();
     let a: BTreeSet<_> = after.iter().map(key).collect();
     let mut out: BTreeMap<String, (Vec<String>, Vec<String>)> = BTreeMap::new();

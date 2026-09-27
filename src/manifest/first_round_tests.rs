@@ -61,12 +61,11 @@ fn prepare_groups_the_panel_on_the_ontology_and_maps_its_labels() {
     assert_eq!(p.tree.source, TreeSource::CellOntology);
     assert_eq!(p.obo.as_deref(), Some(obo.as_str()));
     let map = fs::read_to_string(p.label_cl.as_ref().unwrap()).unwrap();
-    assert!(
-        map.contains("CT 2\tCL:9000012") && map.contains("CT_2\tCL:9000012"),
-        "{map}"
-    );
+    // One spelling per type: the panel's labels are already keyed.
+    let ct2: Vec<&str> = map.lines().filter(|l| l.contains("CL:9000012")).collect();
+    assert_eq!(ct2, ["CT_2\tCL:9000012"]);
     let tree: TypeTree = serde_json::from_str(&fs::read_to_string(&p.tree_path).unwrap()).unwrap();
-    assert_eq!(tree.group_of("CT_2"), Some("group a"));
+    assert_eq!(tree.group_of("CT_2"), Some("group_a"));
 
     // The user's own map is kept, not replaced.
     let own = prepare(&markers, &out, Some(&obo), Some("mine.tsv")).unwrap();
@@ -126,8 +125,8 @@ fn finish_calls_each_cluster_by_its_group_and_keeps_the_fine_labels() {
     let loaded = run::load(&manifest.to_string_lossy()).unwrap();
     let a = &loaded.manifest.annotate;
     let coarse = read_argmax(&resolve(&loaded.dir, a.argmax.as_deref().unwrap())).unwrap();
-    assert_eq!(coarse["a"].0, "group a");
-    assert_eq!(coarse["b"].0, "group a");
+    assert_eq!(coarse["a"].0, "group_a");
+    assert_eq!(coarse["b"].0, "group_a");
     assert_eq!(coarse["c"].0, "CT3", "alone in its class: named for itself");
     assert_eq!(coarse["a"].1, 0.9, "each cell keeps its probability");
     let kept = read_argmax(&resolve(&loaded.dir, a.fine_argmax.as_deref().unwrap())).unwrap();
@@ -136,7 +135,7 @@ fn finish_calls_each_cluster_by_its_group_and_keeps_the_fine_labels() {
         &fs::read_to_string(resolve(&loaded.dir, a.cluster_summary.as_deref().unwrap())).unwrap(),
     )
     .unwrap();
-    assert_eq!(summary["0"]["label"], "group a");
+    assert_eq!(summary["0"]["label"], "group_a");
     assert!(a.celltype_tree.is_some());
 }
 
