@@ -175,7 +175,9 @@ fn record(
     let a = &mut loaded.manifest.annotate;
     match pass {
         Pass::Markers(markers) => {
-            a.markers = Some(markers.to_string());
+            // Stored like every other path here, relative to the manifest,
+            // so it still resolves when read from another directory.
+            a.markers = Some(run_manifest::rel_to_manifest(dir, markers));
             a.argmax = rel(&out.argmax);
             a.annotation = rel(&out.annotation);
             a.cluster_celltype_q = rel(&out.cluster_celltype_q);

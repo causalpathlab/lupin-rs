@@ -193,7 +193,16 @@ impl EvidenceFiles {
                     argmax: at(&a.argmax),
                     marker_support: at(&a.marker_support),
                     marker_embedding: at(&a.marker_embedding),
-                    markers_tsv: a.markers.clone().filter(|m| !m.is_empty()),
+                    // Manifest-relative; older manifests recorded the path as
+                    // typed on the command line, so fall back to it as given.
+                    markers_tsv: a.markers.as_deref().filter(|m| !m.is_empty()).map(|m| {
+                        let resolved = crate::run_manifest::resolve(&loaded.dir, m);
+                        if std::path::Path::new(&resolved).exists() {
+                            resolved
+                        } else {
+                            m.to_string()
+                        }
+                    }),
                 }
             }
             Err(_) => {
