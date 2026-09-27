@@ -508,9 +508,7 @@ pub struct WatchError {
 
 fn watch(args: &RelabelArgs) -> Result<()> {
     let out = args.out.to_string();
-    mkdir_parent(&out)?;
-    let status_path = PathBuf::from(format!("{out}{STATUS}"));
-    let mut status = start_watch(&status_path, &args.from, &args.decisions)?;
+    let (mut status, status_path) = begin_watch(args)?;
     info!(
         "watching {} (from line {}); rounds go to {out}.r<N>; status in {}",
         args.decisions,
@@ -521,6 +519,16 @@ fn watch(args: &RelabelArgs) -> Result<()> {
         watch_step(&mut status, &status_path, &out)?;
         std::thread::sleep(POLL);
     }
+}
+
+/// Start or resume a watch and write its status before any decision, so a
+/// viewer can find the watcher at once.
+fn begin_watch(args: &RelabelArgs) -> Result<(WatchStatus, PathBuf)> {
+    mkdir_parent(&args.out)?;
+    let status_path = PathBuf::from(format!("{}{STATUS}", args.out));
+    let mut status = start_watch(&status_path, &args.from, &args.decisions)?;
+    write_status(&mut status, &status_path)?;
+    Ok((status, status_path))
 }
 
 /// Resume from an existing status for the same decisions file, else start
@@ -618,12 +626,18 @@ pub fn watch_step(status: &mut WatchStatus, status_path: &Path, out: &str) -> Re
             });
         }
     }
+    write_status(status, status_path)?;
+    Ok(true)
+}
+
+/// Stamp and write the status whole, then rename it into place, so a reader
+/// never sees half a file.
+fn write_status(status: &mut WatchStatus, status_path: &Path) -> Result<()> {
     status.updated = now();
-    // Written whole then renamed, so a reader never sees half a file.
     let tmp = status_path.with_extension("json.tmp");
     fs::write(&tmp, serde_json::to_string_pretty(status)?)?;
     fs::rename(&tmp, status_path)?;
-    Ok(true)
+    Ok(())
 }
 
 ////////////

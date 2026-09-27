@@ -262,3 +262,28 @@ fn marker_edits_write_the_round_its_own_panel() {
         Path::new(&panel1).canonicalize().unwrap()
     );
 }
+
+#[test]
+fn a_watch_announces_itself_before_any_decision() {
+    let root = tempfile::tempdir().unwrap();
+    let src = first_round(root.path());
+    let out = root.path().join("w/run").to_string_lossy().into_owned();
+    let (_, status_path) = begin_watch(&RelabelArgs {
+        from: src.to_string_lossy().into(),
+        decisions: root.path().join("d.jsonl").to_string_lossy().into(),
+        out: out.into(),
+        watch: true,
+    })
+    .unwrap();
+    let status: WatchStatus =
+        serde_json::from_str(&fs::read_to_string(&status_path).unwrap()).unwrap();
+    assert_eq!(status.processed_lines, 0);
+    assert_eq!(status.rounds, vec![status.base.clone()]);
+    assert_eq!(status.latest, status.base);
+    assert!(status.error.is_none());
+    let base = resolve(&parent_dir(&status_path), &status.base);
+    assert_eq!(
+        Path::new(&base).canonicalize().unwrap(),
+        src.canonicalize().unwrap()
+    );
+}
