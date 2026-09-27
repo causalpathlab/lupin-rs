@@ -309,6 +309,9 @@ pub struct RunAnnotate {
     /// The decisions that made this round (JSONL).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<String>,
+    /// Every round's marker edits per cell type, newest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_history: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ontology_assignment: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -9,10 +9,13 @@
 //! - `{out}.annotation_log.jsonl`: this round's decisions (`annotate.log`)
 //! - `{out}.annotation_history.json`: every round's decisions per cluster,
 //!   newest first (`annotate.history`)
+//! - when a round edits markers, `{out}.markers.tsv` (`annotate.markers`, the
+//!   previous round's panel with the edits applied) and
+//!   `{out}.marker_history.json` (`annotate.marker_history`, per cell type)
 
 use crate::annotate::rounds::{
-    self, apply, digest, next_cluster_id, parse_cluster_id, prepend_history, ClPlacement,
-    ClusterId, Decision, Digest, Evidence, History, Table, Term,
+    self, apply, apply_markers, digest, next_cluster_id, parse_cluster_id, prepend_history,
+    ClPlacement, ClusterId, Decision, Digest, Evidence, History, MarkerHistory, Table, Term,
 };
 use crate::manifest::run::{self, annotated_path, rel_to_manifest, resolve, Loaded};
 use anyhow::{Context, Result};
@@ -31,6 +34,8 @@ pub const CLUSTERS: &str = ".clusters.parquet";
 pub const SUMMARY: &str = ".cluster_summary.json";
 pub const LOG: &str = ".annotation_log.jsonl";
 pub const HISTORY: &str = ".annotation_history.json";
+pub const MARKERS: &str = ".markers.tsv";
+pub const MARKER_HISTORY: &str = ".marker_history.json";
 
 //////////////////
 // cell tables  //
@@ -267,6 +272,28 @@ pub fn write_summary(loaded: &mut Loaded, out_prefix: &str) -> Result<BTreeMap<C
     Ok(d)
 }
 
+/// The round's marker panel as `(feature, cell type)` pairs, and its marker
+/// history; both empty when the round records none.
+fn read_markers(loaded: &Loaded) -> Result<(Vec<(String, String)>, MarkerHistory)> {
+    let a = &loaded.manifest.annotate;
+    let pairs = match a.markers.as_deref().filter(|m| !m.is_empty()) {
+        Some(rel) => data_beans::aux::gene_sets::read_membership_pairs(&resolve(&loaded.dir, rel))?
+            .into_iter()
+            .map(|(g, t)| (g.into_string(), t.into_string()))
+            .collect(),
+        None => Vec::new(),
+    };
+    let history = match a.marker_history.as_deref() {
+        Some(rel) => {
+            let path = resolve(&loaded.dir, rel);
+            let raw = fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
+            serde_json::from_str(&raw).with_context(|| format!("parsing {path}"))?
+        }
+        None => MarkerHistory::new(),
+    };
+    Ok((pairs, history))
+}
+
 fn read_history(loaded: &Loaded) -> Result<History> {
     let Some(rel) = loaded.manifest.annotate.history.as_deref() else {
         return Ok(History::new());
@@ -376,6 +403,8 @@ fn relabel(
         &round,
         &now(),
     )?;
+    let (mut markers, older_markers) = read_markers(source)?;
+    let (markers_edited, newer_markers) = apply_markers(&decisions, &mut markers, &round)?;
     info!("applied {} decision(s)", decisions.len());
 
     let clusters_path = format!("{out}{CLUSTERS}");
@@ -393,8 +422,31 @@ fn relabel(
     fs::write(&history_path, serde_json::to_string_pretty(&history)?)?;
     info!("wrote {history_path}");
 
+    let marker_paths = if markers_edited {
+        let panel = format!("{out}{MARKERS}");
+        let mut lines: Vec<Box<str>> = vec!["gene\tcelltype".into()];
+        lines.extend(
+            markers
+                .iter()
+                .map(|(g, t)| format!("{g}\t{t}").into_boxed_str()),
+        );
+        write_lines(&lines, &panel)?;
+        info!("wrote {panel}");
+        let hist = format!("{out}{MARKER_HISTORY}");
+        let merged = prepend_history(older_markers, newer_markers);
+        fs::write(&hist, serde_json::to_string_pretty(&merged)?)?;
+        info!("wrote {hist}");
+        Some((panel, hist))
+    } else {
+        None
+    };
+
     let mut next = source.copy_to(manifest_path)?;
     let rel = |p: &str| Some(rel_to_manifest(&next.dir, p));
+    if let Some((panel, hist)) = &marker_paths {
+        next.manifest.annotate.markers = rel(panel);
+        next.manifest.annotate.marker_history = rel(hist);
+    }
     next.manifest.cluster.clusters = rel(&clusters_path);
     next.manifest.annotate.argmax = rel(&argmax_path);
     next.manifest.annotate.log = rel(&log_path);
@@ -606,7 +658,9 @@ Decisions file for `lupin relabel -d`: one JSON object per line.
    \"alternatives\": [{\"label\": \"CT2\", \"why_not\": \"weaker support\"}],
    \"rationale\": \"...\", \"decided_by\": \"user\"}
 
-action:     label (one cluster), merge (\"clusters\": [..], fresh id), keep
+action:     label (one cluster), merge (\"clusters\": [..], fresh id), keep,
+            markers_add / markers_drop (\"label\": cell type, \"features\": [..];
+            edits the round's marker panel, which the next annotate uses)
 decided_by: user | agent_proposed_user_accepted | user_override
 round:      optional; the round whose ids the decision names, relative to the
             decisions file. A decision on any other round is refused.

@@ -172,6 +172,18 @@ pub enum Action {
     Keep,
     /// Not supported yet; refused with an explanation.
     Split,
+    /// Add features to a cell type's markers (a new type if it has none).
+    MarkersAdd,
+    /// Remove features from a cell type's markers.
+    MarkersDrop,
+}
+
+impl Action {
+    /// Edits the marker panel rather than cluster labels.
+    #[must_use]
+    pub fn edits_markers(self) -> bool {
+        matches!(self, Action::MarkersAdd | Action::MarkersDrop)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,11 +198,20 @@ pub enum DecidedBy {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Decision {
     /// The cluster(s) acted on: an id or a list, as integers or strings.
-    #[serde(alias = "clusters", deserialize_with = "de_ids")]
+    /// Empty for marker edits.
+    #[serde(
+        default,
+        alias = "clusters",
+        deserialize_with = "de_ids",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub cluster: Vec<ClusterId>,
     pub action: Action,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Marker edits: the features added to or dropped from `label`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
     /// What the decision rests on, typically items quoted from the digest.
     #[serde(default)]
     pub evidence: Vec<Value>,
@@ -267,13 +288,19 @@ pub struct HistoryEntry {
     pub merged_into: Option<ClusterId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub split_from: Option<ClusterId>,
+    /// Marker edits: the features added or dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<String>>,
 }
 
 pub type History = BTreeMap<ClusterId, Vec<HistoryEntry>>;
 
 /// `newer` entries go in front of each cluster's `older` ones.
 #[must_use]
-pub fn prepend_history(older: History, newer: History) -> History {
+pub fn prepend_history<K: Ord>(
+    older: BTreeMap<K, Vec<HistoryEntry>>,
+    newer: BTreeMap<K, Vec<HistoryEntry>>,
+) -> BTreeMap<K, Vec<HistoryEntry>> {
     let mut out = newer;
     for (id, mut entries) in older {
         out.entry(id).or_default().append(&mut entries);
@@ -328,6 +355,21 @@ pub fn apply(
             !d.rationale.trim().is_empty(),
             "decision {line}: a rationale is required"
         );
+        if d.action.edits_markers() {
+            ensure!(
+                d.cluster.is_empty(),
+                "decision {line}: a marker edit names a cell type, not clusters"
+            );
+            ensure!(
+                d.label.as_deref().is_some_and(|l| !l.trim().is_empty()),
+                "decision {line}: a marker edit needs the cell type as `label`"
+            );
+            ensure!(
+                d.features.iter().any(|f| !f.trim().is_empty()),
+                "decision {line}: a marker edit needs `features`"
+            );
+            continue;
+        }
         ensure!(!d.cluster.is_empty(), "decision {line}: no cluster named");
         for id in &d.cluster {
             ensure!(
@@ -359,6 +401,7 @@ pub fn apply(
                 "decision {line}: `split` is not supported yet; re-cluster that cluster's \
                  cells and pass the result to `lupin annotate --clusters`"
             ),
+            Action::MarkersAdd | Action::MarkersDrop => unreachable!("handled above"),
         }
     }
 
@@ -376,6 +419,7 @@ pub fn apply(
             merged_from: None,
             merged_into: None,
             split_from: None,
+            features: None,
         };
         match d.action {
             Action::Label | Action::Keep => {
@@ -410,9 +454,78 @@ pub fn apply(
                 });
             }
             Action::Split => unreachable!("refused above"),
+            // Applied by [`apply_markers`].
+            Action::MarkersAdd | Action::MarkersDrop => {}
         }
     }
     Ok(history)
+}
+
+/// Marker history: every round's marker edits per cell type, newest first.
+pub type MarkerHistory = BTreeMap<String, Vec<HistoryEntry>>;
+
+/// How a scored panel names a cell type: spaces become `_`.
+fn type_key(t: &str) -> String {
+    t.trim().replace(' ', "_")
+}
+
+/// Apply the marker edits among `decisions` (already validated and stamped
+/// by [`apply`]) to `(feature, cell type)` pairs, in place. Adding a pair
+/// already there changes nothing; dropping one that is not there is refused,
+/// since it is most likely a typo. Returns whether anything was edited, and
+/// the history entries per cell type.
+pub fn apply_markers(
+    decisions: &[Decision],
+    markers: &mut Vec<(String, String)>,
+    round: &str,
+) -> Result<(bool, MarkerHistory)> {
+    let mut history = MarkerHistory::new();
+    let mut edited = false;
+    for (n, d) in decisions.iter().enumerate() {
+        if !d.action.edits_markers() {
+            continue;
+        }
+        let ty = d.label.as_deref().unwrap_or_default();
+        let key = type_key(ty);
+        let features: Vec<&str> = d
+            .features
+            .iter()
+            .map(|f| f.trim())
+            .filter(|f| !f.is_empty())
+            .collect();
+        let has =
+            |m: &[(String, String)], f: &str| m.iter().any(|(g, t)| g == f && type_key(t) == key);
+        if d.action == Action::MarkersAdd {
+            for f in &features {
+                if !has(markers, f) {
+                    markers.push(((*f).to_string(), ty.trim().to_string()));
+                }
+            }
+        } else {
+            let missing: Vec<&&str> = features.iter().filter(|f| !has(markers, f)).collect();
+            ensure!(
+                missing.is_empty(),
+                "decision {}: {missing:?} are not markers of `{ty}`",
+                n + 1
+            );
+            markers.retain(|(g, t)| !(type_key(t) == key && features.contains(&g.as_str())));
+        }
+        edited = true;
+        history.entry(key).or_default().push(HistoryEntry {
+            round: round.to_string(),
+            action: d.action,
+            label: Some(ty.trim().to_string()),
+            rationale: d.rationale.clone(),
+            decided_by: d.decided_by,
+            timestamp: d.timestamp.clone().unwrap_or_default(),
+            evidence: d.evidence.iter().take(TOP_EVIDENCE).cloned().collect(),
+            merged_from: None,
+            merged_into: None,
+            split_from: None,
+            features: Some(features.iter().map(|f| (*f).to_string()).collect()),
+        });
+    }
+    Ok((edited, history))
 }
 
 fn relabel_cells(

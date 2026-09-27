@@ -19,7 +19,7 @@ pub enum AnnotateMethod {
     Projection,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct AnnotateCliArgs {
     #[arg(
         long,
@@ -52,7 +52,7 @@ pub struct AnnotateCliArgs {
         long,
         short = 'm',
         default_value = "",
-        help = "Marker TSV (`gene<TAB>celltype`); omit for ontology-only follow-up on enrichment output"
+        help = "Marker TSV (`gene<TAB>celltype`); defaults to the round's `annotate.markers`. Omit for ontology-only follow-up on enrichment output"
     )]
     pub markers: Box<str>,
 
@@ -171,6 +171,21 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         .map(crate::manifest::run::load)
         .transpose()?;
 
+    // A round carries its marker panel (revised by `relabel`); use it when
+    // no other source of labels is given.
+    let defaulted;
+    let args = match loaded.as_ref().and_then(|l| round_markers(args, l)) {
+        Some(markers) => {
+            log::info!("No -m given: using the round's marker panel {markers}");
+            defaulted = AnnotateCliArgs {
+                markers: markers.into_boxed_str(),
+                ..args.clone()
+            };
+            &defaulted
+        }
+        None => args,
+    };
+
     if is_ontology_followup(args) {
         let loaded = loaded
             .as_ref()
@@ -198,6 +213,21 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
             annotate_by_projection(&build_projection_args(args), loaded)
         }
     }
+}
+
+/// The round's `annotate.markers`, resolved, when `-m`, `--gaf` and `--gmt`
+/// are all absent and this is not an ontology follow-up.
+fn round_markers(args: &AnnotateCliArgs, loaded: &crate::manifest::run::Loaded) -> Option<String> {
+    if !args.markers.is_empty()
+        || args.gaf.is_some()
+        || args.gmt.is_some()
+        || is_ontology_followup(args)
+    {
+        return None;
+    }
+    let rel = loaded.manifest.annotate.markers.as_deref()?;
+    let path = crate::manifest::run::resolve(&loaded.dir, rel);
+    std::path::Path::new(&path).is_file().then_some(path)
 }
 
 fn is_ontology_followup(args: &AnnotateCliArgs) -> bool {

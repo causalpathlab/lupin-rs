@@ -191,3 +191,74 @@ fn watch_turns_each_appended_batch_into_a_round() {
     assert_eq!(resumed.processed_lines, 5);
     assert_eq!(resumed.latest, status.latest);
 }
+
+#[test]
+fn marker_edits_write_the_round_its_own_panel() {
+    let root = tempfile::tempdir().unwrap();
+    let src = first_round(root.path());
+    let panel0 = root.path().join("r0/markers.tsv");
+    fs::write(
+        &panel0,
+        "gene\tcelltype\nGENE1\tCT1\nGENE2\tCT1\nGENE3\tCT2\n",
+    )
+    .unwrap();
+    let mut m = RunManifest::load(&src).unwrap().0;
+    m.annotate.markers = Some("markers.tsv".into());
+    m.save(&src).unwrap();
+
+    let relabel_with = |from: &Path, lines: &str, out: &str| -> PathBuf {
+        let d = root.path().join(format!("{}.jsonl", out.replace('/', "_")));
+        fs::write(&d, lines).unwrap();
+        let out = root.path().join(out).to_string_lossy().into_owned();
+        run_relabel(&RelabelArgs {
+            from: from.to_string_lossy().into(),
+            decisions: d.to_string_lossy().into(),
+            out: out.clone().into(),
+            watch: false,
+        })
+        .unwrap();
+        PathBuf::from(format!("{out}.senna.json"))
+    };
+
+    let r1 = relabel_with(
+        &src,
+        "{\"action\": \"markers_drop\", \"label\": \"CT1\", \"features\": [\"GENE2\"], \"rationale\": \"weak\", \"decided_by\": \"user\"}\n\
+         {\"action\": \"markers_add\", \"label\": \"CT3\", \"features\": [\"GENE4\"], \"rationale\": \"new\", \"decided_by\": \"user\"}\n",
+        "r1/run",
+    );
+    let next = run::load(&r1.to_string_lossy()).unwrap();
+    let a = &next.manifest.annotate;
+    let panel1 = resolve(&next.dir, a.markers.as_deref().unwrap());
+    assert!(panel1.ends_with("run.markers.tsv"));
+    assert_eq!(
+        fs::read_to_string(&panel1).unwrap(),
+        "gene\tcelltype\nGENE1\tCT1\nGENE3\tCT2\nGENE4\tCT3\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&panel0).unwrap(),
+        "gene\tcelltype\nGENE1\tCT1\nGENE2\tCT1\nGENE3\tCT2\n",
+        "the earlier round's panel is untouched"
+    );
+    let hist: rounds::MarkerHistory = serde_json::from_str(
+        &fs::read_to_string(resolve(&next.dir, a.marker_history.as_deref().unwrap())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(hist["CT1"][0].rationale, "weak");
+    assert_eq!(hist["CT3"][0].features, Some(vec!["GENE4".to_string()]));
+
+    // A round with no marker edits keeps the previous round's panel.
+    let r2 = relabel_with(
+        &r1,
+        "{\"cluster\": 0, \"action\": \"keep\", \"rationale\": \"fine\", \"decided_by\": \"user\"}\n",
+        "r2/run",
+    );
+    let after = run::load(&r2.to_string_lossy()).unwrap();
+    let panel2 = resolve(
+        &after.dir,
+        after.manifest.annotate.markers.as_deref().unwrap(),
+    );
+    assert_eq!(
+        Path::new(&panel2).canonicalize().unwrap(),
+        Path::new(&panel1).canonicalize().unwrap()
+    );
+}

@@ -117,6 +117,7 @@ fn a_merged_id_is_never_handed_out_again() {
             merged_from: Some(vec![4, 9]),
             merged_into: None,
             split_from: None,
+            features: None,
         }],
     );
     assert_eq!(next_cluster_id(&some(&[7, 1]), &history), 10);
@@ -155,6 +156,7 @@ fn newer_history_goes_first() {
         merged_from: None,
         merged_into: None,
         split_from: None,
+        features: None,
     };
     let older = History::from([(0, vec![e("r1")])]);
     let newer = History::from([(0, vec![e("r2")])]);
@@ -170,4 +172,73 @@ fn timestamps_are_utc_calendar_dates() {
     assert_eq!(utc_timestamp(0), "1970-01-01T00:00:00Z");
     assert_eq!(utc_timestamp(951_782_400), "2000-02-29T00:00:00Z");
     assert_eq!(utc_timestamp(1_790_000_000), "2026-09-21T14:13:20Z");
+}
+
+#[test]
+fn marker_edits_add_new_types_and_refuse_dropping_absent_markers() {
+    let mut clusters = some(&[0]);
+    let mut labs = labels(&["CT1"]);
+    let mut ds = decisions(
+        r#"{"action": "markers_add", "label": "CT 5", "features": ["GENE1", "GENE2"], "rationale": "r", "decided_by": "user"}
+{"action": "markers_drop", "label": "CT1", "features": ["GENE3"], "rationale": "r", "decided_by": "user"}
+{"cluster": 0, "action": "label", "label": "CT5", "rationale": "r", "decided_by": "user"}"#,
+    );
+    apply(&mut ds, &mut clusters, &mut labs, 1, "r1", "T").unwrap();
+    assert_eq!(labs, labels(&["CT5"]), "cluster decisions still apply");
+
+    let mut markers = vec![
+        ("GENE3".to_string(), "CT1".to_string()),
+        ("GENE4".to_string(), "CT1".to_string()),
+        ("GENE1".to_string(), "CT_5".to_string()),
+    ];
+    let (edited, h) = apply_markers(&ds, &mut markers, "r1").unwrap();
+    assert!(edited);
+    assert_eq!(
+        markers,
+        vec![
+            ("GENE4".to_string(), "CT1".to_string()),
+            ("GENE1".to_string(), "CT_5".to_string()),
+            ("GENE2".to_string(), "CT 5".to_string()),
+        ],
+        "an existing pair is not added twice, whatever the type's spacing"
+    );
+    assert_eq!(
+        h["CT_5"][0].features,
+        Some(vec!["GENE1".into(), "GENE2".into()])
+    );
+    assert_eq!(h["CT1"][0].timestamp, "T");
+
+    let mut again = decisions(
+        r#"{"action": "markers_drop", "label": "CT1", "features": ["GENE3"], "rationale": "r", "decided_by": "user"}"#,
+    );
+    apply(
+        &mut again,
+        &mut some(&[0]),
+        &mut labels(&["CT1"]),
+        1,
+        "r2",
+        "T",
+    )
+    .unwrap();
+    assert!(apply_markers(&again, &mut markers, "r2").is_err());
+}
+
+#[test]
+fn marker_edits_name_a_type_and_features_not_clusters() {
+    let run = |line: &str| {
+        apply(
+            &mut decisions(line),
+            &mut some(&[0]),
+            &mut labels(&["CT1"]),
+            1,
+            "r",
+            "T",
+        )
+    };
+    assert!(run(
+        r#"{"action": "markers_add", "label": "CT1", "rationale": "r", "decided_by": "user"}"#
+    )
+    .is_err());
+    assert!(run(r#"{"action": "markers_add", "features": ["GENE1"], "rationale": "r", "decided_by": "user"}"#).is_err());
+    assert!(run(r#"{"cluster": 0, "action": "markers_add", "label": "CT1", "features": ["GENE1"], "rationale": "r", "decided_by": "user"}"#).is_err());
 }

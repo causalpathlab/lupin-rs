@@ -78,6 +78,13 @@ stale view never lands on renumbered clusters.
 lupin relabel --watch -f r0 -d decisions.jsonl -o rounds/run
 ```
 
+Decisions can also revise the marker panel: `markers_add` / `markers_drop`
+name a cell type (`label`) and `features`. The round then writes its own
+`{out}.markers.tsv` (the previous panel with the edits) as `annotate.markers`,
+and `{out}.marker_history.json` keeps each cell type's edits with their
+rationale. `lupin annotate -f <round>` without `-m` re-annotates from that
+panel.
+
 ## Related crates
 
 [`senna-rs`](https://crates.io/crates/senna-rs) (train / embed / layout; produces the runs lupin reads),
