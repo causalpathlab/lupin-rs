@@ -44,6 +44,23 @@ lupin plot --from run.senna.json -o out/plot
 lupin describe -f run.senna.json --text-prefix run -o out
 ```
 
+## First round: high-level calls
+
+A marker pass calls each cluster by a broad group of the panel's cell types,
+with the evidence of the group's types added up; the fine calls stay in the
+cluster summary (and each cell's fine label in `annotate.fine_argmax`) to
+refine in later rounds. `--fine` calls the fine types directly.
+
+The groups come from the Cell Ontology: `--obo`, else a copy cached under the
+user cache directory, else a download into that cache (`LUPIN_OFFLINE=1`
+skips it). Panel labels are matched to terms by name or exact synonym, and
+each type goes under its nearest analysis class (the ontology's upper slims
+and `cellxgene_subset`) shared with another panel type. With the ontology
+found, its walk runs by default with the matched labels (`--label-cl`
+overrides). Without it, types that share marker genes are grouped instead.
+`{out}.celltype_tree.json` records the groups, their source and the
+ontology release.
+
 ## Annotation rounds
 
 An annotated manifest is a round. `lupin review` prints each cluster's evidence

@@ -4,7 +4,9 @@
 //! annotation ([`rounds`]).
 
 pub mod annotate;
+pub mod first_round;
 pub mod lineage;
+pub mod ontology;
 pub mod pinto;
 pub mod rounds;
 pub mod run;

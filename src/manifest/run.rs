@@ -309,6 +309,12 @@ pub struct RunAnnotate {
     /// The decisions that made this round (JSONL).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<String>,
+    /// The coarse cell-type groups the first round was called with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub celltype_tree: Option<String>,
+    /// The fine per-cell labels behind a coarse first round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fine_argmax: Option<String>,
     /// The cluster table `cluster_expression`'s columns refer to: the ids of
     /// the pass that wrote it, which later rounds' merges do not change.
     #[serde(default, skip_serializing_if = "Option::is_none")]

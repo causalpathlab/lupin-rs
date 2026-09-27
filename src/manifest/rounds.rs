@@ -80,7 +80,7 @@ pub fn write_clusters(path: &str, cells: &[Box<str>], ids: &[Option<ClusterId>])
 }
 
 /// `cell⇥cell_type⇥probability`, header first.
-fn read_argmax(path: &str) -> Result<HashMap<String, (String, f32)>> {
+pub(super) fn read_argmax(path: &str) -> Result<HashMap<String, (String, f32)>> {
     let raw = fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
     Ok(raw
         .lines()
@@ -94,7 +94,7 @@ fn read_argmax(path: &str) -> Result<HashMap<String, (String, f32)>> {
         .collect())
 }
 
-fn write_argmax(
+pub(super) fn write_argmax(
     path: &str,
     cells: &[Box<str>],
     labels: &[Option<String>],
@@ -157,7 +157,7 @@ fn read_cells(loaded: &Loaded) -> Result<Cells> {
 // evidence //
 //////////////
 
-fn read_table(path: &str) -> Result<Table> {
+pub(super) fn read_table(path: &str) -> Result<Table> {
     let m = Mat::from_parquet_with_row_names(path, Some(0))
         .with_context(|| format!("reading {path}"))?;
     let (keep, rows): (Vec<usize>, Vec<ClusterId>) = m

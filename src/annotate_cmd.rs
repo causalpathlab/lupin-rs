@@ -161,6 +161,12 @@ pub struct AnnotateCliArgs {
     pub ontology_by: bool,
     #[arg(long = "use-perm-p")]
     pub use_perm_p: bool,
+
+    #[arg(
+        long,
+        help = "Call the first round at the panel's fine cell types instead of its coarse groups"
+    )]
+    pub fine: bool,
 }
 
 pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
@@ -193,7 +199,33 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         return annotate_ontology(&build_ontology_args(args)?, loaded);
     }
 
-    match route(args, loaded.as_ref()) {
+    // A marker pass on a run: group the panel first (wiring in the Cell
+    // Ontology when it is found), and call the round at that level after.
+    let marker_pass = loaded.is_some() && !args.markers.is_empty();
+    let prepared = marker_pass
+        .then(|| {
+            crate::manifest::first_round::prepare(
+                &args.markers,
+                &args.out,
+                args.obo.as_deref(),
+                args.label_cl.as_deref(),
+            )
+        })
+        .transpose()?;
+    let wired;
+    let args = match &prepared {
+        Some(p) if args.obo.is_none() && p.obo.is_some() => {
+            wired = AnnotateCliArgs {
+                obo: p.obo.as_deref().map(Into::into),
+                label_cl: p.label_cl.as_deref().map(Into::into),
+                ..args.clone()
+            };
+            &wired
+        }
+        _ => args,
+    };
+
+    let result = match route(args, loaded.as_ref()) {
         Route::EmbeddingFiles { feat, cell } => run_projection_from_files(args, feat, cell),
         Route::Enrichment => {
             anyhow::ensure!(
@@ -212,7 +244,15 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
                 .context("--from is required for projection annotation")?;
             annotate_by_projection(&build_projection_args(args), loaded)
         }
+    };
+    result?;
+    if let (Some(p), Some(l)) = (&prepared, &loaded) {
+        let manifest = crate::manifest::run::annotated_path(&l.file, &args.out);
+        if manifest.is_file() {
+            crate::manifest::first_round::finish(&manifest, p, args.fine)?;
+        }
     }
+    Ok(())
 }
 
 /// The round's `annotate.markers`, resolved, when `-m`, `--gaf` and `--gmt`

@@ -6,6 +6,7 @@ pub mod aggregate;
 pub mod args;
 pub mod by_enrichment;
 pub mod by_projection;
+pub mod celltype_tree;
 mod go_signature;
 pub mod inputs;
 pub mod markers;
