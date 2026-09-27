@@ -297,6 +297,18 @@ pub struct RunAnnotate {
     /// The manifest this one was copied from when annotate wrote it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Enrichment: nClusters × C bootstrap support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_celltype_support: Option<String>,
+    /// Per-cluster digest for review, keyed by cluster id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_summary: Option<String>,
+    /// Every round's decisions per cluster id, newest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<String>,
+    /// The decisions that made this round (JSONL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ontology_assignment: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

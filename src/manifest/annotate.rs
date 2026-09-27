@@ -14,8 +14,10 @@ use crate::annotate::by_enrichment::{self, EnrichmentPlan};
 use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
 use crate::annotate::ontology;
-use crate::annotate::outputs::AnnotationOutputs;
+use crate::annotate::outputs::{AnnotationOutputs, ANNOT_PARQUET};
+use crate::manifest::rounds;
 use crate::manifest::run::{annotated_path, resolve, Loaded};
+use legume_numeric::matrix::parquet::read_table_columns;
 
 use crate::annotate::aggregate::{
     accumulate_gene_sum, accumulate_gene_sum_pair, weighted_mean_profile,
@@ -65,7 +67,17 @@ impl Default for LeidenArgs {
 pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &Loaded) -> Result<()> {
     let plan = by_enrichment::plan(args)?;
     let inputs = load_enrichment_inputs(args, &plan, loaded)?;
-    let outputs = by_enrichment::run(args, &plan, &inputs)?;
+    let mut outputs = by_enrichment::run(args, &plan, &inputs)?;
+    // The ids the cluster tables' `K{id}` rows refer to, so later rounds and
+    // viewers key on the same clusters.
+    let clusters_path = format!("{}{}", args.out, rounds::CLUSTERS);
+    let ids: Vec<Option<u32>> = inputs
+        .cluster_labels
+        .iter()
+        .map(|&k| u32::try_from(k).ok())
+        .collect();
+    rounds::write_clusters(&clusters_path, &inputs.cell_names, &ids)?;
+    outputs.clusters = Some(clusters_path);
     let pass = if plan.ontology_mode {
         Pass::GeneSets
     } else {
@@ -97,13 +109,14 @@ pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &Loaded) ->
     let cell = DMatrix::<f32>::from_parquet(&cell_path)
         .with_context(|| format!("reading cell embedding {cell_path}"))?;
 
-    let outputs = by_projection::run(
+    let mut outputs = by_projection::run(
         args,
         &ProjectionInputs {
             feature_embedding: &feat,
             cell_embedding: &cell,
         },
     )?;
+    outputs.clusters = Some(projection_clusters(&args.out)?);
     record(
         loaded,
         &args.out,
@@ -166,6 +179,21 @@ enum Pass<'a> {
     Ontology,
 }
 
+/// Projection clusters the cells itself; its per-cell `community` becomes
+/// the round's cluster table.
+fn projection_clusters(out: &str) -> Result<String> {
+    let annot = format!("{out}{ANNOT_PARQUET}");
+    let (strings, nums) = read_table_columns(&annot, &["cell"], &["community"])
+        .with_context(|| format!("reading {annot}"))?;
+    let ids: Vec<Option<u32>> = nums[0]
+        .iter()
+        .map(|&k| (k.is_finite() && k >= 0.0).then_some(k as u32))
+        .collect();
+    let path = format!("{out}{}", rounds::CLUSTERS);
+    rounds::write_clusters(&path, &strings[0], &ids)?;
+    Ok(path)
+}
+
 /// Record a pass's artifacts in the manifest, relative to its directory, plus
 /// the settings it ran with under `annotate.settings.{method}`, and save it
 /// as a new manifest (see [`annotated_path`]); the one it was read from is left as is.
@@ -200,6 +228,7 @@ fn record(
             a.cluster_term_q = rel(&out.cluster_term_q);
             a.marker_support = rel(&out.marker_support);
             a.marker_embedding = rel(&out.marker_embedding);
+            a.cluster_celltype_support = rel(&out.cluster_celltype_support);
             loaded.manifest.defaults.colour_by = Some("annotation".into());
         }
         Pass::GeneSets => {
@@ -212,6 +241,11 @@ fn record(
             a.ontology_node_mass = rel(&out.ontology_node_mass);
         }
     }
+    if let Some(c) = &out.clusters {
+        loaded.manifest.cluster.clusters = Some(crate::manifest::run::rel_to_manifest(dir, c));
+    }
+    // The previous round's decisions are in its own log; this round made none.
+    loaded.manifest.annotate.log = None;
     let recorded = loaded
         .manifest
         .annotate
@@ -219,6 +253,10 @@ fn record(
         .get_or_insert_with(|| serde_json::json!({}));
     if let serde_json::Value::Object(m) = recorded {
         m.insert(method.into(), settings);
+    }
+    // Derived from what was just written; a failure here should not cost the pass.
+    if let Err(e) = rounds::write_summary(&mut loaded, out_prefix) {
+        log::warn!("no cluster summary for this round: {e:#}");
     }
     loaded.manifest.save(&loaded.file)
 }

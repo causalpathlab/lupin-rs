@@ -1,0 +1,451 @@
+//! Annotation rounds: the per-cluster digest a reviewer reads, the decisions
+//! they make, and the history that keeps the reasoning behind each one.
+//!
+//! A round is a manifest. `lupin annotate` writes the first; each
+//! `lupin relabel` reads a round plus a decisions file and writes the next,
+//! whose `annotate.source` points back. Cluster ids are the integers in
+//! `cluster.clusters` and are never reused: a merge takes a fresh id, so a
+//! cluster's history stays attached to one id across rounds.
+//!
+//! Nothing here reads or writes files; [`crate::manifest::rounds`] does.
+
+use anyhow::{bail, ensure, Result};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
+
+pub type ClusterId = u32;
+
+/// How many candidates of each kind a digest entry keeps.
+const TOP: usize = 5;
+/// How many evidence items a history entry keeps from its decision.
+const TOP_EVIDENCE: usize = 3;
+
+////////////
+// digest //
+////////////
+
+/// What a reviewer needs to decide on one cluster. Keyed by cluster id in
+/// `{out}.cluster_summary.json`; every list is sorted best first.
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+pub struct Digest {
+    pub size: usize,
+    /// The label most of the cluster's cells carry in this round.
+    pub label: Option<String>,
+    pub calls: Vec<Call>,
+    pub terms: Vec<Term>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cl: Option<ClPlacement>,
+}
+
+/// A candidate label with its FDR q-value and bootstrap support, where known.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Call {
+    pub label: String,
+    pub q: Option<f32>,
+    pub support: Option<f32>,
+}
+
+/// A gene-set term (GO or GMT) and its effect on the cluster.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Term {
+    pub source: String,
+    pub term: String,
+    pub effect: f32,
+    pub q: Option<f32>,
+}
+
+/// Where the Cell Ontology walk placed the cluster.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ClPlacement {
+    pub id: String,
+    pub name: String,
+    pub abstained: bool,
+}
+
+/// A cluster × label table, rows already parsed to cluster ids.
+pub struct Table {
+    pub rows: Vec<ClusterId>,
+    pub cols: Vec<String>,
+    /// Row-major, `rows.len() × cols.len()`.
+    pub values: Vec<f32>,
+}
+
+impl Table {
+    fn row(&self, id: ClusterId) -> Option<&[f32]> {
+        let r = self.rows.iter().position(|&x| x == id)?;
+        let w = self.cols.len();
+        Some(&self.values[r * w..(r + 1) * w])
+    }
+}
+
+/// Everything a digest is built from; each part is optional.
+#[derive(Default)]
+pub struct Evidence {
+    /// Cluster × label FDR q-values.
+    pub q: Option<Table>,
+    /// Cluster × label bootstrap support.
+    pub support: Option<Table>,
+    /// Per cluster, terms in rank order.
+    pub terms: BTreeMap<ClusterId, Vec<Term>>,
+    pub cl: BTreeMap<ClusterId, ClPlacement>,
+}
+
+/// Labels a table may carry that are not a call.
+const NOT_A_CALL: &[&str] = &["unassigned"];
+
+/// One digest entry per cluster id present in `clusters`.
+#[must_use]
+pub fn digest(
+    clusters: &[Option<ClusterId>],
+    labels: &[Option<String>],
+    ev: &Evidence,
+) -> BTreeMap<ClusterId, Digest> {
+    let mut out: BTreeMap<ClusterId, Digest> = BTreeMap::new();
+    let mut votes: BTreeMap<ClusterId, BTreeMap<&str, usize>> = BTreeMap::new();
+    for (i, id) in clusters.iter().enumerate() {
+        let Some(id) = *id else { continue };
+        out.entry(id).or_default().size += 1;
+        if let Some(Some(l)) = labels.get(i) {
+            *votes.entry(id).or_default().entry(l.as_str()).or_default() += 1;
+        }
+    }
+    for (id, d) in &mut out {
+        d.label = votes.get(id).and_then(|v| {
+            v.iter()
+                .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+                .map(|(l, _)| (*l).to_string())
+        });
+        d.calls = calls_for(*id, ev);
+        d.terms = ev
+            .terms
+            .get(id)
+            .map(|t| t.iter().take(TOP).cloned().collect())
+            .unwrap_or_default();
+        d.cl = ev.cl.get(id).cloned();
+    }
+    out
+}
+
+fn calls_for(id: ClusterId, ev: &Evidence) -> Vec<Call> {
+    let mut by_label: BTreeMap<String, Call> = BTreeMap::new();
+    let mut take = |t: &Option<Table>, set: fn(&mut Call, f32)| {
+        let Some(t) = t else { return };
+        let Some(row) = t.row(id) else { return };
+        for (c, &v) in t.cols.iter().zip(row) {
+            if NOT_A_CALL.contains(&c.as_str()) || !v.is_finite() {
+                continue;
+            }
+            let call = by_label.entry(c.clone()).or_insert_with(|| Call {
+                label: c.clone(),
+                q: None,
+                support: None,
+            });
+            set(call, v);
+        }
+    };
+    take(&ev.q, |c, v| c.q = Some(v));
+    take(&ev.support, |c, v| c.support = Some(v));
+    let mut calls: Vec<Call> = by_label.into_values().collect();
+    // Support first (more is better), then q (less is better); unknowns last.
+    calls.sort_by(|a, b| {
+        let s = |c: &Call| c.support.unwrap_or(f32::NEG_INFINITY);
+        let q = |c: &Call| c.q.unwrap_or(f32::INFINITY);
+        s(b).total_cmp(&s(a)).then(q(a).total_cmp(&q(b)))
+    });
+    calls.truncate(TOP);
+    calls
+}
+
+///////////////
+// decisions //
+///////////////
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    /// Give one cluster a label.
+    Label,
+    /// Join clusters into one with a fresh id, optionally labelling it.
+    Merge,
+    /// Leave a cluster as it is, recording why.
+    Keep,
+    /// Not supported yet; refused with an explanation.
+    Split,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecidedBy {
+    User,
+    AgentProposedUserAccepted,
+    UserOverride,
+}
+
+/// One line of a decisions file.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Decision {
+    /// The cluster(s) acted on: an id or a list, as integers or strings.
+    #[serde(alias = "clusters", deserialize_with = "de_ids")]
+    pub cluster: Vec<ClusterId>,
+    pub action: Action,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// What the decision rests on, typically items quoted from the digest.
+    #[serde(default)]
+    pub evidence: Vec<Value>,
+    /// Options weighed and why each was not taken.
+    #[serde(default)]
+    pub alternatives: Vec<Value>,
+    #[serde(default)]
+    pub rationale: String,
+    pub decided_by: DecidedBy,
+    /// Filled in when the decision is applied, if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+}
+
+fn de_ids<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ClusterId>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Id {
+        N(ClusterId),
+        S(String),
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(Id),
+        Many(Vec<Id>),
+    }
+    let ids = match OneOrMany::deserialize(d)? {
+        OneOrMany::One(id) => vec![id],
+        OneOrMany::Many(ids) => ids,
+    };
+    ids.into_iter()
+        .map(|id| match id {
+            Id::N(n) => Ok(n),
+            Id::S(s) => parse_cluster_id(&s)
+                .ok_or_else(|| serde::de::Error::custom(format!("not a cluster id: `{s}`"))),
+        })
+        .collect()
+}
+
+/// A cluster id from `12`, `K12` or `C12`.
+#[must_use]
+pub fn parse_cluster_id(s: &str) -> Option<ClusterId> {
+    s.trim_start_matches(|c: char| c.is_ascii_alphabetic())
+        .parse()
+        .ok()
+}
+
+/////////////
+// history //
+/////////////
+
+/// One step in a cluster's history, newest first in the history file.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct HistoryEntry {
+    /// The round's manifest, relative to the history file.
+    pub round: String,
+    pub action: Action,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub rationale: String,
+    pub decided_by: DecidedBy,
+    pub timestamp: String,
+    #[serde(default)]
+    pub evidence: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_from: Option<Vec<ClusterId>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_into: Option<ClusterId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_from: Option<ClusterId>,
+}
+
+pub type History = BTreeMap<ClusterId, Vec<HistoryEntry>>;
+
+/// `newer` entries go in front of each cluster's `older` ones.
+#[must_use]
+pub fn prepend_history(older: History, newer: History) -> History {
+    let mut out = newer;
+    for (id, mut entries) in older {
+        out.entry(id).or_default().append(&mut entries);
+    }
+    out
+}
+
+/// The first id no round has used: past every current id and every id the
+/// history mentions.
+#[must_use]
+pub fn next_cluster_id(clusters: &[Option<ClusterId>], history: &History) -> ClusterId {
+    let current = clusters.iter().flatten().copied().max();
+    let past = history
+        .iter()
+        .flat_map(|(id, es)| {
+            std::iter::once(*id).chain(es.iter().flat_map(|e| {
+                e.merged_from
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .chain(e.merged_into)
+                    .chain(e.split_from)
+            }))
+        })
+        .max();
+    current.max(past).map_or(0, |m| m + 1)
+}
+
+//////////////
+// applying //
+//////////////
+
+/// Apply `decisions` to one round's per-cell cluster ids and labels, in
+/// place, and return the history entries they make, tagged with `round`.
+///
+/// Every decision needs a rationale, may name only clusters present in this
+/// round, and no cluster may be named twice. `now` stamps decisions that
+/// carry no timestamp.
+pub fn apply(
+    decisions: &mut [Decision],
+    clusters: &mut [Option<ClusterId>],
+    labels: &mut [Option<String>],
+    mut next_id: ClusterId,
+    round: &str,
+    now: &str,
+) -> Result<History> {
+    let present: BTreeSet<ClusterId> = clusters.iter().flatten().copied().collect();
+    let mut seen = BTreeSet::new();
+    for (n, d) in decisions.iter().enumerate() {
+        let line = n + 1;
+        ensure!(
+            !d.rationale.trim().is_empty(),
+            "decision {line}: a rationale is required"
+        );
+        ensure!(!d.cluster.is_empty(), "decision {line}: no cluster named");
+        for id in &d.cluster {
+            ensure!(
+                present.contains(id),
+                "decision {line}: cluster {id} is not in this round"
+            );
+            ensure!(
+                seen.insert(*id),
+                "decision {line}: cluster {id} is already decided in this round"
+            );
+        }
+        match d.action {
+            Action::Label => {
+                ensure!(
+                    d.cluster.len() == 1,
+                    "decision {line}: `label` takes one cluster; use `merge` to join several"
+                );
+                ensure!(
+                    d.label.as_deref().is_some_and(|l| !l.trim().is_empty()),
+                    "decision {line}: `label` needs a label"
+                );
+            }
+            Action::Merge => ensure!(
+                d.cluster.len() >= 2,
+                "decision {line}: `merge` needs at least two clusters"
+            ),
+            Action::Keep => {}
+            Action::Split => bail!(
+                "decision {line}: `split` is not supported yet; re-cluster that cluster's \
+                 cells and pass the result to `lupin annotate --clusters`"
+            ),
+        }
+    }
+
+    let mut history = History::new();
+    for d in decisions.iter_mut() {
+        let timestamp = d.timestamp.get_or_insert_with(|| now.to_string()).clone();
+        let entry = |label: Option<String>| HistoryEntry {
+            round: round.to_string(),
+            action: d.action,
+            label,
+            rationale: d.rationale.clone(),
+            decided_by: d.decided_by,
+            timestamp: timestamp.clone(),
+            evidence: d.evidence.iter().take(TOP_EVIDENCE).cloned().collect(),
+            merged_from: None,
+            merged_into: None,
+            split_from: None,
+        };
+        match d.action {
+            Action::Label | Action::Keep => {
+                let id = d.cluster[0];
+                if let Some(l) = &d.label {
+                    relabel_cells(clusters, labels, id, l);
+                }
+                for &id in &d.cluster {
+                    history.entry(id).or_default().push(entry(d.label.clone()));
+                }
+            }
+            Action::Merge => {
+                let new_id = next_id;
+                next_id += 1;
+                for c in clusters.iter_mut() {
+                    if c.is_some_and(|id| d.cluster.contains(&id)) {
+                        *c = Some(new_id);
+                    }
+                }
+                if let Some(l) = &d.label {
+                    relabel_cells(clusters, labels, new_id, l);
+                }
+                for &old in &d.cluster {
+                    history.entry(old).or_default().push(HistoryEntry {
+                        merged_into: Some(new_id),
+                        ..entry(d.label.clone())
+                    });
+                }
+                history.entry(new_id).or_default().push(HistoryEntry {
+                    merged_from: Some(d.cluster.clone()),
+                    ..entry(d.label.clone())
+                });
+            }
+            Action::Split => unreachable!("refused above"),
+        }
+    }
+    Ok(history)
+}
+
+fn relabel_cells(
+    clusters: &[Option<ClusterId>],
+    labels: &mut [Option<String>],
+    id: ClusterId,
+    label: &str,
+) {
+    for (c, l) in clusters.iter().zip(labels.iter_mut()) {
+        if *c == Some(id) {
+            *l = Some(label.to_string());
+        }
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` for a Unix time in seconds.
+#[must_use]
+pub fn utc_timestamp(unix_secs: u64) -> String {
+    let days = i64::try_from(unix_secs / 86_400).unwrap_or(0);
+    let secs = unix_secs % 86_400;
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
+}
+
+#[cfg(test)]
+#[path = "rounds_tests.rs"]
+mod tests;

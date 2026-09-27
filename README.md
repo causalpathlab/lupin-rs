@@ -44,6 +44,27 @@ lupin plot --from run.senna.json -o out/plot
 lupin describe -f run.senna.json --text-prefix run -o out
 ```
 
+## Annotation rounds
+
+An annotated manifest is a round. `lupin review` prints each cluster's evidence
+(candidate labels with q and support, top GO/GMT terms, Cell Ontology placement)
+and every decision made on it so far; `--json` gives the same to a program or an
+agent. Decisions go in a JSONL file, each with its evidence, the alternatives
+weighed and a rationale; `lupin relabel` applies them and writes the next round:
+
+```sh
+lupin annotate -f run.senna.json -m markers.tsv -o r0
+lupin review -f r0                       # or: --json, -c 3
+lupin relabel -f r0 -d decisions.jsonl -o r1
+```
+
+Each round records `annotate.source` (the round before it),
+`annotate.cluster_summary` (`{out}.cluster_summary.json`, keyed by cluster id),
+`annotate.log` (this round's decisions) and `annotate.history`
+(`{out}.annotation_history.json`: every round's decisions per cluster, newest
+first). Merged clusters take fresh ids, so an id always names the same cells'
+history. `lupin review --help` documents the decisions format.
+
 ## Related crates
 
 [`senna-rs`](https://crates.io/crates/senna-rs) (train / embed / layout; produces the runs lupin reads),

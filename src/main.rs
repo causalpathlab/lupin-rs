@@ -119,6 +119,24 @@ enum Commands {
     )]
     Describe(DescribeArgs),
     #[command(
+        about = "Show an annotation round cluster by cluster: calls, terms, CL placement, history",
+        long_about = "Reads an annotated manifest (a round) and prints, per cluster,\n\
+                      its size and current label, the candidate labels with q and support,\n\
+                      the top GO/GMT terms, the Cell Ontology placement,\n\
+                      and every decision made on it so far with its rationale.\n\
+                      `--json` prints the same for a program or an agent to read."
+    )]
+    Review(manifest::rounds::ReviewArgs),
+    #[command(
+        about = "Apply a decisions file to an annotation round and write the next round",
+        long_about = "Reads a round and a decisions file (JSONL; see `lupin review --help`),\n\
+                      relabels or merges clusters, and writes a new manifest at `-o`\n\
+                      whose `annotate.source` points back to the round it started from.\n\
+                      Every decision needs a rationale, kept in `{out}.annotation_history.json`.\n\
+                      Counts are not re-read; merged clusters take fresh ids."
+    )]
+    Relabel(manifest::rounds::RelabelArgs),
+    #[command(
         name = "plot",
         about = "Publication-quality scatter over a senna layout embedding",
         long_about = "Rasterized scatter with vector labels over a transparent background.\n\
@@ -153,6 +171,8 @@ fn main() -> Result<()> {
         Commands::DynAssoc(c) => run_assoc(&c),
         Commands::Pseudotime(c) => run_pseudotime_from_manifest(&c),
         Commands::Describe(c) => run_describe(&c),
+        Commands::Review(c) => manifest::rounds::run_review(&c),
+        Commands::Relabel(c) => manifest::rounds::run_relabel(&c),
         Commands::Plot(c) => fit_plot(&c),
         Commands::PlotTopic(c) => fit_plot_topic(&c),
         Commands::PlotStrand(c) => fit_plot_strand(&c),

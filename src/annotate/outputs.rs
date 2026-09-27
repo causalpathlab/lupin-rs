@@ -81,4 +81,7 @@ pub struct AnnotationOutputs {
     pub cluster_term_q: Option<String>,
     pub marker_support: Option<String>,
     pub marker_embedding: Option<String>,
+    pub cluster_celltype_support: Option<String>,
+    /// Per-cell cluster ids whose values match the cluster tables' `K{id}` rows.
+    pub clusters: Option<String>,
 }

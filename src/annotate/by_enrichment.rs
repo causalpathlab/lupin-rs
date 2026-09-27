@@ -329,6 +329,10 @@ pub fn run(
         cluster_expression: Some(cell_expr_path),
         ontology_assignment: ontology_assign,
         ontology_node_mass: ontology_mass,
+        cluster_celltype_support: {
+            let p = format!("{out}.cluster_celltype_support.parquet");
+            std::path::Path::new(&p).exists().then_some(p)
+        },
         ..AnnotationOutputs::default()
     })
 }
