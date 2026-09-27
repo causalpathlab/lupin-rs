@@ -47,7 +47,7 @@ use super::write::*;
 
 /// The manifest-derived inputs `run_lineage` cannot read for itself.
 ///
-/// Everything here needs a run manifest, so [`crate::lineage_manifest`]
+/// Everything here needs a run manifest, so [`crate::manifest::lineage`]
 /// resolves it and hands the results in.
 pub struct LineageInputs {
     /// Where the run's per-cell tables (θ, δ) are.

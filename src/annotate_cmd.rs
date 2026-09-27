@@ -2,8 +2,10 @@
 
 use crate::annotate::args::{AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs};
 use crate::annotate::by_projection::{self, ProjectionInputs};
-use crate::annotate_manifest::{annotate_by_enrichment, annotate_by_projection, annotate_ontology};
-use crate::run_manifest::{self, RunManifest};
+use crate::manifest::annotate::{
+    annotate_by_enrichment, annotate_by_projection, annotate_ontology,
+};
+use crate::manifest::run::RunManifest;
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 use legume_numeric::matrix::dmatrix_io::DMatrix;
@@ -163,7 +165,11 @@ pub struct AnnotateCliArgs {
 
 pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     // One manifest load per invocation; every route below reuses it.
-    let mut loaded = args.from.as_deref().map(run_manifest::load).transpose()?;
+    let mut loaded = args
+        .from
+        .as_deref()
+        .map(crate::manifest::run::load)
+        .transpose()?;
 
     if is_ontology_followup(args) {
         let loaded = loaded
@@ -227,7 +233,10 @@ enum Route<'a> {
 
 /// Pick the backend. An explicit embedding pair wins; otherwise the run
 /// manifest decides between co-embed projection and enrichment.
-fn route<'a>(args: &'a AnnotateCliArgs, loaded: Option<&run_manifest::Loaded>) -> Route<'a> {
+fn route<'a>(
+    args: &'a AnnotateCliArgs,
+    loaded: Option<&crate::manifest::run::Loaded>,
+) -> Route<'a> {
     if let (Some(feat), Some(cell)) = (
         args.feature_embedding.as_deref(),
         args.cell_embedding.as_deref(),

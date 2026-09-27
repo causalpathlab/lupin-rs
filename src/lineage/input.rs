@@ -19,8 +19,8 @@ use super::layout::l2_normalize_rows;
 /// What the producing run says about its own per-cell tables — everything the
 /// θ resolver needs from a run manifest.
 ///
-/// The θ resolver never reads a manifest itself: [`crate::lineage_manifest`]
-/// fills this from `crate::run_manifest`, and a caller with nothing to go on passes
+/// The θ resolver never reads a manifest itself: [`crate::manifest::lineage`]
+/// fills this from `crate::manifest::run`, and a caller with nothing to go on passes
 /// [`LatentContract::unknown`].
 #[derive(Clone, Debug)]
 pub struct LatentContract {

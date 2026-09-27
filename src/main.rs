@@ -2,15 +2,13 @@
 
 mod annotate;
 mod annotate_cmd;
-mod annotate_manifest;
 mod cell_labels;
 mod describe;
 mod gene_text;
 mod lineage;
-mod lineage_manifest;
+mod manifest;
 mod marker_embedding;
 mod plot;
-mod run_manifest;
 
 use crate::annotate_cmd::{run_annotate, AnnotateCliArgs};
 use crate::gene_text::cli::{run_knn_graph, run_qc, KnnGraphCmd, QcCmd};
@@ -21,7 +19,7 @@ use crate::lineage::pseudotime::PseudotimeArgs;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use describe::{run_describe, DescribeArgs};
-use lineage_manifest::{run_lineage_from_manifest, run_pseudotime_from_manifest};
+use manifest::lineage::{run_lineage_from_manifest, run_pseudotime_from_manifest};
 use plot::scatter::{fit_plot, PlotArgs};
 use plot::strand::{fit_plot_strand, PlotStrandArgs};
 use plot::topic::{fit_plot_topic, PlotTopicArgs};

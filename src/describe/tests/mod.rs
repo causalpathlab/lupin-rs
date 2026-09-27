@@ -176,7 +176,7 @@ fn enrichment_q_table_calls_each_cluster_by_its_lowest_q() {
 
 #[test]
 fn a_manifest_points_describe_at_the_latest_pass_not_stale_files() {
-    use crate::run_manifest::{RunKind, RunManifest};
+    use crate::manifest::run::{RunKind, RunManifest};
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("run").to_string_lossy().into_owned();
     // A stale projection table from an earlier pass on the same prefix...

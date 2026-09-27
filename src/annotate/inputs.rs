@@ -3,7 +3,7 @@
 //!
 //! Re-opening the raw counts, resolving where the clustering comes from, and
 //! aggregating per-cluster/per-batch gene sums all need the run manifest and
-//! the sparse backend, so they live in [`crate::annotate_manifest`]; what arrives
+//! the sparse backend, so they live in [`crate::manifest::annotate`]; what arrives
 //! here is the result.
 
 use legume_numeric::matrix::dense_mat_io::{read_mat, Mat, MatWithNames};

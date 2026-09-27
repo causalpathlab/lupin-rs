@@ -33,7 +33,7 @@ use std::path::Path;
 
 /// The two embeddings the projection pass scores against each other. Finding
 /// them means reading `outputs.feature_coembedding` / `outputs.cell_embedding`,
-/// so the caller loads them — see [`crate::annotate_manifest`].
+/// so the caller loads them — see [`crate::manifest::annotate`].
 pub struct ProjectionInputs<'a> {
     /// Genes on the cell manifold (the co-embedded feature space).
     pub feature_embedding: &'a MatWithNames<Mat>,

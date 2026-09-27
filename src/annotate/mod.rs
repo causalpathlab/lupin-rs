@@ -1,5 +1,5 @@
 //! Cell-type annotation (enrichment, projection, ontology) over plain file
-//! paths and loaded matrices. [`crate::annotate_manifest`] resolves a
+//! paths and loaded matrices. [`crate::manifest::annotate`] resolves a
 //! `run.senna.json` into the input structs here and records the outputs.
 
 pub mod aggregate;

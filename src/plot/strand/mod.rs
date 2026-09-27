@@ -25,7 +25,7 @@
 mod place;
 mod render;
 
-use crate::run_manifest::resolve;
+use crate::manifest::run::resolve;
 use clap::{Args, ValueEnum};
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dense_mat_io::{Mat, MatWithNames};
@@ -334,9 +334,9 @@ fn resolve_inputs(args: &PlotStrandArgs) -> anyhow::Result<(String, String)> {
         return Ok((activity.to_string(), args.out.to_string()));
     };
 
-    let crate::run_manifest::Loaded {
+    let crate::manifest::run::Loaded {
         manifest: m, dir, ..
-    } = crate::run_manifest::load(from)?;
+    } = crate::manifest::run::load(from)?;
     let resolve = |s: &str| resolve(&dir, s);
 
     // The derived activity is written next to `--out`.

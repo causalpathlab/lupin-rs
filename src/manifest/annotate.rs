@@ -15,14 +15,14 @@ use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
 use crate::annotate::ontology;
 use crate::annotate::outputs::AnnotationOutputs;
-use crate::run_manifest::{self, resolve, Loaded};
+use crate::manifest::run::{resolve, Loaded};
 
 use crate::annotate::aggregate::{
     accumulate_gene_sum, accumulate_gene_sum_pair, weighted_mean_profile,
 };
 use crate::annotate::markers::build_annotation_matrix;
+use crate::manifest::run::{CellSpace, RunManifest};
 use crate::marker_embedding::load_marker_feature_embedding;
-use crate::run_manifest::{CellSpace, RunManifest};
 use data_beans::aux::data_loading::{
     read_data_on_shared_rows, ReadSharedRowsArgs, SparseDataWithBatch,
 };
@@ -170,14 +170,14 @@ fn record(
     let dir = &loaded.dir;
     let rel = |p: &Option<String>| {
         p.as_deref()
-            .map(|abs| run_manifest::rel_to_manifest(dir, abs))
+            .map(|abs| crate::manifest::run::rel_to_manifest(dir, abs))
     };
     let a = &mut loaded.manifest.annotate;
     match pass {
         Pass::Markers(markers) => {
             // Stored like every other path here, relative to the manifest,
             // so it still resolves when read from another directory.
-            a.markers = Some(run_manifest::rel_to_manifest(dir, markers));
+            a.markers = Some(crate::manifest::run::rel_to_manifest(dir, markers));
             a.argmax = rel(&out.argmax);
             a.annotation = rel(&out.annotation);
             a.cluster_celltype_q = rel(&out.cluster_celltype_q);

@@ -201,7 +201,7 @@ pub struct PseudotimeArgs {
 
 /// Paths a caller has already resolved for [`run_pseudotime`].
 ///
-/// Resolving `--from` is [`crate::lineage_manifest`]'s job; a caller working
+/// Resolving `--from` is [`crate::manifest::lineage`]'s job; a caller working
 /// off explicit paths fills this directly.
 pub struct PseudotimeInputs {
     /// Cell × K latent matrix (parquet or delimited text).

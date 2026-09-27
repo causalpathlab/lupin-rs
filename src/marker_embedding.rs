@@ -13,7 +13,7 @@ use legume_numeric::matrix::traits::IoOps;
 use log::info;
 use std::path::Path;
 
-use crate::run_manifest::{resolve, RunKind, RunManifest};
+use crate::manifest::run::{resolve, RunKind, RunManifest};
 
 /// Load the marker-matching gene table. `prefix` only names the run in errors.
 pub fn load_marker_feature_embedding(

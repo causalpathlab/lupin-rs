@@ -3,7 +3,7 @@
 //! `annotate --method enrichment`) so their I/O contract stays in lock-step.
 //!
 //! Wiring these paths into `manifest.annotate.*` is the caller's job — see
-//! [`crate::annotate_manifest`].
+//! [`crate::manifest::annotate`].
 
 use std::path::Path;
 

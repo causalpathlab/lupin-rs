@@ -1,6 +1,6 @@
 //! Cluster-based annotation: marker-set enrichment on the per-cluster
 //! expression matrix (NB-Fisher adjusted, re-aggregated from raw counts by the
-//! caller — see [`crate::annotate_manifest`]).
+//! caller — see [`crate::manifest::annotate`]).
 
 use super::args::{
     AnnotateArgs, BOOT_NUM_DRAWS, KEEP_IEA, MAX_GENE_SET, MIN_CONFIDENCE, MIN_GENE_SET, NUM_DRAWS,

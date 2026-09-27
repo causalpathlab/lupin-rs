@@ -4,7 +4,7 @@
 //! mapping from a stamped `kind` to the contract.
 
 use super::*;
-use crate::run_manifest::{default_path, RunKind, RunManifest};
+use crate::manifest::run::{default_path, RunKind, RunManifest};
 use std::path::Path;
 
 /// Minimal `{prefix}.senna.json` stating only the kind.

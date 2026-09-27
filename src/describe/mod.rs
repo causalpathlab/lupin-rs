@@ -177,12 +177,12 @@ impl EvidenceFiles {
     /// `-o` was. Otherwise `--from` is an annotate / lineage output prefix and
     /// the files are looked for by name.
     fn locate(from: &str) -> Self {
-        match crate::run_manifest::load(from) {
+        match crate::manifest::run::load(from) {
             Ok(loaded) => {
                 let a = &loaded.manifest.annotate;
                 let at = |slot: &Option<String>| {
                     slot.as_deref()
-                        .map(|rel| crate::run_manifest::resolve(&loaded.dir, rel))
+                        .map(|rel| crate::manifest::run::resolve(&loaded.dir, rel))
                 };
                 let term_q = at(&a.cluster_term_q);
                 Self {
@@ -196,7 +196,7 @@ impl EvidenceFiles {
                     // Manifest-relative; older manifests recorded the path as
                     // typed on the command line, so fall back to it as given.
                     markers_tsv: a.markers.as_deref().filter(|m| !m.is_empty()).map(|m| {
-                        let resolved = crate::run_manifest::resolve(&loaded.dir, m);
+                        let resolved = crate::manifest::run::resolve(&loaded.dir, m);
                         if std::path::Path::new(&resolved).exists() {
                             resolved
                         } else {

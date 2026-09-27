@@ -2,7 +2,7 @@
 //! into the plain paths and loaded matrices [`crate::lineage`] takes, then
 //! write the artifact paths it returns back into the manifest.
 
-use crate::run_manifest::resolve;
+use crate::manifest::run::resolve;
 use anyhow::Result;
 use log::info;
 
@@ -13,8 +13,8 @@ use crate::lineage::pseudotime::{
 use crate::lineage::run::{run_lineage, LineageInputs};
 use crate::lineage::{LatentContract, RunTables};
 
+use crate::manifest::run::{derive_out_prefix, load, manifest_file, rel_to_manifest, Loaded};
 use crate::marker_embedding::load_marker_feature_embedding;
-use crate::run_manifest::{derive_out_prefix, load, manifest_file, rel_to_manifest, Loaded};
 
 /// What `{prefix}`'s manifest says about its per-cell tables, in the form the
 /// θ resolver takes, plus the loaded manifest. A missing or unreadable
@@ -145,5 +145,5 @@ fn update_manifest(mut ctx: Loaded, outputs: &PseudotimeOutputs) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "lineage_manifest_tests.rs"]
+#[path = "lineage_tests.rs"]
 mod tests;
