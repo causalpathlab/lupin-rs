@@ -65,6 +65,16 @@ Each round records `annotate.source` (the round before it),
 first). Merged clusters take fresh ids, so an id always names the same cells'
 history. `lupin review --help` documents the decisions format.
 
+`lupin relabel --watch` keeps running and turns each batch of lines appended
+to the decisions file into the next round (`{out}.r1`, `{out}.r2`, ...), so
+decisions can come from a viewer, an agent or an editor while it runs.
+`{out}.relabel_status.json` names the latest round and the last refused
+batch; a restarted watcher resumes from it.
+
+```sh
+lupin relabel --watch -f r0 -d decisions.jsonl -o rounds/run
+```
+
 ## Related crates
 
 [`senna-rs`](https://crates.io/crates/senna-rs) (train / embed / layout; produces the runs lupin reads),

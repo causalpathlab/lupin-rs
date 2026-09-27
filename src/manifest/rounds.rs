@@ -22,9 +22,10 @@ use legume_numeric::matrix::common_io::{mkdir_parent, write_lines};
 use legume_numeric::matrix::dense_mat_io::{read_mat, Mat};
 use legume_numeric::matrix::traits::IoOps;
 use log::info;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const CLUSTERS: &str = ".clusters.parquet";
 pub const SUMMARY: &str = ".cluster_summary.json";
@@ -295,38 +296,66 @@ pub struct RelabelArgs {
     )]
     pub decisions: Box<str>,
 
-    #[arg(long, short = 'o', help = "Output prefix for the new round")]
+    #[arg(
+        long,
+        short = 'o',
+        help = "Output prefix for the new round (with --watch: rounds are {out}.r1, {out}.r2, ...)"
+    )]
     pub out: Box<str>,
+
+    #[arg(
+        long,
+        help = "Keep running: each batch of lines appended to the decisions file becomes the next round"
+    )]
+    pub watch: bool,
 }
 
-/// Apply a decisions file to a round and write the next one.
+/// Apply a decisions file to a round and write the next one, or with
+/// `--watch`, keep applying whatever is appended to it.
 pub fn run_relabel(args: &RelabelArgs) -> Result<()> {
+    if args.watch {
+        return watch(args);
+    }
     let source = run::load(&args.from)?;
-    let out = args.out.to_string();
-    mkdir_parent(&out)?;
-    let manifest_path = annotated_path(&source.file, &out);
+    let raw = fs::read_to_string(&*args.decisions)
+        .with_context(|| format!("reading {}", args.decisions))?;
+    let lines: Vec<(usize, &str)> = raw.lines().enumerate().map(|(n, l)| (n + 1, l)).collect();
+    let decisions = parse_decisions(&lines, &args.decisions)?;
+    relabel(&source, decisions, &args.out)?;
+    Ok(())
+}
+
+/// `(line number, line)` pairs to decisions; blank lines are skipped.
+fn parse_decisions(lines: &[(usize, &str)], file: &str) -> Result<Vec<Decision>> {
+    let decisions: Vec<Decision> = lines
+        .iter()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(n, l)| {
+            serde_json::from_str(l).with_context(|| format!("{file} line {n}: not a decision"))
+        })
+        .collect::<Result<_>>()?;
+    anyhow::ensure!(!decisions.is_empty(), "{file}: no decisions");
+    Ok(decisions)
+}
+
+fn now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    rounds::utc_timestamp(secs)
+}
+
+/// Apply `decisions` to the round `source` and write the next round at
+/// `out`; returns its manifest. Nothing is written if a decision is refused.
+fn relabel(source: &Loaded, mut decisions: Vec<Decision>, out: &str) -> Result<PathBuf> {
+    mkdir_parent(out)?;
+    let manifest_path = annotated_path(&source.file, out);
     let round = manifest_path
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
 
-    let mut cells = read_cells(&source)?;
-    let older = read_history(&source)?;
-    let raw = fs::read_to_string(&*args.decisions)
-        .with_context(|| format!("reading {}", args.decisions))?;
-    let mut decisions: Vec<Decision> = raw
-        .lines()
-        .enumerate()
-        .filter(|(_, l)| !l.trim().is_empty())
-        .map(|(n, l)| {
-            serde_json::from_str(l)
-                .with_context(|| format!("{} line {}: not a decision", args.decisions, n + 1))
-        })
-        .collect::<Result<_>>()?;
-    anyhow::ensure!(!decisions.is_empty(), "{}: no decisions", args.decisions);
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let mut cells = read_cells(source)?;
+    let older = read_history(source)?;
     let next_id = next_cluster_id(&cells.clusters, &older);
     let newer = apply(
         &mut decisions,
@@ -334,7 +363,7 @@ pub fn run_relabel(args: &RelabelArgs) -> Result<()> {
         &mut cells.labels,
         next_id,
         &round,
-        &rounds::utc_timestamp(now),
+        &now(),
     )?;
     info!("applied {} decision(s)", decisions.len());
 
@@ -359,8 +388,151 @@ pub fn run_relabel(args: &RelabelArgs) -> Result<()> {
     next.manifest.annotate.argmax = rel(&argmax_path);
     next.manifest.annotate.log = rel(&log_path);
     next.manifest.annotate.history = rel(&history_path);
-    write_summary(&mut next, &out)?;
-    next.manifest.save(&next.file)
+    write_summary(&mut next, out)?;
+    next.manifest.save(&next.file)?;
+    Ok(next.file)
+}
+
+///////////
+// watch //
+///////////
+
+pub const STATUS: &str = ".relabel_status.json";
+const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// What `relabel --watch` has done, rewritten after every batch at
+/// `{out}.relabel_status.json`. Paths are relative to that file.
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct WatchStatus {
+    /// The decisions file being watched.
+    pub decisions: String,
+    /// Lines of it already handled, applied or refused.
+    pub processed_lines: usize,
+    /// Rounds written, oldest first.
+    pub rounds: Vec<String>,
+    /// The round the next batch applies to.
+    pub latest: String,
+    /// Why the last batch was refused; `None` once one succeeds.
+    pub error: Option<WatchError>,
+    pub updated: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WatchError {
+    /// First and last line of the refused batch.
+    pub lines: [usize; 2],
+    pub message: String,
+}
+
+fn watch(args: &RelabelArgs) -> Result<()> {
+    let out = args.out.to_string();
+    mkdir_parent(&out)?;
+    let status_path = PathBuf::from(format!("{out}{STATUS}"));
+    let mut status = start_watch(&status_path, &args.from, &args.decisions)?;
+    info!(
+        "watching {} (from line {}); rounds go to {out}.r<N>; status in {}",
+        args.decisions,
+        status.processed_lines + 1,
+        status_path.display()
+    );
+    loop {
+        watch_step(&mut status, &status_path, &out)?;
+        std::thread::sleep(POLL);
+    }
+}
+
+/// Resume from an existing status for the same decisions file, else start
+/// at `from` with nothing processed.
+fn start_watch(status_path: &Path, from: &str, decisions: &str) -> Result<WatchStatus> {
+    let dir = parent_dir(status_path);
+    let decisions_rel = rel_to_manifest(&dir, decisions);
+    if let Ok(raw) = fs::read_to_string(status_path) {
+        let prev: WatchStatus = serde_json::from_str(&raw)
+            .with_context(|| format!("parsing {}", status_path.display()))?;
+        if prev.decisions == decisions_rel {
+            return Ok(prev);
+        }
+        log::warn!(
+            "{} watched {}; starting over for {decisions}",
+            status_path.display(),
+            prev.decisions
+        );
+    }
+    let first = run::load(from)?;
+    Ok(WatchStatus {
+        decisions: decisions_rel,
+        latest: rel_to_manifest(&dir, &first.file.to_string_lossy()),
+        updated: now(),
+        ..WatchStatus::default()
+    })
+}
+
+fn parent_dir(p: &Path) -> PathBuf {
+    p.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
+/// Apply the complete lines appended since the last step as one round.
+/// Returns whether there was anything new. A refused batch is recorded in
+/// the status and skipped, so the next append is not stuck behind it.
+pub fn watch_step(status: &mut WatchStatus, status_path: &Path, out: &str) -> Result<bool> {
+    let dir = parent_dir(status_path);
+    let decisions = resolve(&dir, &status.decisions);
+    let raw = match fs::read_to_string(&decisions) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).with_context(|| format!("reading {decisions}")),
+    };
+    // A line is complete once its newline is written.
+    let complete = raw.matches('\n').count();
+    if complete <= status.processed_lines {
+        return Ok(false);
+    }
+    let batch: Vec<(usize, &str)> = raw
+        .lines()
+        .enumerate()
+        .skip(status.processed_lines)
+        .take(complete - status.processed_lines)
+        .map(|(n, l)| (n + 1, l))
+        .collect();
+    let first_line = status.processed_lines + 1;
+    status.processed_lines = complete;
+    if batch.iter().all(|(_, l)| l.trim().is_empty()) {
+        return Ok(false);
+    }
+
+    let round_prefix = format!("{out}.r{}", status.rounds.len() + 1);
+    let result = run::load(&resolve(&dir, &status.latest)).and_then(|source| {
+        let ds = parse_decisions(&batch, &decisions)?;
+        relabel(&source, ds, &round_prefix)
+    });
+    match result {
+        Ok(file) => {
+            let rel = rel_to_manifest(&dir, &file.to_string_lossy());
+            info!(
+                "round {} written: {}",
+                status.rounds.len() + 1,
+                file.display()
+            );
+            status.rounds.push(rel.clone());
+            status.latest = rel;
+            status.error = None;
+        }
+        Err(e) => {
+            log::warn!("lines {first_line}-{complete} refused: {e:#}");
+            status.error = Some(WatchError {
+                lines: [first_line, complete],
+                message: format!("{e:#}"),
+            });
+        }
+    }
+    status.updated = now();
+    // Written whole then renamed, so a reader never sees half a file.
+    let tmp = status_path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_string_pretty(status)?)?;
+    fs::rename(&tmp, status_path)?;
+    Ok(true)
 }
 
 ////////////
