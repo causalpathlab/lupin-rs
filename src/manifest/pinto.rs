@@ -13,6 +13,8 @@
 //! - `outputs.cell_embedding` / `outputs.feature_embedding` (cage) →
 //!   `outputs.cell_embedding` / `outputs.feature_coembedding`: one shared
 //!   space scored by dot product, so the run annotates by projection
+//! - `outputs.cells` → a `spatial` layout: every cell's coordinates, which
+//!   come first in that table (written only when the run had coordinates)
 
 use super::run::{rel_to_manifest, Loaded, RunKind, RunManifest};
 use anyhow::{Context, Result};
@@ -36,6 +38,8 @@ struct PintoManifest {
 
 #[derive(Deserialize, Default)]
 struct PintoOutputs {
+    #[serde(default)]
+    cells: Option<String>,
     #[serde(default)]
     propensity: Option<String>,
     #[serde(default)]
@@ -87,6 +91,14 @@ pub fn load(file: &Path) -> Result<Loaded> {
     m.cluster.clusters = slot(&p.outputs.propensity);
     m.outputs.cell_embedding = slot(&p.outputs.cell_embedding);
     m.outputs.feature_coembedding = slot(&p.outputs.feature_embedding);
+    if let Some(coords) = slot(&p.outputs.cells) {
+        m.layout.extra.insert("current".into(), "spatial".into());
+        m.layout.extra.insert(
+            "methods".into(),
+            serde_json::json!({ "spatial": { "cell_coords": coords } }),
+        );
+        m.layout.cell_coords = Some(coords);
+    }
 
     info!(
         "Loaded pinto run {} (command: {})",
@@ -127,6 +139,7 @@ mod tests {
             "run.propensity.parquet",
             "run.cell_embedding.parquet",
             "run.feature_embedding.parquet",
+            "run.cells.parquet",
         ] {
             fs::write(dir.join(f), "").unwrap();
         }
@@ -140,6 +153,7 @@ mod tests {
                 "propensity": "elsewhere/run.propensity.parquet",
                 "cell_embedding": "elsewhere/run.cell_embedding.parquet",
                 "feature_embedding": "elsewhere/run.feature_embedding.parquet",
+                "cells": "elsewhere/run.cells.parquet",
                 "cell_bias": "elsewhere/run.cell_bias.parquet"
             }
         }"#;
@@ -169,6 +183,15 @@ mod tests {
             want("run.feature_embedding.parquet")
         );
         assert_eq!(m.prefix, "run");
+        assert_eq!(
+            at(m.layout.cell_coords.as_deref().unwrap()),
+            want("run.cells.parquet")
+        );
+        assert_eq!(m.layout.extra["current"], "spatial");
+        assert_eq!(
+            m.layout.extra["methods"]["spatial"]["cell_coords"].as_str(),
+            m.layout.cell_coords.as_deref()
+        );
 
         // Annotation's copy, in another directory, still finds every table
         // and names the pinto manifest it came from.
@@ -183,6 +206,8 @@ mod tests {
             from_out(back.cluster.clusters.as_deref().unwrap()),
             want("run.propensity.parquet")
         );
+        let spatial = back.layout.extra["methods"]["spatial"]["cell_coords"].as_str();
+        assert_eq!(from_out(spatial.unwrap()), want("run.cells.parquet"));
         assert_eq!(
             from_out(back.annotate.source.as_deref().unwrap()),
             file.canonicalize().unwrap()
