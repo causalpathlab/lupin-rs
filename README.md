@@ -68,8 +68,11 @@ history. `lupin review --help` documents the decisions format.
 `lupin relabel --watch` keeps running and turns each batch of lines appended
 to the decisions file into the next round (`{out}.r1`, `{out}.r2`, ...), so
 decisions can come from a viewer, an agent or an editor while it runs.
-`{out}.relabel_status.json` names the latest round and the last refused
-batch; a restarted watcher resumes from it.
+`{out}.relabel_status.json` names the round it started from (`base`), every
+round since, the latest, and the last refused batch; a restarted watcher
+resumes from it. A decision may name the round its ids refer to (`round`);
+one naming any round but the latest is refused, so a decision made on a
+stale view never lands on renumbered clusters.
 
 ```sh
 lupin relabel --watch -f r0 -d decisions.jsonl -o rounds/run

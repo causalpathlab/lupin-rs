@@ -321,7 +321,12 @@ pub fn run_relabel(args: &RelabelArgs) -> Result<()> {
         .with_context(|| format!("reading {}", args.decisions))?;
     let lines: Vec<(usize, &str)> = raw.lines().enumerate().map(|(n, l)| (n + 1, l)).collect();
     let decisions = parse_decisions(&lines, &args.decisions)?;
-    relabel(&source, decisions, &args.out)?;
+    relabel(
+        &source,
+        decisions,
+        &parent_dir(Path::new(&*args.decisions)),
+        &args.out,
+    )?;
     Ok(())
 }
 
@@ -347,7 +352,13 @@ fn now() -> String {
 
 /// Apply `decisions` to the round `source` and write the next round at
 /// `out`; returns its manifest. Nothing is written if a decision is refused.
-fn relabel(source: &Loaded, mut decisions: Vec<Decision>, out: &str) -> Result<PathBuf> {
+fn relabel(
+    source: &Loaded,
+    mut decisions: Vec<Decision>,
+    decisions_dir: &Path,
+    out: &str,
+) -> Result<PathBuf> {
+    check_round(source, &decisions, decisions_dir)?;
     mkdir_parent(out)?;
     let manifest_path = annotated_path(&source.file, out);
     let round = manifest_path
@@ -393,6 +404,22 @@ fn relabel(source: &Loaded, mut decisions: Vec<Decision>, out: &str) -> Result<P
     Ok(next.file)
 }
 
+/// Refuse decisions that name a round other than `source`.
+fn check_round(source: &Loaded, decisions: &[Decision], decisions_dir: &Path) -> Result<()> {
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let current = canon(&source.file);
+    for d in decisions {
+        let Some(named) = &d.round else { continue };
+        let named_path = PathBuf::from(resolve(decisions_dir, named));
+        anyhow::ensure!(
+            canon(&named_path) == current,
+            "ids refer to {named}, latest is {}; review the latest round and decide again",
+            source.file.display()
+        );
+    }
+    Ok(())
+}
+
 ///////////
 // watch //
 ///////////
@@ -408,7 +435,10 @@ pub struct WatchStatus {
     pub decisions: String,
     /// Lines of it already handled, applied or refused.
     pub processed_lines: usize,
-    /// Rounds written, oldest first.
+    /// The round the watcher started from (`-f`).
+    #[serde(default)]
+    pub base: String,
+    /// Every round in order, starting with `base`.
     pub rounds: Vec<String>,
     /// The round the next batch applies to.
     pub latest: String,
@@ -459,9 +489,12 @@ fn start_watch(status_path: &Path, from: &str, decisions: &str) -> Result<WatchS
         );
     }
     let first = run::load(from)?;
+    let base = rel_to_manifest(&dir, &first.file.to_string_lossy());
     Ok(WatchStatus {
         decisions: decisions_rel,
-        latest: rel_to_manifest(&dir, &first.file.to_string_lossy()),
+        rounds: vec![base.clone()],
+        latest: base.clone(),
+        base,
         updated: now(),
         ..WatchStatus::default()
     })
@@ -502,10 +535,16 @@ pub fn watch_step(status: &mut WatchStatus, status_path: &Path, out: &str) -> Re
         return Ok(false);
     }
 
-    let round_prefix = format!("{out}.r{}", status.rounds.len() + 1);
+    // `rounds` starts with the base, so its length numbers the next round.
+    let round_prefix = format!("{out}.r{}", status.rounds.len().max(1));
     let result = run::load(&resolve(&dir, &status.latest)).and_then(|source| {
         let ds = parse_decisions(&batch, &decisions)?;
-        relabel(&source, ds, &round_prefix)
+        relabel(
+            &source,
+            ds,
+            &parent_dir(Path::new(&decisions)),
+            &round_prefix,
+        )
     });
     match result {
         Ok(file) => {
@@ -569,7 +608,11 @@ Decisions file for `lupin relabel -d`: one JSON object per line.
 
 action:     label (one cluster), merge (\"clusters\": [..], fresh id), keep
 decided_by: user | agent_proposed_user_accepted | user_override
-Every decision needs a rationale; it is kept in the round's history.";
+round:      optional; the round whose ids the decision names, relative to the
+            decisions file. A decision on any other round is refused.
+Every decision needs a rationale; it is kept in the round's history.
+With several writers (a viewer and an agent), append each decision as one
+write of one newline-terminated line under 4 KB, so lines never interleave.";
 
 /// Print a round's digest and history, for a person or an agent deciding.
 pub fn run_review(args: &ReviewArgs) -> Result<()> {

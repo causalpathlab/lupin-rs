@@ -137,19 +137,39 @@ fn watch_turns_each_appended_batch_into_a_round() {
     // The newline completes it: round 1.
     append("\n");
     assert!(step(&mut status));
-    assert_eq!(status.rounds.len(), 1);
+    assert_eq!(status.rounds.len(), 2, "the base, then round 1");
+    assert_eq!(status.rounds[0], status.base);
+    assert!(
+        status.latest.ends_with("run.r1.senna.json"),
+        "{}",
+        status.latest
+    );
     assert!(status.error.is_none());
 
     // A refused batch is recorded and skipped; the round does not advance.
     append("{\"cluster\": 1, \"action\": \"keep\", \"decided_by\": \"user\"}\n");
     assert!(step(&mut status));
-    assert_eq!(status.rounds.len(), 1);
+    assert_eq!(status.rounds.len(), 2);
     assert_eq!(status.error.as_ref().unwrap().lines, [2, 2]);
 
     // The next batch applies to round 1 and clears the error.
     append("{\"clusters\": [1, 2], \"action\": \"merge\", \"rationale\": \"r\", \"decided_by\": \"user\"}\n");
     assert!(step(&mut status));
-    assert_eq!(status.rounds.len(), 2);
+    assert_eq!(status.rounds.len(), 3);
+    assert!(status.error.is_none());
+
+    // A decision made on round 1 after round 2 landed is refused.
+    let stale = "{\"cluster\": 0, \"action\": \"keep\", \"rationale\": \"r\", \"decided_by\": \"user\", \"round\": \"w/run.r1.senna.json\"}\n";
+    append(stale);
+    assert!(step(&mut status));
+    assert_eq!(status.rounds.len(), 3);
+    let msg = &status.error.as_ref().unwrap().message;
+    assert!(msg.contains("ids refer to w/run.r1.senna.json"), "{msg}");
+
+    // Naming the latest round is accepted.
+    append("{\"cluster\": 0, \"action\": \"keep\", \"rationale\": \"r\", \"decided_by\": \"user\", \"round\": \"w/run.r2.senna.json\"}\n");
+    assert!(step(&mut status));
+    assert_eq!(status.rounds.len(), 4);
     assert!(status.error.is_none());
 
     let latest = run::load(&resolve(root.path().join("w").as_path(), &status.latest)).unwrap();
@@ -168,6 +188,6 @@ fn watch_turns_each_appended_batch_into_a_round() {
         &decisions.to_string_lossy(),
     )
     .unwrap();
-    assert_eq!(resumed.processed_lines, 3);
+    assert_eq!(resumed.processed_lines, 5);
     assert_eq!(resumed.latest, status.latest);
 }

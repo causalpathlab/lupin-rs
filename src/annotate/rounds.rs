@@ -203,6 +203,11 @@ pub struct Decision {
     /// Filled in when the decision is applied, if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
+    /// The round whose cluster ids this decision names, relative to the
+    /// decisions file. When given, it must be the round being relabelled, so a
+    /// decision made on a stale view cannot land on renumbered ids.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<String>,
 }
 
 fn de_ids<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ClusterId>, D::Error> {
