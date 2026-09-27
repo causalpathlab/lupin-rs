@@ -15,7 +15,7 @@ use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
 use crate::annotate::ontology;
 use crate::annotate::outputs::AnnotationOutputs;
-use crate::manifest::run::{default_path, resolve, Loaded};
+use crate::manifest::run::{annotated_path, resolve, Loaded};
 
 use crate::annotate::aggregate::{
     accumulate_gene_sum, accumulate_gene_sum_pair, weighted_mean_profile,
@@ -34,7 +34,7 @@ use legume_numeric::matrix::traits::IoOps;
 use log::info;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// CLI passthrough for the internal Leiden fallback (used only when neither
 /// `--clusters` nor `manifest.cluster.clusters` is provided).
@@ -168,7 +168,7 @@ enum Pass<'a> {
 
 /// Record a pass's artifacts in the manifest, relative to its directory, plus
 /// the settings it ran with under `annotate.settings.{method}`, and save it
-/// as a new manifest `{out}.senna.json`; the one it was read from is left as is.
+/// as a new manifest (see [`annotated_path`]); the one it was read from is left as is.
 fn record(
     loaded: &Loaded,
     out_prefix: &str,
@@ -177,7 +177,7 @@ fn record(
     method: &str,
     settings: serde_json::Value,
 ) -> Result<()> {
-    let mut loaded = loaded.copy_to(PathBuf::from(default_path(out_prefix)))?;
+    let mut loaded = loaded.copy_to(annotated_path(&loaded.file, out_prefix))?;
     let dir = &loaded.dir;
     let rel = |p: &Option<String>| {
         p.as_deref()

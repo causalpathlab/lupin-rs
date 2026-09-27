@@ -4,7 +4,8 @@
 //! directory pinto ran in. Each one is found the way pinto's own viewer finds
 //! it: as written if that exists, otherwise its file name beside the manifest.
 //! The result is manifest-relative like any other run, so annotation can copy
-//! it to a new `{out}.senna.json`. The `.pinto.json` itself is never written.
+//! it to a new `{out}.lupin.json`. The `.pinto.json` itself is never written,
+//! and senna does not read the result.
 //!
 //! What maps where:
 //! - `data_files` → `data.input` (pinto records no batch files)
@@ -197,7 +198,7 @@ mod tests {
         // and names the pinto manifest it came from.
         fs::create_dir_all(root.path().join("out")).unwrap();
         let copy = loaded
-            .copy_to(root.path().join("out/o.senna.json"))
+            .copy_to(root.path().join("out/o.lupin.json"))
             .unwrap();
         copy.manifest.save(&copy.file).unwrap();
         let (back, out_dir) = RunManifest::load(&copy.file).unwrap();

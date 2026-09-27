@@ -389,11 +389,14 @@ impl RunManifest {
                 m.version
             );
         }
+        // A `pinto-*` kind is a pinto run lupin annotated, not a stranger.
         if let RunKind::Other(k) = &m.kind {
-            log::warn!(
-                "manifest {}: run kind `{k}` is unknown to lupin; treating its cells as signed scores",
-                path.display()
-            );
+            if !k.starts_with("pinto-") {
+                log::warn!(
+                    "manifest {}: run kind `{k}` is unknown to lupin; treating its cells as signed scores",
+                    path.display()
+                );
+            }
         }
         let dir = path
             .parent()
@@ -492,6 +495,7 @@ pub fn rebase_paths(value: &mut Value, from_dir: &Path, to_dir: &Path) {
 #[must_use]
 pub fn derive_out_prefix(from: &str) -> String {
     from.strip_suffix(".senna.json")
+        .or_else(|| from.strip_suffix(LUPIN_SUFFIX))
         .or_else(|| from.strip_suffix(super::pinto::SUFFIX))
         .or_else(|| from.strip_suffix(".json"))
         .unwrap_or(from)
@@ -504,9 +508,25 @@ pub fn default_path(prefix: &str) -> String {
     format!("{prefix}.senna.json")
 }
 
+/// The suffix of a manifest lupin writes for a run senna did not train (a
+/// pinto run). Same layout as a senna manifest; senna does not read it.
+pub const LUPIN_SUFFIX: &str = ".lupin.json";
+
+/// Where annotation writes its manifest for `-o prefix`: `.senna.json` for a
+/// senna run, `.lupin.json` for anything else (a pinto run, or a round of one).
+#[must_use]
+pub fn annotated_path(source: &Path, prefix: &str) -> PathBuf {
+    let name = source.to_string_lossy();
+    if name.ends_with(LUPIN_SUFFIX) || super::pinto::is_pinto(source) {
+        PathBuf::from(format!("{prefix}{LUPIN_SUFFIX}"))
+    } else {
+        PathBuf::from(default_path(prefix))
+    }
+}
+
 /// The manifest file `--from` names: the path itself when it is a file,
-/// otherwise `{prefix}.senna.json`, or `{prefix}.pinto.json` when only that
-/// exists.
+/// otherwise `{prefix}.senna.json`, else `{prefix}.lupin.json` or
+/// `{prefix}.pinto.json`, whichever exists first.
 #[must_use]
 pub fn manifest_file(from: &str) -> PathBuf {
     let direct = Path::new(from);
@@ -515,12 +535,13 @@ pub fn manifest_file(from: &str) -> PathBuf {
     }
     let prefix = derive_out_prefix(from);
     let senna = PathBuf::from(default_path(&prefix));
-    let pinto = PathBuf::from(format!("{prefix}{}", super::pinto::SUFFIX));
-    if !senna.is_file() && pinto.is_file() {
-        pinto
-    } else {
-        senna
-    }
+    [
+        PathBuf::from(format!("{prefix}{LUPIN_SUFFIX}")),
+        PathBuf::from(format!("{prefix}{}", super::pinto::SUFFIX)),
+    ]
+    .into_iter()
+    .find(|p| !senna.is_file() && p.is_file())
+    .unwrap_or(senna)
 }
 
 /// A loaded manifest, its directory (for resolving relative paths), and the
@@ -724,6 +745,14 @@ mod tests {
         fs::write(&file, r#"{"version": 2, "kind": "topic", "prefix": "run"}"#).unwrap();
         let src = load(&file.to_string_lossy()).unwrap();
         assert!(src.copy_to(dir.path().join("run.senna.json")).is_err());
+    }
+
+    #[test]
+    fn annotating_a_non_senna_run_writes_a_lupin_manifest() {
+        let to = |src: &str| annotated_path(Path::new(src), "o/out");
+        assert_eq!(to("r/run.senna.json"), PathBuf::from("o/out.senna.json"));
+        assert_eq!(to("r/run.pinto.json"), PathBuf::from("o/out.lupin.json"));
+        assert_eq!(to("r/round1.lupin.json"), PathBuf::from("o/out.lupin.json"));
     }
 
     #[test]

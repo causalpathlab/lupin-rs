@@ -19,7 +19,8 @@ count files, the final level's `cluster` column in the propensity table, and,
 for `cage`, the shared cell and feature embeddings, which it annotates by
 projection. Cell coordinates, when the run had them, become a `spatial`
 layout. The pinto manifest is never written; the result is a new
-`{out}.senna.json`. Every command that writes files
+`{out}.lupin.json`, with the same layout as a senna manifest. Senna does not
+read it; lupin commands take it with `-f`. Every command that writes files
 takes an explicit `-o/--out` prefix; lupin never writes to a location derived
 from the manifest, so a run copied to another machine works as is.
 
