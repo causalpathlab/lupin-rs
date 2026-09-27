@@ -7,7 +7,8 @@
 //!
 //! `--from` may name the manifest file itself or the run's output prefix; every
 //! command resolves it through [`load`], which also remembers the file so
-//! updates are saved back where they were read.
+//! updates are saved back where they were read. Annotation instead writes a
+//! new manifest through [`Loaded::copy_to`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -293,6 +294,9 @@ pub struct RunAnnotate {
     /// Input marker TSV (provenance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markers: Option<String>,
+    /// The manifest this one was copied from when annotate wrote it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ontology_assignment: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -432,7 +436,16 @@ pub fn rel_to_manifest(manifest_dir: &Path, written_path: &str) -> String {
     let abs = cwd.join(written_path);
     let manifest_dir = cwd.join(manifest_dir);
     let manifest_abs = manifest_dir.canonicalize().unwrap_or(manifest_dir);
-    let written_abs = abs.canonicalize().unwrap_or(abs);
+    // A stem or a file not yet written: canonicalize its directory instead.
+    let written_abs = abs.canonicalize().unwrap_or_else(|_| {
+        match (
+            abs.parent().and_then(|d| d.canonicalize().ok()),
+            abs.file_name(),
+        ) {
+            (Some(d), Some(name)) => d.join(name),
+            _ => abs.clone(),
+        }
+    });
     match written_abs.strip_prefix(&manifest_abs) {
         Ok(rel) => rel.to_string_lossy().into_owned(),
         Err(_) => written_abs.to_string_lossy().into_owned(),
@@ -448,6 +461,31 @@ pub fn resolve(manifest_dir: &Path, rel: &str) -> String {
         rel.to_string()
     } else {
         manifest_dir.join(p).to_string_lossy().into_owned()
+    }
+}
+
+/// Rewrite every relative path in `value` that names an existing file or
+/// directory from `from_dir` so it names the same one from `to_dir`. The walk
+/// covers keys lupin does not model, so another tool's paths survive a move;
+/// strings that resolve to nothing are left alone.
+pub fn rebase_paths(value: &mut Value, from_dir: &Path, to_dir: &Path) {
+    match value {
+        Value::String(s) => {
+            if Path::new(s.as_str()).is_absolute() || s.is_empty() {
+                return;
+            }
+            let old = from_dir.join(s.as_str());
+            if old.exists() {
+                *s = rel_to_manifest(to_dir, &old.to_string_lossy());
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|v| rebase_paths(v, from_dir, to_dir)),
+        Value::Object(map) => map
+            .values_mut()
+            .for_each(|v| rebase_paths(v, from_dir, to_dir)),
+        _ => {}
     }
 }
 
@@ -505,6 +543,46 @@ impl Loaded {
             )
         })?;
         Ok(resolve(&self.dir, rel))
+    }
+}
+
+impl Loaded {
+    /// This run as a new manifest at `file`, which must not be the one it was
+    /// read from. Paths are rebased onto `file`'s directory; `prefix`, a stem
+    /// rather than a file, keeps naming the original run, whose tables live
+    /// there. Nothing is written.
+    pub fn copy_to(&self, file: PathBuf) -> anyhow::Result<Loaded> {
+        let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        anyhow::ensure!(
+            !same(&self.file, &file),
+            "{} is the manifest annotate reads from; choose a different --out",
+            file.display()
+        );
+        let dir = file
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        let mut value = serde_json::to_value(&self.manifest)?;
+        let prefix = value.as_object_mut().and_then(|m| m.remove("prefix"));
+        rebase_paths(&mut value, &self.dir, &dir);
+        if let (Some(Value::String(p)), Some(m)) = (prefix, value.as_object_mut()) {
+            let p = if Path::new(&p).is_absolute() {
+                p
+            } else {
+                rel_to_manifest(&dir, &self.dir.join(&p).to_string_lossy())
+            };
+            m.insert("prefix".into(), Value::String(p));
+        }
+        let mut manifest: RunManifest = serde_json::from_value(value)?;
+        manifest.annotate.source = Some(rel_to_manifest(&dir, &self.file.to_string_lossy()));
+        Ok(Loaded {
+            manifest,
+            dir,
+            file,
+        })
     }
 }
 
@@ -567,6 +645,75 @@ mod tests {
         assert_eq!(back["train_args"]["args"]["k"], 7);
         assert_eq!(back["outputs"]["pb_tree"], "run.pb_tree.parquet");
         assert_eq!(back["annotate"]["future_slot"], 3);
+    }
+
+    #[test]
+    fn a_copy_in_a_sibling_directory_resolves_the_same_files() {
+        let root = tempfile::tempdir().unwrap();
+        let (a, b) = (root.path().join("a"), root.path().join("b"));
+        fs::create_dir_all(a.join("layouts")).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        for f in [
+            "counts.zarr",
+            "run.latent.parquet",
+            "layouts/run.umap.cells.parquet",
+        ] {
+            fs::write(a.join(f), "").unwrap();
+        }
+        let raw = r#"{
+            "version": 2,
+            "kind": "topic",
+            "prefix": "run",
+            "data": {"input": ["counts.zarr"]},
+            "outputs": {"latent": "run.latent.parquet"},
+            "layout": {
+                "current": "umap",
+                "methods": {"umap": {"cell_coords": "layouts/run.umap.cells.parquet"}}
+            }
+        }"#;
+        let file = a.join("run.senna.json");
+        fs::write(&file, raw).unwrap();
+        let src = load(&file.to_string_lossy()).unwrap();
+
+        let copy = src.copy_to(b.join("out.senna.json")).unwrap();
+        copy.manifest.save(&copy.file).unwrap();
+        let v: Value = serde_json::from_str(&fs::read_to_string(&copy.file).unwrap()).unwrap();
+
+        let same_file = |from_b: &Value, in_a: &str| {
+            let got = Path::new(&resolve(&b, from_b.as_str().unwrap())).canonicalize();
+            assert_eq!(
+                got.unwrap(),
+                a.join(in_a).canonicalize().unwrap(),
+                "{from_b}"
+            );
+        };
+        same_file(&v["data"]["input"][0], "counts.zarr");
+        same_file(&v["outputs"]["latent"], "run.latent.parquet");
+        same_file(
+            &v["layout"]["methods"]["umap"]["cell_coords"],
+            "layouts/run.umap.cells.parquet",
+        );
+        same_file(&v["annotate"]["source"], "run.senna.json");
+        assert_eq!(v["layout"]["current"], "umap");
+
+        let prefix = PathBuf::from(resolve(&b, v["prefix"].as_str().unwrap()));
+        assert_eq!(
+            prefix.parent().unwrap().canonicalize().unwrap(),
+            a.canonicalize().unwrap()
+        );
+        assert_eq!(prefix.file_name().unwrap(), "run");
+
+        // The input is untouched.
+        assert_eq!(fs::read_to_string(&file).unwrap(), raw);
+    }
+
+    #[test]
+    fn a_copy_onto_its_own_source_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("run.senna.json");
+        fs::write(&file, r#"{"version": 2, "kind": "topic", "prefix": "run"}"#).unwrap();
+        let src = load(&file.to_string_lossy()).unwrap();
+        assert!(src.copy_to(dir.path().join("run.senna.json")).is_err());
     }
 
     #[test]

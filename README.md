@@ -8,8 +8,11 @@ and gene-text logic live as internal modules — not separate crates.io packages
 
 Lupin reads the runs senna writes (`run.senna.json` and the tables it lists) but
 does not link against senna. `-f/--from` takes the manifest file or its output
-prefix, and commands that produce artifacts record them back in the manifest,
-preserving every field lupin does not use. Every command that writes files
+prefix. `lupin annotate` leaves that manifest untouched and writes a new one,
+`{out}.senna.json`: a copy of the run with its paths rebased onto the new
+location, every field lupin does not use preserved, and an `annotate` section
+added, so viewers open the annotated run directly. `lineage` and `pseudotime`
+record their outputs back in the manifest they read. Every command that writes files
 takes an explicit `-o/--out` prefix; lupin never writes to a location derived
 from the manifest, so a run copied to another machine works as is.
 
@@ -26,7 +29,7 @@ Requires Rust 1.91+. Optional: `--features cuda` / `--features metal` / `--featu
 ```sh
 lupin text-qc --uniprot-tsv human.tsv --obo go-basic.obo -o run
 lupin word-graph --uniprot-tsv human.tsv --obo go-basic.obo -o run
-lupin annotate -f run.senna.json -m markers.tsv -o out
+lupin annotate -f run.senna.json -m markers.tsv -o out   # writes out.senna.json
 lupin lineage -f out/gem -o out/lin
 lupin pseudotime -f run.senna.json -o out
 lupin plot --from run.senna.json -o out/plot

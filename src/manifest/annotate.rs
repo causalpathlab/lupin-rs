@@ -15,7 +15,7 @@ use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
 use crate::annotate::ontology;
 use crate::annotate::outputs::AnnotationOutputs;
-use crate::manifest::run::{resolve, Loaded};
+use crate::manifest::run::{default_path, resolve, Loaded};
 
 use crate::annotate::aggregate::{
     accumulate_gene_sum, accumulate_gene_sum_pair, weighted_mean_profile,
@@ -34,7 +34,7 @@ use legume_numeric::matrix::traits::IoOps;
 use log::info;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// CLI passthrough for the internal Leiden fallback (used only when neither
 /// `--clusters` nor `manifest.cluster.clusters` is provided).
@@ -62,7 +62,7 @@ impl Default for LeidenArgs {
 /// `lupin annotate --method enrichment`: re-open the raw counts the manifest
 /// points at, aggregate them per cluster, run the enrichment, and record what
 /// it wrote.
-pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &mut Loaded) -> Result<()> {
+pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &Loaded) -> Result<()> {
     let plan = by_enrichment::plan(args)?;
     let inputs = load_enrichment_inputs(args, &plan, loaded)?;
     let outputs = by_enrichment::run(args, &plan, &inputs)?;
@@ -71,12 +71,19 @@ pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &mut Loaded) -> Resul
     } else {
         Pass::Markers(&args.markers)
     };
-    record(loaded, pass, &outputs, "enrichment", settings(args)?)
+    record(
+        loaded,
+        &args.out,
+        pass,
+        &outputs,
+        "enrichment",
+        settings(args)?,
+    )
 }
 
 /// `lupin annotate --method projection`: score the run's co-embedded gene
 /// space and cell embedding against the marker panel, and record what it wrote.
-pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &mut Loaded) -> Result<()> {
+pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &Loaded) -> Result<()> {
     let run = loaded.file.display().to_string();
     // Genes on the cell manifold; for a `gem` run only the spliced rows,
     // re-keyed by gene — see [`crate::marker_embedding`].
@@ -99,6 +106,7 @@ pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &mut Loaded
     )?;
     record(
         loaded,
+        &args.out,
         Pass::Markers(&args.markers),
         &outputs,
         "projection",
@@ -108,7 +116,7 @@ pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &mut Loaded
 
 /// `lupin annotate` without markers: walk the CL tree over the cluster ×
 /// cell-type matrix an earlier enrichment run recorded.
-pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &mut Loaded) -> Result<()> {
+pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &Loaded) -> Result<()> {
     let q_rel = loaded
         .manifest
         .annotate
@@ -125,6 +133,7 @@ pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &mut Loaded) -> Re
     let outputs = ontology::run(args, &q_abs)?;
     record(
         loaded,
+        &args.out,
         Pass::Ontology,
         &outputs,
         "ontology",
@@ -159,14 +168,16 @@ enum Pass<'a> {
 
 /// Record a pass's artifacts in the manifest, relative to its directory, plus
 /// the settings it ran with under `annotate.settings.{method}`, and save it
-/// back to the file it was read from.
+/// as a new manifest `{out}.senna.json`; the one it was read from is left as is.
 fn record(
-    loaded: &mut Loaded,
+    loaded: &Loaded,
+    out_prefix: &str,
     pass: Pass<'_>,
     out: &AnnotationOutputs,
     method: &str,
     settings: serde_json::Value,
 ) -> Result<()> {
+    let mut loaded = loaded.copy_to(PathBuf::from(default_path(out_prefix)))?;
     let dir = &loaded.dir;
     let rel = |p: &Option<String>| {
         p.as_deref()

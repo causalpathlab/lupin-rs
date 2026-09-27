@@ -165,7 +165,7 @@ pub struct AnnotateCliArgs {
 
 pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     // One manifest load per invocation; every route below reuses it.
-    let mut loaded = args
+    let loaded = args
         .from
         .as_deref()
         .map(crate::manifest::run::load)
@@ -173,7 +173,7 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
 
     if is_ontology_followup(args) {
         let loaded = loaded
-            .as_mut()
+            .as_ref()
             .context("--from required for ontology follow-up")?;
         return annotate_ontology(&build_ontology_args(args)?, loaded);
     }
@@ -186,14 +186,14 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
                 "enrichment needs --markers, --gaf, or --gmt"
             );
             let loaded = loaded
-                .as_mut()
+                .as_ref()
                 .context("--from is required for enrichment annotation")?;
             annotate_by_enrichment(&build_enrichment_args(args), loaded)
         }
         Route::Projection => {
             anyhow::ensure!(!args.markers.is_empty(), "projection needs --markers");
             let loaded = loaded
-                .as_mut()
+                .as_ref()
                 .context("--from is required for projection annotation")?;
             annotate_by_projection(&build_projection_args(args), loaded)
         }
