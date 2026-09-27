@@ -17,7 +17,9 @@ use crate::annotate::rounds::{
     self, apply, apply_markers, digest, next_cluster_id, parse_cluster_id, prepend_history,
     ClPlacement, ClusterId, Decision, Digest, Evidence, History, MarkerHistory, Table, Term,
 };
-use crate::manifest::run::{self, annotated_path, rel_to_manifest, resolve, Loaded};
+use crate::manifest::run::{
+    self, annotated_path, parent_dir, rel_to_manifest, resolve, same_file, Loaded,
+};
 use anyhow::{Context, Result};
 use clap::Args;
 use enrichment::UNASSIGNED_LABEL;
@@ -29,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub const CLUSTERS: &str = ".clusters.parquet";
 pub const SUMMARY: &str = ".cluster_summary.json";
@@ -307,7 +310,7 @@ fn read_history(loaded: &Loaded) -> Result<History> {
 // relabel //
 /////////////
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 pub struct RelabelArgs {
     #[arg(
         long,
@@ -319,48 +322,83 @@ pub struct RelabelArgs {
     #[arg(
         long,
         short = 'd',
-        help = "Decisions, one JSON object per line (see `lupin review --help`)"
+        help = "Decisions, one JSON object per line, or `-` for stdin (see `lupin review --help`)"
     )]
     pub decisions: Box<str>,
 
-    #[arg(
-        long,
-        short = 'o',
-        help = "Output prefix for the new round (with --watch: rounds are {out}.r1, {out}.r2, ...)"
-    )]
-    pub out: Box<str>,
+    #[arg(long, short = 'o', help = "Output prefix for the new round")]
+    pub out: Option<Box<str>>,
 
     #[arg(
         long,
-        help = "Keep running: each batch of lines appended to the decisions file becomes the next round"
+        conflicts_with = "out",
+        help = "Write the next round of -f's chain ({chain}.r<N+1>) and print its path; \
+                refused unless -f is the chain's latest round"
+    )]
+    pub next: bool,
+
+    #[arg(
+        long,
+        conflicts_with_all = ["next", "out"],
+        help = "Keep running: each batch of lines appended to the decisions file becomes the next \
+                round of -f's chain; every decision must name its `round`"
     )]
     pub watch: bool,
 }
 
-/// Apply a decisions file to a round and write the next one, or with
-/// `--watch`, keep applying whatever is appended to it.
+/// Apply decisions to a round and write the next one; with `--watch`, keep
+/// applying whatever is appended to the decisions file.
+///
+/// `--next` and `--watch` grow `-f`'s chain through [`Chain::write_next`]:
+/// one lock, one rule that decisions are made on the latest round. `-o`
+/// writes a round wherever it is told, and like every path never
+/// overwrites one.
 pub fn run_relabel(args: &RelabelArgs) -> Result<()> {
     if args.watch {
+        anyhow::ensure!(
+            &*args.decisions != "-",
+            "--watch needs a decisions file, not stdin"
+        );
         return watch(args);
     }
+    let (raw, decisions_dir) = if &*args.decisions == "-" {
+        (
+            std::io::read_to_string(std::io::stdin())?,
+            PathBuf::from("."),
+        )
+    } else {
+        let raw = fs::read_to_string(&*args.decisions)
+            .with_context(|| format!("reading {}", args.decisions))?;
+        (raw, parent_dir(Path::new(&*args.decisions)))
+    };
+    let decisions = parse_decisions(numbered(&raw), &args.decisions)?;
     let source = run::load(&args.from)?;
-    let raw = fs::read_to_string(&*args.decisions)
-        .with_context(|| format!("reading {}", args.decisions))?;
-    let lines: Vec<(usize, &str)> = raw.lines().enumerate().map(|(n, l)| (n + 1, l)).collect();
-    let decisions = parse_decisions(&lines, &args.decisions)?;
-    relabel(
-        &source,
-        decisions,
-        &parent_dir(Path::new(&*args.decisions)),
-        &args.out,
-    )?;
+    let written = match &args.out {
+        Some(out) => relabel(&source, decisions, &decisions_dir, out)?,
+        None if args.next => {
+            let chain = Chain::of(&source.file);
+            let lock = chain.lock()?;
+            chain.write_next(&lock, &source.file, decisions, &decisions_dir)?
+        }
+        None => anyhow::bail!("give -o <prefix>, or --next to continue -f's chain"),
+    };
+    // The caller (a viewer, say) opens what was written.
+    println!("{}", written.display());
     Ok(())
 }
 
-/// `(line number, line)` pairs to decisions; blank lines are skipped.
-fn parse_decisions(lines: &[(usize, &str)], file: &str) -> Result<Vec<Decision>> {
+/// A text's lines, numbered from 1.
+fn numbered(raw: &str) -> impl Iterator<Item = (usize, &str)> {
+    raw.lines().enumerate().map(|(n, l)| (n + 1, l))
+}
+
+/// Numbered lines to decisions; blank lines are skipped.
+fn parse_decisions<'a>(
+    lines: impl IntoIterator<Item = (usize, &'a str)>,
+    file: &str,
+) -> Result<Vec<Decision>> {
     let decisions: Vec<Decision> = lines
-        .iter()
+        .into_iter()
         .filter(|(_, l)| !l.trim().is_empty())
         .map(|(n, l)| {
             serde_json::from_str(l).with_context(|| format!("{file} line {n}: not a decision"))
@@ -377,17 +415,167 @@ fn now() -> String {
     rounds::utc_timestamp(secs)
 }
 
+///////////
+// chain //
+///////////
+
+/// How long a one-shot writer waits for another to finish its round.
+const LOCK_WAIT: Duration = Duration::from_secs(10);
+
+/// Rounds `{prefix}.r1`, `{prefix}.r2`, ... grown from `base`. The latest
+/// round is the highest one on disk, so every writer agrees on it.
+pub struct Chain {
+    prefix: String,
+    base: PathBuf,
+    /// The base's own round number when it is a round of this chain, else 0.
+    base_k: usize,
+}
+
+impl Chain {
+    /// The chain `round` belongs to: `X.rK.senna.json` is round K of `X`;
+    /// any other manifest `X.*.json` starts chain `X`.
+    #[must_use]
+    pub fn of(round: &Path) -> Self {
+        let stem = run::derive_out_prefix(&round.to_string_lossy());
+        let (prefix, base_k) = split_round(&stem).unwrap_or((stem.as_str(), 0));
+        Self {
+            prefix: prefix.to_string(),
+            base: round.to_path_buf(),
+            base_k,
+        }
+    }
+
+    fn round_prefix(&self, k: usize) -> String {
+        format!("{}.r{k}", self.prefix)
+    }
+
+    /// Every round manifest on disk after the base, in order. Found by
+    /// listing the directory, so a missing round does not hide later ones.
+    fn rounds(&self) -> Vec<(usize, PathBuf)> {
+        // `annotated_path(base, "")` is just the manifest suffix.
+        let suffix = annotated_path(&self.base, "")
+            .to_string_lossy()
+            .into_owned();
+        let prefix = Path::new(&self.prefix);
+        let name = prefix.file_name().map(|n| n.to_string_lossy().into_owned());
+        let Ok(entries) = fs::read_dir(parent_dir(prefix)) else {
+            return Vec::new();
+        };
+        let mut found: Vec<(usize, PathBuf)> = entries
+            .flatten()
+            .filter_map(|e| {
+                let file = e.file_name().to_string_lossy().into_owned();
+                let (p, k) = split_round(file.strip_suffix(suffix.as_str())?)?;
+                (Some(p) == name.as_deref() && k > self.base_k).then(|| (k, e.path()))
+            })
+            .collect();
+        found.sort_unstable_by_key(|(k, _)| *k);
+        found
+    }
+
+    /// The highest round on disk and its manifest; the base before any.
+    #[must_use]
+    pub fn latest(&self) -> (usize, PathBuf) {
+        self.rounds()
+            .pop()
+            .unwrap_or_else(|| (self.base_k, self.base.clone()))
+    }
+
+    /// Write the next round from `made_on`, the round the decisions were made
+    /// on, which must still be the latest: if another writer has moved on,
+    /// the decisions' cluster ids may no longer mean what the decider saw.
+    /// Holding `_lock` is what makes "latest" stay true while writing.
+    fn write_next(
+        &self,
+        _lock: &ChainLock,
+        made_on: &Path,
+        decisions: Vec<Decision>,
+        decisions_dir: &Path,
+    ) -> Result<PathBuf> {
+        let (k, latest) = self.latest();
+        anyhow::ensure!(
+            same_file(made_on, &latest),
+            "{} is not the latest round (that is {}); reload and decide again",
+            made_on.display(),
+            latest.display()
+        );
+        let source = run::load(&latest.to_string_lossy())?;
+        relabel(&source, decisions, decisions_dir, &self.round_prefix(k + 1))
+    }
+
+    /// Hold the chain's lock, waiting up to [`LOCK_WAIT`] for another writer.
+    pub fn lock(&self) -> Result<ChainLock> {
+        self.lock_within(LOCK_WAIT)
+    }
+
+    /// Hold the chain's lock only if it is free now.
+    pub fn try_lock(&self) -> Result<ChainLock> {
+        self.lock_within(Duration::ZERO)
+    }
+
+    /// `{prefix}.relabel.lock`, as an OS file lock: a writer that dies
+    /// releases it, and the file itself stays.
+    fn lock_within(&self, wait: Duration) -> Result<ChainLock> {
+        let path = format!("{}.relabel.lock", self.prefix);
+        mkdir_parent(&path)?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("opening {path}"))?;
+        let start = std::time::Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(ChainLock { _file: file }),
+                Err(fs::TryLockError::WouldBlock) => {
+                    anyhow::ensure!(
+                        start.elapsed() < wait,
+                        "another relabel is writing this chain ({path} held)"
+                    );
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(fs::TryLockError::Error(e)) => {
+                    return Err(e).with_context(|| format!("locking {path}"))
+                }
+            }
+        }
+    }
+}
+
+/// `X.rK` as `(X, K)`.
+fn split_round(stem: &str) -> Option<(&str, usize)> {
+    let (prefix, k) = stem.rsplit_once(".r")?;
+    let k = k
+        .parse()
+        .ok()
+        .filter(|_| k.bytes().all(|b| b.is_ascii_digit()))?;
+    Some((prefix, k))
+}
+
+/// The chain's lock, released when dropped (the OS releases it too if the
+/// process dies first).
+pub struct ChainLock {
+    _file: fs::File,
+}
+
 /// Apply `decisions` to the round `source` and write the next round at
-/// `out`; returns its manifest. Nothing is written if a decision is refused.
+/// `out`; returns its manifest. Nothing is written if a decision is refused,
+/// and an existing round is never overwritten.
 fn relabel(
     source: &Loaded,
     mut decisions: Vec<Decision>,
     decisions_dir: &Path,
     out: &str,
 ) -> Result<PathBuf> {
+    let manifest_path = annotated_path(&source.file, out);
+    anyhow::ensure!(
+        !manifest_path.exists(),
+        "{} exists; rounds are never overwritten",
+        manifest_path.display()
+    );
     check_round(source, &decisions, decisions_dir)?;
     mkdir_parent(out)?;
-    let manifest_path = annotated_path(&source.file, out);
     let round = manifest_path
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -456,16 +644,18 @@ fn relabel(
     Ok(next.file)
 }
 
-/// Refuse decisions that name a round other than `source`.
+/// Refuse decisions that name a round other than `source`, the one they are
+/// being applied to.
 fn check_round(source: &Loaded, decisions: &[Decision], decisions_dir: &Path) -> Result<()> {
-    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let current = canon(&source.file);
+    let current = source
+        .file
+        .canonicalize()
+        .unwrap_or_else(|_| source.file.clone());
     for d in decisions {
         let Some(named) = &d.round else { continue };
-        let named_path = PathBuf::from(resolve(decisions_dir, named));
         anyhow::ensure!(
-            canon(&named_path) == current,
-            "ids refer to {named}, latest is {}; review the latest round and decide again",
+            same_file(Path::new(&resolve(decisions_dir, named)), &current),
+            "ids refer to {named}, but the round being relabelled is {}; reload and decide again",
             source.file.display()
         );
     }
@@ -477,10 +667,11 @@ fn check_round(source: &Loaded, decisions: &[Decision], decisions_dir: &Path) ->
 ///////////
 
 pub const STATUS: &str = ".relabel_status.json";
-const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+const POLL: Duration = Duration::from_millis(500);
 
 /// What `relabel --watch` has done, rewritten after every batch at
-/// `{out}.relabel_status.json`. Paths are relative to that file.
+/// `{chain}.relabel_status.json`. Rounds are named relative to that file,
+/// which sits beside them.
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct WatchStatus {
     /// The decisions file being watched.
@@ -490,9 +681,9 @@ pub struct WatchStatus {
     /// The round the watcher started from (`-f`).
     #[serde(default)]
     pub base: String,
-    /// Every round in order, starting with `base`.
+    /// Every round in order, starting with `base`; filled in when written.
     pub rounds: Vec<String>,
-    /// The round the next batch applies to.
+    /// The chain's latest round; filled in when written.
     pub latest: String,
     /// Why the last batch was refused; `None` once one succeeds.
     pub error: Option<WatchError>,
@@ -507,35 +698,35 @@ pub struct WatchError {
 }
 
 fn watch(args: &RelabelArgs) -> Result<()> {
-    let out = args.out.to_string();
-    let (mut status, status_path) = begin_watch(args)?;
+    let (mut status, status_path, chain) = begin_watch(args)?;
     info!(
-        "watching {} (from line {}); rounds go to {out}.r<N>; status in {}",
+        "watching {} (from line {}); rounds go to {}.r<N>; status in {}",
         args.decisions,
         status.processed_lines + 1,
+        chain.prefix,
         status_path.display()
     );
     loop {
-        watch_step(&mut status, &status_path, &out)?;
+        watch_step(&mut status, &status_path, &chain)?;
         std::thread::sleep(POLL);
     }
 }
 
 /// Start or resume a watch and write its status before any decision, so a
-/// viewer can find the watcher at once.
-fn begin_watch(args: &RelabelArgs) -> Result<(WatchStatus, PathBuf)> {
-    mkdir_parent(&args.out)?;
-    let status_path = PathBuf::from(format!("{}{STATUS}", args.out));
-    let mut status = start_watch(&status_path, &args.from, &args.decisions)?;
-    write_status(&mut status, &status_path)?;
-    Ok((status, status_path))
+/// viewer can find the watcher at once. The chain is `-f`'s own.
+fn begin_watch(args: &RelabelArgs) -> Result<(WatchStatus, PathBuf, Chain)> {
+    let chain = Chain::of(&run::load(&args.from)?.file);
+    mkdir_parent(&chain.prefix)?;
+    let status_path = PathBuf::from(format!("{}{STATUS}", chain.prefix));
+    let mut status = start_watch(&status_path, &chain.base, &args.decisions)?;
+    write_status(&mut status, &status_path, &chain)?;
+    Ok((status, status_path, chain))
 }
 
 /// Resume from an existing status for the same decisions file, else start
-/// at `from` with nothing processed.
-fn start_watch(status_path: &Path, from: &str, decisions: &str) -> Result<WatchStatus> {
-    let dir = parent_dir(status_path);
-    let decisions_rel = rel_to_manifest(&dir, decisions);
+/// at `base` with nothing processed.
+fn start_watch(status_path: &Path, base: &Path, decisions: &str) -> Result<WatchStatus> {
+    let decisions_rel = rel_to_manifest(&parent_dir(status_path), decisions);
     if let Ok(raw) = fs::read_to_string(status_path) {
         let prev: WatchStatus = serde_json::from_str(&raw)
             .with_context(|| format!("parsing {}", status_path.display()))?;
@@ -548,30 +739,27 @@ fn start_watch(status_path: &Path, from: &str, decisions: &str) -> Result<WatchS
             prev.decisions
         );
     }
-    let first = run::load(from)?;
-    let base = rel_to_manifest(&dir, &first.file.to_string_lossy());
     Ok(WatchStatus {
         decisions: decisions_rel,
-        rounds: vec![base.clone()],
-        latest: base.clone(),
-        base,
-        updated: now(),
+        base: file_name(base),
         ..WatchStatus::default()
     })
 }
 
-fn parent_dir(p: &Path) -> PathBuf {
-    p.parent()
-        .filter(|d| !d.as_os_str().is_empty())
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+fn file_name(p: &Path) -> String {
+    p.file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
 }
 
 /// Apply the complete lines appended since the last step as one round.
 /// Returns whether there was anything new. A refused batch is recorded in
 /// the status and skipped, so the next append is not stuck behind it.
-pub fn watch_step(status: &mut WatchStatus, status_path: &Path, out: &str) -> Result<bool> {
-    let dir = parent_dir(status_path);
-    let decisions = resolve(&dir, &status.decisions);
+pub fn watch_step(status: &mut WatchStatus, status_path: &Path, chain: &Chain) -> Result<bool> {
+    // Follow rounds other writers added since the last step.
+    if file_name(&chain.latest().1) != status.latest {
+        write_status(status, status_path, chain)?;
+    }
+    let decisions = resolve(&parent_dir(status_path), &status.decisions);
     let raw = match fs::read_to_string(&decisions) {
         Ok(r) => r,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -582,40 +770,29 @@ pub fn watch_step(status: &mut WatchStatus, status_path: &Path, out: &str) -> Re
     if complete <= status.processed_lines {
         return Ok(false);
     }
-    let batch: Vec<(usize, &str)> = raw
-        .lines()
-        .enumerate()
+    let batch: Vec<(usize, &str)> = numbered(&raw)
         .skip(status.processed_lines)
         .take(complete - status.processed_lines)
-        .map(|(n, l)| (n + 1, l))
         .collect();
     let first_line = status.processed_lines + 1;
-    status.processed_lines = complete;
     if batch.iter().all(|(_, l)| l.trim().is_empty()) {
+        status.processed_lines = complete;
         return Ok(false);
     }
+    // Contention is not a verdict on the decisions: leave them for the next
+    // poll rather than blocking it.
+    let lock = match chain.try_lock() {
+        Ok(lock) => lock,
+        Err(e) => {
+            log::warn!("lines {first_line}-{complete} wait: {e:#}");
+            return Ok(false);
+        }
+    };
+    status.processed_lines = complete;
 
-    // `rounds` starts with the base, so its length numbers the next round.
-    let round_prefix = format!("{out}.r{}", status.rounds.len().max(1));
-    let result = run::load(&resolve(&dir, &status.latest)).and_then(|source| {
-        let ds = parse_decisions(&batch, &decisions)?;
-        relabel(
-            &source,
-            ds,
-            &parent_dir(Path::new(&decisions)),
-            &round_prefix,
-        )
-    });
-    match result {
+    match apply_batch(chain, &lock, batch, &decisions) {
         Ok(file) => {
-            let rel = rel_to_manifest(&dir, &file.to_string_lossy());
-            info!(
-                "round {} written: {}",
-                status.rounds.len() + 1,
-                file.display()
-            );
-            status.rounds.push(rel.clone());
-            status.latest = rel;
+            info!("round written: {}", file.display());
             status.error = None;
         }
         Err(e) => {
@@ -626,13 +803,36 @@ pub fn watch_step(status: &mut WatchStatus, status_path: &Path, out: &str) -> Re
             });
         }
     }
-    write_status(status, status_path)?;
+    write_status(status, status_path, chain)?;
     Ok(true)
 }
 
-/// Stamp and write the status whole, then rename it into place, so a reader
-/// never sees half a file.
-fn write_status(status: &mut WatchStatus, status_path: &Path) -> Result<()> {
+/// One watched batch as the next round. With no `-f` per batch, the round
+/// the decisions were made on comes from their `round`, which is required.
+fn apply_batch(
+    chain: &Chain,
+    lock: &ChainLock,
+    batch: Vec<(usize, &str)>,
+    decisions: &str,
+) -> Result<PathBuf> {
+    let ds = parse_decisions(batch, decisions)?;
+    let dir = parent_dir(Path::new(decisions));
+    let made_on = ds
+        .iter()
+        .map(|d| d.round.as_deref())
+        .collect::<Option<Vec<_>>>()
+        .and_then(|r| r.first().map(|r| resolve(&dir, r)))
+        .context("every watched decision must name the round it was made on (`round`)")?;
+    chain.write_next(lock, Path::new(&made_on), ds, &dir)
+}
+
+/// Stamp the status with the chain as it is on disk and write it whole,
+/// then rename it into place, so a reader never sees half a file.
+fn write_status(status: &mut WatchStatus, status_path: &Path, chain: &Chain) -> Result<()> {
+    status.rounds = std::iter::once(status.base.clone())
+        .chain(chain.rounds().iter().map(|(_, r)| file_name(r)))
+        .collect();
+    status.latest = status.rounds.last().cloned().unwrap_or_default();
     status.updated = now();
     let tmp = status_path.with_extension("json.tmp");
     fs::write(&tmp, serde_json::to_string_pretty(status)?)?;
@@ -748,8 +948,11 @@ fn render(id: ClusterId, d: &Digest, history: &[rounds::HistoryEntry]) -> String
         let label = h.label.as_deref().unwrap_or("-");
         let _ = writeln!(
             s,
-            "  hist  {} {:?} -> {label} by {:?}: {}",
-            h.round, h.action, h.decided_by, h.rationale
+            "  hist  {} {} -> {label} by {}: {}",
+            h.round,
+            h.action.as_str(),
+            h.decided_by.as_str(),
+            h.rationale
         );
     }
     s

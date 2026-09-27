@@ -413,11 +413,7 @@ impl RunManifest {
                 );
             }
         }
-        let dir = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-        Ok((m, dir))
+        Ok((m, parent_dir(path)))
     }
 
     /// v1 embedding runs stored the co-embed as `feature_embedding` and ρ as
@@ -467,6 +463,22 @@ pub fn rel_to_manifest(manifest_dir: &Path, written_path: &str) -> String {
         Ok(rel) => rel.to_string_lossy().into_owned(),
         Err(_) => written_abs.to_string_lossy().into_owned(),
     }
+}
+
+/// The directory a file is in; `.` for a bare file name.
+#[must_use]
+pub fn parent_dir(p: &Path) -> PathBuf {
+    p.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
+/// Whether two paths name the same file. Paths that cannot be resolved (a
+/// file not written yet) are compared as written.
+#[must_use]
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    canon(a) == canon(b)
 }
 
 /// Resolve a manifest-relative path against the manifest's directory.
@@ -595,19 +607,12 @@ impl Loaded {
     /// rather than a file, keeps naming the original run, whose tables live
     /// there. Nothing is written.
     pub fn copy_to(&self, file: PathBuf) -> anyhow::Result<Loaded> {
-        let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
-            (Ok(a), Ok(b)) => a == b,
-            _ => false,
-        };
         anyhow::ensure!(
-            !same(&self.file, &file),
+            !same_file(&self.file, &file),
             "{} is the manifest annotate reads from; choose a different --out",
             file.display()
         );
-        let dir = file
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        let dir = parent_dir(&file);
         let mut value = serde_json::to_value(&self.manifest)?;
         let prefix = value.as_object_mut().and_then(|m| m.remove("prefix"));
         rebase_paths(&mut value, &self.dir, &dir);

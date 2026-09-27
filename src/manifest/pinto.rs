@@ -61,10 +61,7 @@ pub fn load(file: &Path) -> Result<Loaded> {
     let raw = std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
     let p: PintoManifest =
         serde_json::from_str(&raw).with_context(|| format!("parse {}", file.display()))?;
-    let dir = file
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let dir = super::run::parent_dir(file);
 
     let find = |written: &str| -> Option<String> {
         let found = locate(written, &dir);

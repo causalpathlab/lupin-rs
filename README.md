@@ -65,18 +65,27 @@ Each round records `annotate.source` (the round before it),
 first). Merged clusters take fresh ids, so an id always names the same cells'
 history. `lupin review --help` documents the decisions format.
 
-`lupin relabel --watch` keeps running and turns each batch of lines appended
-to the decisions file into the next round (`{out}.r1`, `{out}.r2`, ...), so
-decisions can come from a viewer, an agent or an editor while it runs.
-`{out}.relabel_status.json` names the round it started from (`base`), every
-round since, the latest, and the last refused batch; a restarted watcher
-resumes from it. A decision may name the round its ids refer to (`round`);
-one naming any round but the latest is refused, so a decision made on a
-stale view never lands on renumbered clusters.
+Rounds after the first form a chain: `r0.r1`, `r0.r2`, ... beside `r0`, and
+the latest is the highest one on disk. Two ways grow it, and they can run at
+once; every writer takes the chain's lock, and a decision made on anything but
+the latest round is refused ("reload and decide again"):
+
+- `lupin relabel -f <round> -d - --next` reads decisions on stdin, writes the
+  next round and prints its path. A viewer runs it once per decision.
+- `lupin relabel --watch -f <round> -d decisions.jsonl` keeps running and turns
+  each batch of lines appended to the file into the next round, so an agent or
+  an editor can decide while it runs. Each watched decision names the round it
+  was made on (`round`). `{chain}.relabel_status.json` lists the rounds, the
+  latest (including rounds written by direct calls) and the last refused batch;
+  a restarted watcher resumes from it.
 
 ```sh
-lupin relabel --watch -f r0 -d decisions.jsonl -o rounds/run
+echo '{"cluster": 3, "action": "label", "label": "CT1", "rationale": "...", "decided_by": "user"}' \
+  | lupin relabel -f r0 -d - --next        # prints r0.r1.senna.json
+lupin relabel --watch -f r0 -d decisions.jsonl
 ```
+
+A round is never overwritten, whichever way it is written.
 
 Decisions can also revise the marker panel: `markers_add` / `markers_drop`
 name a cell type (`label`) and `features`. The round then writes its own

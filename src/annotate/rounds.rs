@@ -179,6 +179,19 @@ pub enum Action {
 }
 
 impl Action {
+    /// The name decisions files use.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Action::Label => "label",
+            Action::Merge => "merge",
+            Action::Keep => "keep",
+            Action::Split => "split",
+            Action::MarkersAdd => "markers_add",
+            Action::MarkersDrop => "markers_drop",
+        }
+    }
+
     /// Edits the marker panel rather than cluster labels.
     #[must_use]
     pub fn edits_markers(self) -> bool {
@@ -192,6 +205,18 @@ pub enum DecidedBy {
     User,
     AgentProposedUserAccepted,
     UserOverride,
+}
+
+impl DecidedBy {
+    /// The name decisions files use.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DecidedBy::User => "user",
+            DecidedBy::AgentProposedUserAccepted => "agent_proposed_user_accepted",
+            DecidedBy::UserOverride => "user_override",
+        }
+    }
 }
 
 /// One line of a decisions file.
