@@ -343,6 +343,18 @@ fn run_projection_from_files(
     Ok(())
 }
 
+/// The enrichment settings `lupin annotate` uses by default, writing under
+/// `out`: parsed from the command's own defaults, so the two cannot drift.
+pub(crate) fn default_enrichment_args(out: &str) -> AnnotateArgs {
+    #[derive(clap::Parser)]
+    struct Defaults {
+        #[command(flatten)]
+        annotate: AnnotateCliArgs,
+    }
+    let d = <Defaults as clap::Parser>::parse_from(["lupin", "-o", out]);
+    build_enrichment_args(&d.annotate)
+}
+
 pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
     AnnotateArgs {
         clusters: args.clusters.clone(),

@@ -784,3 +784,14 @@ fn a_coarse_label_agrees_with_a_top_call_inside_its_group() {
     assert_eq!(summary["0"]["evidence"]["top"], "CT1");
     assert_eq!(summary["0"]["evidence"]["agrees"], true);
 }
+
+#[test]
+fn a_pasted_chat_answer_reads_as_decisions() {
+    let text = "Here are my suggestions:\n```json\n{\"cluster\": 0, \"action\": \"keep\", \"rationale\": \"r\", \"decided_by\": \"agent_proposed_user_accepted\"}\n```\nHope this helps.\n";
+    let ds = parse_decisions(numbered(text), "paste").unwrap();
+    assert_eq!(ds.len(), 1);
+    assert!(
+        parse_decisions(numbered("{not json}\n"), "paste").is_err(),
+        "a broken decision is still refused"
+    );
+}

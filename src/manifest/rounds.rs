@@ -440,14 +440,16 @@ fn numbered(raw: &str) -> impl Iterator<Item = (usize, &str)> {
     raw.lines().enumerate().map(|(n, l)| (n + 1, l))
 }
 
-/// Numbered lines to decisions; blank lines are skipped.
+/// Numbered lines to decisions. Only lines starting with `{` are decisions,
+/// so an answer pasted from a chat, with its prose and code fences, reads as
+/// is; each of those lines must parse.
 fn parse_decisions<'a>(
     lines: impl IntoIterator<Item = (usize, &'a str)>,
     file: &str,
 ) -> Result<Vec<Decision>> {
     let decisions: Vec<Decision> = lines
         .into_iter()
-        .filter(|(_, l)| !l.trim().is_empty())
+        .filter(|(_, l)| l.trim_start().starts_with('{'))
         .map(|(n, l)| {
             serde_json::from_str(l).with_context(|| format!("{file} line {n}: not a decision"))
         })

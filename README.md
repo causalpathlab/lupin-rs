@@ -68,6 +68,23 @@ overrides). Without it, types that share marker genes are grouped instead.
 `{out}.celltype_tree.json` records the groups, their source and the
 ontology release.
 
+## Without a marker panel: ask an AI
+
+```sh
+lupin ask -f run.senna.json -o a0 --context "tissue, species"   # prints a prompt
+# paste the prompt into any AI chat, then paste its answer back:
+lupin relabel -f a0.senna.json -d - --next < answer.txt
+```
+
+`lupin ask` writes a first round with unlabelled clusters and a prompt listing
+each cluster's most specific genes (log fold change of counts per 10k over the
+other clusters, among the genes it expresses strongly). The prompt asks for
+decision lines only: labels with a rationale and the genes relied on, and
+marker sets for each label. `relabel` reads the answer as pasted (prose and
+code fences are skipped), records who decided (`agent_proposed_user_accepted`)
+and rescores the round against the suggested markers. lupin sends nothing
+anywhere.
+
 ## Annotation rounds
 
 An annotated manifest is a round. `lupin review` prints each cluster's evidence

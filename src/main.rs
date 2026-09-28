@@ -137,6 +137,16 @@ enum Commands {
     )]
     Relabel(manifest::rounds::RelabelArgs),
     #[command(
+        about = "Without a marker panel: write an unlabelled first round and a prompt for any AI chat",
+        long_about = "Writes a first round whose clusters carry no labels yet,\n\
+                      and prints a prompt listing each cluster's most specific genes.\n\
+                      Paste it into an AI chat; the prompt asks for decision lines only.\n\
+                      Paste the answer into `lupin relabel -f <round> -d - --next`:\n\
+                      labels, rationales and suggested markers become the next round,\n\
+                      rescored like any enrichment run. Nothing is sent anywhere by lupin."
+    )]
+    Ask(manifest::ask::AskArgs),
+    #[command(
         name = "plot",
         about = "Publication-quality scatter over a senna layout embedding",
         long_about = "Rasterized scatter with vector labels over a transparent background.\n\
@@ -173,6 +183,7 @@ fn main() -> Result<()> {
         Commands::Describe(c) => run_describe(&c),
         Commands::Review(c) => manifest::rounds::run_review(&c),
         Commands::Relabel(c) => manifest::rounds::run_relabel(&c),
+        Commands::Ask(c) => manifest::ask::run_ask(&c),
         Commands::Plot(c) => fit_plot(&c),
         Commands::PlotTopic(c) => fit_plot_topic(&c),
         Commands::PlotStrand(c) => fit_plot_strand(&c),

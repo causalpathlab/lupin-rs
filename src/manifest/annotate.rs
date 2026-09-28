@@ -362,7 +362,7 @@ fn drop_small_clusters(labels: &mut [usize], min_size: usize) -> usize {
 /// Re-open the raw counts, resolve the clustering, parse the marker TSV, and
 /// aggregate the NB-Fisher-weighted cluster (and, for the marker path,
 /// per-batch) expression the enrichment pass scores.
-fn load_enrichment_inputs(
+pub(super) fn load_enrichment_inputs(
     args: &AnnotateArgs,
     plan: &EnrichmentPlan,
     loaded: &Loaded,
