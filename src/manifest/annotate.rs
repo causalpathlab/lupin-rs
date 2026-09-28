@@ -83,14 +83,21 @@ pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &Loaded) -> Result<()
     } else {
         Pass::Markers(&args.markers)
     };
-    record(
-        loaded,
-        &args.out,
-        pass,
-        &outputs,
-        "enrichment",
-        settings(args)?,
-    )
+    // Which nulls actually ran: the sample permutation is skipped when there
+    // are too few batches to shuffle.
+    let mut used = settings(args)?;
+    if let serde_json::Value::Object(m) = &mut used {
+        let draws = by_enrichment::sample_perm_draws(inputs.n_batches, args.num_perm);
+        m.insert(
+            "null".into(),
+            serde_json::json!({
+                "gene_set_randomization": crate::annotate::args::NUM_DRAWS,
+                "sample_permutation": draws,
+                "batches": inputs.n_batches,
+            }),
+        );
+    }
+    record(loaded, &args.out, pass, &outputs, "enrichment", used)
 }
 
 /// `lupin annotate --method projection`: score the run's co-embedded gene

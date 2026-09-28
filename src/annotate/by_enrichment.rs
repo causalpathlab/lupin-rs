@@ -73,6 +73,25 @@ pub fn plan(args: &AnnotateArgs) -> anyhow::Result<EnrichmentPlan> {
 /// GO/GMT mode, against the gene sets) and write the artifacts under
 /// `plan.out`. Returns their paths; recording them in a run manifest is the
 /// caller's job.
+/// Fewest batches the sample-permutation null may shuffle. It permutes whole
+/// batches, so `P` batches allow only `P!` distinct orderings: with one or
+/// two, null (cluster, type) pairs came out "significant" far above the
+/// nominal rate on synthetic data, while four or more were calibrated.
+pub const MIN_PERM_BATCHES: usize = 4;
+
+/// The sample permutations to run for `n_batches`: the requested number, or
+/// none when there are too few batches to permute. The gene-set
+/// randomization null, which stays calibrated at any batch count, then
+/// carries the test alone.
+#[must_use]
+pub fn sample_perm_draws(n_batches: usize, requested: usize) -> usize {
+    if n_batches < MIN_PERM_BATCHES {
+        0
+    } else {
+        requested
+    }
+}
+
 pub fn run(
     args: &AnnotateArgs,
     plan: &EnrichmentPlan,
@@ -143,10 +162,17 @@ pub fn run(
         cell_names: inputs.cell_names.clone(),
     };
 
+    let perm_draws = sample_perm_draws(n_batches, args.num_perm);
+    if perm_draws < args.num_perm {
+        log::warn!(
+            "{n_batches} batch(es): too few for the sample-permutation null (needs \
+             {MIN_PERM_BATCHES}); testing against the gene-set null alone"
+        );
+    }
     let config = AnnotateConfig {
         specificity: SpecificityMode::Simplex,
         num_row_randomization: NUM_DRAWS,
-        num_sample_perm: args.num_perm,
+        num_sample_perm: perm_draws,
         // pb_membership_pk's rows ARE batches (one pseudobulk per batch),
         // so the sample-permutation null shuffles batches directly with no
         // inner stratification. Cell-level labels would be the wrong length
@@ -735,4 +761,17 @@ fn display_annotation_histogram(annot: &Mat, annot_names: &[Box<str>]) {
         );
     }
     eprintln!();
+}
+
+#[cfg(test)]
+mod perm_tests {
+    use super::*;
+
+    #[test]
+    fn too_few_batches_skip_the_sample_permutation() {
+        assert_eq!(sample_perm_draws(1, 500), 0);
+        assert_eq!(sample_perm_draws(MIN_PERM_BATCHES - 1, 500), 0);
+        assert_eq!(sample_perm_draws(MIN_PERM_BATCHES, 500), 500);
+        assert_eq!(sample_perm_draws(1, 0), 0, "none requested, none run");
+    }
 }
