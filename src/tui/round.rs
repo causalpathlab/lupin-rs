@@ -20,8 +20,6 @@ use std::path::{Path, PathBuf};
 
 /// Candidates listed per cluster.
 const CANDIDATES: usize = 6;
-/// Specific genes listed per cluster.
-const TOP_GENES: usize = 20;
 
 /// A cell type competing for a cluster, with its enrichment statistics.
 #[derive(Clone, Debug, PartialEq)]
@@ -153,6 +151,8 @@ pub enum Edit {
         label: String,
         reason: String,
     },
+    /// Keep the cluster's label, recording why.
+    Keep { cluster: ClusterId, reason: String },
     /// Add `genes` to `label`'s markers, or drop them (`add` false).
     Markers {
         label: String,
@@ -160,6 +160,17 @@ pub enum Edit {
         add: bool,
         reason: String,
     },
+}
+
+impl Edit {
+    /// The cluster a label or keep decides.
+    #[must_use]
+    pub fn cluster(&self) -> Option<ClusterId> {
+        match self {
+            Self::Label { cluster, .. } | Self::Keep { cluster, .. } => Some(*cluster),
+            Self::Markers { .. } => None,
+        }
+    }
 }
 
 pub struct RoundView {
@@ -173,6 +184,8 @@ pub struct RoundView {
     pub markers: BTreeMap<String, BTreeSet<String>>,
     /// Cells no cluster holds.
     pub loose_cells: usize,
+    /// Clusters an earlier round decided (labelled or kept), from its history.
+    pub decided: BTreeSet<ClusterId>,
 }
 
 impl RoundView {
@@ -203,6 +216,10 @@ impl RoundView {
         // Each cluster's size and label, as `review` and `relabel` see them.
         let digests = digest(&cells.clusters, &cells.labels, &Evidence::default());
         let loose_cells = cells.clusters.iter().filter(|c| c.is_none()).count();
+        let decided = match at(&a.history) {
+            Some(p) => decided_in(&p)?,
+            None => BTreeSet::new(),
+        };
         let genes = expression.as_ref().map(specific_genes).unwrap_or_default();
         let clusters = digests
             .into_iter()
@@ -246,19 +263,18 @@ impl RoundView {
             expression,
             markers,
             loose_cells,
+            decided,
         })
     }
 
     /// Cluster `id`'s label with the edits applied; `None` for unassigned.
     #[must_use]
     pub fn label_of(&self, id: ClusterId, edits: &[Edit]) -> Option<String> {
-        let edited = edits.iter().rev().find_map(|e| match e {
-            Edit::Label { cluster, label, .. } if *cluster == id => Some(label.clone()),
-            _ => None,
-        });
+        // The cluster's last decision: a label, or keeping the round's.
+        let edited = edits.iter().rev().find(|e| e.cluster() == Some(id));
         match edited {
-            Some(l) => (l != UNASSIGNED_LABEL).then_some(l),
-            None => self
+            Some(Edit::Label { label, .. }) => (label != UNASSIGNED_LABEL).then(|| label.clone()),
+            _ => self
                 .clusters
                 .iter()
                 .find(|c| c.id == id)
@@ -356,16 +372,12 @@ pub fn decisions(edits: &[Edit], round: &RoundView) -> Vec<Decision> {
         timestamp: None,
         round: None,
     };
-    let mut last: BTreeMap<ClusterId, (&str, &str)> = BTreeMap::new();
+    let mut last: BTreeMap<ClusterId, &Edit> = BTreeMap::new();
     let mut out = Vec::new();
     for e in edits {
         match e {
-            Edit::Label {
-                cluster,
-                label,
-                reason,
-            } => {
-                last.insert(*cluster, (label, reason));
+            Edit::Label { cluster, .. } | Edit::Keep { cluster, .. } => {
+                last.insert(*cluster, e);
             }
             Edit::Markers {
                 label,
@@ -389,7 +401,7 @@ pub fn decisions(edits: &[Edit], round: &RoundView) -> Vec<Decision> {
             }
         }
     }
-    for (id, (label, reason)) in last {
+    for (id, e) in last {
         let evidence = round
             .clusters
             .iter()
@@ -401,16 +413,33 @@ pub fn decisions(edits: &[Edit], round: &RoundView) -> Vec<Decision> {
                 json!({"kind": "marker", "term": c.label, "share": c.share, "nes": c.nes, "p": c.p, "q": c.q})
             })
             .collect();
+        let (action, label, reason) = match e {
+            Edit::Label { label, reason, .. } => (Action::Label, Some(label.clone()), reason),
+            Edit::Keep { reason, .. } => (Action::Keep, None, reason),
+            Edit::Markers { .. } => continue,
+        };
         out.push(decision(
-            Action::Label,
+            action,
             vec![id],
-            Some(label.to_string()),
+            label,
             Vec::new(),
             evidence,
             reason,
         ));
     }
     out
+}
+
+/// The clusters a round's history (`annotation_history.json`: cluster id →
+/// decisions) records a decision for.
+fn decided_in(path: &str) -> Result<BTreeSet<ClusterId>> {
+    let text = std::fs::read_to_string(path)?;
+    let history: BTreeMap<String, serde_json::Value> = serde_json::from_str(&text)?;
+    Ok(history
+        .into_iter()
+        .filter(|(_, v)| v.as_array().is_some_and(|a| !a.is_empty()))
+        .filter_map(|(k, _)| k.parse().ok())
+        .collect())
 }
 
 fn top_by(items: impl Iterator<Item = (String, f32)>, k: usize) -> Vec<(String, f32)> {
@@ -420,8 +449,8 @@ fn top_by(items: impl Iterator<Item = (String, f32)>, k: usize) -> Vec<(String, 
     v
 }
 
-/// Per cluster, the genes that set it apart: among the genes above the
-/// cluster's average, the largest [`Expression::log2fc`] over the others.
+/// Per cluster, the genes that set it apart, all of them: the genes above
+/// the cluster's average, by [`Expression::log2fc`] over the others.
 #[must_use]
 pub fn specific_genes(expr: &Expression) -> BTreeMap<ClusterId, Vec<(String, f32)>> {
     let m = &expr.table.mat;
@@ -435,7 +464,7 @@ pub fn specific_genes(expr: &Expression) -> BTreeMap<ClusterId, Vec<(String, f32
                     expr.log2fc(g, &[k])
                         .map(|fc| (expr.table.rows[g].to_string(), fc))
                 });
-            (id, top_by(scored, TOP_GENES))
+            (id, top_by(scored, usize::MAX))
         })
         .collect()
 }

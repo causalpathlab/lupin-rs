@@ -23,50 +23,153 @@ pub fn draw(f: &mut Frame, app: &App) {
         Constraint::Length(1),
     ])
     .areas(f.area());
+    // Left: the clusters and their genes; right: the ontology and the cell
+    // types competing for the selected cluster.
     let [left, right] =
-        Layout::horizontal([Constraint::Length(56), Constraint::Min(50)]).areas(body);
-    let [clusters, settings] = Layout::vertical([
-        Constraint::Min(6),
-        Constraint::Length(SETTINGS.len() as u16 + 2),
-    ])
-    .areas(left);
-    let [tree, detail] =
-        Layout::vertical([Constraint::Min(8), Constraint::Length(14)]).areas(right);
-    let [candidates, genes] =
-        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(detail);
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(body);
+    let [clusters, genes] =
+        Layout::vertical([Constraint::Min(8), Constraint::Length(16)]).areas(left);
+    let [tree, candidates] =
+        Layout::vertical([Constraint::Min(8), Constraint::Length(12)]).areas(right);
 
     draw_header(f, header, app);
     draw_clusters(f, clusters, app);
-    draw_settings(f, settings, app);
     draw_candidates(f, candidates, app);
     draw_genes(f, genes, app);
     draw_tree(f, tree, app);
     draw_summary(f, summary, app);
     draw_log(f, log, app);
     f.render_widget(Paragraph::new(help(app)).dim(), keys);
+    if app.settings_open {
+        draw_settings(f, app);
+    }
+    if app.help_open {
+        draw_guide(f);
+    }
     if app.prompt.is_some() {
         draw_prompt(f, app);
     }
 }
 
+/// The bottom line: where the key guide is, and the pane's main keys.
 fn help(app: &App) -> &'static str {
     match app.focus {
         Focus::Clusters => {
-            " ↑↓ cluster · 1-6 take candidate · enter pick in tree · u unassign · ⌫ undo · ] next flagged · tab pane · s save · e export · r run · q quit"
+            " ? keys · ↑↓ cluster · 1-6 take · k keep · ] next flagged · tab pane · s save · q quit"
         }
         Focus::Genes => {
-            " ↑↓ gene · space mark · a add as markers of the cluster's label · d drop them · m specific genes / markers · esc back · s save"
+            " ? keys · ↑↓ gene · a add · A add to a type · d drop · x hide · m markers · tab pane"
         }
-        Focus::Tree => match app.tree_mode {
-            TreeMode::Panel => {
-                " ↑↓ node · enter give the cluster this label · ←→ fold · o Cell Ontology · esc back · tab pane · s save"
-            }
-            TreeMode::Ontology(_) => {
-                " ↑↓ term · enter give the cluster this term · → into · ← up · / search · o panel tree · esc back · s save"
-            }
-        },
-        Focus::Settings => " ↑↓ setting · ←→ change · r run a pass with them · tab pane",
+        Focus::Tree => {
+            " ? keys · ↑↓ node · enter label · space mark · + mixed label · o ontology · / search"
+        }
     }
+}
+
+/// Every key, by pane, in a popup (`?`).
+const GUIDE: &[(&str, &[(&str, &str)])] = &[
+    (
+        "anywhere",
+        &[
+            ("?", "this guide (any key closes it)"),
+            (
+                "tab / shift-tab",
+                "next / previous pane: clusters → tree → genes",
+            ),
+            ("r", "cluster & run: Leiden and pass settings, enter runs"),
+            ("x", "while a pass or save runs: stop it"),
+            ("s", "save the edits as the next round, and export"),
+            ("e", "export the open round"),
+            ("q", "quit (asks again with unsaved edits)"),
+        ],
+    ),
+    (
+        "clusters",
+        &[
+            ("↑↓", "select a cluster"),
+            ("1-6", "label it with that candidate"),
+            ("k", "keep its label (✓ = decided)"),
+            ("u", "unassign it"),
+            ("enter", "find its label in the tree"),
+            ("⌫", "undo its edit"),
+            ("]", "next flagged (?) cluster not yet decided"),
+        ],
+    ),
+    (
+        "tree",
+        &[
+            ("↑↓", "select a node"),
+            ("enter", "label the cluster with it"),
+            ("← →", "fold / unfold (ontology: up / into a term)"),
+            ("o", "panel tree ↔ the full Cell Ontology"),
+            ("/", "search the ontology (names, synonyms, abbreviations)"),
+            (
+                "space / +",
+                "mark nodes / give the cluster their mixed label (A+B)",
+            ),
+        ],
+    ),
+    (
+        "genes",
+        &[
+            ("↑↓ / space", "select / mark genes"),
+            ("m", "specific genes ↔ the label's markers"),
+            ("a", "add as markers of the cluster's label"),
+            (
+                "A",
+                "add as markers of any cell type (a new name makes a new type)",
+            ),
+            ("d", "drop from the label's markers"),
+            ("x / X", "hide the genes / hide by pattern (MT-*)"),
+            ("H", "show hidden genes"),
+        ],
+    ),
+    (
+        "marks",
+        &[
+            ("?  ✓", "cluster flagged (weak or no call) / decided"),
+            ("new", "a specific gene no panel type lists"),
+            (
+                "weak",
+                "a marker not enriched in this cluster (log2 FC ≤ 0)",
+            ),
+            ("◀", "the cluster's current label in the tree"),
+        ],
+    ),
+];
+
+fn draw_guide(f: &mut Frame) {
+    let mut lines: Vec<Line> = Vec::new();
+    for (section, keys) in GUIDE {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(format!(" {section}")).bold().cyan());
+        for (key, what) in *keys {
+            lines.push(Line::from(vec![
+                Span::from(format!("   {key:<16}")).bold(),
+                Span::from(*what),
+            ]));
+        }
+    }
+    let height = (lines.len() as u16 + 2).min(f.area().height);
+    let [area] = Layout::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .areas(f.area());
+    let [area] = Layout::horizontal([Constraint::Length(84)])
+        .flex(Flex::Center)
+        .areas(area);
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" keys ")
+                .title_bottom(Line::from(" any key closes ").dim()),
+        ),
+        area,
+    );
 }
 
 fn pane(title: String, focused: bool) -> Block<'static> {
@@ -91,9 +194,10 @@ fn bar(share: f32) -> String {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
+    // The status first, where it is seen; the run's file last.
     let mut spans = vec![
         Span::from(" lupin annotate ").bold().reversed(),
-        Span::from(format!(" {} ", app.source.display())),
+        Span::from(format!(" {} ", app.status)).bold(),
     ];
     if !app.edits.is_empty() {
         spans.push(Span::from(format!("· {} unsaved ", app.edits.len())).yellow());
@@ -101,7 +205,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if app.stale {
         spans.push(Span::from("· settings changed, r to re-run ").yellow());
     }
-    spans.push(Span::from(format!("· {}", app.status)));
+    spans.push(Span::from(format!("· {}", app.source.display())).dim());
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -120,7 +224,13 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         .map(|c| {
             let label = r.label_of(c.id, &app.edits);
             let shown = label.clone().unwrap_or_else(|| UNASSIGNED_LABEL.into());
-            let flag = if c.flagged() { "?" } else { "" };
+            let flag = if app.decided(c.id) {
+                "✓"
+            } else if c.flagged() {
+                "?"
+            } else {
+                ""
+            };
             let row = Row::new([
                 format!("K{}", c.id),
                 c.cells.to_string(),
@@ -159,8 +269,14 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
     f.render_stateful_widget(t, area, &mut state);
 }
 
-fn draw_settings(f: &mut Frame, area: Rect, app: &App) {
-    let focused = app.focus == Focus::Settings;
+/// The clustering and pass settings, as a popup over the screen.
+fn draw_settings(f: &mut Frame, app: &App) {
+    let [area] = Layout::vertical([Constraint::Length(SETTINGS.len() as u16 + 4)])
+        .flex(Flex::Center)
+        .areas(f.area());
+    let [area] = Layout::horizontal([Constraint::Length(64)])
+        .flex(Flex::Center)
+        .areas(area);
     let rows: Vec<Row> = SETTINGS
         .iter()
         .map(|s| Row::new([s.name().to_string(), s.value(&app.args)]))
@@ -170,10 +286,17 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &App) {
     } else {
         "Leiden on the cell embedding"
     };
-    let mut state = TableState::default().with_selected(focused.then_some(app.setting));
+    let mut state = TableState::default().with_selected(Some(app.setting));
     let t = Table::new(rows, [Constraint::Length(14), Constraint::Min(8)])
-        .block(pane(format!(" pass settings · {note} "), focused))
-        .row_highlight_style(highlight(focused));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title(format!(" cluster & run · {note} "))
+                .title_bottom(Line::from(" ↑↓ setting · ←→ change · enter run · esc close ").dim()),
+        )
+        .row_highlight_style(highlight(true));
+    f.render_widget(Clear, area);
     f.render_stateful_widget(t, area, &mut state);
 }
 
@@ -271,31 +394,56 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
             " "
         }
     };
+    // Only the rows that fit are built: the lists run to thousands of genes.
+    let height = area.height.saturating_sub(2) as usize;
+    let start = app.gene_sel.saturating_sub(height.saturating_sub(1));
+    let window = start..start + height;
     let (rows, title): (Vec<Row>, String) = match app.gene_view {
         GeneView::Specific => {
-            let rows = c
-                .genes
+            let fc: std::collections::HashMap<&str, f32> =
+                c.genes.iter().map(|(g, s)| (g.as_str(), *s)).collect();
+            let listed = app.listed_genes();
+            let rows = listed[window.start.min(listed.len())..window.end.min(listed.len())]
                 .iter()
-                .map(|(g, s)| {
+                .map(|g| {
                     let of = r.marker_of(g);
+                    let hidden = app.hidden.hides(g);
+                    // A gene no panel type lists: the panel missed it.
+                    let tag = if hidden {
+                        "hidden".to_string()
+                    } else if of.is_empty() {
+                        "new".to_string()
+                    } else {
+                        of.join(",")
+                    };
                     let row = Row::new([
                         mark(g).to_string(),
                         g.clone(),
-                        format!("{s:+.2}"),
-                        of.join(","),
+                        format!("{:+.2}", fc.get(g.as_str()).copied().unwrap_or(f32::NAN)),
+                        tag,
                     ]);
-                    if key.as_deref().is_some_and(|l| of.contains(&l)) {
+                    if hidden {
+                        row.dim()
+                    } else if key.as_deref().is_some_and(|l| of.contains(&l)) {
                         row.green()
                     } else if of.is_empty() {
-                        row
+                        row.yellow()
                     } else {
                         row.dim()
                     }
                 })
                 .collect();
+            let shown = if app.show_hidden {
+                "H: hide them"
+            } else {
+                "H: show hidden"
+            };
             (
                 rows,
-                " specific genes (log2 FC) · green: marker of its label · m: its markers ".into(),
+                format!(
+                    " {} specific genes · log2 FC · new = in no panel · {shown} ",
+                    listed.len()
+                ),
             )
         }
         GeneView::Markers => {
@@ -308,44 +456,49 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
                 return;
             };
             let listed = app.label_markers();
-            let rows = listed
+            let rows = listed[window.start.min(listed.len())..window.end.min(listed.len())]
                 .iter()
                 .map(|(g, fc, added)| {
-                    let fc = *fc;
+                    // A marker not enriched in this cluster: missed here.
+                    let weak = fc.is_none_or(|v| v <= 0.0);
+                    let tag = match (added, weak) {
+                        (true, _) => "added",
+                        (false, true) => "weak",
+                        (false, false) => "",
+                    };
                     let row = Row::new([
                         mark(g).to_string(),
                         g.clone(),
                         fc.map_or_else(|| "—".into(), |v| format!("{v:+.2}")),
-                        if *added {
-                            "added".into()
-                        } else {
-                            String::new()
-                        },
+                        tag.to_string(),
                     ]);
-                    match fc {
-                        _ if *added => row.yellow(),
-                        Some(v) if v > 0.0 => row.green(),
-                        Some(_) => row,
-                        None => row.dim(),
+                    match (added, weak) {
+                        (true, _) => row.yellow(),
+                        (false, false) => row.green(),
+                        (false, true) => row.dim(),
                     }
                 })
                 .collect();
+            let weak = listed
+                .iter()
+                .filter(|(_, fc, _)| fc.is_none_or(|v| v <= 0.0))
+                .count();
             (
                 rows,
                 format!(
-                    " {} markers of {label} (log2 FC in K{}) · m: specific genes ",
+                    " {} markers of {label} · {weak} weak (FC ≤ 0 in K{}) ",
                     listed.len(),
                     c.id
                 ),
             )
         }
     };
-    let mut state = TableState::default().with_selected(focused.then_some(app.gene_sel));
+    let mut state = TableState::default().with_selected(focused.then_some(app.gene_sel - start));
     let t = Table::new(
         rows,
         [
             Constraint::Length(1),
-            Constraint::Length(12),
+            Constraint::Length(14),
             Constraint::Length(7),
             Constraint::Min(8),
         ],
@@ -382,8 +535,10 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     .sum()
             });
             let here = now.as_deref() == Some(app.tree.label(i));
+            let marked = app.tree_marked.iter().any(|m| m == app.tree.label(i));
             let name = format!(
-                "{}{glyph} {}{}",
+                "{}{}{glyph} {}{}",
+                if marked { "●" } else { " " },
                 "  ".repeat(n.depth),
                 n.name,
                 if here { "  ◀" } else { "" }
@@ -471,8 +626,13 @@ fn draw_ontology(f: &mut Frame, area: Rect, app: &App, v: &OntologyView, cl: &Cl
                 .filter(|(_, above)| above.contains(&r.id))
                 .count();
             let here = now.as_deref() == Some(r.id.as_str());
+            let marked = !app.tree_marked.is_empty()
+                && app
+                    .tree_marked
+                    .contains(&super::ontology::term_label(cl, &app.tree, &r.id));
             let name = format!(
-                "{indent}{glyph} {}{}",
+                "{}{indent}{glyph} {}{}",
+                if marked { "●" } else { " " },
                 cl.name(&r.id).unwrap_or(&r.id),
                 if here { "  ◀" } else { "" }
             );

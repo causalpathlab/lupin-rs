@@ -33,14 +33,98 @@ pub struct Call {
     pub top: String,
 }
 
+/// Where a label sits: its CL term, the panel types it covers, and the
+/// names above it (top first).
+struct Place {
+    cl_id: Option<String>,
+    under: BTreeSet<String>,
+    above: Vec<String>,
+}
+
+/// A single label's place: on the panel's tree, else in the Cell Ontology
+/// `cl` when given, else on its own.
+fn place(label: &str, tree: &PanelTree, cl: Option<&ClTerms>) -> Place {
+    if let Some(i) = tree.node_of(label) {
+        let path = tree.path(i);
+        return Place {
+            cl_id: tree.nodes[i].cl_id.clone(),
+            under: tree.labels_under(i).into_iter().map(String::from).collect(),
+            above: path[..path.len() - 1]
+                .iter()
+                .map(|&n| tree.nodes[n].name.clone())
+                .collect(),
+        };
+    }
+    if let Some((cl, t)) =
+        cl.and_then(|cl| super::ontology::term_of(cl, tree, label).map(|t| (cl, t)))
+    {
+        let mut above: Vec<String> = cl
+            .lineage(&t)
+            .iter()
+            .map(|id| label_key(cl.name(id).unwrap_or(id)))
+            .collect();
+        above.pop();
+        return Place {
+            under: tree
+                .typed_terms()
+                .filter(|(_, id)| cl.ancestors_or_self(id).contains(&t))
+                .map(|(l, _)| l.to_string())
+                .chain([label_key(label)])
+                .collect(),
+            cl_id: Some(t),
+            above,
+        };
+    }
+    Place {
+        cl_id: None,
+        under: BTreeSet::from([label_key(label)]),
+        above: Vec::new(),
+    }
+}
+
+/// A mixed label's place (`A+B`): the parts' types together, their terms
+/// joined by `|`, and the lineage of their nearest common ancestor.
+fn mixed_place(parts: &[&str], tree: &PanelTree, cl: Option<&ClTerms>) -> Place {
+    let places: Vec<Place> = parts.iter().map(|p| place(p, tree, cl)).collect();
+    let ids: Vec<&str> = places.iter().filter_map(|p| p.cl_id.as_deref()).collect();
+    let above = match cl {
+        Some(cl) if ids.len() == parts.len() => {
+            let mut shared = cl.ancestors_or_self(ids[0]);
+            for id in &ids[1..] {
+                let a = cl.ancestors_or_self(id);
+                shared.retain(|t| a.contains(t));
+            }
+            // The deepest term all the parts share.
+            shared
+                .iter()
+                .max_by_key(|t| cl.ancestors_or_self(t).len())
+                .map(|t| {
+                    cl.lineage(t)
+                        .iter()
+                        .map(|id| label_key(cl.name(id).unwrap_or(id)))
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    };
+    Place {
+        cl_id: (!ids.is_empty()).then(|| ids.join("|")),
+        under: places.into_iter().flat_map(|p| p.under).collect(),
+        above,
+    }
+}
+
 /// Each cluster's call, the edits applied. A label off the panel's tree is
 /// looked up in the Cell Ontology `cl`, when given, for its term, lineage and
-/// the share of the panel types under it.
+/// the share of the panel types under it; a mixed label (`A+B`) is placed by
+/// its parts.
 #[must_use]
 pub fn cluster_calls(
     round: &RoundView,
     tree: &PanelTree,
     cl: Option<&ClTerms>,
+    mixed: &super::ontology::Mixed,
     edits: &[Edit],
 ) -> BTreeMap<ClusterId, Call> {
     round
@@ -50,61 +134,33 @@ pub fn cluster_calls(
             let label = round
                 .label_of(c.id, edits)
                 .unwrap_or_else(|| UNASSIGNED_LABEL.into());
-            let node = (label != UNASSIGNED_LABEL)
-                .then(|| tree.node_of(&label))
-                .flatten();
-            // Off the panel's tree: the CL term the label names, if any.
-            let term = node
-                .is_none()
-                .then(|| cl.zip(Some(&label)))
-                .flatten()
-                .filter(|(_, l)| l.as_str() != UNASSIGNED_LABEL)
-                .and_then(|(cl, l)| super::ontology::term_of(cl, tree, l).map(|t| (cl, t)));
-            let under: BTreeSet<String> = match (node, &term) {
-                (Some(i), _) => tree.labels_under(i).into_iter().map(String::from).collect(),
-                (None, Some((cl, t))) => tree
-                    .typed_terms()
-                    .filter(|(_, id)| cl.ancestors_or_self(id).contains(t))
-                    .map(|(l, _)| l.to_string())
-                    .chain([label_key(&label)])
-                    .collect(),
-                (None, None) => BTreeSet::from([label_key(&label)]),
+            let p = if label == UNASSIGNED_LABEL {
+                Place {
+                    cl_id: None,
+                    under: BTreeSet::new(),
+                    above: Vec::new(),
+                }
+            } else if let Some(parts) = mixed.parts(&label) {
+                let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+                mixed_place(&parts, tree, cl)
+            } else {
+                place(&label, tree, cl)
             };
             let share = c
                 .shares
                 .iter()
-                .filter(|(t, _)| under.contains(&label_key(t)))
+                .filter(|(t, _)| p.under.contains(&label_key(t)))
                 .map(|(_, s)| s)
                 .sum();
-            let lineage = node.map_or_else(
-                || match &term {
-                    Some((cl, t)) => {
-                        let mut names: Vec<String> = cl
-                            .lineage(t)
-                            .iter()
-                            .map(|id| label_key(cl.name(id).unwrap_or(id)))
-                            .collect();
-                        names.pop();
-                        names.push(label.clone());
-                        names.join(" > ")
-                    }
-                    None => label.clone(),
-                },
-                |i| {
-                    let path = tree.path(i);
-                    let mut names: Vec<&str> = path[..path.len() - 1]
-                        .iter()
-                        .map(|&n| tree.nodes[n].name.as_str())
-                        .collect();
-                    names.push(&label);
-                    names.join(" > ")
-                },
-            );
+            let lineage = p
+                .above
+                .iter()
+                .map(String::as_str)
+                .chain([label.as_str()])
+                .collect::<Vec<_>>()
+                .join(" > ");
             let call = Call {
-                cl_id: node
-                    .and_then(|i| tree.nodes[i].cl_id.clone())
-                    .or_else(|| term.as_ref().map(|(_, t)| t.clone()))
-                    .unwrap_or_default(),
+                cl_id: p.cl_id.unwrap_or_default(),
                 lineage,
                 share,
                 top: c
@@ -220,10 +276,11 @@ pub fn write(
     round: &RoundView,
     tree: &PanelTree,
     cl: Option<&ClTerms>,
+    mixed: &super::ontology::Mixed,
     original: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(PathBuf, PathBuf)> {
     let stem = crate::manifest::run::derive_out_prefix(&round.manifest.to_string_lossy());
-    let calls = cluster_calls(round, tree, cl, &[]);
+    let calls = cluster_calls(round, tree, cl, mixed, &[]);
 
     let n = round.cell_names.len();
     let (mut cluster, mut label, mut cl_id, mut lineage, mut top) = (

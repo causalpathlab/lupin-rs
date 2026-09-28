@@ -148,6 +148,94 @@ pub fn type_ancestry(cl: &ClTerms, tree: &PanelTree) -> Vec<(String, BTreeSet<St
         .collect()
 }
 
+/// Mixed labels by name: a label that stands for several cell types a
+/// cluster's evidence cannot separate, one per line of `mixed_labels.tsv`
+/// (`name<TAB>A+B`), read from the user's config and the project's `lupin/`
+/// folder and added to from the TUI. A name not listed is split on `+`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Mixed {
+    by_name: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+/// How mixed-label names compare: as lupin labels, ignoring case.
+fn name_key(name: &str) -> String {
+    label_key(&name.trim().to_lowercase())
+}
+
+/// The file mixed labels are kept in.
+pub const MIXED: &str = "mixed_labels.tsv";
+
+impl Mixed {
+    fn extend(&mut self, text: &str) {
+        for line in text.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((name, parts)) = line.split_once('\t') {
+                let parts: Vec<String> = parts
+                    .split(super::app::MIX)
+                    .map(|p| label_key(p.trim()))
+                    .filter(|p| !p.is_empty())
+                    .collect();
+                if parts.len() > 1 {
+                    self.by_name.insert(name_key(name), parts);
+                }
+            }
+        }
+    }
+
+    /// The user's and the project's mixed labels.
+    pub fn load(search: &crate::manifest::data_files::SearchPath) -> anyhow::Result<Self> {
+        let mut m = Self::default();
+        for dir in [&search.user, &search.project].into_iter().flatten() {
+            let p = dir.join(MIXED);
+            if p.is_file() {
+                m.extend(&std::fs::read_to_string(&p)?);
+            }
+        }
+        Ok(m)
+    }
+
+    /// Name `parts` `name` from now on, and append it to `file`.
+    pub fn add(
+        &mut self,
+        name: &str,
+        parts: &[String],
+        file: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        use std::io::Write;
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let new = !file.exists();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file)?;
+        if new {
+            writeln!(
+                f,
+                "# Mixed cell-type labels: name, then the types it stands for joined by `+`."
+            )?;
+        }
+        let joined = parts.join(super::app::MIX);
+        writeln!(f, "{name}\t{joined}")?;
+        self.by_name.insert(name_key(name), parts.to_vec());
+        Ok(())
+    }
+
+    /// The cell types `label` stands for: its listed parts, else its `+`
+    /// parts; `None` for a single type.
+    #[must_use]
+    pub fn parts(&self, label: &str) -> Option<Vec<String>> {
+        if let Some(p) = self.by_name.get(&name_key(label)) {
+            return Some(p.clone());
+        }
+        let p: Vec<String> = label.split(super::app::MIX).map(String::from).collect();
+        (p.len() > 1).then_some(p)
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/ontology.rs"]
 mod tests;

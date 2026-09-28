@@ -62,6 +62,7 @@ fn round() -> RoundView {
             ("B".into(), set(&["MS4A1"])),
         ]),
         loose_cells: 0,
+        decided: BTreeSet::new(),
     }
 }
 
@@ -75,7 +76,13 @@ fn relabel(cluster: ClusterId, label: &str) -> Edit {
 
 #[test]
 fn a_class_label_pools_its_types_share_and_names_its_lineage() {
-    let calls = cluster_calls(&round(), &tree(), None, &[relabel(1, "lymph")]);
+    let calls = cluster_calls(
+        &round(),
+        &tree(),
+        None,
+        &crate::tui::ontology::Mixed::default(),
+        &[relabel(1, "lymph")],
+    );
     assert_eq!(calls[&0].label, "T");
     assert_eq!(calls[&0].lineage, "lymph > T");
     assert!((calls[&0].share - 0.7).abs() < 1e-6);
@@ -89,7 +96,7 @@ fn a_class_label_pools_its_types_share_and_names_its_lineage() {
 fn markers_are_panel_or_added_and_the_rest_suggested() {
     let r = round();
     let t = tree();
-    let calls = cluster_calls(&r, &t, None, &[]);
+    let calls = cluster_calls(&r, &t, None, &crate::tui::ontology::Mixed::default(), &[]);
     // CD2 was added this session: not in the original panel.
     let original = BTreeMap::from([
         ("T".to_string(), BTreeSet::from(["CD3E".to_string()])),
@@ -144,6 +151,7 @@ fn a_term_off_the_panel_gets_its_id_and_lineage_from_the_ontology() {
         &round(),
         &t,
         Some(&cl),
+        &crate::tui::ontology::Mixed::default(),
         &[relabel(0, "stem_cell"), relabel(1, "lymph")],
     );
     assert_eq!(calls[&0].cl_id, "CL:3");
@@ -153,4 +161,55 @@ fn a_term_off_the_panel_gets_its_id_and_lineage_from_the_ontology() {
         (calls[&1].share - 0.7).abs() < 1e-6,
         "B 0.6 + T 0.1, both under lymph"
     );
+}
+
+#[test]
+fn a_mixed_label_sums_its_parts_and_sits_under_their_common_ancestor() {
+    let obo = "[Term]\nid: CL:0\nname: root cell\n\n\
+               [Term]\nid: CL:1\nname: lymph\nsubset: cellxgene_subset\nis_a: CL:0\n\n\
+               [Term]\nid: CL:10\nname: T\nis_a: CL:1\n\n\
+               [Term]\nid: CL:12\nname: B\nis_a: CL:1\n\n\
+               [Term]\nid: CL:3\nname: stem cell\nis_a: CL:0\n";
+    let cl = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let panel: Vec<(String, String)> = [("G1", "T"), ("G2", "B")]
+        .iter()
+        .map(|(g, t)| ((*g).to_string(), (*t).to_string()))
+        .collect();
+    let t = PanelTree::from_ontology(&cl, &panel).unwrap();
+    let calls = cluster_calls(
+        &round(),
+        &t,
+        Some(&cl),
+        &crate::tui::ontology::Mixed::default(),
+        &[relabel(0, "B+T")],
+    );
+    assert_eq!(calls[&0].label, "B+T");
+    assert!((calls[&0].share - 0.9).abs() < 1e-6, "T 0.7 + B 0.2");
+    assert_eq!(calls[&0].cl_id, "CL:12|CL:10");
+    assert_eq!(calls[&0].lineage, "root_cell > lymph > B+T");
+    // Without the ontology: the parts on the panel's tree still add up.
+    let alone = cluster_calls(
+        &round(),
+        &tree(),
+        None,
+        &crate::tui::ontology::Mixed::default(),
+        &[relabel(0, "B+T")],
+    );
+    assert!((alone[&0].share - 0.9).abs() < 1e-6);
+}
+
+#[test]
+fn a_named_mix_is_placed_by_its_parts() {
+    let mut mixed = crate::tui::ontology::Mixed::default();
+    let root = tempfile::tempdir().unwrap();
+    mixed
+        .add(
+            "lymphs",
+            &["B".into(), "T".into()],
+            &root.path().join("m.tsv"),
+        )
+        .unwrap();
+    let calls = cluster_calls(&round(), &tree(), None, &mixed, &[relabel(0, "lymphs")]);
+    assert_eq!(calls[&0].label, "lymphs");
+    assert!((calls[&0].share - 0.9).abs() < 1e-6, "T 0.7 + B 0.2");
 }

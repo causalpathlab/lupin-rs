@@ -119,3 +119,28 @@ fn a_term_is_labelled_by_the_panel_type_on_it_else_by_its_name() {
         "every panel type sits under lymph: {lymph:?}"
     );
 }
+
+#[test]
+fn a_named_mix_is_remembered_and_a_plus_label_splits() {
+    let root = tempfile::tempdir().unwrap();
+    let search = crate::manifest::data_files::SearchPath {
+        install: None,
+        source: None,
+        cache: None,
+        user: None,
+        project: Some(root.path().join("lupin")),
+    };
+    let mut m = Mixed::load(&search).unwrap();
+    assert_eq!(m.parts("EMP+HSC"), Some(vec!["EMP".into(), "HSC".into()]));
+    assert_eq!(m.parts("HSC"), None);
+    assert_eq!(m.parts("HSPC mix"), None, "a name not yet known");
+    let file = root.path().join("lupin").join(MIXED);
+    m.add("HSPC mix", &["EMP".into(), "HSC".into()], &file)
+        .unwrap();
+    assert_eq!(m.parts("hspc_mix"), Some(vec!["EMP".into(), "HSC".into()]));
+    let again = Mixed::load(&search).unwrap();
+    assert_eq!(
+        again.parts("HSPC mix"),
+        Some(vec!["EMP".into(), "HSC".into()])
+    );
+}

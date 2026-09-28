@@ -8,6 +8,7 @@
 
 mod app;
 mod export;
+mod genes;
 mod ontology;
 mod round;
 mod runner;
@@ -97,6 +98,8 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
         app.panel_ancestry = ontology::type_ancestry(cl, &app.tree);
     }
     app.cl = terms;
+    app.hidden = genes::GeneFilter::load(&search)?;
+    app.mixed = ontology::Mixed::load(&search)?;
     app.data_search = search;
     // Pick up where an earlier session left this prefix: its latest round.
     if target.is_file() {

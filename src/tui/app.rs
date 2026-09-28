@@ -28,7 +28,6 @@ pub enum Focus {
     Clusters,
     Genes,
     Tree,
-    Settings,
 }
 
 /// The settings the screen edits, in the order it lists them.
@@ -136,6 +135,14 @@ pub enum Pending {
         /// to remember the alias once the label is taken.
         remember: Option<(String, String)>,
     },
+    /// Keep cluster `cluster`'s label; the text is why.
+    Keep { cluster: ClusterId },
+    /// Hide the genes the text's pattern matches from the specific genes.
+    Hide,
+    /// The name (the text) of a mixed label for `parts`.
+    MixName { parts: Vec<String> },
+    /// The cell type (the text) to add or drop `genes` as markers of.
+    MarkerType { genes: Vec<String>, add: bool },
     /// Append `label → id` to the alias file `file`; the text is the note.
     Remember {
         label: String,
@@ -195,10 +202,22 @@ pub struct App {
     pub cluster_sel: usize,
     pub gene_sel: usize,
     pub gene_view: GeneView,
+    /// Genes kept out of the specific-genes view.
+    pub hidden: super::genes::GeneFilter,
+    /// Show the hidden genes anyway, dimmed.
+    pub show_hidden: bool,
     /// Genes marked for adding or dropping as markers.
     pub marked: Vec<String>,
+    /// Tree nodes' labels marked for a mixed label.
+    pub tree_marked: Vec<String>,
+    /// Mixed labels by name.
+    pub mixed: super::ontology::Mixed,
     pub tree_sel: usize,
     pub setting: usize,
+    /// The clustering and pass settings popup is open.
+    pub settings_open: bool,
+    /// The key guide is open.
+    pub help_open: bool,
     pub prompt: Option<Prompt>,
     pub log: Vec<String>,
     log_tx: Sender<String>,
@@ -231,9 +250,15 @@ impl App {
             cluster_sel: 0,
             gene_sel: 0,
             gene_view: GeneView::Specific,
+            hidden: super::genes::GeneFilter::default(),
+            show_hidden: false,
             marked: Vec::new(),
+            tree_marked: Vec::new(),
+            mixed: super::ontology::Mixed::default(),
             tree_sel: 0,
             setting: 0,
+            settings_open: false,
+            help_open: false,
             prompt: None,
             log: Vec::new(),
             log_tx,
@@ -350,6 +375,92 @@ impl App {
         self.cluster_sel = i;
         self.gene_sel = 0;
         self.marked.clear();
+        self.tree_marked.clear();
+    }
+
+    /// The label of the tree pane's selected node: a panel node's, or a CL
+    /// term's in the ontology view.
+    fn tree_selected_label(&self) -> Option<String> {
+        match (&self.tree_mode, &self.cl) {
+            (TreeMode::Ontology(v), Some(cl)) => v
+                .selected()
+                .map(|r| super::ontology::term_label(cl, &self.tree, &r.id)),
+            _ => self
+                .tree
+                .visible()
+                .get(self.tree_sel)
+                .map(|&i| self.tree.label(i).to_string()),
+        }
+    }
+
+    /// Mark or unmark the selected node for a mixed label.
+    fn toggle_tree_mark(&mut self) {
+        let Some(l) = self.tree_selected_label() else {
+            return;
+        };
+        match self.tree_marked.iter().position(|m| *m == l) {
+            Some(i) => {
+                self.tree_marked.remove(i);
+            }
+            None => self.tree_marked.push(l),
+        }
+    }
+
+    /// Label the selected cluster by the marked nodes together: a mixed
+    /// label, for a cluster the evidence cannot split between them. Asks
+    /// what to call it first.
+    fn mix_marked(&mut self) {
+        if self.tree_marked.len() < 2 {
+            self.status =
+                "mark two or more nodes with space, then + gives the cluster a mixed label".into();
+            return;
+        }
+        let mut parts = std::mem::take(&mut self.tree_marked);
+        parts.sort();
+        parts.dedup();
+        self.prompt = Some(Prompt {
+            title: format!(
+                " name the mix of {} (e.g. an abbreviation): ",
+                parts.join(", ")
+            ),
+            text: parts.join(MIX),
+            pending: Pending::MixName { parts },
+        });
+    }
+
+    /// Label the selected cluster `name`, standing for `parts`; a name that
+    /// is not just the parts joined is remembered with them.
+    fn ask_mixed(&mut self, name: String, parts: Vec<String>) {
+        let said: Vec<String> = parts
+            .iter()
+            .map(|p| {
+                let cand = self
+                    .selected()
+                    .and_then(|c| c.candidates.iter().find(|t| t.label == *p));
+                match cand {
+                    Some(t) => format!("{p} ({})", evidence(t)),
+                    None => p.clone(),
+                }
+            })
+            .collect();
+        let reason = format!(
+            "mixed: {}; the evidence does not separate them",
+            said.join(" + ")
+        );
+        if name != parts.join(MIX) {
+            let file = self
+                .data_search
+                .project
+                .as_ref()
+                .or(self.data_search.user.as_ref())
+                .map(|d| d.join(super::ontology::MIXED));
+            if let Some(file) = file {
+                if let Err(e) = self.mixed.add(&name, &parts, &file) {
+                    self.status = format!("could not record the mix: {e:#}");
+                }
+            }
+        }
+        self.ask_label(name, reason, None);
     }
 
     /// Put the tree's cursor on node `i`, when it is visible.
@@ -373,11 +484,31 @@ impl App {
             .collect()
     }
 
-    /// Whether cluster `id` has an unsaved label edit.
+    /// Whether cluster `id` has an unsaved label or keep.
     pub fn edited(&self, id: ClusterId) -> bool {
-        self.edits
-            .iter()
-            .any(|e| matches!(e, Edit::Label { cluster, .. } if *cluster == id))
+        self.edits.iter().any(|e| e.cluster() == Some(id))
+    }
+
+    /// Whether cluster `id` is decided: now, or in an earlier round.
+    pub fn decided(&self, id: ClusterId) -> bool {
+        self.edited(id) || self.round.as_ref().is_some_and(|r| r.decided.contains(&id))
+    }
+
+    /// Keep the selected cluster's label, asking why.
+    fn keep(&mut self) {
+        let Some(c) = self.selected() else { return };
+        let label = self
+            .current_label()
+            .unwrap_or_else(|| UNASSIGNED_LABEL.into());
+        let reason = match c.candidates.iter().find(|t| t.label == label) {
+            Some(t) => format!("keep {label} ({})", evidence(t)),
+            None => format!("keep {label}"),
+        };
+        self.prompt = Some(Prompt {
+            title: format!(" K{} keeps {label}: why? ", c.id),
+            text: reason,
+            pending: Pending::Keep { cluster: c.id },
+        });
     }
 
     fn start(&mut self) {
@@ -457,7 +588,7 @@ impl App {
         let Some(r) = &self.round else {
             return "nothing to export".into();
         };
-        match super::export::write(r, &self.tree, self.cl.as_ref(), &self.original) {
+        match super::export::write(r, &self.tree, self.cl.as_ref(), &self.mixed, &self.original) {
             Ok((cells, markers)) => {
                 self.push_log(format!(
                     "exported {} and {}",
@@ -536,8 +667,7 @@ impl App {
         let Some(id) = self.selected().map(|c| c.id) else {
             return;
         };
-        self.edits
-            .retain(|e| !matches!(e, Edit::Label { cluster, .. } if *cluster == id));
+        self.edits.retain(|e| e.cluster() != Some(id));
     }
 
     /// The genes the genes pane lists: the cluster's specific genes, or
@@ -546,7 +676,13 @@ impl App {
         match self.gene_view {
             GeneView::Specific => self
                 .selected()
-                .map(|c| c.genes.iter().map(|g| g.0.clone()).collect())
+                .map(|c| {
+                    c.genes
+                        .iter()
+                        .filter(|g| self.show_hidden || !self.hidden.hides(&g.0))
+                        .map(|g| g.0.clone())
+                        .collect()
+                })
                 .unwrap_or_default(),
             GeneView::Markers => self
                 .label_markers()
@@ -579,18 +715,9 @@ impl App {
         v
     }
 
-    /// Open a prompt to add (`add`) or drop the marked genes, else the
-    /// selected one, as markers of the selected cluster's label. Genes
-    /// already in (for adding) or not in (for dropping) are left out.
-    fn ask_markers(&mut self, add: bool) {
-        let (Some(c), Some(r)) = (self.selected(), &self.round) else {
-            return;
-        };
-        let Some(label) = self.current_label() else {
-            self.status = "label the cluster first: markers belong to a cell type".into();
-            return;
-        };
-        let chosen = if self.marked.is_empty() {
+    /// The marked genes, else the selected one.
+    fn chosen_genes(&self) -> Vec<String> {
+        if self.marked.is_empty() {
             self.listed_genes()
                 .get(self.gene_sel)
                 .cloned()
@@ -598,7 +725,65 @@ impl App {
                 .collect()
         } else {
             self.marked.clone()
+        }
+    }
+
+    /// Keep genes matching `pattern` out of the specific genes, remembered
+    /// in the project's hidden-genes file.
+    fn hide(&mut self, pattern: &str) {
+        let Some(file) = super::genes::GeneFilter::file(&self.data_search) else {
+            return;
         };
+        self.status = match self.hidden.add(pattern, &file) {
+            Ok(()) => format!(
+                "hiding {pattern} (in {}; H shows hidden genes)",
+                file.display()
+            ),
+            Err(e) => format!("could not hide {pattern}: {e:#}"),
+        };
+        let n = self.listed_genes().len();
+        self.gene_sel = self.gene_sel.min(n.saturating_sub(1));
+    }
+
+    /// Open a prompt to add (`add`) or drop the marked genes, else the
+    /// selected one, as markers of the selected cluster's label. Genes
+    /// already in (for adding) or not in (for dropping) are left out.
+    fn ask_markers(&mut self, add: bool) {
+        // Markers belong to a cell type: the cluster's label, else its top
+        // candidate, else one named here (a new one, for a type the panel lacks).
+        let label = self
+            .current_label()
+            .or_else(|| self.selected()?.candidates.first().map(|c| c.label.clone()));
+        match label {
+            Some(l) => self.ask_markers_of(l, add),
+            None => self.ask_marker_type(add),
+        }
+    }
+
+    /// Ask which cell type (existing or new) the chosen genes are markers
+    /// of, prefilled with the cluster's label.
+    fn ask_marker_type(&mut self, add: bool) {
+        let genes = self.chosen_genes();
+        if genes.is_empty() {
+            return;
+        }
+        self.prompt = Some(Prompt {
+            title: format!(
+                " {} {} as markers of which cell type? (a new name makes a new type) ",
+                if add { "add" } else { "drop" },
+                genes.join(", ")
+            ),
+            text: self.current_label().unwrap_or_default(),
+            pending: Pending::MarkerType { genes, add },
+        });
+    }
+
+    /// [`Self::ask_markers`] for cell type `label`.
+    fn ask_markers_of(&mut self, label: String, add: bool) {
+        let (Some(c), Some(r)) = (self.selected(), &self.round) else {
+            return;
+        };
+        let chosen = self.chosen_genes();
         let current: Vec<String> = r
             .markers_of(&label, &self.edits)
             .into_iter()
@@ -679,6 +864,15 @@ impl App {
                             });
                         }
                     }
+                    Pending::Keep { cluster } => {
+                        self.edits.push(Edit::Keep { cluster, reason });
+                    }
+                    Pending::Hide => self.hide(&reason),
+                    Pending::MixName { parts } => self.ask_mixed(reason, parts),
+                    Pending::MarkerType { genes, add } => {
+                        self.marked = genes;
+                        self.ask_markers_of(reason, add);
+                    }
                     Pending::Remember { label, id, file } => {
                         self.status = match remember_alias(&file, &label, &id, &reason) {
                             Ok(()) => format!("remembered {label} → {id} in {}", file.display()),
@@ -737,7 +931,19 @@ impl App {
                 return;
             }
         }
+        if self.help_open {
+            // Any key closes the guide.
+            self.help_open = false;
+            return;
+        }
+        if k.code == KeyCode::Char('?') {
+            self.help_open = true;
+            return;
+        }
         let armed = self.armed.take();
+        if self.settings_open {
+            return self.settings_key(k.code, armed);
+        }
         match k.code {
             KeyCode::Char('q') => {
                 let busy = self.child.as_ref().map(|c| c.2);
@@ -759,11 +965,9 @@ impl App {
                     );
                 }
             }
-            KeyCode::Char('r') => {
-                self.armed = armed;
-                self.start();
-            }
-            KeyCode::Char('x') => self.stop(),
+            KeyCode::Char('r') => self.settings_open = true,
+            // Stops a running pass or save; otherwise it is the pane's (hide, in genes).
+            KeyCode::Char('x') if self.child.is_some() => self.stop(),
             KeyCode::Char('s') => self.save(),
             KeyCode::Char('e') => {
                 self.status = if self.edits.is_empty() {
@@ -778,9 +982,29 @@ impl App {
         }
     }
 
+    /// Keys in the clustering and pass settings popup.
+    fn settings_key(&mut self, code: KeyCode, armed: Option<Armed>) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('r' | 'q') => self.settings_open = false,
+            KeyCode::Up => self.setting = self.setting.saturating_sub(1),
+            KeyCode::Down if self.setting + 1 < SETTINGS.len() => self.setting += 1,
+            KeyCode::Left | KeyCode::Right => {
+                SETTINGS[self.setting].adjust(&mut self.args, code == KeyCode::Right);
+                self.stale = self.round.is_some();
+            }
+            KeyCode::Enter => {
+                self.armed = armed;
+                self.start();
+                // Closed once running; open while a confirmation is pending.
+                self.settings_open = self.child.is_none();
+            }
+            _ => {}
+        }
+    }
+
     fn cycle(&self, forward: bool) -> Focus {
-        use Focus::{Clusters, Genes, Settings, Tree};
-        let order = [Clusters, Tree, Genes, Settings];
+        use Focus::{Clusters, Genes, Tree};
+        let order = [Clusters, Tree, Genes];
         let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
         let n = order.len();
         order[if forward {
@@ -810,6 +1034,7 @@ impl App {
                 match code {
                     KeyCode::Char(c @ '1'..='9') => self.pick_candidate(c as usize - '1' as usize),
                     KeyCode::Char('u') => self.unassign(),
+                    KeyCode::Char('k') => self.keep(),
                     KeyCode::Backspace | KeyCode::Delete => self.undo(),
                     KeyCode::Char(']') => self.next_flagged(),
                     KeyCode::Enter => self.jump_to_tree(),
@@ -831,6 +1056,27 @@ impl App {
                         }
                     }
                     KeyCode::Char('a') => self.ask_markers(true),
+                    KeyCode::Char('A') => self.ask_marker_type(true),
+                    KeyCode::Char('x') => {
+                        let genes = self.chosen_genes();
+                        for g in genes {
+                            self.hide(&g);
+                        }
+                        self.marked.clear();
+                    }
+                    KeyCode::Char('X') => {
+                        if let Some(g) = self.chosen_genes().first() {
+                            self.prompt = Some(Prompt {
+                                title: " hide genes matching (`*` = anything): ".into(),
+                                text: super::genes::suggest(g),
+                                pending: Pending::Hide,
+                            });
+                        }
+                    }
+                    KeyCode::Char('H') => {
+                        self.show_hidden = !self.show_hidden;
+                        self.gene_sel = 0;
+                    }
                     KeyCode::Char('d') => self.ask_markers(false),
                     KeyCode::Char('m') => {
                         self.gene_view = match self.gene_view {
@@ -845,6 +1091,8 @@ impl App {
                 }
             }
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
+            Focus::Tree if code == KeyCode::Char(' ') => self.toggle_tree_mark(),
+            Focus::Tree if code == KeyCode::Char('+') => self.mix_marked(),
             Focus::Tree if matches!(self.tree_mode, TreeMode::Ontology(_)) => {
                 self.ontology_key(code);
             }
@@ -867,14 +1115,6 @@ impl App {
                     (KeyCode::Right, Some(i)) => self.tree.fold(i, false),
                     (KeyCode::Esc, _) => self.focus = Focus::Clusters,
                     _ => {}
-                }
-            }
-            Focus::Settings => {
-                move_in(&mut self.setting, SETTINGS.len());
-                let inc = code == KeyCode::Right;
-                if inc || code == KeyCode::Left {
-                    SETTINGS[self.setting].adjust(&mut self.args, inc);
-                    self.stale = self.round.is_some();
                 }
             }
         }
@@ -956,10 +1196,10 @@ impl App {
         let n = r.clusters.len();
         let next = (1..=n)
             .map(|d| (self.cluster_sel + d) % n)
-            .find(|&i| r.clusters[i].flagged() && !self.edited(r.clusters[i].id));
+            .find(|&i| r.clusters[i].flagged() && !self.decided(r.clusters[i].id));
         match next {
             Some(i) => self.select_cluster(i),
-            None => self.status = "every flagged cluster has an edit".into(),
+            None => self.status = "every flagged cluster is decided".into(),
         }
     }
 
@@ -978,6 +1218,9 @@ fn decisions_file(round: &Path) -> PathBuf {
     let stem = crate::manifest::run::derive_out_prefix(&round.to_string_lossy());
     PathBuf::from(format!("{stem}.decisions.jsonl"))
 }
+
+/// Joins the parts of a mixed label (`Basophils+Mast_cells`).
+pub const MIX: &str = "+";
 
 /// The Cell Ontology's root, where browsing starts without a better place.
 const ROOT_TERM: &str = "CL:0000000";

@@ -36,6 +36,7 @@ fn round() -> RoundView {
         expression: None,
         markers: BTreeMap::from([("T".into(), BTreeSet::from(["CD3E".into()]))]),
         loose_cells: 1,
+        decided: BTreeSet::new(),
     }
 }
 
@@ -161,4 +162,39 @@ fn a_genes_fold_change_is_its_cluster_over_the_rest() {
     assert!((fc - (5.0f32 / 3.0).log2()).abs() < 1e-6, "{fc}");
     assert!(r.fold_change(1, "G").unwrap() < 0.0);
     assert_eq!(r.fold_change(0, "absent"), None);
+}
+
+#[test]
+fn keeping_a_label_is_a_decision_that_undoes_an_earlier_relabel() {
+    let r = round();
+    let keep = Edit::Keep {
+        cluster: 0,
+        reason: "the markers agree".into(),
+    };
+    let edits = [relabel(0, "B"), keep.clone()];
+    assert_eq!(
+        r.label_of(0, &edits).as_deref(),
+        Some("T"),
+        "back to the round's label"
+    );
+    assert_eq!(keep.cluster(), Some(0));
+    let d = decisions(&edits, &r);
+    assert_eq!(d.len(), 1, "one decision per cluster: the last");
+    assert_eq!(d[0].action.as_str(), "keep");
+    assert_eq!(d[0].cluster, [0]);
+    assert_eq!(d[0].label, None);
+    assert_eq!(d[0].rationale, "the markers agree");
+}
+
+#[test]
+fn a_rounds_history_says_which_clusters_are_decided() {
+    let root = tempfile::tempdir().unwrap();
+    let p = root.path().join("h.json");
+    std::fs::write(
+        &p,
+        r#"{"1": [{"action": "keep"}], "3": [{"action": "label"}], "4": [], "x": [{}]}"#,
+    )
+    .unwrap();
+    let d = decided_in(&p.to_string_lossy()).unwrap();
+    assert_eq!(d, BTreeSet::from([1, 3]));
 }
