@@ -92,36 +92,15 @@ pub fn sample_perm_draws(n_batches: usize, requested: usize) -> usize {
     }
 }
 
-pub fn run(
-    args: &AnnotateArgs,
-    plan: &EnrichmentPlan,
-    inputs: &EnrichmentInputs,
-) -> anyhow::Result<AnnotationOutputs> {
-    let out = plan.out.as_ref();
-    let g = inputs.gene_names.len();
+/// The marker-path scoring of one enrichment pass: marker enrichment per
+/// cluster against the gene-set null (and the sample-permutation null with
+/// enough batches), FDR, and the marker bootstrap when `args.n_boot > 0`.
+/// Writes nothing; [`run`] writes the outputs, and a relabel round rescores
+/// through this on its merged clusters and edited panel.
+pub fn score(args: &AnnotateArgs, inputs: &EnrichmentInputs) -> anyhow::Result<AnnotateOutputs> {
     let n_clusters = inputs.n_clusters;
     let n_batches = inputs.n_batches;
     let profile_gk = &inputs.profile_gk;
-    let cluster_names = axis_id_names("K", n_clusters);
-    info!("Cluster expression: {g} genes × {n_clusters} clusters");
-    let profile_max = profile_gk.iter().fold(0f32, |m, &v| m.max(v));
-    if profile_max <= 1e-12 {
-        anyhow::bail!(
-            "Cluster expression matrix is all zero — every cell-axis cluster_label is \
-             out of range (>= n_clusters). Check the cluster file's barcodes match the \
-             data backend, or that the manifest's `clusters` path resolves correctly."
-        );
-    }
-
-    ///////////////////////////////////
-    // GO/GMT ontology gene-set mode //
-    ///////////////////////////////////
-    // Descriptive module-score signature on the cluster profile (no cell-level
-    // labels, no permutation, no tree). Diverges from the marker path entirely.
-    if plan.ontology_mode {
-        return run_ontology_gene_sets(args, out, profile_gk, &inputs.gene_names, &cluster_names);
-    }
-
     // pb_membership[batch, cluster] = (# cells in batch with cluster id) / batch_size.
     let pb_membership_pk = build_pb_membership(
         &inputs.batch_labels,
@@ -209,6 +188,38 @@ pub fn run(
         args.num_perm,
     );
 
+    annotate(&group, &markers_gc, &inputs.celltype_names, &config)
+}
+
+pub fn run(
+    args: &AnnotateArgs,
+    plan: &EnrichmentPlan,
+    inputs: &EnrichmentInputs,
+) -> anyhow::Result<AnnotationOutputs> {
+    let out = plan.out.as_ref();
+    let g = inputs.gene_names.len();
+    let n_clusters = inputs.n_clusters;
+    let profile_gk = &inputs.profile_gk;
+    let cluster_names = axis_id_names("K", n_clusters);
+    info!("Cluster expression: {g} genes × {n_clusters} clusters");
+    let profile_max = profile_gk.iter().fold(0f32, |m, &v| m.max(v));
+    if profile_max <= 1e-12 {
+        anyhow::bail!(
+            "Cluster expression matrix is all zero — every cell-axis cluster_label is \
+             out of range (>= n_clusters). Check the cluster file's barcodes match the \
+             data backend, or that the manifest's `clusters` path resolves correctly."
+        );
+    }
+
+    ///////////////////////////////////
+    // GO/GMT ontology gene-set mode //
+    ///////////////////////////////////
+    // Descriptive module-score signature on the cluster profile (no cell-level
+    // labels, no permutation, no tree). Diverges from the marker path entirely.
+    if plan.ontology_mode {
+        return run_ontology_gene_sets(args, out, profile_gk, &inputs.gene_names, &cluster_names);
+    }
+
     let AnnotateOutputs {
         q_kc,
         es_kc,
@@ -219,7 +230,7 @@ pub fn run(
         cell_annotation_nc,
         argmax_labels,
         bootstrap,
-    } = annotate(&group, &markers_gc, &inputs.celltype_names, &config)?;
+    } = score(args, inputs)?;
 
     /////////////
     // Outputs //

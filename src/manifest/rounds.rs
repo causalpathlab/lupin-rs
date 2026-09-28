@@ -341,6 +341,13 @@ pub struct RelabelArgs {
 
     #[arg(
         long,
+        help = "Refresh bootstrap support when rescoring the round (slower; it also runs \
+                whenever the round edits markers)"
+    )]
+    pub support: bool,
+
+    #[arg(
+        long,
         conflicts_with_all = ["next", "out", "watch"],
         help = "Validate as --next would, write nothing, and print what the decisions would \
                 change as JSON (marker edits re-rank cell types approximately)"
@@ -388,16 +395,16 @@ pub fn run_relabel(args: &RelabelArgs) -> Result<()> {
         ensure_latest(&source.file, &latest)?;
         println!(
             "{}",
-            serde_json::to_string(&preview(&source, decisions, &decisions_dir)?)?
+            serde_json::to_string(&preview(&source, decisions, &decisions_dir, args.support)?)?
         );
         return Ok(());
     }
     let written = match &args.out {
-        Some(out) => relabel(&source, decisions, &decisions_dir, out)?,
+        Some(out) => relabel(&source, decisions, &decisions_dir, out, args.support)?,
         None if args.next => {
             let chain = Chain::of(&source.file);
             let lock = chain.lock()?;
-            chain.write_next(&lock, &source.file, decisions, &decisions_dir)?
+            chain.write_next(&lock, &source.file, decisions, &decisions_dir, args.support)?
         }
         None => anyhow::bail!("give -o <prefix>, or --next to continue -f's chain"),
     };
@@ -510,11 +517,18 @@ impl Chain {
         made_on: &Path,
         decisions: Vec<Decision>,
         decisions_dir: &Path,
+        support: bool,
     ) -> Result<PathBuf> {
         let (k, latest) = self.latest();
         ensure_latest(made_on, &latest)?;
         let source = run::load(&latest.to_string_lossy())?;
-        relabel(&source, decisions, decisions_dir, &self.round_prefix(k + 1))
+        relabel(
+            &source,
+            decisions,
+            decisions_dir,
+            &self.round_prefix(k + 1),
+            support,
+        )
     }
 
     /// Hold the chain's lock, waiting up to [`LOCK_WAIT`] for another writer.
@@ -634,6 +648,7 @@ fn relabel(
     decisions: Vec<Decision>,
     decisions_dir: &Path,
     out: &str,
+    support: bool,
 ) -> Result<PathBuf> {
     let manifest_path = annotated_path(&source.file, out);
     anyhow::ensure!(
@@ -685,8 +700,42 @@ fn relabel(
         None => None,
     };
 
+    // Rescore the new clusters and panel when the pass cached its statistics.
+    // The bootstrap is the slow part: it runs after marker edits, which are
+    // what it guards, or on request; otherwise support is marked stale.
+    let n_boot = if support || p.marker_history.is_some() {
+        RESCORE_BOOT
+    } else {
+        0
+    };
+    let rescored = super::recalibrate::rescore(source, &p.cells, &p.markers, n_boot)?;
+    let tables = rescored
+        .as_ref()
+        .map(|r| write_rescored(r, out))
+        .transpose()?;
+
     let mut next = source.copy_to(manifest_path)?;
     let rel = |p: &str| Some(rel_to_manifest(&next.dir, p));
+    if let Some((q, q_values, support_path)) = &tables {
+        let a = &mut next.manifest.annotate;
+        a.cluster_celltype_q = rel(q);
+        a.cluster_celltype_q_values = rel(q_values);
+        a.cluster_celltype_support = support_path.as_deref().and_then(rel);
+        let rounds = source
+            .manifest
+            .annotate
+            .stats
+            .as_ref()
+            .and_then(|s| s.get("rounds_of_curation"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            + 1;
+        a.stats = Some(json!({
+            "kind": "post_selection",
+            "rounds_of_curation": rounds,
+            "support_stale": support_path.is_none(),
+        }));
+    }
     if let Some((panel, hist)) = &marker_paths {
         next.manifest.annotate.markers = rel(panel);
         next.manifest.annotate.marker_history = rel(hist);
@@ -700,6 +749,36 @@ fn relabel(
     Ok(next.file)
 }
 
+/// Bootstrap resamples when a relabel round rescores its support.
+const RESCORE_BOOT: usize = 50;
+
+/// Write a rescored round's cluster × type tables under `out`: the Q
+/// probabilities, the FDR q-values and, when the bootstrap ran, the support.
+fn write_rescored(
+    r: &super::recalibrate::Rescored,
+    out: &str,
+) -> Result<(String, String, Option<String>)> {
+    let rows = r.row_names();
+    let q = format!("{out}.cluster_celltype_q.parquet");
+    r.q_probs
+        .to_parquet_with_names(&q, (Some(&rows), Some("cluster")), Some(&r.types))?;
+    let q_values = format!("{out}.cluster_celltype_q_values.parquet");
+    r.q_values
+        .to_parquet_with_names(&q_values, (Some(&rows), Some("cluster")), Some(&r.types))?;
+    let support = match &r.support {
+        Some(m) => {
+            let path = format!("{out}.cluster_celltype_support.parquet");
+            let mut cols = r.types.clone();
+            cols.push(UNASSIGNED_LABEL.into());
+            m.to_parquet_with_names(&path, (Some(&rows), Some("cluster")), Some(&cols))?;
+            Some(path)
+        }
+        None => None,
+    };
+    info!("wrote the rescored round's q and support tables under {out}");
+    Ok((q, q_values, support))
+}
+
 /////////////
 // preview //
 /////////////
@@ -711,7 +790,12 @@ const PREVIEW_CALLS: usize = 5;
 /// label before and after and, when the round records a cluster expression
 /// profile, the cell types re-ranked against the edited marker panel (an
 /// approximation of the next `lupin annotate`, see [`approx_calls`]).
-fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> Result<Value> {
+fn preview(
+    source: &Loaded,
+    decisions: Vec<Decision>,
+    decisions_dir: &Path,
+    support: bool,
+) -> Result<Value> {
     let before = read_cells(source)?;
     let (panel_before, _) = read_markers(source)?;
     let named: BTreeSet<ClusterId> = decisions.iter().flat_map(|d| d.cluster.clone()).collect();
@@ -732,28 +816,48 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
         .filter_map(|(b, a)| b.filter(|b| named.contains(b)).and(*a))
         .collect();
 
-    let profile = expression_profile(source, &after.cells)?;
-    // `calls_before` is `None` when marker edits cannot move the calls.
-    let (calls_before, calls_after) = match &profile {
-        Some((table, groups)) => {
-            let [b, a] = approx_calls(table, groups, [&panel_before, &after.markers])?;
-            (Some(b), a)
-        }
-        None => {
-            // No profile: the round's recorded calls.
-            let recorded = digest(&before.clusters, &before.labels, &read_evidence(source)?);
-            let calls: RankedCalls = recorded
+    // The round's recorded calls: the "before" of a rescoring, and the only
+    // calls there are when nothing can be rescored.
+    let recorded: Calls = digest(&before.clusters, &before.labels, &read_evidence(source)?)
+        .into_iter()
+        .map(|(id, d)| {
+            let calls = d
+                .calls
                 .into_iter()
-                .map(|(id, d)| (id, d.calls.into_iter().map(|c| (c.label, None)).collect()))
+                .map(|c| CallView {
+                    label: c.label,
+                    score: None,
+                    q: c.q,
+                    support: c.support,
+                })
                 .collect();
-            (None, calls)
-        }
+            (id, calls)
+        })
+        .collect();
+
+    // Best first: rescored with the round's own scoring when the pass cached
+    // its statistics, else ranked approximately on the expression profile,
+    // else as recorded.
+    let n_boot = if support || after.marker_history.is_some() {
+        RESCORE_BOOT
+    } else {
+        0
     };
-    let top = |calls: &RankedCalls, id: &ClusterId| {
+    let (stats, calls_before, calls_after): (&str, Option<Calls>, Calls) = if let Some(r) =
+        super::recalibrate::rescore(source, &after.cells, &after.markers, n_boot)?
+    {
+        ("recalibrated", Some(recorded), rescored_calls(&r))
+    } else if let Some((table, groups)) = expression_profile(source, &after.cells)? {
+        let [b, a] = approx_calls(&table, &groups, [&panel_before, &after.markers])?;
+        ("approximate", Some(scored_calls(b)), scored_calls(a))
+    } else {
+        ("recorded", None, recorded)
+    };
+    let top = |calls: &Calls, id: &ClusterId| {
         calls
             .get(id)
             .and_then(|c| c.first())
-            .map(|(l, _)| l.clone())
+            .map(|c| c.label.clone())
     };
 
     let mut clusters = serde_json::Map::new();
@@ -771,7 +875,7 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
             .into_iter()
             .flatten()
             .take(PREVIEW_CALLS)
-            .map(|(label, score)| json!({"label": label, "score": score, "q": null, "support": null}))
+            .map(|c| json!({"label": c.label, "score": c.score, "q": c.q, "support": c.support}))
             .collect();
         clusters.insert(
             id.to_string(),
@@ -790,11 +894,70 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
         .filter(|(b, a)| b != a)
         .count();
     Ok(json!({
-        "rescored": profile.is_some(),
+        "rescored": stats != "recorded",
+        "stats": stats,
+        "support_stale": stats == "recalibrated" && n_boot == 0,
         "clusters": clusters,
         "cells_changed": cells_changed,
         "markers": marker_diff(&panel_before, &after.markers),
     }))
+}
+
+/// One ranked call as a preview reports it.
+struct CallView {
+    label: String,
+    /// The approximate module score, when that is how it was ranked.
+    score: Option<f32>,
+    q: Option<f32>,
+    support: Option<f32>,
+}
+
+/// Per cluster, its calls best first.
+type Calls = BTreeMap<ClusterId, Vec<CallView>>;
+
+fn scored_calls(ranked: RankedCalls) -> Calls {
+    ranked
+        .into_iter()
+        .map(|(id, v)| {
+            let calls = v
+                .into_iter()
+                .map(|(label, score)| CallView {
+                    label,
+                    score,
+                    q: None,
+                    support: None,
+                })
+                .collect();
+            (id, calls)
+        })
+        .collect()
+}
+
+/// A rescored round's calls: support first (more is better), then q.
+fn rescored_calls(r: &super::recalibrate::Rescored) -> Calls {
+    r.ids
+        .iter()
+        .enumerate()
+        .map(|(row, id)| {
+            let mut calls: Vec<CallView> = r
+                .types
+                .iter()
+                .enumerate()
+                .map(|(t, label)| CallView {
+                    label: label.to_string(),
+                    score: None,
+                    q: Some(r.q_values[(row, t)]).filter(|q| q.is_finite()),
+                    support: r.support.as_ref().map(|s| s[(row, t)]),
+                })
+                .collect();
+            calls.sort_by(|a, b| {
+                let s = |c: &CallView| c.support.unwrap_or(f32::NEG_INFINITY);
+                let q = |c: &CallView| c.q.unwrap_or(f32::INFINITY);
+                s(b).total_cmp(&s(a)).then(q(a).total_cmp(&q(b)))
+            });
+            (*id, calls)
+        })
+        .collect()
 }
 
 /// Per cell type, the features the edits add and drop.
@@ -1145,7 +1308,7 @@ fn apply_batch(
         .collect::<Option<Vec<_>>>()
         .and_then(|r| r.first().map(|r| resolve(&dir, r)))
         .context("every watched decision must name the round it was made on (`round`)")?;
-    chain.write_next(lock, Path::new(&made_on), ds, &dir)
+    chain.write_next(lock, Path::new(&made_on), ds, &dir, false)
 }
 
 /// Stamp the status with the chain as it is on disk and write it whole,

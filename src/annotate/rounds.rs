@@ -37,6 +37,19 @@ pub struct Digest {
     pub terms: Vec<Term>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cl: Option<ClPlacement>,
+    /// The best call beside the cluster's label, to flag a label the
+    /// evidence does not back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<EvidenceCheck>,
+}
+
+/// The top call and whether the cluster's label agrees with it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct EvidenceCheck {
+    pub top: String,
+    pub q: Option<f32>,
+    pub support: Option<f32>,
+    pub agrees: bool,
 }
 
 /// A candidate label with its FDR q-value and bootstrap support, where known.
@@ -124,6 +137,15 @@ pub fn digest(
             .map(|t| t.iter().take(TOP).cloned().collect())
             .unwrap_or_default();
         d.cl = ev.cl.get(id).cloned();
+        d.evidence = d.calls.first().map(|c| EvidenceCheck {
+            top: c.label.clone(),
+            q: c.q,
+            support: c.support,
+            agrees: d
+                .label
+                .as_deref()
+                .is_some_and(|l| label_key(l) == label_key(&c.label)),
+        });
     }
     out
 }

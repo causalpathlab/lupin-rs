@@ -78,6 +78,9 @@ pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &Loaded) -> Result<()
         .collect();
     rounds::write_clusters(&clusters_path, &inputs.cell_names, &ids)?;
     outputs.clusters = Some(clusters_path);
+    if !plan.ontology_mode {
+        outputs.stats_cache = crate::manifest::recalibrate::write_cache(&args.out, &inputs)?;
+    }
     let pass = if plan.ontology_mode {
         Pass::GeneSets
     } else {
@@ -257,6 +260,20 @@ fn record(
     }
     // The previous round's decisions are in its own log; this round made none.
     loaded.manifest.annotate.log = None;
+    // A fresh pass: its statistics are not post-selection.
+    loaded.manifest.annotate.stats = None;
+    if matches!(pass, Pass::Markers(_)) {
+        // Enrichment caches its statistics; projection has none to cache.
+        loaded.manifest.annotate.stats_cache = out.stats_cache.clone().map(|c| {
+            let rel = |p: &str| crate::manifest::run::rel_to_manifest(&loaded.dir, p);
+            crate::manifest::run::StatsCache {
+                gene_sum: rel(&c.gene_sum),
+                batch_profile: rel(&c.batch_profile),
+                gene_weight: rel(&c.gene_weight),
+                cell_batch: rel(&c.cell_batch),
+            }
+        });
+    }
     let recorded = loaded
         .manifest
         .annotate
@@ -397,7 +414,7 @@ fn load_enrichment_inputs(
     };
 
     let nb_fisher = nb_fisher_weights(&loaded.run_prefix(), data_vec, &gene_names)?;
-    let (profile_gk, pb_gene_gp) = aggregate_expression(
+    let (profile_gk, pb_gene_gp, gene_sum_kg) = aggregate_expression(
         plan,
         data_vec,
         &cluster_labels,
@@ -419,6 +436,8 @@ fn load_enrichment_inputs(
         celltype_names,
         profile_gk,
         pb_gene_gp,
+        gene_sum_kg,
+        gene_weights: nb_fisher,
     })
 }
 
@@ -524,7 +543,7 @@ fn aggregate_expression(
     n_batches: usize,
     g: usize,
     nb_fisher: &[f32],
-) -> Result<(Mat, Option<Mat>)> {
+) -> Result<(Mat, Option<Mat>, Vec<f64>)> {
     if plan.ontology_mode {
         let gene_sum_kg = accumulate_gene_sum(data_vec, cluster_labels, n_clusters, g, BLOCK_SIZE)?;
         // μ[g, c] = w_NBF[g] · (Σ counts[g, n ∈ c]) / size_sum[c]; Simplex
@@ -533,6 +552,7 @@ fn aggregate_expression(
         return Ok((
             weighted_mean_profile(&gene_sum_kg, n_clusters, g, nb_fisher),
             None,
+            gene_sum_kg,
         ));
     }
 
@@ -548,6 +568,7 @@ fn aggregate_expression(
     Ok((
         weighted_mean_profile(&gene_sum_kg, n_clusters, g, nb_fisher),
         Some(weighted_mean_profile(&gene_sum_pg, n_batches, g, nb_fisher)),
+        gene_sum_kg,
     ))
 }
 

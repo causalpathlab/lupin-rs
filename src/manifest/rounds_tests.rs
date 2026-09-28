@@ -67,7 +67,7 @@ fn next_from(from: &Path, text: &str) -> Result<PathBuf> {
     let chain = Chain::of(&source.file);
     let lock = chain.lock()?;
     let ds = parse_decisions(numbered(text), "test")?;
-    chain.write_next(&lock, &source.file, ds, Path::new("."))
+    chain.write_next(&lock, &source.file, ds, Path::new("."), false)
 }
 
 /// Start a watch on `src`'s chain with decisions at `decisions`.
@@ -467,7 +467,7 @@ fn round_with_profile(root: &Path) -> PathBuf {
 fn preview_of(src: &Path, text: &str) -> Value {
     let source = run::load(&src.to_string_lossy()).unwrap();
     let ds = parse_decisions(numbered(text), "test").unwrap();
-    preview(&source, ds, Path::new(".")).unwrap()
+    preview(&source, ds, Path::new("."), false).unwrap()
 }
 
 #[test]
@@ -547,4 +547,179 @@ fn preview_refuses_a_stale_round_and_reports_unscored_rounds() {
     .unwrap_err()
     .to_string();
     assert!(err.contains("not the latest round"), "{err}");
+}
+
+/// A round an enrichment pass wrote, with its statistics cached: 60 genes,
+/// clusters 0..3 of 10 cells each over 4 batches; CT1, CT2 and CT3 own five
+/// markers each, raised in clusters 0, 1 and 2.
+fn enriched_round(root: &Path) -> PathBuf {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        a: crate::annotate_cmd::AnnotateCliArgs,
+    }
+    let dir = root.join("e");
+    fs::create_dir_all(&dir).unwrap();
+    let at = |f: &str| dir.join(f).to_string_lossy().into_owned();
+    let (g, k, per) = (60usize, 3usize, 10usize);
+    let genes: Vec<Box<str>> = (0..g).map(|i| format!("GENE{i}").into()).collect();
+    let cells: Vec<Box<str>> = (0..k * per).map(|i| format!("c{i}").into()).collect();
+    let ids: Vec<Option<ClusterId>> = (0..k * per).map(|i| Some((i / per) as ClusterId)).collect();
+    write_clusters(&at("run.clusters.parquet"), &cells, &ids).unwrap();
+    let batches: Vec<Option<ClusterId>> =
+        (0..k * per).map(|i| Some((i % 4) as ClusterId)).collect();
+    write_clusters(&at("run.cell_batch.parquet"), &cells, &batches).unwrap();
+    let labels: Vec<Option<String>> = ids
+        .iter()
+        .map(|id| Some(format!("CT{}", id.unwrap() + 1)))
+        .collect();
+    write_argmax(&at("run.argmax.tsv"), &cells, &labels, &vec![0.9; k * per]).unwrap();
+
+    let mut sums = Mat::zeros(g, k);
+    for i in 0..g {
+        for c in 0..k {
+            sums[(i, c)] = 10.0 + ((i * 7 + c * 3) % 5) as f32;
+        }
+    }
+    for c in 0..k {
+        for m in 0..5 {
+            sums[(c * 5 + m, c)] *= 6.0;
+        }
+    }
+    let kcols: Vec<Box<str>> = (0..k).map(|c| format!("K{c}").into()).collect();
+    sums.to_parquet_with_names(
+        &at("run.cluster_gene_sum.parquet"),
+        (Some(&genes), Some("gene")),
+        Some(&kcols),
+    )
+    .unwrap();
+    sums.to_parquet_with_names(
+        &at("run.cluster_expression.parquet"),
+        (Some(&genes), Some("gene")),
+        Some(&kcols),
+    )
+    .unwrap();
+    let mut pb = Mat::zeros(g, 4);
+    for i in 0..g {
+        for b in 0..4 {
+            pb[(i, b)] =
+                (0..k).map(|c| sums[(i, c)]).sum::<f32>() / 300.0 * (1.0 + 0.05 * b as f32);
+        }
+    }
+    let bcols: Vec<Box<str>> = (0..4).map(|b| format!("B{b}").into()).collect();
+    pb.to_parquet_with_names(
+        &at("run.batch_profile.parquet"),
+        (Some(&genes), Some("gene")),
+        Some(&bcols),
+    )
+    .unwrap();
+    let mut w = Mat::zeros(g, 1);
+    for i in 0..g {
+        w[(i, 0)] = 1.0;
+    }
+    w.to_parquet_with_names(
+        &at("run.gene_weight.parquet"),
+        (Some(&genes), Some("gene")),
+        Some(&["weight".into()]),
+    )
+    .unwrap();
+    let mut panel = String::from("gene\tcelltype\n");
+    for c in 0..k {
+        for m in 0..5 {
+            panel.push_str(&format!("GENE{}\tCT{}\n", c * 5 + m, c + 1));
+        }
+    }
+    fs::write(dir.join("markers.tsv"), panel).unwrap();
+
+    let cli = Cli::parse_from(["x", "-o", "o", "-m", "markers.tsv"]);
+    let settings =
+        serde_json::to_value(crate::annotate_cmd::build_enrichment_args(&cli.a)).unwrap();
+    let mut m = RunManifest::new(crate::manifest::run::RunKind::Topic, "run");
+    m.cluster.clusters = Some("run.clusters.parquet".into());
+    let a = &mut m.annotate;
+    a.argmax = Some("run.argmax.tsv".into());
+    a.markers = Some("markers.tsv".into());
+    a.expression_clusters = Some("run.clusters.parquet".into());
+    a.cluster_expression = Some("run.cluster_expression.parquet".into());
+    a.settings = Some(json!({ "enrichment": settings }));
+    a.stats_cache = Some(crate::manifest::run::StatsCache {
+        gene_sum: "run.cluster_gene_sum.parquet".into(),
+        batch_profile: "run.batch_profile.parquet".into(),
+        gene_weight: "run.gene_weight.parquet".into(),
+        cell_batch: "run.cell_batch.parquet".into(),
+    });
+    let src = dir.join("run.senna.json");
+    m.save(&src).unwrap();
+    src
+}
+
+#[test]
+fn a_relabel_round_is_rescored_on_its_merged_clusters() {
+    let root = tempfile::tempdir().unwrap();
+    let src = enriched_round(root.path());
+    let d = root.path().join("d.jsonl");
+    fs::write(
+        &d,
+        line(
+            json!({"clusters": [1, 2], "action": "merge", "rationale": "r", "decided_by": "user"}),
+        ),
+    )
+    .unwrap();
+    run_relabel(&args(&src, &d, Some(&root.path().join("r1/run")))).unwrap();
+
+    let r1 = run::load(&root.path().join("r1/run.senna.json").to_string_lossy()).unwrap();
+    let a = &r1.manifest.annotate;
+    let q = read_table(&resolve(
+        &r1.dir,
+        a.cluster_celltype_q_values.as_deref().unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(
+        q.rows,
+        vec![0, 3],
+        "the merged cluster is scored under its new id"
+    );
+    let stats = a.stats.as_ref().unwrap();
+    assert_eq!(stats["kind"], "post_selection");
+    assert_eq!(stats["rounds_of_curation"], 1);
+    assert_eq!(stats["support_stale"], true, "no marker edit, no bootstrap");
+    assert!(a.cluster_celltype_support.is_none());
+
+    let summary: Value = serde_json::from_str(
+        &fs::read_to_string(resolve(&r1.dir, a.cluster_summary.as_deref().unwrap())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(summary["0"]["evidence"]["top"], "CT1");
+    assert_eq!(summary["0"]["evidence"]["agrees"], true);
+    assert!(
+        summary["0"]["evidence"]["q"].as_f64().unwrap() < 0.1,
+        "{summary}"
+    );
+}
+
+#[test]
+fn a_marker_edit_refreshes_support_and_preview_is_rescored() {
+    let root = tempfile::tempdir().unwrap();
+    let src = enriched_round(root.path());
+    let edit = line(
+        json!({"action": "markers_drop", "label": "CT3", "features": ["GENE14"], "rationale": "r", "decided_by": "user"}),
+    );
+
+    let p = preview_of(&src, &edit);
+    assert_eq!(p["stats"], "recalibrated");
+    assert_eq!(p["support_stale"], false);
+
+    let d = root.path().join("d.jsonl");
+    fs::write(&d, edit).unwrap();
+    run_relabel(&args(&src, &d, Some(&root.path().join("r1/run")))).unwrap();
+    let r1 = run::load(&root.path().join("r1/run.senna.json").to_string_lossy()).unwrap();
+    let a = &r1.manifest.annotate;
+    assert_eq!(a.stats.as_ref().unwrap()["support_stale"], false);
+    let support = read_table(&resolve(
+        &r1.dir,
+        a.cluster_celltype_support.as_deref().unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(support.rows, vec![0, 1, 2]);
 }

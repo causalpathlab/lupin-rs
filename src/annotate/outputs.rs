@@ -84,4 +84,6 @@ pub struct AnnotationOutputs {
     pub cluster_celltype_support: Option<String>,
     /// Per-cell cluster ids whose values match the cluster tables' `K{id}` rows.
     pub clusters: Option<String>,
+    /// The pass's sufficient statistics, for rescoring later rounds.
+    pub stats_cache: Option<crate::manifest::run::StatsCache>,
 }

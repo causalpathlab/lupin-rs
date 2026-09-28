@@ -340,7 +340,7 @@ fn run_projection_from_files(
     Ok(())
 }
 
-fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
+pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
     AnnotateArgs {
         clusters: args.clusters.clone(),
         knn: args.knn.unwrap_or(15),

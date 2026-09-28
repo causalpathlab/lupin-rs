@@ -319,6 +319,14 @@ pub struct RunAnnotate {
     /// the pass that wrote it, which later rounds' merges do not change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expression_clusters: Option<String>,
+    /// What an enrichment pass cached so later rounds can be rescored
+    /// without re-reading counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats_cache: Option<StatsCache>,
+    /// How this round's statistics were made (e.g. post-selection after
+    /// curation), for readers to caveat them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<Value>,
     /// Every round's marker edits per cell type, newest first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marker_history: Option<String>,
@@ -348,6 +356,17 @@ pub struct RunAnnotate {
     pub settings: Option<Value>,
     #[serde(flatten)]
     pub extra: Extra,
+}
+
+/// An enrichment pass's sufficient statistics, manifest-relative: the raw
+/// per-cluster gene sums (columns `K{id}` of `annotate.expression_clusters`),
+/// the per-batch profile, the per-gene weights and each cell's batch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatsCache {
+    pub gene_sum: String,
+    pub batch_profile: String,
+    pub gene_weight: String,
+    pub cell_batch: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

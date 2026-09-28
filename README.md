@@ -116,6 +116,18 @@ that would change. When the round records a cluster expression profile
 a marker module score, a quick approximation of what the next `lupin annotate`
 would call.
 
+Rounds of an enrichment run are rescored. The pass caches its sufficient
+statistics (per-cluster gene sums, the per-batch profile, gene weights and
+each cell's batch; `annotate.stats_cache`), and every relabel round reruns the
+same scoring on its merged clusters and edited marker panel without reading
+the counts: fresh q-values every round, and bootstrap support whenever the
+round edits markers or `--support` asks for it (otherwise support is marked
+stale). These statistics come after curation on the same data, so the round
+records `annotate.stats = {kind: post_selection, rounds_of_curation, support_stale}`;
+a fresh `lupin annotate` pass is the confirmatory one. Each cluster's summary
+entry carries `evidence` (the top call, its q and support, and whether the
+cluster's label agrees). `--preview` uses the same rescoring when it can.
+
 A round is never overwritten, whichever way it is written.
 
 Decisions can also revise the marker panel: `markers_add` / `markers_drop`
