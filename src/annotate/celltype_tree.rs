@@ -80,6 +80,19 @@ fn normalise(s: &str) -> String {
     s
 }
 
+/// A normalised label with each plural word made singular: a trailing `s`
+/// dropped from words longer than three letters that do not end in `ss`.
+fn singular(normalised: &str) -> String {
+    normalised
+        .split(' ')
+        .map(|w| match w.strip_suffix('s') {
+            Some(stem) if w.len() > 3 && !stem.ends_with('s') => stem,
+            _ => w,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 impl ClTerms {
     /// Parse the `[Term]` stanzas of an OBO file: `id`, `name`, exact
     /// synonyms, `is_a` parents and subsets; obsolete terms are skipped.
@@ -142,8 +155,9 @@ impl ClTerms {
         self.name_of.get(id).map(String::as_str)
     }
 
-    /// Match panel labels to terms by name or exact synonym. A label that
-    /// matches no term, or several, stays unmapped rather than guessed.
+    /// Match panel labels to terms by name or exact synonym, as written or
+    /// with plural words made singular. A label that matches no term, or
+    /// several, stays unmapped rather than guessed.
     #[must_use]
     pub fn map_labels<'a>(
         &self,
@@ -152,7 +166,13 @@ impl ClTerms {
         let mut mapped = BTreeMap::new();
         let mut unmapped = Vec::new();
         for label in labels {
-            match self.by_name.get(&normalise(label)) {
+            // As written, else with plural words made singular.
+            let exact = normalise(label);
+            let found = self
+                .by_name
+                .get(&exact)
+                .or_else(|| self.by_name.get(&singular(&exact)));
+            match found {
                 Some(ids) if ids.len() == 1 => {
                     mapped.insert(
                         label.to_string(),

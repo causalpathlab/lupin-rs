@@ -41,7 +41,8 @@ pub fn is_first_round(source: &Loaded) -> bool {
 /// Group the panel at `markers` before a marker pass writing under `out`,
 /// and write the groups to `{out}.celltype_tree.json`. `obo` and `label_cl`
 /// are the user's; a label map is written for the pass when the groups come
-/// from the Cell Ontology and the user named none.
+/// from the Cell Ontology, every panel type matched a term, and the user
+/// named no map.
 pub fn prepare(
     markers: &str,
     out: &str,
@@ -56,8 +57,25 @@ pub fn prepare(
     mkdir_parent(out)?;
     fs::write(format!("{out}{TREE}"), serde_json::to_string_pretty(&tree)?)?;
 
+    // The ontology walk needs every panel type on a term; with any left
+    // unmatched it would refuse the whole pass, so it is not wired in then.
+    let unmatched: Vec<&str> = tree
+        .groups
+        .iter()
+        .flat_map(|g| g.members.iter())
+        .filter(|m| !tree.label_cl.contains_key(*m))
+        .map(String::as_str)
+        .collect();
+    if found.is_some() && label_cl.is_none() && !tree.label_cl.is_empty() && !unmatched.is_empty() {
+        log::warn!(
+            "{} panel type(s) match no Cell Ontology term ({}); the ontology walk is skipped. \
+             Map them with --label-cl to run it",
+            unmatched.len(),
+            unmatched.join(", ")
+        );
+    }
     let ontology = match (found, label_cl) {
-        (Some(obo), None) if !tree.label_cl.is_empty() => {
+        (Some(obo), None) if !tree.label_cl.is_empty() && unmatched.is_empty() => {
             // Labels are already in the form the pass scores them under.
             let map = format!("{out}{LABEL_CL}");
             let lines: Vec<Box<str>> = tree
@@ -122,11 +140,26 @@ pub fn finish(manifest: &Path, tree: &TypeTree, coarse: bool) -> Result<()> {
     );
     let fine_path = format!("{out}{FINE_ARGMAX}");
     fs::copy(&argmax_path, &fine_path)?;
-    let labels: Vec<Option<String>> = cells
-        .clusters
-        .iter()
-        .map(|id| id.and_then(|id| calls.get(&id).cloned().flatten()))
-        .collect();
+    // Enrichment calls whole clusters, so the cluster's group call is each
+    // cell's; projection calls cells, so each keeps the group of its own fine
+    // label, and a cell the pass abstained on stays unassigned.
+    let labels: Vec<Option<String>> = if probs.is_some() {
+        cells
+            .clusters
+            .iter()
+            .map(|id| id.and_then(|id| calls.get(&id).cloned().flatten()))
+            .collect()
+    } else {
+        cells
+            .labels
+            .iter()
+            .map(|l| {
+                l.as_deref()
+                    .and_then(|l| index.get(&crate::annotate::markers::label_key(l)))
+                    .map(|g| (*g).to_string())
+            })
+            .collect()
+    };
     write_argmax(&argmax_path, &cells.names, &labels, &cells.probs)?;
     let named = calls.values().flatten().count();
     info!("first round: {named} cluster(s) called at the coarse level; fine labels in {fine_path}");

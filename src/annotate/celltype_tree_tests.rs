@@ -71,7 +71,7 @@ fn obo_terms_keep_names_exact_synonyms_parents_and_release() {
     let t = ClTerms::parse(OBO);
     assert_eq!(t.release.as_deref(), Some("test/2026-01-01"));
     assert_eq!(t.term_count(), 6, "the obsolete term is skipped");
-    let (mapped, unmapped) = t.map_labels(["CT1", "ct3_alias", "CT3 loose", "CT9", "CT7"]);
+    let (mapped, unmapped) = t.map_labels(["CT1", "ct3_alias", "CT3 loose", "CT9", "CT7", "CT1s"]);
     assert_eq!(mapped["CT1"], "CL:9000011");
     assert_eq!(
         mapped["ct3_alias"], "CL:9000021",

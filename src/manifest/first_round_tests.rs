@@ -162,3 +162,68 @@ fn a_fine_first_round_only_records_the_groups() {
     assert!(loaded.manifest.annotate.celltype_tree.is_some());
     assert!(loaded.manifest.annotate.fine_argmax.is_none());
 }
+
+#[test]
+fn an_unmatched_panel_type_keeps_the_ontology_walk_off() {
+    let root = tempfile::tempdir().unwrap();
+    let (obo, _) = setup(root.path());
+    let markers = root.path().join("m2.tsv");
+    // CT_x matches no term: the walk would refuse the pass, so it is not wired.
+    fs::write(
+        &markers,
+        "gene\tcelltype\nGENE1\tCT1\nGENE2\tCT 2\nGENE9\tCT x\n",
+    )
+    .unwrap();
+    let out = root.path().join("o/run").to_string_lossy().into_owned();
+    let p = prepare(&markers.to_string_lossy(), &out, Some(&obo), None).unwrap();
+    assert!(p.ontology.is_none());
+    assert_eq!(
+        p.tree.source,
+        TreeSource::CellOntology,
+        "the groups still come from the ontology"
+    );
+}
+
+#[test]
+fn without_cluster_probabilities_each_cell_keeps_its_own_groups_call() {
+    let root = tempfile::tempdir().unwrap();
+    let (obo, markers) = setup(root.path());
+    let out = root.path().join("run").to_string_lossy().into_owned();
+    let p = prepare(&markers, &out, Some(&obo), None).unwrap();
+    // One cluster: a CT1 cell, a CT3 cell and an abstained cell (projection).
+    let cells: Vec<Box<str>> = ["a", "b", "c"].iter().map(|s| Box::from(*s)).collect();
+    write_clusters(
+        &format!("{out}.clusters.parquet"),
+        &cells,
+        &[Some(0), Some(0), Some(0)],
+    )
+    .unwrap();
+    let fine = vec![Some("CT1".to_string()), Some("CT3".to_string()), None];
+    write_argmax(
+        &format!("{out}.argmax.tsv"),
+        &cells,
+        &fine,
+        &[0.9, 0.8, 0.1],
+    )
+    .unwrap();
+    let mut m = RunManifest::new(crate::manifest::run::RunKind::Topic, "run");
+    m.cluster.clusters = Some("run.clusters.parquet".into());
+    m.annotate.argmax = Some("run.argmax.tsv".into());
+    let manifest = root.path().join("run.senna.json");
+    m.save(&manifest).unwrap();
+
+    finish(&manifest, &p.tree, true).unwrap();
+
+    let loaded = run::load(&manifest.to_string_lossy()).unwrap();
+    let coarse = read_argmax(&resolve(
+        &loaded.dir,
+        loaded.manifest.annotate.argmax.as_deref().unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(coarse["a"].0, "group_a");
+    assert_eq!(coarse["b"].0, "CT3");
+    assert_eq!(
+        coarse["c"].0, "unassigned",
+        "an abstained cell stays unassigned"
+    );
+}
