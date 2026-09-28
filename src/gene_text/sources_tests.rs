@@ -16,7 +16,7 @@ fn gene_kind() -> FeatureNameKind {
 #[test]
 fn generic_rows_merge_by_type_and_feature_and_a_later_source_only_fills_gaps() {
     let f = tmp(
-        "feature\ttype\tname\ttext\nTP53\tgene\ttumor protein p53\t\nENSG1_TP53\tgene\t\tGuardian of the genome.\nGO:1\tterm\tapoptosis\tProgrammed death.\nTP53\tterm\t\tnot the gene\n",
+        "feature\ttype\tname\ttext\nGENE1\tgene\tgene one protein\t\nENSG1_GENE1\tgene\t\tGuardian of the genome.\nGO:1\tterm\tapoptosis\tProgrammed death.\nGENE1\tterm\t\tnot the gene\n",
         ".tsv",
     );
     let mut c = Corpus::new(gene_kind());
@@ -24,15 +24,15 @@ fn generic_rows_merge_by_type_and_feature_and_a_later_source_only_fills_gaps() {
     assert_eq!(
         c.docs().len(),
         3,
-        "gene TP53 merged with its ENSG alias; term TP53 is separate"
+        "gene GENE1 merged with its ENSG alias; term GENE1 is separate"
     );
-    let tp53 = &c.docs()[0];
-    assert_eq!(tp53.ty.as_ref(), "gene");
-    assert_eq!(tp53.name.as_ref(), "tumor protein p53");
-    assert_eq!(tp53.text.as_ref(), "Guardian of the genome.");
+    let gene1 = &c.docs()[0];
+    assert_eq!(gene1.ty.as_ref(), "gene");
+    assert_eq!(gene1.name.as_ref(), "gene one protein");
+    assert_eq!(gene1.text.as_ref(), "Guardian of the genome.");
     assert_eq!(
-        tp53.sentence(),
-        "tumor protein p53. Guardian of the genome."
+        gene1.sentence(),
+        "gene one protein. Guardian of the genome."
     );
     assert_eq!(c.docs()[2].sentence(), "not the gene");
 }
@@ -41,7 +41,7 @@ fn generic_rows_merge_by_type_and_feature_and_a_later_source_only_fills_gaps() {
 fn uniprot_rows_strip_evidence_tags_and_fan_out_over_primary_symbols() {
     let f = tmp(
         "Entry\tGene Names (primary)\tProtein names\tFunction [CC]\n\
-         P04637\tTP53\tCellular tumor antigen p53\tFUNCTION: Acts as a tumor suppressor {ECO:0000269|PubMed:1}. Binds DNA {ECO:0000305}.\n\
+         P00001\tGENE1\tGene one protein\tFUNCTION: Acts in a process {ECO:0000269|PubMed:1}. Binds DNA {ECO:0000305}.\n\
          Q00000\tGENEA; GENEB\tTwin protein\t\n\
          Q11111\t\tOrphan\tFUNCTION: nothing\n",
         ".tsv",
@@ -51,12 +51,9 @@ fn uniprot_rows_strip_evidence_tags_and_fan_out_over_primary_symbols() {
     assert_eq!(
         c.docs().len(),
         3,
-        "TP53, GENEA, GENEB; the row without a symbol is skipped"
+        "GENE1, GENEA, GENEB; the row without a symbol is skipped"
     );
-    assert_eq!(
-        c.docs()[0].text.as_ref(),
-        "Acts as a tumor suppressor . Binds DNA ."
-    );
+    assert_eq!(c.docs()[0].text.as_ref(), "Acts in a process . Binds DNA .");
     assert_eq!(c.docs()[1].name.as_ref(), "Twin protein");
     assert_eq!(c.docs()[2].feature.as_ref(), "GENEB");
 }
@@ -65,22 +62,25 @@ fn uniprot_rows_strip_evidence_tags_and_fan_out_over_primary_symbols() {
 fn gene_info_rows_give_the_full_name_and_synonyms() {
     let f = tmp(
         "#tax_id\tGeneID\tSymbol\tLocusTag\tSynonyms\tdbXrefs\tchromosome\tmap_location\tdescription\ttype_of_gene\n\
-         9606\t7157\tTP53\t-\tBCC7|LFS1|P53\tMIM:191170\t17\t17p13.1\ttumor protein p53\tprotein-coding\n\
+         9606\t1001\tGENE1\t-\tALIAS1|ALIAS2|ALIAS3\tMIM:100001\t17\t1p1.1\tgene one protein\tprotein-coding\n\
          9606\t1\tA1BG\t-\t-\t-\t19\t19q13.43\talpha-1-B glycoprotein\tprotein-coding\n",
         ".tsv",
     );
     let mut c = Corpus::new(gene_kind());
     c.add_ncbi_gene_info(f.path().to_str().unwrap()).unwrap();
     assert_eq!(c.docs().len(), 2);
-    assert_eq!(c.docs()[0].name.as_ref(), "tumor protein p53");
-    assert_eq!(c.docs()[0].text.as_ref(), "Also known as BCC7, LFS1, P53.");
+    assert_eq!(c.docs()[0].name.as_ref(), "gene one protein");
+    assert_eq!(
+        c.docs()[0].text.as_ref(),
+        "Also known as ALIAS1, ALIAS2, ALIAS3."
+    );
     assert_eq!(c.docs()[1].text.as_ref(), "");
 }
 
 #[test]
 fn gmt_sets_use_the_description_unless_it_is_a_url_and_obo_terms_bring_definitions() {
     let gmt = tmp(
-        "HALLMARK_APOPTOSIS\thttp://msigdb/x\tTP53\tBAX\nCUSTOM_SET\tGenes I like\tMYC\n",
+        "HALLMARK_APOPTOSIS\thttp://msigdb/x\tGENE1\tGENE2\nCUSTOM_SET\tGenes I like\tGENE3\n",
         ".gmt",
     );
     let obo = tmp(
@@ -128,7 +128,10 @@ fn gmt_sets_use_the_description_unless_it_is_a_url_and_obo_terms_bring_definitio
 
 #[test]
 fn gmt_and_gaf_memberships_ride_along_with_the_text_and_gaf_propagates_through_the_obo() {
-    let gmt = tmp("SET_A\thttp://x\tTP53\tBAX\nSET_B\tdesc\tMYC\n", ".gmt");
+    let gmt = tmp(
+        "SET_A\thttp://x\tGENE1\tGENE2\nSET_B\tdesc\tGENE3\n",
+        ".gmt",
+    );
     let obo = tmp(
         "format-version: 1.2\n\n[Term]\nid: GO:1\nname: root\n\n[Term]\nid: GO:2\nname: leaf\ndef: \"A leaf.\" [x]\nis_a: GO:1 ! root\n",
         ".obo",
@@ -136,13 +139,13 @@ fn gmt_and_gaf_memberships_ride_along_with_the_text_and_gaf_propagates_through_t
     let mut row = vec![""; 17];
     row[0] = "UniProtKB";
     row[1] = "P1";
-    row[2] = "TP53";
+    row[2] = "GENE1";
     row[3] = "involved_in";
     row[4] = "GO:2";
     row[5] = "PMID:1";
     row[6] = "IDA";
     row[8] = "P";
-    row[10] = "TP53";
+    row[10] = "GENE1";
     row[11] = "protein";
     row[12] = "taxon:9606";
     row[13] = "20200101";
@@ -158,15 +161,15 @@ fn gmt_and_gaf_memberships_ride_along_with_the_text_and_gaf_propagates_through_t
         .map(|m| (m.gene.to_string(), m.term.to_string()))
         .collect();
     m.sort();
-    // GMT: 3 rows; GAF: TP53 → GO:2 and, propagated, GO:1.
+    // GMT: 3 rows; GAF: GENE1 → GO:2 and, propagated, GO:1.
     assert_eq!(
         m,
         vec![
-            ("BAX".into(), "SET_A".into()),
-            ("MYC".into(), "SET_B".into()),
-            ("TP53".into(), "GO:1".into()),
-            ("TP53".into(), "GO:2".into()),
-            ("TP53".into(), "SET_A".into()),
+            ("GENE1".into(), "GO:1".into()),
+            ("GENE1".into(), "GO:2".into()),
+            ("GENE1".into(), "SET_A".into()),
+            ("GENE2".into(), "SET_A".into()),
+            ("GENE3".into(), "SET_B".into()),
         ]
     );
     let src: std::collections::BTreeSet<&str> =

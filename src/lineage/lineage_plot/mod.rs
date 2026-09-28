@@ -57,8 +57,7 @@ use svg::{emit_colourbar, emit_legend};
 ///
 /// There are as many MST nodes as `lupin lineage --n-centroids` asked for (200 by
 /// default), and labeling each one prints the same handful of type names over and
-/// over — on a cord-blood run, `Late_Erythroid` 48 times and `EoBasoMast_Precursor`
-/// 38, stacked into an unreadable mat. The label's job is to name each *type* once,
+/// over, dozens of times each, stacked into an unreadable mat. The label's job is to name each *type* once,
 /// not to restate every node's call.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]
 #[clap(rename_all = "kebab-case")]
@@ -85,8 +84,8 @@ const AUTO_CURVE_MAX_LINEAGES: usize = 24;
 ///
 /// There is only ever ONE backbone: the MST over the `--n-centroids` node
 /// centroids. Slingshot fits one smooth curve per *lineage*, and a lineage is a
-/// root→leaf path, so the curve count is `leaves − 1` (98 leaves → 97 curves on a
-/// K=200 cord-blood run) and every one of them redraws the shared trunk.
+/// root→leaf path, so the curve count is `leaves − 1` (close to a hundred at the
+/// default K) and every one of them redraws the shared trunk.
 /// Slingshot's own figures show 2–4 curves because it runs over ~5–20 cell
 /// *clusters*; `lupin lineage` defaults to `K = min(cells/10, 200)`, a fine mesh.
 /// Lowering K to get Slingshot-like curves costs cell-type resolution — at K=12 the
@@ -514,9 +513,9 @@ pub fn run_lineage_plot(args: &LineagePlotArgs) -> Result<()> {
         false => svg.replacen("</svg>", &format!("{overlay}</svg>"), 1),
     };
 
-    // One raster layer per cell type (15+ on a cord-blood run), each a full-canvas
-    // RGBA PNG. Stacked, the PDF carries that many image streams and opens slowly;
-    // composited, it carries one — 798 KB → 585 KB on a cord-blood figure. Blending
+    // One raster layer per cell type, each a full-canvas RGBA PNG. Stacked, the
+    // PDF carries that many image streams and opens slowly; composited, it
+    // carries one, and the file is markedly smaller. Blending
     // happens in the same order either way, but doing it once in tiny_skia rather
     // than K times in the PDF/PNG renderer rounds premultiplied alpha once: ~1% of
     // pixels shift by 1–2/255. Invisible, and worth the single image stream.

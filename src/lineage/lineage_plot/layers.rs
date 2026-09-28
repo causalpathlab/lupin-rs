@@ -156,7 +156,7 @@ pub(super) fn build_celltype_layers(
         })
         .unzip();
 
-    // Palette keyed by LEADING fate, so `HSPC` and `HSPC/Erythroid` share one hue. Sorted;
+    // Palette keyed by LEADING fate, so `CT1` and `CT1/CT2` share one hue. Sorted;
     // `unassigned` dropped unless --show-unassigned.
     let mut leads: Vec<Box<str>> = display.iter().map(|d| Box::from(leading_fate(d))).collect();
     leads.sort_unstable();
@@ -205,8 +205,8 @@ pub(super) fn build_celltype_layers(
             .push(px);
     }
 
-    // Legend order: display labels sorted (groups by leading-fate prefix, e.g. `HSPC` then
-    // `HSPC/Erythroid`).
+    // Legend order: display labels sorted (groups by leading-fate prefix, e.g. `CT1` then
+    // `CT1/CT2`).
     let mut labels: Vec<Box<str>> = conf_pts.keys().chain(mixed_pts.keys()).cloned().collect();
     labels.sort_unstable();
     labels.dedup();
@@ -396,8 +396,8 @@ pub(super) fn build_curve_layer(
 /// traverse each edge.
 ///
 /// `curves_2d` holds one smooth principal curve per lineage, and every lineage
-/// starts at the root — so the trunk is redrawn once per lineage. On a cord-blood
-/// run that is 97 near-identical polylines stacked on the same pixels, which
+/// starts at the root — so the trunk is redrawn once per lineage. On a typical
+/// run that is dozens of near-identical polylines stacked on the same pixels, which
 /// saturates into an opaque mat and hides the branching it is supposed to show.
 ///
 /// The tree is the union of those paths with no duplication: 199 edges, each drawn
@@ -445,8 +445,8 @@ pub(super) fn build_tree_layer(
 /// gem's increment fit to the **unspliced** edges with the spliced θ held fixed —
 /// so the arrow states what the spliced/unspliced contrast says, not what the graph
 /// topology looks like. Its sign gives `directed_from → directed_to`; its magnitude
-/// is the confidence. Below the cut the orientation is a coin flip (on a cord-blood
-/// run, 54 of 199 edges sit under the absolute floor alone), and those edges are
+/// is the confidence. Below the cut the orientation is a coin flip (a sizeable
+/// share of edges can sit under the absolute floor alone), and those edges are
 /// left undirected rather than handed an arrowhead they have not earned.
 pub(super) fn build_velocity_arrows(
     nodes: &NodePositions,

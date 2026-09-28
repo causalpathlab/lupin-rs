@@ -120,9 +120,9 @@ pub fn score(args: &AnnotateArgs, inputs: &EnrichmentInputs) -> anyhow::Result<A
 
     // Data-aware specificity re-weighting: scale each marker by an empirical
     // specificity score derived from the actual cluster expression matrix.
-    // Markers that light up broadly (GZMB across NK + CD8 effector) get
-    // attenuated; cluster-exclusive markers (NCAM1 in NK only) keep full
-    // weight. This complements the IDF that already runs on the marker TSV.
+    // Markers that light up broadly (shared by several types) get
+    // attenuated; cluster-exclusive markers keep full weight. This
+    // complements the IDF that already runs on the marker TSV.
     let mut markers_gc = inputs.markers_gc.clone();
     apply_empirical_specificity_weights(&mut markers_gc, profile_gk);
 
@@ -407,7 +407,7 @@ fn run_ontology_gene_sets(
     // Per (cluster, term): mean_in − mean_out of log1p(CP10K) on the cluster
     // profile, cross-cluster-contrasted. The top positive-effect terms per
     // cluster ARE the GO signature. This plain effect-size ranking recovers
-    // cluster lineage (T-cell, cell-cycle, erythroid, …) more cleanly than a
+    // cluster lineage (lineage and cell-cycle programs) more cleanly than a
     // permutation-z + TreeBH walk, whose ÷sd reweighting rewards small,
     // stable-null terms and whose depth preference descends to narrow processes.
     let ms = ontology_module_score(profile_gk, &gs.terms, &gs.universe)?;

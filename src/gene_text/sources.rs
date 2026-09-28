@@ -133,7 +133,7 @@ impl Corpus {
 
     /// Gene-set members are already symbols (GAF column 3, GMT genes), so
     /// they are kept as given: the ENSG-delimiter rule would cut
-    /// `TP53_HUMAN`-style keys down to their suffix.
+    /// `GENE1_HUMAN`-style keys down to their suffix.
     fn add_gene_sets(&mut self, sets: &GeneSets, source: &str) -> usize {
         let mut terms: Vec<&Box<str>> = sets.term_genes.keys().collect();
         terms.sort();

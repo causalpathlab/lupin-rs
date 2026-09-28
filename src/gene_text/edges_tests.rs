@@ -139,13 +139,13 @@ fn typed_edges_are_five_tab_separated_columns() {
     let mut buf: Vec<u8> = Vec::new();
     let n = write_typed_edges(
         &mut buf,
-        [("gene", "TP53", "word", "apoptosis", 0.61234f32)].into_iter(),
+        [("gene", "GENE1", "word", "apoptosis", 0.61234f32)].into_iter(),
     )
     .unwrap();
     assert_eq!(n, 1);
     assert_eq!(
         String::from_utf8(buf).unwrap(),
-        "gene\tTP53\tword\tapoptosis\t0.6123\n"
+        "gene\tGENE1\tword\tapoptosis\t0.6123\n"
     );
 }
 

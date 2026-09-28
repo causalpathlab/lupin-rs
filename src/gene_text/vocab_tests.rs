@@ -19,21 +19,21 @@ fn occ(words: &[&str]) -> Vec<Occurrence> {
 #[test]
 fn tokens_are_lowercased_filtered_by_length_digits_and_stopwords_and_keep_their_spans() {
     let t = tokenize(
-        "The TP53 protein regulates Apoptosis in 2 steps; DNA-binding is the role.",
+        "The ABC1 protein regulates Apoptosis in 2 steps; DNA-binding is the role.",
         &opts(false),
     );
     let words: Vec<&str> = t.iter().map(|o| o.word.as_ref()).collect();
     // "the" (stopword), "protein" (filler), "in" (short/stop), "2" (digits),
-    // "is" (stop), "role" (filler) go; "tp53" stays (alphabetic content).
+    // "is" (stop), "role" (filler) go; "abc1" stays (alphabetic content).
     assert_eq!(
         words,
-        vec!["tp53", "regulates", "apoptosis", "steps", "dna", "binding"]
+        vec!["abc1", "regulates", "apoptosis", "steps", "dna", "binding"]
     );
     let first = &t[0];
-    assert_eq!(&"The TP53 protein"[first.start..first.end], "TP53");
+    assert_eq!(&"The ABC1 protein"[first.start..first.end], "ABC1");
     let apoptosis = &t[2];
     assert_eq!(
-        &"The TP53 protein regulates Apoptosis in 2 steps; DNA-binding is the role."
+        &"The ABC1 protein regulates Apoptosis in 2 steps; DNA-binding is the role."
             [apoptosis.start..apoptosis.end],
         "Apoptosis"
     );
@@ -207,13 +207,13 @@ fn the_vocabulary_round_trips_through_its_tsv() {
 #[test]
 fn abbreviations_and_unit_tokens_fall_with_the_short_words() {
     let t = tokenize(
-        "kinases, e.g. MAPK, i.e. the 5.8S rRNA, E.coli strains, TP53",
+        "kinases, e.g. KINX, i.e. the 5.8S rRNA, E.coli strains, ABC1",
         &opts(false),
     );
     let words: Vec<&str> = t.iter().map(|o| o.word.as_ref()).collect();
     assert_eq!(
         words,
-        vec!["kinases", "mapk", "rrna", "e.coli", "strains", "tp53"]
+        vec!["kinases", "kinx", "rrna", "e.coli", "strains", "abc1"]
     );
 }
 

@@ -1,8 +1,7 @@
 //! `lupin plot-strand` — Watson/Crick mirrored genomic-activity
 //! ideograms.
 //!
-//! Motivated by the CD34+ bone-marrow "silent sister" hypothesis: for
-//! each cell type, draw per-chromosome gene **activity split by strand**
+//! For each cell type, draw per-chromosome gene **activity split by strand**
 //! — forward/Watson genes as a filled pileup rising *upward*,
 //! reverse/Crick genes *mirrored downward* around a shared horizontal
 //! chromosome axis (cf. Strand-seq ideograms).
