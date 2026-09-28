@@ -110,7 +110,6 @@ pub fn finish(manifest: &Path, tree: &TypeTree, coarse: bool) -> Result<()> {
         .as_deref()
         .map(|rel| read_table(&resolve(&loaded.dir, rel)))
         .transpose()?;
-    let min_share = 0.0;
     let mut votes: BTreeMap<ClusterId, Vec<&str>> = BTreeMap::new();
     for (id, label) in cells.clusters.iter().zip(&cells.labels) {
         if let Some(id) = id {
@@ -125,7 +124,7 @@ pub fn finish(manifest: &Path, tree: &TypeTree, coarse: bool) -> Result<()> {
             let row = probs
                 .as_ref()
                 .and_then(|t| t.row(*id).map(|r| (&t.cols[..], r)));
-            (*id, coarse_call(&index, row, labels, min_share))
+            (*id, coarse_call(&index, row, labels))
         })
         .collect();
 

@@ -308,9 +308,21 @@ impl App {
                     }
                 }
                 let (latest, _) = chain_rounds(&self.target);
+                // Edits made while a save ran were not in it: carry them into
+                // the new round (a save keeps the clusters' ids).
+                let later = match job {
+                    Job::Save(n) => self.edits.split_off(n.min(self.edits.len())),
+                    Job::Pass => Vec::new(),
+                };
                 self.open(&latest);
+                let kept = later.len();
+                self.edits = later;
                 let done = match job {
                     Job::Pass => format!("pass done in {secs}s"),
+                    Job::Save(n) if kept > 0 => format!(
+                        "saved {n} edit(s), {kept} made since still unsaved; {}",
+                        self.export()
+                    ),
                     Job::Save(n) => format!("saved {n} edit(s); {}", self.export()),
                 };
                 self.status = format!("{done}. {}", self.status);
@@ -343,6 +355,8 @@ impl App {
                 self.round = Some(r);
                 self.edits.clear();
                 self.marked.clear();
+                self.tree_marked.clear();
+                self.gene_sel = 0;
                 self.stale = false;
                 self.cluster_sel = self.cluster_sel.min(self.n_clusters().saturating_sub(1));
             }
@@ -447,17 +461,10 @@ impl App {
             "mixed: {}; the evidence does not separate them",
             said.join(" + ")
         );
-        if name != parts.join(MIX) {
-            let file = self
-                .data_search
-                .project
-                .as_ref()
-                .or(self.data_search.user.as_ref())
-                .map(|d| d.join(super::ontology::MIXED));
-            if let Some(file) = file {
-                if let Err(e) = self.mixed.add(&name, &parts, &file) {
-                    self.status = format!("could not record the mix: {e:#}");
-                }
+        // Every mix is listed, so a `+` in a type's own name is never read as one.
+        if let Some(file) = self.data_search.amend(super::ontology::MIXED) {
+            if let Err(e) = self.mixed.add(&name, &parts, &file) {
+                self.status = format!("could not record the mix: {e:#}");
             }
         }
         self.ask_label(name, reason, None);
@@ -538,12 +545,25 @@ impl App {
         }
     }
 
+    /// Stop a running pass. A save is not stopped midway, which could leave
+    /// a round half-written: it finishes on its own.
     fn stop(&mut self) {
-        if let Some((mut c, _, _)) = self.child.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-            self.status = "stopped".into();
+        match self.child.as_ref().map(|c| c.2) {
+            Some(Job::Pass) => {
+                if let Some((mut c, _, _)) = self.child.take() {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                    self.status = "stopped".into();
+                }
+            }
+            Some(Job::Save(_)) => self.status = "a save finishes on its own; wait for it".into(),
+            None => {}
         }
+    }
+
+    /// Whether a pass is running, which is about to replace the clusters.
+    fn pass_running(&self) -> bool {
+        self.child.as_ref().is_some_and(|c| c.2 == Job::Pass)
     }
 
     fn save(&mut self) {
@@ -828,6 +848,15 @@ impl App {
         match k.code {
             KeyCode::Esc => self.prompt = None,
             KeyCode::Enter => {
+                let edits_clusters = matches!(
+                    p.pending,
+                    Pending::Label { .. } | Pending::Keep { .. } | Pending::Markers { .. }
+                );
+                if edits_clusters && self.pass_running() {
+                    self.status =
+                        "a pass is running and will replace these clusters: wait for it".into();
+                    return;
+                }
                 let Some(p) = self.prompt.take() else { return };
                 let reason = p.text.trim().to_string();
                 if reason.is_empty() {
@@ -847,9 +876,10 @@ impl App {
                             reason,
                         });
                         self.focus = Focus::Clusters;
-                        if let (Some((alias, id)), Some(file)) =
-                            (remember, self.data_search.amend_aliases())
-                        {
+                        if let (Some((alias, id)), Some(file)) = (
+                            remember,
+                            self.data_search.amend(crate::manifest::data_files::ALIASES),
+                        ) {
                             self.prompt = Some(Prompt {
                                 title: format!(
                                     " remember {alias} → {id} in {}? enter: yes (the text is the note) · esc: no ",
@@ -905,7 +935,10 @@ impl App {
 
     pub fn key(&mut self, k: KeyEvent) {
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
-            self.stop();
+            // A running save is left to finish; a pass is stopped.
+            if self.pass_running() {
+                self.stop();
+            }
             self.quit = true;
             return;
         }
@@ -947,13 +980,15 @@ impl App {
         match k.code {
             KeyCode::Char('q') => {
                 let busy = self.child.as_ref().map(|c| c.2);
-                if armed != Some(Armed::Quit) && busy.is_some() {
+                let unsaved = match self.edits.len() {
+                    0 => String::new(),
+                    n => format!(" and {n} unsaved edit(s)"),
+                };
+                if matches!(busy, Some(Job::Save(_))) {
+                    self.status = "saving… q once it is done".into();
+                } else if armed != Some(Armed::Quit) && busy.is_some() {
                     self.armed = Some(Armed::Quit);
-                    self.status = match busy {
-                        Some(Job::Save(_)) => "a save is running: q again stops it and loses it",
-                        _ => "a pass is running: q again stops it",
-                    }
-                    .into();
+                    self.status = format!("a pass is running{unsaved}: q again stops it and quits");
                 } else if armed == Some(Armed::Quit) || self.edits.is_empty() {
                     self.stop();
                     self.quit = true;
@@ -1228,24 +1263,12 @@ const ROOT_TERM: &str = "CL:0000000";
 /// Append `label → id` to the alias table `file`, creating it (and its
 /// directory) with a header the first time.
 fn remember_alias(file: &Path, label: &str, id: &str, note: &str) -> anyhow::Result<()> {
-    use std::io::Write;
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let new = !file.exists();
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(file)?;
-    if new {
-        writeln!(
-            f,
-            "# Cell-type labels mapped to Cell Ontology terms, layered over lupin's own\n\
-             # (see `lupin data where`). Columns: label, CL id, note.\nlabel\tcl_id\tnote"
-        )?;
-    }
-    writeln!(f, "{label}\t{id}\t{}", note.replace(['\t', '\n'], " "))?;
-    Ok(())
+    crate::manifest::data_files::append_line(
+        file,
+        "Cell-type labels mapped to Cell Ontology terms, layered over lupin's own\n\
+         (see `lupin data where`). Columns: label, CL id, note.",
+        &format!("{label}\t{id}\t{}", note.replace(['\t', '\n'], " ")),
+    )
 }
 
 /// A candidate's evidence for a reason: share, and NES and q when known.

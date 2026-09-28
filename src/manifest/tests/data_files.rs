@@ -80,7 +80,7 @@ fn later_layers_win_and_every_file_read_is_recorded() {
     assert_eq!(d.alias_files.len(), 3, "install, project and the run's own");
     assert!(d.ontology.as_ref().unwrap().ends_with(ONTOLOGY));
     assert_eq!(
-        d.search.amend_aliases().unwrap(),
+        d.search.amend(ALIASES).unwrap(),
         root.path().join("run/lupin").join(ALIASES)
     );
 }
@@ -150,4 +150,16 @@ fn a_run_file_is_found_as_given_else_beside_the_run() {
         root.path().join("run").join("map.tsv")
     );
     assert!(s.run_file("absent.tsv").is_none());
+}
+
+#[test]
+fn appended_lines_come_after_a_comment_header() {
+    let root = tempfile::tempdir().unwrap();
+    let f = root.path().join("a").join("x.tsv");
+    append_line(&f, "what\ncolumns", "one").unwrap();
+    append_line(&f, "what\ncolumns", "two").unwrap();
+    assert_eq!(
+        fs::read_to_string(&f).unwrap(),
+        "# what\n# columns\none\ntwo\n"
+    );
 }

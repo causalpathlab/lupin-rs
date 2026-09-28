@@ -149,13 +149,25 @@ impl SearchPath {
         found
     }
 
-    /// Where the TUI remembers an alias: the project's file, else the user's.
+    /// Where the TUI writes data file `name`: the project's, else the user's.
     #[must_use]
-    pub fn amend_aliases(&self) -> Option<PathBuf> {
+    pub fn amend(&self, name: &str) -> Option<PathBuf> {
         self.project
             .as_ref()
             .or(self.user.as_ref())
-            .map(|d| d.join(ALIASES))
+            .map(|d| d.join(name))
+    }
+
+    /// `name`'s text from the user's and then the project's layer, the files
+    /// that exist.
+    pub fn user_and_project(&self, name: &str) -> Result<Vec<String>> {
+        [&self.user, &self.project]
+            .into_iter()
+            .flatten()
+            .map(|d| d.join(name))
+            .filter(|p| p.is_file())
+            .map(|p| fs::read_to_string(&p).with_context(|| format!("reading {}", p.display())))
+            .collect()
     }
 }
 
@@ -322,6 +334,27 @@ impl ClData {
             "ontology_release": release,
         })
     }
+}
+
+/// Append `line` to `file`, creating it (and its directory) with the
+/// comment `header` first.
+pub fn append_line(file: &Path, header: &str, line: &str) -> Result<()> {
+    use std::io::Write;
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let new = !file.exists();
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)?;
+    if new {
+        for h in header.lines() {
+            writeln!(f, "# {h}")?;
+        }
+    }
+    writeln!(f, "{line}")?;
+    Ok(())
 }
 
 /// `p` made absolute (and canonical when it exists).

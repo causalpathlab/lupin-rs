@@ -122,10 +122,13 @@ impl OntologyView {
 /// else the term's name.
 #[must_use]
 pub fn term_label(cl: &ClTerms, tree: &PanelTree, id: &str) -> String {
+    // The first by name when several panel types sit on one term, so a pick
+    // names the same label every session.
     tree.typed_terms()
-        .find(|(_, t)| *t == id)
-        .map(|(l, _)| l.to_string())
-        .unwrap_or_else(|| label_key(cl.name(id).unwrap_or(id)))
+        .filter(|(_, t)| *t == id)
+        .map(|(l, _)| l)
+        .min()
+        .map_or_else(|| label_key(cl.name(id).unwrap_or(id)), String::from)
 }
 
 /// The CL term a label names: a panel type's, else the term it matches
@@ -148,22 +151,23 @@ pub fn type_ancestry(cl: &ClTerms, tree: &PanelTree) -> Vec<(String, BTreeSet<St
         .collect()
 }
 
-/// Mixed labels by name: a label that stands for several cell types a
-/// cluster's evidence cannot separate, one per line of `mixed_labels.tsv`
-/// (`name<TAB>A+B`), read from the user's config and the project's `lupin/`
-/// folder and added to from the TUI. A name not listed is split on `+`.
+/// Mixed labels: a label that stands for several cell types a cluster's
+/// evidence cannot separate, one per line of `mixed_labels.tsv`
+/// (`name<TAB>type<TAB>type…`), read from the user's config and the project's
+/// `lupin/` folder and added to from the TUI. Only a listed label is a mix:
+/// a `+` inside a panel type's name (`CD14+ Monocytes`) means nothing.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Mixed {
     by_name: std::collections::BTreeMap<String, Vec<String>>,
 }
 
+/// The file mixed labels are kept in.
+pub const MIXED: &str = "mixed_labels.tsv";
+
 /// How mixed-label names compare: as lupin labels, ignoring case.
 fn name_key(name: &str) -> String {
     label_key(&name.trim().to_lowercase())
 }
-
-/// The file mixed labels are kept in.
-pub const MIXED: &str = "mixed_labels.tsv";
 
 impl Mixed {
     fn extend(&mut self, text: &str) {
@@ -171,15 +175,11 @@ impl Mixed {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            if let Some((name, parts)) = line.split_once('\t') {
-                let parts: Vec<String> = parts
-                    .split(super::app::MIX)
-                    .map(|p| label_key(p.trim()))
-                    .filter(|p| !p.is_empty())
-                    .collect();
-                if parts.len() > 1 {
-                    self.by_name.insert(name_key(name), parts);
-                }
+            let mut cols = line.split('\t').map(str::trim);
+            let name = cols.next().unwrap_or_default();
+            let parts: Vec<String> = cols.filter(|p| !p.is_empty()).map(label_key).collect();
+            if !name.is_empty() && parts.len() > 1 {
+                self.by_name.insert(name_key(name), parts);
             }
         }
     }
@@ -187,52 +187,42 @@ impl Mixed {
     /// The user's and the project's mixed labels.
     pub fn load(search: &crate::manifest::data_files::SearchPath) -> anyhow::Result<Self> {
         let mut m = Self::default();
-        for dir in [&search.user, &search.project].into_iter().flatten() {
-            let p = dir.join(MIXED);
-            if p.is_file() {
-                m.extend(&std::fs::read_to_string(&p)?);
-            }
+        for text in search.user_and_project(MIXED)? {
+            m.extend(&text);
         }
         Ok(m)
     }
 
-    /// Name `parts` `name` from now on, and append it to `file`.
+    /// Name `parts` `name` from now on, and append it to `file` (once).
     pub fn add(
         &mut self,
         name: &str,
         parts: &[String],
         file: &std::path::Path,
     ) -> anyhow::Result<()> {
-        use std::io::Write;
-        if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir)?;
+        if self
+            .by_name
+            .get(&name_key(name))
+            .is_some_and(|p| p == parts)
+        {
+            return Ok(());
         }
-        let new = !file.exists();
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(file)?;
-        if new {
-            writeln!(
-                f,
-                "# Mixed cell-type labels: name, then the types it stands for joined by `+`."
-            )?;
-        }
-        let joined = parts.join(super::app::MIX);
-        writeln!(f, "{name}\t{joined}")?;
+        crate::manifest::data_files::append_line(
+            file,
+            "Mixed cell-type labels: the name, then the types it stands for, tab-separated.",
+            &std::iter::once(name)
+                .chain(parts.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join("\t"),
+        )?;
         self.by_name.insert(name_key(name), parts.to_vec());
         Ok(())
     }
 
-    /// The cell types `label` stands for: its listed parts, else its `+`
-    /// parts; `None` for a single type.
+    /// The cell types `label` stands for, when it is a listed mix.
     #[must_use]
     pub fn parts(&self, label: &str) -> Option<Vec<String>> {
-        if let Some(p) = self.by_name.get(&name_key(label)) {
-            return Some(p.clone());
-        }
-        let p: Vec<String> = label.split(super::app::MIX).map(String::from).collect();
-        (p.len() > 1).then_some(p)
+        self.by_name.get(&name_key(label)).cloned()
     }
 }
 

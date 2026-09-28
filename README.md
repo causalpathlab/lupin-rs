@@ -187,7 +187,7 @@ What you curate in the TUI is kept as plain files in `lupin/` beside the run
 manifest (read after `~/.config/lupin/`, which holds the same names for every
 project): `cl_aliases.tsv` (label → CL term), `hidden_genes.txt` (genes or `*`
 patterns such as `MT-*` kept out of the specific-genes view) and
-`mixed_labels.tsv` (a name for a mixed label, e.g. `HSPC mix<TAB>EMP+HSC`, given
+`mixed_labels.tsv` (a name for a mixed label, e.g. `HSPC mix<TAB>EMP<TAB>HSC`, given
 to a cluster the evidence cannot split).
 
 ## Method write-ups

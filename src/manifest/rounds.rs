@@ -804,13 +804,14 @@ fn write_rescored(r: &super::recalibrate::Rescored, out: &str) -> Result<Rescore
             (&r.probit_z, CLUSTER_CELLTYPE_Z),
         ],
     )?;
-    let mut w = written.into_iter();
-    let mut next = || w.next().unwrap_or_default();
+    let Ok([q, q_values, p, nes, _, _]) = <[String; 6]>::try_from(written) else {
+        anyhow::bail!("rescoring wrote an unexpected number of tables");
+    };
     Ok(RescoredTables {
-        q: next(),
-        q_values: next(),
-        p: next(),
-        nes: next(),
+        q,
+        q_values,
+        p,
+        nes,
     })
 }
 

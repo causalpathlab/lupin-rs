@@ -121,7 +121,7 @@ fn a_term_is_labelled_by_the_panel_type_on_it_else_by_its_name() {
 }
 
 #[test]
-fn a_named_mix_is_remembered_and_a_plus_label_splits() {
+fn only_a_listed_mix_is_a_mix() {
     let root = tempfile::tempdir().unwrap();
     let search = crate::manifest::data_files::SearchPath {
         install: None,
@@ -131,7 +131,9 @@ fn a_named_mix_is_remembered_and_a_plus_label_splits() {
         project: Some(root.path().join("lupin")),
     };
     let mut m = Mixed::load(&search).unwrap();
-    assert_eq!(m.parts("EMP+HSC"), Some(vec!["EMP".into(), "HSC".into()]));
+    // A `+` is part of many panel names: never read as a mix.
+    assert_eq!(m.parts("EMP+HSC"), None);
+    assert_eq!(m.parts("CD14+ monocyte"), None);
     assert_eq!(m.parts("HSC"), None);
     assert_eq!(m.parts("HSPC mix"), None, "a name not yet known");
     let file = root.path().join("lupin").join(MIXED);
@@ -143,4 +145,35 @@ fn a_named_mix_is_remembered_and_a_plus_label_splits() {
         again.parts("HSPC mix"),
         Some(vec!["EMP".into(), "HSC".into()])
     );
+    let mut again = again;
+    again
+        .add("hspc MIX", &["EMP".into(), "HSC".into()], &file)
+        .unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(
+        text.lines()
+            .filter(|l| !l.starts_with('#'))
+            .collect::<Vec<_>>(),
+        ["HSPC mix\tEMP\tHSC"],
+        "tab-separated, recorded once"
+    );
+}
+
+#[test]
+fn a_term_with_several_panel_types_is_labelled_the_same_either_way() {
+    let cl = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
+    let label = |pairs: &[(&str, &str)]| {
+        let panel: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(g, t)| ((*g).to_string(), (*t).to_string()))
+            .collect();
+        term_label(
+            &cl,
+            &PanelTree::from_ontology(&cl, &panel).unwrap(),
+            "CL:10",
+        )
+    };
+    let a = label(&[("G1", "T cells"), ("G2", "TC"), ("G3", "B cells")]);
+    let b = label(&[("G2", "TC"), ("G1", "T cells"), ("G3", "B cells")]);
+    assert_eq!(a, b);
 }

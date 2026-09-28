@@ -589,15 +589,13 @@ fn attach_by_sharing(
 
 /// A cluster's coarse call from its evidence: per group (via
 /// [`TypeTree::index`]), the cluster's shares for the group's types summed,
-/// when there are any (`types` and their `values`), and the best group called
-/// only if its share reaches `min_share`; otherwise the group most of its
-/// cells' fine labels fall in.
+/// when there are any (`types` and their `values`), else the cells' fine
+/// labels counted per group; the group with the most called.
 #[must_use]
 pub fn coarse_call(
     index: &HashMap<String, &str>,
     probs: Option<(&[String], &[f32])>,
     cell_labels: &[&str],
-    min_share: f32,
 ) -> Option<String> {
     let group = |t: &str| index.get(&label_key(t)).copied();
     let mut mass: BTreeMap<&str, f32> = BTreeMap::new();
@@ -622,9 +620,8 @@ pub fn coarse_call(
             }
         }
     }
-    let floor = if probs.is_some() { min_share } else { 0.0 };
     mass.into_iter()
-        .filter(|(_, m)| *m > 0.0 && *m >= floor)
+        .filter(|(_, m)| *m > 0.0)
         .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(a.0)))
         .map(|(g, _)| g.to_string())
 }

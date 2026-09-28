@@ -11,7 +11,7 @@ fn a_remembered_alias_is_appended_and_reads_back_as_the_top_layer() {
     remember_alias(&file, "BaEoMa", "CL:0000767", "second").unwrap();
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.starts_with('#'), "a new file starts with its header");
-    assert_eq!(text.matches("label\tcl_id\tnote").count(), 1, "one header");
+    assert_eq!(text.matches("Columns:").count(), 1, "one header");
     assert!(
         text.contains("EMP\tCL:0000049\tpicked in the TUI\n"),
         "tabs in the note are flattened"

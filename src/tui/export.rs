@@ -192,6 +192,7 @@ pub struct MarkerRow {
 pub fn marker_rows(
     round: &RoundView,
     tree: &PanelTree,
+    mixed: &super::ontology::Mixed,
     calls: &BTreeMap<ClusterId, Call>,
     original: &BTreeMap<String, BTreeSet<String>>,
 ) -> Vec<MarkerRow> {
@@ -204,10 +205,17 @@ pub fn marker_rows(
     let expr = round.expression.as_ref();
     let mut out = Vec::new();
     for (label, ids) in clusters_of {
-        let types: Vec<String> = match tree.node_of(label) {
-            Some(i) => tree.labels_under(i).into_iter().map(String::from).collect(),
-            None => vec![label_key(label)],
-        };
+        // A mix's markers are its parts' together.
+        let parts = mixed
+            .parts(label)
+            .unwrap_or_else(|| vec![label.to_string()]);
+        let types: Vec<String> = parts
+            .iter()
+            .flat_map(|part| match tree.node_of(part) {
+                Some(i) => tree.labels_under(i).into_iter().map(String::from).collect(),
+                None => vec![label_key(part)],
+            })
+            .collect();
         let in_panel = |set: &BTreeMap<String, BTreeSet<String>>, g: &str| {
             types
                 .iter()
@@ -237,11 +245,19 @@ pub fn marker_rows(
                 log2fc: fc_of(g),
             })
             .collect();
+        // Most specific first; unmeasured (NaN) last.
+        let fc = |r: &MarkerRow| {
+            if r.log2fc.is_nan() {
+                f32::NEG_INFINITY
+            } else {
+                r.log2fc
+            }
+        };
         rows.sort_by(|a, b| {
             a.source
                 .cmp(b.source)
                 .reverse()
-                .then(b.log2fc.total_cmp(&a.log2fc))
+                .then(fc(b).total_cmp(&fc(a)))
         });
         if let Some(e) = expr {
             let names = &e.table.rows;
@@ -319,7 +335,7 @@ pub fn write(
     let markers = PathBuf::from(format!("{stem}.celltype_markers.tsv"));
     let mut lines: Vec<Box<str>> = vec!["celltype\tgene\tsource\tlog2fc".into()];
     lines.extend(
-        marker_rows(round, tree, &calls, original)
+        marker_rows(round, tree, mixed, &calls, original)
             .into_iter()
             .map(|r| format!("{}\t{}\t{}\t{:.3}", r.celltype, r.gene, r.source, r.log2fc).into()),
     );

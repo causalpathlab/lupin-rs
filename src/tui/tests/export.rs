@@ -102,7 +102,13 @@ fn markers_are_panel_or_added_and_the_rest_suggested() {
         ("T".to_string(), BTreeSet::from(["CD3E".to_string()])),
         ("B".to_string(), BTreeSet::from(["MS4A1".to_string()])),
     ]);
-    let rows = marker_rows(&r, &t, &calls, &original);
+    let rows = marker_rows(
+        &r,
+        &t,
+        &crate::tui::ontology::Mixed::default(),
+        &calls,
+        &original,
+    );
     let of = |ct: &str| -> Vec<(String, &str)> {
         rows.iter()
             .filter(|m| m.celltype == ct)
@@ -176,26 +182,81 @@ fn a_mixed_label_sums_its_parts_and_sits_under_their_common_ancestor() {
         .map(|(g, t)| ((*g).to_string(), (*t).to_string()))
         .collect();
     let t = PanelTree::from_ontology(&cl, &panel).unwrap();
-    let calls = cluster_calls(
-        &round(),
-        &t,
-        Some(&cl),
-        &crate::tui::ontology::Mixed::default(),
-        &[relabel(0, "B+T")],
-    );
+    let dir = tempfile::tempdir().unwrap();
+    let mut mixed = crate::tui::ontology::Mixed::default();
+    mixed
+        .add("B+T", &["B".into(), "T".into()], &dir.path().join("m.tsv"))
+        .unwrap();
+    let calls = cluster_calls(&round(), &t, Some(&cl), &mixed, &[relabel(0, "B+T")]);
     assert_eq!(calls[&0].label, "B+T");
     assert!((calls[&0].share - 0.9).abs() < 1e-6, "T 0.7 + B 0.2");
     assert_eq!(calls[&0].cl_id, "CL:12|CL:10");
     assert_eq!(calls[&0].lineage, "root_cell > lymph > B+T");
     // Without the ontology: the parts on the panel's tree still add up.
-    let alone = cluster_calls(
+    let alone = cluster_calls(&round(), &tree(), None, &mixed, &[relabel(0, "B+T")]);
+    assert!((alone[&0].share - 0.9).abs() < 1e-6);
+    // Unlisted, `B+T` is just a label off the panel.
+    let plain = cluster_calls(
         &round(),
         &tree(),
         None,
         &crate::tui::ontology::Mixed::default(),
         &[relabel(0, "B+T")],
     );
-    assert!((alone[&0].share - 0.9).abs() < 1e-6);
+    assert!(plain[&0].share < 0.9);
+}
+
+#[test]
+fn a_mixed_labels_markers_are_its_parts_markers() {
+    let r = round();
+    let t = tree();
+    let dir = tempfile::tempdir().unwrap();
+    let mut mixed = crate::tui::ontology::Mixed::default();
+    mixed
+        .add(
+            "lymphs",
+            &["B".into(), "T".into()],
+            &dir.path().join("m.tsv"),
+        )
+        .unwrap();
+    let calls = cluster_calls(&r, &t, None, &mixed, &[relabel(0, "lymphs")]);
+    let rows = marker_rows(&r, &t, &mixed, &calls, &r.markers);
+    let genes: BTreeSet<&str> = rows
+        .iter()
+        .filter(|m| m.celltype == "lymphs")
+        .map(|m| m.gene.as_str())
+        .collect();
+    for g in ["CD3E", "CD2", "MS4A1"] {
+        assert!(genes.contains(g), "{g} in {genes:?}");
+    }
+}
+
+#[test]
+fn unmeasured_markers_come_last() {
+    let mut r = round();
+    // CD2 sorts before CD3E by name but is not measured.
+    r.markers
+        .insert("T".into(), ["CD2", "CD3E", "ZZZ"].map(String::from).into());
+    let t = tree();
+    let calls = cluster_calls(&r, &t, None, &crate::tui::ontology::Mixed::default(), &[]);
+    let rows = marker_rows(
+        &r,
+        &t,
+        &crate::tui::ontology::Mixed::default(),
+        &calls,
+        &r.markers,
+    );
+    let t_rows: Vec<&MarkerRow> = rows
+        .iter()
+        .filter(|m| m.celltype == "T" && m.source == "panel")
+        .collect();
+    assert_eq!(t_rows[0].gene, "CD3E");
+    let first_nan = t_rows.iter().position(|m| m.log2fc.is_nan()).unwrap();
+    assert!(
+        t_rows[first_nan..].iter().all(|m| m.log2fc.is_nan()),
+        "measured first: {:?}",
+        t_rows.iter().map(|m| &m.gene).collect::<Vec<_>>()
+    );
 }
 
 #[test]

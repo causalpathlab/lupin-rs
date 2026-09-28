@@ -4,9 +4,8 @@
 //! folder (see [`crate::manifest::data_files`]) and added to from the TUI.
 //! Data, not code: nothing is hidden unless a file says so.
 
-use crate::manifest::data_files::SearchPath;
+use crate::manifest::data_files::{append_line, SearchPath};
 use anyhow::Result;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// The file the hidden genes are kept in.
@@ -39,11 +38,8 @@ impl GeneFilter {
     /// The user's and the project's hidden genes, both applied.
     pub fn load(search: &SearchPath) -> Result<Self> {
         let mut f = Self::default();
-        for dir in [&search.user, &search.project].into_iter().flatten() {
-            let p = dir.join(HIDDEN);
-            if p.is_file() {
-                f.extend(&std::fs::read_to_string(&p)?);
-            }
+        for text in search.user_and_project(HIDDEN)? {
+            f.extend(&text);
         }
         Ok(f)
     }
@@ -51,11 +47,7 @@ impl GeneFilter {
     /// Where the TUI adds patterns: the project's file, else the user's.
     #[must_use]
     pub fn file(search: &SearchPath) -> Option<PathBuf> {
-        search
-            .project
-            .as_ref()
-            .or(search.user.as_ref())
-            .map(|d| d.join(HIDDEN))
+        search.amend(HIDDEN)
     }
 
     /// Hide `pattern` from now on, and append it to `file`.
@@ -64,21 +56,11 @@ impl GeneFilter {
         if pattern.is_empty() || self.patterns.iter().any(|p| p == pattern) {
             return Ok(());
         }
-        if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let new = !file.exists();
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(file)?;
-        if new {
-            writeln!(
-                f,
-                "# Genes lupin's TUI keeps out of the specific-genes view: names or `*` patterns."
-            )?;
-        }
-        writeln!(f, "{pattern}")?;
+        append_line(
+            file,
+            "Genes lupin's TUI keeps out of the specific-genes view: names or `*` patterns.",
+            pattern,
+        )?;
         self.patterns.push(pattern.to_string());
         Ok(())
     }
