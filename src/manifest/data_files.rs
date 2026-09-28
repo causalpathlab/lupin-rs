@@ -24,6 +24,7 @@ use log::{info, warn};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 pub const RULES: &str = "cl_matching.json";
@@ -50,9 +51,21 @@ pub struct SearchPath {
 }
 
 impl SearchPath {
-    /// The search path for a run whose manifest sits in `run_dir`.
+    /// The search path for a run whose manifest sits in `run_dir`. Under
+    /// test, only the project layer: nothing from the machine the tests run
+    /// on, and no downloads.
     #[must_use]
     pub fn new(run_dir: Option<&Path>) -> Self {
+        let project = run_dir.map(|d| d.join("lupin"));
+        if cfg!(test) {
+            return Self {
+                install: None,
+                source: None,
+                cache: None,
+                user: None,
+                project,
+            };
+        }
         let env_dir = |k: &str| std::env::var_os(k).map(PathBuf::from);
         let install = env_dir(DATA_DIR_ENV).or_else(|| {
             let exe = std::env::current_exe().ok()?;
@@ -64,7 +77,6 @@ impl SearchPath {
         let cache = dirs::cache_dir().map(|d| d.join("lupin"));
         let user = env_dir(CONFIG_DIR_ENV)
             .or_else(|| dirs::home_dir().map(|h| h.join(".config").join("lupin")));
-        let project = run_dir.map(|d| d.join("lupin"));
         Self {
             install,
             source,
@@ -116,6 +128,27 @@ impl SearchPath {
         out
     }
 
+    /// A file named on the command line: as given, else beside the run
+    /// (the project layer's parent); `None`, with a warning, when neither
+    /// exists.
+    #[must_use]
+    pub fn run_file(&self, f: &str) -> Option<PathBuf> {
+        let given = PathBuf::from(f);
+        let beside = self
+            .project
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|d| d.join(f));
+        let found = [Some(given), beside]
+            .into_iter()
+            .flatten()
+            .find(|p| p.is_file());
+        if found.is_none() {
+            warn!("{f} not found; going on without it");
+        }
+        found
+    }
+
     /// Where the TUI remembers an alias: the project's file, else the user's.
     #[must_use]
     pub fn amend_aliases(&self) -> Option<PathBuf> {
@@ -132,48 +165,103 @@ pub struct ClData {
     pub aliases: Aliases,
     /// The ontology file, when one is at hand.
     pub ontology: Option<PathBuf>,
-    /// Every file read, for the run's record.
-    pub sources: Vec<String>,
+    /// The rules and alias files read, in layer order.
+    pub rule_files: Vec<PathBuf>,
+    pub alias_files: Vec<PathBuf>,
     pub search: SearchPath,
+    /// The ontology, parsed on first use.
+    pub parsed: OnceLock<Option<ClTerms>>,
+}
+
+/// Whether [`ClData::load`] may download what it cannot find. Only an
+/// annotate pass and the TUI's start do: a relabel, a preview or a rescore
+/// reuses what its pass recorded ([`ClData::from_record`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Fetch {
+    Allowed,
+    Never,
 }
 
 impl ClData {
     /// Load the rules and aliases along `search`, then `run_aliases` (a
     /// `--label-cl` file), and find the ontology (`explicit_obo` first).
+    /// Run files are taken as given, else beside the run.
     pub fn load(
         search: SearchPath,
         explicit_obo: Option<&str>,
         run_aliases: Option<&str>,
+        fetch: Fetch,
     ) -> Result<Self> {
-        let online = std::env::var_os(OFFLINE_ENV).is_none();
-        let mut sources = Vec::new();
-
-        let mut layers = Vec::new();
-        for p in search.layers(RULES, online) {
-            let text =
-                fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
-            layers.push(
-                serde_json::from_str::<Value>(&text)
-                    .with_context(|| format!("{} is not JSON", p.display()))?,
-            );
-            sources.push(p.display().to_string());
-        }
-        if layers.is_empty() {
+        let online = fetch == Fetch::Allowed && std::env::var_os(OFFLINE_ENV).is_none();
+        let rule_files = search.layers(RULES, online);
+        if rule_files.is_empty() {
             warn!(
                 "no {RULES} found (see `lupin data where`): matching cell-type labels to the \
                  Cell Ontology literally, by name and exact synonym only"
             );
         }
-        let rules = MatchRules::from_layers(&layers)?;
+        let mut alias_files = search.layers(ALIASES, online);
+        alias_files.extend(run_aliases.and_then(|f| search.run_file(f)));
+        let ontology = match explicit_obo {
+            Some(f) => search.run_file(f),
+            None => search.layers(ONTOLOGY, false).pop(),
+        };
+        let mut data = Self::from_files(rule_files, alias_files, ontology, search)?;
+        if data.ontology.is_none() && explicit_obo.is_none() {
+            data.ontology = fetch_ontology(&data.search, &data.rules, online);
+        }
+        Ok(data)
+    }
 
+    /// The data a pass recorded ([`Self::record`]), read from exactly those
+    /// files; `None` when there is no record or a file is gone.
+    pub fn from_record(record: &Value, search: SearchPath) -> Result<Option<Self>> {
+        let paths = |key: &str| -> Option<Vec<PathBuf>> {
+            record
+                .get(key)?
+                .as_array()?
+                .iter()
+                .map(|v| v.as_str().map(PathBuf::from))
+                .collect()
+        };
+        let (Some(rules), Some(aliases)) = (paths("rules"), paths("aliases")) else {
+            return Ok(None);
+        };
+        let ontology = record
+            .get("ontology")
+            .and_then(Value::as_str)
+            .map(PathBuf::from);
+        let all_there = rules
+            .iter()
+            .chain(&aliases)
+            .chain(&ontology)
+            .all(|p| p.is_file());
+        if !all_there {
+            warn!("files the pass recorded are gone; finding the Cell Ontology data afresh");
+            return Ok(None);
+        }
+        Self::from_files(rules, aliases, ontology, search).map(Some)
+    }
+
+    fn from_files(
+        rule_files: Vec<PathBuf>,
+        alias_files: Vec<PathBuf>,
+        ontology: Option<PathBuf>,
+        search: SearchPath,
+    ) -> Result<Self> {
+        let mut layers = Vec::new();
+        for p in &rule_files {
+            let text = fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+            layers.push(
+                serde_json::from_str::<Value>(&text)
+                    .with_context(|| format!("{} is not JSON", p.display()))?,
+            );
+        }
+        let rules = MatchRules::from_layers(&layers)?;
         let mut aliases = Aliases::default();
-        let mut files = search.layers(ALIASES, online);
-        files.extend(run_aliases.map(PathBuf::from));
-        for p in files {
-            let text =
-                fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
-            aliases.add_tsv(&text, &p.display().to_string())?;
-            sources.push(p.display().to_string());
+        for p in &alias_files {
+            let text = fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+            aliases.add_tsv(&text, &p.display().to_string());
         }
         if !aliases.is_empty() {
             info!(
@@ -181,29 +269,36 @@ impl ClData {
                 aliases.len()
             );
         }
-
-        let ontology = match explicit_obo {
-            Some(p) => Some(PathBuf::from(p)),
-            None => search
-                .layers(ONTOLOGY, false)
-                .pop()
-                .or_else(|| fetch_ontology(&search, &rules, online)),
-        };
-        if let Some(p) = &ontology {
-            sources.push(p.display().to_string());
-        }
         Ok(Self {
             rules,
             aliases,
             ontology,
-            sources,
+            rule_files,
+            alias_files,
             search,
+            parsed: OnceLock::new(),
         })
     }
 
-    /// The ontology parsed under the rules, with the aliases; `None` without
-    /// an ontology.
-    pub fn terms(&self) -> Result<Option<ClTerms>> {
+    /// The ontology parsed under the rules, with the aliases, parsed once;
+    /// `None` without an ontology.
+    pub fn terms(&self) -> Result<Option<&ClTerms>> {
+        if self.parsed.get().is_none() {
+            let parsed = self.parse()?;
+            let _ = self.parsed.set(parsed);
+        }
+        Ok(self.parsed.get().and_then(Option::as_ref))
+    }
+
+    /// [`Self::terms`], owned.
+    pub fn into_terms(mut self) -> Result<Option<ClTerms>> {
+        match self.parsed.take() {
+            Some(t) => Ok(t),
+            None => self.parse(),
+        }
+    }
+
+    fn parse(&self) -> Result<Option<ClTerms>> {
         self.ontology
             .as_ref()
             .map(|p| {
@@ -214,11 +309,28 @@ impl ClData {
             .transpose()
     }
 
-    /// What the run used, for its record.
+    /// What the run used, for its record: each file by its role, as an
+    /// absolute path, so a later rescore reads the same ones
+    /// ([`Self::from_record`]) wherever it runs from.
     #[must_use]
     pub fn record(&self, release: Option<&str>) -> Value {
-        json!({ "files": self.sources, "ontology_release": release })
+        let abs = |p: &PathBuf| absolute(p).display().to_string();
+        json!({
+            "rules": self.rule_files.iter().map(abs).collect::<Vec<_>>(),
+            "aliases": self.alias_files.iter().map(abs).collect::<Vec<_>>(),
+            "ontology": self.ontology.as_ref().map(abs),
+            "ontology_release": release,
+        })
     }
+}
+
+/// `p` made absolute (and canonical when it exists).
+fn absolute(p: &Path) -> PathBuf {
+    p.canonicalize().unwrap_or_else(|_| {
+        std::env::current_dir()
+            .map(|d| d.join(p))
+            .unwrap_or_else(|_| p.to_path_buf())
+    })
 }
 
 /// The ontology downloaded into the cache from the rules' `ontology_url`.
@@ -345,7 +457,7 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
                 }
                 println!("{}", to.display());
             }
-            let rules = ClData::load(search.clone(), None, None)?.rules;
+            let rules = ClData::load(search.clone(), None, None, Fetch::Never)?.rules;
             let to = search.cached(ONTOLOGY).context("no cache directory")?;
             if *force || !to.is_file() {
                 let url = rules

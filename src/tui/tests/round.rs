@@ -34,7 +34,6 @@ fn round() -> RoundView {
         cell_names: Vec::new(),
         cell_clusters: Vec::new(),
         expression: None,
-        gene_row: HashMap::new(),
         markers: BTreeMap::from([("T".into(), BTreeSet::from(["CD3E".into()]))]),
         loose_cells: 1,
     }
@@ -89,7 +88,7 @@ fn edits_become_one_decision_per_cluster_after_the_marker_edits() {
         },
         relabel(1, "lymph"),
     ];
-    let d = decisions(&edits, &r).unwrap();
+    let d = decisions(&edits, &r);
     assert_eq!(d.len(), 2);
     assert_eq!(d[0].action.as_str(), "markers_add");
     assert_eq!(d[0].features, ["MS4A1"]);
@@ -109,17 +108,14 @@ fn specific_genes_rank_high_and_exclusive_first() {
         cols: vec!["K0".into(), "K1".into()],
         mat: Mat::from_row_slice(3, 2, &[10.0, 10.0, 8.0, 0.0, 0.0, 0.0]),
     };
-    let g = specific_genes(&expr);
+    let g = specific_genes(&Expression::new(expr));
     let k0: Vec<&str> = g[&0].iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(k0, ["G2", "G1"]);
     assert_eq!(g[&1][0].0, "G1");
 }
 
 #[test]
-fn a_cluster_takes_its_cells_most_common_label() {
-    assert_eq!(majority(["a", "b", "b"].into_iter()).as_deref(), Some("b"));
-    assert_eq!(majority(["b", "a"].into_iter()).as_deref(), Some("a"));
-    assert_eq!(majority(std::iter::empty()), None);
+fn a_gene_names_the_types_it_marks() {
     assert_eq!(r_marker(), ["T"]);
 }
 
@@ -145,7 +141,7 @@ fn a_labels_markers_follow_the_edits_in_order() {
         markers(false, &["CD3E", "CD5"]),
     ];
     assert_eq!(r.markers_of("T", &edits), [("CD2".to_string(), true)]);
-    let d = decisions(&edits, &r).unwrap();
+    let d = decisions(&edits, &r);
     assert_eq!(d[1].action.as_str(), "markers_drop");
     assert_eq!(d[1].features, ["CD3E", "CD5"]);
 }
@@ -153,12 +149,11 @@ fn a_labels_markers_follow_the_edits_in_order() {
 #[test]
 fn a_genes_fold_change_is_its_cluster_over_the_rest() {
     let r = RoundView {
-        expression: Some(MatWithNames {
+        expression: Some(Expression::new(MatWithNames {
             rows: vec!["G".into()],
             cols: vec!["K0".into(), "K1".into()],
             mat: Mat::from_row_slice(1, 2, &[3.0, 1.0]),
-        }),
-        gene_row: HashMap::from([("G".to_string(), 0)]),
+        })),
         ..round()
     };
     // The table's mean (2) as pseudo-count: log2((3 + 2) / (1 + 2)).

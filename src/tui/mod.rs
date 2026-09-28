@@ -13,7 +13,6 @@ mod round;
 mod runner;
 mod ui;
 
-use crate::annotate::markers::read_marker_pairs;
 use crate::annotate_cmd::AnnotateCliArgs;
 use crate::manifest::run::{self, annotated_path, resolve};
 use anyhow::{Context, Result};
@@ -79,16 +78,15 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
     }
 
     eprintln!("lupin: placing the panel on the Cell Ontology…");
-    let panel: Vec<(String, String)> = read_marker_pairs(&args.markers)?
-        .into_iter()
-        .map(|(g, t)| (g.into_string(), t.into_string()))
-        .collect();
+    let panel = crate::annotate::markers::read_panel(&args.markers)?;
     let data = crate::manifest::ontology::load(
         Some(&loaded.dir),
         args.obo.as_deref(),
         args.label_cl.as_deref(),
+        crate::manifest::data_files::Fetch::Allowed,
     )?;
-    let terms = data.terms()?;
+    let search = data.search.clone();
+    let terms = data.into_terms()?;
     let tree = crate::manifest::ontology::panel_tree_on(terms.as_ref(), &panel);
 
     let target = annotated_path(&loaded.file, &args.out);
@@ -99,7 +97,7 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
         app.panel_ancestry = ontology::type_ancestry(cl, &app.tree);
     }
     app.cl = terms;
-    app.data_search = data.search.clone();
+    app.data_search = search;
     // Pick up where an earlier session left this prefix: its latest round.
     if target.is_file() {
         let (latest, _) = crate::manifest::rounds::chain_rounds(&target);
@@ -108,14 +106,24 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
 
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
+        // Drawn when something changed: a key, a resize, the log or the status.
+        let mut dirty = true;
         while !app.quit {
+            let (logged, status) = (app.log.len(), app.status.clone());
             app.tick();
-            terminal.draw(|f| ui::draw(f, &app))?;
+            dirty |= app.log.len() != logged || app.status != status;
+            if dirty {
+                terminal.draw(|f| ui::draw(f, &app))?;
+                dirty = false;
+            }
             if event::poll(Duration::from_millis(150))? {
-                if let Event::Key(k) = event::read()? {
-                    if k.kind == KeyEventKind::Press {
+                match event::read()? {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => {
                         app.key(k);
+                        dirty = true;
                     }
+                    Event::Resize(..) => dirty = true,
+                    _ => {}
                 }
             }
         }

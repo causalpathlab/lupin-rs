@@ -50,11 +50,9 @@ pub fn prepare(
     data: &super::data_files::ClData,
     label_cl: Option<&str>,
 ) -> Result<Prepared> {
-    let panel: Vec<(String, String)> = crate::annotate::markers::read_marker_pairs(markers)?
-        .into_iter()
-        .map(|(g, t)| (g.into_string(), t.into_string()))
-        .collect();
-    let (tree, found) = super::ontology::type_tree(data, &panel)?;
+    let panel = crate::annotate::markers::read_panel(markers)?;
+    let tree = super::ontology::type_tree(data, &panel)?;
+    let found = data.ontology.clone();
     mkdir_parent(out)?;
     fs::write(format!("{out}{TREE}"), serde_json::to_string_pretty(&tree)?)?;
 

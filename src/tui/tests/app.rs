@@ -17,6 +17,6 @@ fn a_remembered_alias_is_appended_and_reads_back_as_the_top_layer() {
         "tabs in the note are flattened"
     );
     let mut a = Aliases::default();
-    assert_eq!(a.add_tsv(&text, "project").unwrap(), 2);
+    assert_eq!(a.add_tsv(&text, "project"), 2);
     assert_eq!(a.get("emp"), Some("CL:0000049"));
 }

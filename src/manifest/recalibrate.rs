@@ -5,6 +5,7 @@
 //! clusters' gene sums add, the batch × cluster membership is rebuilt from
 //! the cells, and the panel is rebuilt from the round's markers.
 
+use super::data_files::{ClData, Fetch, SearchPath};
 use crate::annotate::aggregate::weighted_mean_profile;
 use crate::annotate::args::AnnotateArgs;
 use crate::annotate::by_enrichment;
@@ -91,6 +92,29 @@ impl Rescored {
     pub fn row_names(&self) -> Vec<Box<str>> {
         self.ids.iter().map(|id| format!("K{id}").into()).collect()
     }
+}
+
+/// The Cell Ontology data `source`'s pass used, read from the files it
+/// recorded; failing that, found beside the run without downloading.
+fn pass_cl_data(source: &Loaded, args: &AnnotateArgs) -> Result<ClData> {
+    let search = || SearchPath::new(Some(&source.dir));
+    let recorded = source
+        .manifest
+        .annotate
+        .settings
+        .as_ref()
+        .and_then(|s| s.pointer("/enrichment/cell_ontology"));
+    if let Some(r) = recorded {
+        if let Some(d) = ClData::from_record(r, search())? {
+            return Ok(d);
+        }
+    }
+    ClData::load(
+        search(),
+        args.obo.as_deref(),
+        args.label_cl.as_deref(),
+        Fetch::Never,
+    )
 }
 
 /// Rescore the clusters of `after` against `panel` from `source`'s cached
@@ -210,15 +234,8 @@ pub(super) fn rescore(
         gene_sum_kg: Vec::new(),
         gene_weights: Vec::new(),
         type_tree: Some(
-            super::ontology::panel_tree(
-                &super::ontology::load(
-                    Some(&source.dir),
-                    args.obo.as_deref(),
-                    args.label_cl.as_deref(),
-                )?,
-                panel,
-            )?
-            .treebh(&annot.annot_names),
+            super::ontology::panel_tree(&pass_cl_data(source, &args)?, panel)?
+                .treebh(&annot.annot_names),
         ),
         cl_record: None,
     };

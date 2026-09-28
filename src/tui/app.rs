@@ -275,6 +275,13 @@ impl App {
             }
             Ok(Some(st)) if st.success() => {
                 self.child = None;
+                // A new pass rewrote the base round: rounds made on the old
+                // one no longer apply.
+                if job == Job::Pass {
+                    if let Err(e) = crate::manifest::rounds::supersede_later(&self.target) {
+                        self.push_log(format!("could not set the old rounds aside: {e:#}"));
+                    }
+                }
                 let (latest, _) = chain_rounds(&self.target);
                 self.open(&latest);
                 let done = match job {
@@ -285,7 +292,11 @@ impl App {
             }
             Ok(Some(st)) => {
                 self.child = None;
-                self.status = format!("pass failed ({st}); see the log");
+                let what = match job {
+                    Job::Pass => "pass",
+                    Job::Save(_) => "save",
+                };
+                self.status = format!("{what} failed ({st}); see the log");
             }
             Err(e) => {
                 self.child = None;
@@ -298,7 +309,7 @@ impl App {
     pub fn open(&mut self, manifest: &Path) {
         match RoundView::load(manifest) {
             Ok(r) => {
-                let flagged = r.clusters.iter().filter(|c| self.flagged(c)).count();
+                let flagged = r.clusters.iter().filter(|c| c.flagged()).count();
                 self.status = format!(
                     "{}: {} clusters, {flagged} to look at (]: next)",
                     file_name(manifest),
@@ -318,11 +329,6 @@ impl App {
         self.round.as_ref().map_or(0, |r| r.clusters.len())
     }
 
-    /// Unassigned, or its top candidate holds too little of its evidence.
-    pub fn flagged(&self, c: &super::round::ClusterView) -> bool {
-        c.label.is_none() || c.top_share() < CONTESTED
-    }
-
     pub fn selected(&self) -> Option<&super::round::ClusterView> {
         self.round.as_ref()?.clusters.get(self.cluster_sel)
     }
@@ -333,7 +339,41 @@ impl App {
         r.label_of(self.selected()?.id, &self.edits)
     }
 
-    /// Whether the selected cluster has an unsaved edit.
+    /// The selected cluster's label, else its top candidate.
+    fn label_or_top(&self) -> Option<String> {
+        self.current_label()
+            .or_else(|| self.selected()?.candidates.first().map(|c| c.label.clone()))
+    }
+
+    /// Select cluster `i`, clearing the gene selection.
+    fn select_cluster(&mut self, i: usize) {
+        self.cluster_sel = i;
+        self.gene_sel = 0;
+        self.marked.clear();
+    }
+
+    /// Put the tree's cursor on node `i`, when it is visible.
+    fn select_node(&mut self, i: usize) {
+        self.tree_sel = self
+            .tree
+            .visible()
+            .iter()
+            .position(|&v| v == i)
+            .unwrap_or(0);
+    }
+
+    /// The selected cluster's candidates `under` covers, as `type share`.
+    fn pooled(&self, under: impl Fn(&str) -> bool) -> Vec<String> {
+        self.selected()
+            .map(|c| &c.candidates[..])
+            .unwrap_or_default()
+            .iter()
+            .filter(|c| under(&c.label))
+            .map(|c| format!("{} {:.2}", c.label, c.share))
+            .collect()
+    }
+
+    /// Whether cluster `id` has an unsaved label edit.
     pub fn edited(&self, id: ClusterId) -> bool {
         self.edits
             .iter()
@@ -352,10 +392,6 @@ impl App {
                 self.edits.len(),
                 later.len()
             );
-            return;
-        }
-        if let Err(e) = set_aside(&later) {
-            self.status = format!("could not set the old rounds aside: {e:#}");
             return;
         }
         self.push_log(format!(
@@ -392,14 +428,14 @@ impl App {
             return;
         }
         let file = decisions_file(&round.manifest);
-        let written = decisions(&self.edits, round).and_then(|d| {
-            let lines: Vec<String> = d
+        let written = (|| -> anyhow::Result<()> {
+            let lines: Vec<String> = decisions(&self.edits, round)
                 .iter()
                 .map(serde_json::to_string)
                 .collect::<Result<_, _>>()?;
             std::fs::write(&file, lines.join("\n") + "\n")?;
             Ok(())
-        });
+        })();
         let started = written
             .and_then(|()| runner::spawn_relabel(&round.manifest, &file, self.log_tx.clone()));
         match started {
@@ -434,8 +470,9 @@ impl App {
         }
     }
 
-    /// Open a prompt to label the selected cluster `label`.
-    fn ask_label(&mut self, label: String, reason: String) {
+    /// Open a prompt to label the selected cluster `label`, then maybe
+    /// offer to `remember` an alias.
+    fn ask_label(&mut self, label: String, reason: String, remember: Option<(String, String)>) {
         let Some(c) = self.selected() else { return };
         self.prompt = Some(Prompt {
             title: format!(" K{} → {label}: why? ", c.id),
@@ -443,7 +480,7 @@ impl App {
             pending: Pending::Label {
                 cluster: c.id,
                 label,
-                remember: None,
+                remember,
             },
         });
     }
@@ -464,30 +501,21 @@ impl App {
             ),
             _ => format!("top candidate {} ({})", pick.label, evidence(&pick)),
         };
-        self.ask_label(pick.label, reason);
+        self.ask_label(pick.label, reason, None);
     }
 
     /// Label the selected cluster by tree node `i`.
     fn pick_node(&mut self, i: usize) {
-        let Some(c) = self.selected() else { return };
         let label = self.tree.label(i).to_string();
-        let under: Vec<&str> = self.tree.labels_under(i);
-        let pooled: Vec<String> = c
-            .candidates
-            .iter()
-            .filter(|c| {
-                under
-                    .iter()
-                    .any(|u| *u == crate::annotate::markers::label_key(&c.label))
-            })
-            .map(|c| format!("{} {:.2}", c.label, c.share))
-            .collect();
+        let under = self.tree.labels_under(i);
+        let pooled =
+            self.pooled(|t| under.contains(&crate::annotate::markers::label_key(t).as_str()));
         let reason = if pooled.is_empty() {
             format!("{label} from the ontology")
         } else {
             format!("{label} from the ontology, over {}", pooled.join(" + "))
         };
-        self.ask_label(label, reason);
+        self.ask_label(label, reason, None);
     }
 
     fn unassign(&mut self) {
@@ -500,7 +528,7 @@ impl App {
             ),
             None => "no candidate".into(),
         };
-        self.ask_label(UNASSIGNED_LABEL.into(), reason);
+        self.ask_label(UNASSIGNED_LABEL.into(), reason, None);
     }
 
     /// Drop the selected cluster's edits.
@@ -774,12 +802,10 @@ impl App {
         };
         match self.focus {
             Focus::Clusters => {
-                let before = self.cluster_sel;
-                let n = self.n_clusters();
-                move_in(&mut self.cluster_sel, n);
-                if before != self.cluster_sel {
-                    self.gene_sel = 0;
-                    self.marked.clear();
+                let (before, mut sel) = (self.cluster_sel, self.cluster_sel);
+                move_in(&mut sel, self.n_clusters());
+                if sel != before {
+                    self.select_cluster(sel);
                 }
                 match code {
                     KeyCode::Char(c @ '1'..='9') => self.pick_candidate(c as usize - '1' as usize),
@@ -832,12 +858,7 @@ impl App {
                         if self.tree.nodes[i].children.is_empty() || self.tree.is_folded(i) {
                             // Up to the parent, like a file tree.
                             if let Some(p) = self.tree.nodes[i].parent {
-                                self.tree_sel = self
-                                    .tree
-                                    .visible()
-                                    .iter()
-                                    .position(|&v| v == p)
-                                    .unwrap_or(0);
+                                self.select_node(p);
                             }
                         } else {
                             self.tree.fold(i, true);
@@ -875,12 +896,7 @@ impl App {
             .visible()
             .get(self.tree_sel)
             .and_then(|&i| self.tree.nodes[i].cl_id.clone());
-        let from_cluster = || {
-            let label = self
-                .current_label()
-                .or_else(|| self.selected()?.candidates.first().map(|c| c.label.clone()))?;
-            super::ontology::term_of(cl, &self.tree, &label)
-        };
+        let from_cluster = || super::ontology::term_of(cl, &self.tree, &self.label_or_top()?);
         let focus = from_node
             .or_else(from_cluster)
             .filter(|id| cl.has(id))
@@ -910,19 +926,11 @@ impl App {
 
     /// Label the selected cluster by CL term `id`.
     fn pick_term(&mut self, id: &str) {
-        let (Some(cl), Some(c)) = (&self.cl, self.selected()) else {
-            return;
-        };
+        let Some(cl) = &self.cl else { return };
         let label = super::ontology::term_label(cl, &self.tree, id);
-        let under = cl_descendant_check(cl, id);
-        let pooled: Vec<String> = c
-            .candidates
-            .iter()
-            .filter(|cand| {
-                super::ontology::term_of(cl, &self.tree, &cand.label).is_some_and(|t| under(&t))
-            })
-            .map(|cand| format!("{} {:.2}", cand.label, cand.share))
-            .collect();
+        let term_of = |l: &str| super::ontology::term_of(cl, &self.tree, l);
+        let pooled =
+            self.pooled(|t| term_of(t).is_some_and(|t| cl.ancestors_or_self(&t).contains(id)));
         let name = cl.name(id).unwrap_or(id);
         let reason = if pooled.is_empty() {
             format!("{name} ({id}) from the Cell Ontology")
@@ -934,21 +942,12 @@ impl App {
         };
         // The top candidate, if the ontology has no term for it: offer to
         // remember that this is the term it means.
-        let remember = c
-            .candidates
-            .first()
-            .filter(|t| super::ontology::term_of(cl, &self.tree, &t.label).is_none())
+        let remember = self
+            .selected()
+            .and_then(|c| c.candidates.first())
+            .filter(|t| term_of(&t.label).is_none())
             .map(|t| (t.label.clone(), id.to_string()));
-        let cluster = c.id;
-        self.prompt = Some(Prompt {
-            title: format!(" K{cluster} → {label}: why? "),
-            text: reason,
-            pending: Pending::Label {
-                cluster,
-                label,
-                remember,
-            },
-        });
+        self.ask_label(label, reason, remember);
     }
 
     /// Select the next flagged cluster without an edit, wrapping around.
@@ -957,30 +956,18 @@ impl App {
         let n = r.clusters.len();
         let next = (1..=n)
             .map(|d| (self.cluster_sel + d) % n)
-            .find(|&i| self.flagged(&r.clusters[i]) && !self.edited(r.clusters[i].id));
+            .find(|&i| r.clusters[i].flagged() && !self.edited(r.clusters[i].id));
         match next {
-            Some(i) => {
-                self.cluster_sel = i;
-                self.gene_sel = 0;
-                self.marked.clear();
-            }
+            Some(i) => self.select_cluster(i),
             None => self.status = "every flagged cluster has an edit".into(),
         }
     }
 
     /// Focus the tree on the selected cluster's label (or its top candidate).
     fn jump_to_tree(&mut self) {
-        let want = self
-            .current_label()
-            .or_else(|| self.selected()?.candidates.first().map(|c| c.label.clone()));
-        if let Some(i) = want.as_deref().and_then(|l| self.tree.node_of(l)) {
+        if let Some(i) = self.label_or_top().and_then(|l| self.tree.node_of(&l)) {
             self.tree.reveal(i);
-            self.tree_sel = self
-                .tree
-                .visible()
-                .iter()
-                .position(|&v| v == i)
-                .unwrap_or(0);
+            self.select_node(i);
         }
         self.focus = Focus::Tree;
     }
@@ -994,14 +981,6 @@ fn decisions_file(round: &Path) -> PathBuf {
 
 /// The Cell Ontology's root, where browsing starts without a better place.
 const ROOT_TERM: &str = "CL:0000000";
-
-/// Whether a term is `id` or under it.
-fn cl_descendant_check<'a>(
-    cl: &'a crate::annotate::celltype_tree::ClTerms,
-    id: &'a str,
-) -> impl Fn(&str) -> bool + 'a {
-    move |t: &str| cl.ancestors_or_self(t).contains(id)
-}
 
 /// Append `label → id` to the alias table `file`, creating it (and its
 /// directory) with a header the first time.
@@ -1043,31 +1022,6 @@ fn file_name(p: &Path) -> String {
         || p.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     )
-}
-
-/// Move the files of `rounds` (each `X.rK.senna.json`, with its `X.rK.*`
-/// siblings) into `X.superseded/`, so a new pass starts a fresh chain.
-fn set_aside(rounds: &[PathBuf]) -> anyhow::Result<()> {
-    for m in rounds {
-        let stem = crate::manifest::run::derive_out_prefix(&m.to_string_lossy());
-        let stem = Path::new(&stem);
-        let (Some(dir), Some(name)) = (stem.parent(), stem.file_name()) else {
-            continue;
-        };
-        let name = format!("{}.", name.to_string_lossy());
-        let chain = name
-            .rsplit_once(".r")
-            .map_or(name.as_str(), |(c, _)| c)
-            .to_string();
-        let aside = dir.join(format!("{chain}.superseded"));
-        std::fs::create_dir_all(&aside)?;
-        for e in std::fs::read_dir(dir)?.flatten() {
-            if e.file_name().to_string_lossy().starts_with(&name) {
-                std::fs::rename(e.path(), aside.join(e.file_name()))?;
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

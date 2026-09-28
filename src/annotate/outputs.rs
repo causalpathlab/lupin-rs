@@ -15,6 +15,10 @@ pub const ANNOT_PARQUET: &str = ".annot.parquet";
 pub const CLUSTER_TERM_Q: &str = ".cluster_term_q.parquet";
 /// `{out}.cluster_celltype_q_values.parquet`: enrichment's cluster × cell-type FDR q.
 pub const CLUSTER_CELLTYPE_Q_VALUES: &str = ".cluster_celltype_q_values.parquet";
+/// Enrichment: cluster × cell type Q (each row a softmax over the types that pass FDR).
+pub const CLUSTER_CELLTYPE_Q: &str = ".cluster_celltype_q.parquet";
+/// Enrichment: cluster × cell type raw enrichment scores.
+pub const CLUSTER_CELLTYPE_ES: &str = ".cluster_celltype_es.parquet";
 /// Enrichment: cluster × cell type p-values.
 pub const CLUSTER_CELLTYPE_P: &str = ".cluster_celltype_p.parquet";
 /// Enrichment: cluster × cell type NES (fgsea's normalized enrichment score), the effect size.
@@ -88,10 +92,32 @@ pub struct AnnotationOutputs {
     pub ontology_signature: Option<String>,
     pub ontology_term_effect: Option<String>,
     pub cluster_celltype_q_values: Option<String>,
+    pub cluster_celltype_p: Option<String>,
+    pub cluster_celltype_nes: Option<String>,
     pub cluster_term_q: Option<String>,
     pub marker_embedding: Option<String>,
     /// Per-cell cluster ids whose values match the cluster tables' `K{id}` rows.
     pub clusters: Option<String>,
     /// The pass's sufficient statistics, for rescoring later rounds.
     pub stats_cache: Option<crate::manifest::run::StatsCache>,
+}
+
+/// Write cluster × cell type `tables` under `out`, each as `{out}{suffix}`
+/// with rows `rows` and columns `cols`; returns the paths in order.
+pub fn write_cluster_tables(
+    out: &str,
+    rows: &[Box<str>],
+    cols: &[Box<str>],
+    tables: &[(&legume_numeric::matrix::dense_mat_io::Mat, &str)],
+) -> anyhow::Result<Vec<String>> {
+    use legume_numeric::matrix::traits::IoOps;
+    tables
+        .iter()
+        .map(|(m, suffix)| {
+            let path = format!("{out}{suffix}");
+            m.to_parquet_with_names(&path, (Some(rows), Some("cluster")), Some(cols))?;
+            log::info!("wrote {path}");
+            Ok(path)
+        })
+        .collect()
 }

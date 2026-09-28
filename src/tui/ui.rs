@@ -120,7 +120,7 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         .map(|c| {
             let label = r.label_of(c.id, &app.edits);
             let shown = label.clone().unwrap_or_else(|| UNASSIGNED_LABEL.into());
-            let flag = if app.flagged(c) { "?" } else { "" };
+            let flag = if c.flagged() { "?" } else { "" };
             let row = Row::new([
                 format!("K{}", c.id),
                 c.cells.to_string(),

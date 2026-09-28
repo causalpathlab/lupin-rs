@@ -52,12 +52,11 @@ fn round() -> RoundView {
         ],
         cell_names: vec!["c0".into(), "c1".into()],
         cell_clusters: vec![Some(0), Some(1)],
-        expression: Some(MatWithNames {
+        expression: Some(crate::tui::round::Expression::new(MatWithNames {
             rows: vec!["CD3E".into(), "MS4A1".into(), "NEW".into(), "ACTB".into()],
             cols: vec!["K0".into(), "K1".into()],
             mat: Mat::from_row_slice(4, 2, &[8.0, 1.0, 1.0, 8.0, 12.0, 0.0, 20.0, 20.0]),
-        }),
-        gene_row: std::collections::HashMap::new(),
+        })),
         markers: BTreeMap::from([
             ("T".into(), set(&["CD3E", "CD2"])),
             ("B".into(), set(&["MS4A1"])),

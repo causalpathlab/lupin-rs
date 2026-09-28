@@ -3,11 +3,11 @@
 //! the edits made here, which become the `relabel` decisions of the next
 //! round when saved.
 
-use crate::annotate::markers::{label_key, read_marker_pairs};
-use crate::annotate::outputs::{
-    CLUSTER_CELLTYPE_NES, CLUSTER_CELLTYPE_P, CLUSTER_CELLTYPE_Q_VALUES,
+use crate::annotate::markers::label_key;
+use crate::annotate::markers::read_marker_pairs;
+use crate::annotate::rounds::{
+    digest, parse_cluster_id, Action, ClusterId, DecidedBy, Decision, Evidence, Table,
 };
-use crate::annotate::rounds::{ClusterId, Decision, Table};
 use crate::manifest::rounds::{read_cells, read_table};
 use crate::manifest::run::{self, resolve};
 use anyhow::Result;
@@ -37,6 +37,86 @@ pub struct Candidate {
     pub q: Option<f32>,
 }
 
+/// A genes × clusters expression table with what fold changes over it need,
+/// computed once: each gene's row, each cluster's column, each gene's total,
+/// and the pseudo-count.
+pub struct Expression {
+    pub table: MatWithNames<Mat>,
+    row: HashMap<String, usize>,
+    col: HashMap<ClusterId, usize>,
+    totals: Vec<f32>,
+    /// The table's mean: a pseudo-count on its scale, so a gene near zero
+    /// elsewhere does not win on a vanishing denominator.
+    eps: f32,
+}
+
+impl Expression {
+    /// Index `table` (columns `K{id}`).
+    #[must_use]
+    pub fn new(table: MatWithNames<Mat>) -> Self {
+        let row = table
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(r, g)| (g.to_string(), r))
+            .collect();
+        let col = table
+            .cols
+            .iter()
+            .enumerate()
+            .filter_map(|(k, c)| parse_cluster_id(c).map(|id| (id, k)))
+            .collect();
+        let totals = (0..table.mat.nrows())
+            .map(|g| table.mat.row(g).sum())
+            .collect();
+        let eps = table.mat.mean().max(f32::MIN_POSITIVE);
+        Self {
+            table,
+            row,
+            col,
+            totals,
+            eps,
+        }
+    }
+
+    #[must_use]
+    pub fn row(&self, gene: &str) -> Option<usize> {
+        self.row.get(gene).copied()
+    }
+
+    /// The columns of clusters `ids`.
+    #[must_use]
+    pub fn cols(&self, ids: &BTreeSet<ClusterId>) -> Vec<usize> {
+        ids.iter()
+            .filter_map(|id| self.col.get(id).copied())
+            .collect()
+    }
+
+    /// Gene `r`'s mean over columns `inside`.
+    #[must_use]
+    pub fn mean_in(&self, r: usize, inside: &[usize]) -> f32 {
+        inside.iter().map(|&k| self.table.mat[(r, k)]).sum::<f32>() / inside.len().max(1) as f32
+    }
+
+    /// Gene `r`'s log2 fold change over columns `inside` against the other
+    /// columns' mean; `None` without both.
+    #[must_use]
+    pub fn log2fc(&self, r: usize, inside: &[usize]) -> Option<f32> {
+        let rest = self
+            .table
+            .mat
+            .ncols()
+            .checked_sub(inside.len())
+            .filter(|&n| n > 0)?;
+        if inside.is_empty() {
+            return None;
+        }
+        let sum_in: f32 = inside.iter().map(|&k| self.table.mat[(r, k)]).sum();
+        let mean_out = (self.totals[r] - sum_in) / rest as f32;
+        Some(((sum_in / inside.len() as f32 + self.eps) / (mean_out + self.eps)).log2())
+    }
+}
+
 /// One cluster of the round.
 pub struct ClusterView {
     pub id: ClusterId,
@@ -56,6 +136,12 @@ impl ClusterView {
     #[must_use]
     pub fn top_share(&self) -> f32 {
         self.candidates.first().map_or(0.0, |c| c.share)
+    }
+
+    /// Unassigned, or its top candidate holds too little of its evidence.
+    #[must_use]
+    pub fn flagged(&self) -> bool {
+        self.label.is_none() || self.top_share() < super::app::CONTESTED
     }
 }
 
@@ -82,9 +168,7 @@ pub struct RoundView {
     pub cell_names: Vec<Box<str>>,
     pub cell_clusters: Vec<Option<ClusterId>>,
     /// Genes × clusters, as the pass aggregated them.
-    pub expression: Option<MatWithNames<Mat>>,
-    /// Each gene's row of `expression`.
-    pub gene_row: HashMap<String, usize>,
+    pub expression: Option<Expression>,
     /// The round's marker panel: label key → genes.
     pub markers: BTreeMap<String, BTreeSet<String>>,
     /// Cells no cluster holds.
@@ -98,44 +182,31 @@ impl RoundView {
         let a = &loaded.manifest.annotate;
         let at = |rel: &Option<String>| rel.as_deref().map(|r| resolve(&loaded.dir, r));
 
-        // Q: how the cluster's evidence splits over the types; and beside
-        // the q-values, the p-values and z they came from.
-        let share = at(&a.cluster_celltype_q)
-            .map(|p| read_table(&p))
-            .transpose()?;
-        let q_values = at(&a.cluster_celltype_q_values);
-        let beside = |suffix: &str| {
-            q_values
-                .as_deref()
-                .and_then(|q| q.strip_suffix(CLUSTER_CELLTYPE_Q_VALUES))
-                .map(|stem| format!("{stem}{suffix}"))
-                .filter(|p| Path::new(p).is_file())
-                .map(|p| read_table(&p))
-                .transpose()
-        };
-        let (nes_table, p_table) = (beside(CLUSTER_CELLTYPE_NES)?, beside(CLUSTER_CELLTYPE_P)?);
-        let q_table = q_values.map(|p| read_table(&p)).transpose()?;
+        let table = |rel: &Option<String>| at(rel).map(|p| read_table(&p)).transpose();
+        // Q: how the cluster's evidence splits over the types; and the
+        // statistics it came from.
+        let share = table(&a.cluster_celltype_q)?;
+        let (nes_table, p_table, q_table) = (
+            table(&a.cluster_celltype_nes)?,
+            table(&a.cluster_celltype_p)?,
+            table(&a.cluster_celltype_q_values)?,
+        );
         let expression = at(&a.cluster_expression)
             .map(|p| Mat::from_parquet_with_row_names(&p, Some(0)))
-            .transpose()?;
+            .transpose()?
+            .map(Expression::new);
         let markers = match at(&a.markers) {
             Some(p) if Path::new(&p).is_file() => panel_sets(&p)?,
             _ => BTreeMap::new(),
         };
 
-        let mut members: BTreeMap<ClusterId, Vec<usize>> = BTreeMap::new();
-        let mut loose_cells = 0;
-        for (i, c) in cells.clusters.iter().enumerate() {
-            match c {
-                Some(c) => members.entry(*c).or_default().push(i),
-                None => loose_cells += 1,
-            }
-        }
+        // Each cluster's size and label, as `review` and `relabel` see them.
+        let digests = digest(&cells.clusters, &cells.labels, &Evidence::default());
+        let loose_cells = cells.clusters.iter().filter(|c| c.is_none()).count();
         let genes = expression.as_ref().map(specific_genes).unwrap_or_default();
-        let clusters = members
+        let clusters = digests
             .into_iter()
-            .map(|(id, idx)| {
-                let labels = idx.iter().filter_map(|&i| cells.labels[i].as_deref());
+            .map(|(id, d)| {
                 let shares: Vec<(String, f32)> = share
                     .as_ref()
                     .and_then(|t| t.row(id).map(|r| (&t.cols, r)))
@@ -159,8 +230,8 @@ impl RoundView {
                     .collect();
                 ClusterView {
                     id,
-                    cells: idx.len(),
-                    label: majority(labels),
+                    cells: d.size,
+                    label: d.label,
                     candidates,
                     shares,
                     genes: genes.get(&id).cloned().unwrap_or_default(),
@@ -172,16 +243,6 @@ impl RoundView {
             clusters,
             cell_names: cells.names,
             cell_clusters: cells.clusters,
-            gene_row: expression
-                .as_ref()
-                .map(|e| {
-                    e.rows
-                        .iter()
-                        .enumerate()
-                        .map(|(r, g)| (g.to_string(), r))
-                        .collect()
-                })
-                .unwrap_or_default(),
             expression,
             markers,
             loose_cells,
@@ -232,17 +293,7 @@ impl RoundView {
     #[must_use]
     pub fn fold_change(&self, id: ClusterId, gene: &str) -> Option<f32> {
         let e = self.expression.as_ref()?;
-        let r = *self.gene_row.get(gene)?;
-        let n = e.cols.len();
-        let k =
-            (0..n).find(|&k| crate::annotate::rounds::parse_cluster_id(&e.cols[k]) == Some(id))?;
-        if n < 2 {
-            return None;
-        }
-        let eps = e.mat.mean().max(f32::MIN_POSITIVE);
-        let x = e.mat[(r, k)];
-        let rest = (e.mat.row(r).sum() - x) / (n - 1) as f32;
-        Some(((x + eps) / (rest + eps)).log2())
+        e.log2fc(e.row(gene)?, &e.cols(&BTreeSet::from([id])))
     }
 
     /// `label`'s markers with the edits applied, each with whether an edit
@@ -289,64 +340,77 @@ impl RoundView {
 }
 
 /// The last edit per cluster, and every marker edit, as the next
-/// round's decisions.
-pub fn decisions(edits: &[Edit], round: &RoundView) -> Result<Vec<Decision>> {
-    let mut last: BTreeMap<ClusterId, &Edit> = BTreeMap::new();
+/// round's decisions; marker edits first, as they change what the labels
+/// are scored on.
+#[must_use]
+pub fn decisions(edits: &[Edit], round: &RoundView) -> Vec<Decision> {
+    let decision = |action, cluster, label, features, evidence, rationale: &str| Decision {
+        cluster,
+        action,
+        label,
+        features,
+        evidence,
+        alternatives: Vec::new(),
+        rationale: rationale.to_string(),
+        decided_by: DecidedBy::User,
+        timestamp: None,
+        round: None,
+    };
+    let mut last: BTreeMap<ClusterId, (&str, &str)> = BTreeMap::new();
     let mut out = Vec::new();
     for e in edits {
         match e {
-            Edit::Label { cluster, .. } => {
-                last.insert(*cluster, e);
+            Edit::Label {
+                cluster,
+                label,
+                reason,
+            } => {
+                last.insert(*cluster, (label, reason));
             }
             Edit::Markers {
                 label,
                 genes,
                 add,
                 reason,
-            } => out.push(json!({
-                "action": if *add { "markers_add" } else { "markers_drop" },
-                "label": label,
-                "features": genes,
-                "rationale": reason,
-                "decided_by": "user",
-            })),
+            } => {
+                let action = if *add {
+                    Action::MarkersAdd
+                } else {
+                    Action::MarkersDrop
+                };
+                out.push(decision(
+                    action,
+                    Vec::new(),
+                    Some(label.clone()),
+                    genes.clone(),
+                    Vec::new(),
+                    reason,
+                ));
+            }
         }
     }
-    for (id, e) in last {
-        let Edit::Label { label, reason, .. } = e else {
-            continue;
-        };
-        let c = round.clusters.iter().find(|c| c.id == id);
-        let evidence: Vec<_> = c
+    for (id, (label, reason)) in last {
+        let evidence = round
+            .clusters
+            .iter()
+            .find(|c| c.id == id)
             .map(|c| &c.candidates[..])
             .unwrap_or_default()
             .iter()
-            .map(|c| json!({"kind": "marker", "term": c.label, "share": c.share, "nes": c.nes, "p": c.p, "q": c.q}))
+            .map(|c| {
+                json!({"kind": "marker", "term": c.label, "share": c.share, "nes": c.nes, "p": c.p, "q": c.q})
+            })
             .collect();
-        out.push(json!({
-            "cluster": id,
-            "action": "label",
-            "label": label,
-            "evidence": evidence,
-            "rationale": reason,
-            "decided_by": "user",
-        }));
+        out.push(decision(
+            Action::Label,
+            vec![id],
+            Some(label.to_string()),
+            Vec::new(),
+            evidence,
+            reason,
+        ));
     }
-    // Marker edits first, as they change what the labels are scored on.
-    out.into_iter()
-        .map(|v| Ok(serde_json::from_value(v)?))
-        .collect()
-}
-
-/// The most frequent of `labels`; ties to the smallest; `None` when empty.
-fn majority<'a>(labels: impl Iterator<Item = &'a str>) -> Option<String> {
-    let mut n: BTreeMap<&str, usize> = BTreeMap::new();
-    for l in labels {
-        *n.entry(l).or_default() += 1;
-    }
-    n.into_iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
-        .map(|(l, _)| l.to_string())
+    out
 }
 
 fn top_by(items: impl Iterator<Item = (String, f32)>, k: usize) -> Vec<(String, f32)> {
@@ -356,29 +420,22 @@ fn top_by(items: impl Iterator<Item = (String, f32)>, k: usize) -> Vec<(String, 
     v
 }
 
-/// Per cluster, the genes that set it apart, from a genes × clusters
-/// expression table (columns `K{id}`): among the genes above the cluster's
-/// average, the largest log2 fold change over the other clusters' mean.
-pub fn specific_genes(expr: &MatWithNames<Mat>) -> BTreeMap<ClusterId, Vec<(String, f32)>> {
-    let m = &expr.mat;
-    let (n_genes, n_clusters) = (m.nrows(), m.ncols());
-    if n_genes == 0 || n_clusters < 2 {
-        return BTreeMap::new();
-    }
-    let totals: Vec<f32> = (0..n_genes).map(|g| m.row(g).sum()).collect();
-    // A pseudo-count on the scale of the table, so a gene near zero
-    // elsewhere does not win on a vanishing denominator.
-    let eps = m.mean().max(f32::MIN_POSITIVE);
-    (0..n_clusters)
-        .filter_map(|k| {
-            let id = crate::annotate::rounds::parse_cluster_id(&expr.cols[k])?;
+/// Per cluster, the genes that set it apart: among the genes above the
+/// cluster's average, the largest [`Expression::log2fc`] over the others.
+#[must_use]
+pub fn specific_genes(expr: &Expression) -> BTreeMap<ClusterId, Vec<(String, f32)>> {
+    let m = &expr.table.mat;
+    expr.col
+        .iter()
+        .map(|(&id, &k)| {
             let floor = m.column(k).mean();
-            let scored = (0..n_genes).filter(|&g| m[(g, k)] > floor).map(|g| {
-                let x = m[(g, k)];
-                let rest = (totals[g] - x) / (n_clusters - 1) as f32;
-                (expr.rows[g].to_string(), ((x + eps) / (rest + eps)).log2())
-            });
-            Some((id, top_by(scored, TOP_GENES)))
+            let scored = (0..m.nrows())
+                .filter(|&g| m[(g, k)] > floor)
+                .filter_map(|g| {
+                    expr.log2fc(g, &[k])
+                        .map(|fc| (expr.table.rows[g].to_string(), fc))
+                });
+            (id, top_by(scored, TOP_GENES))
         })
         .collect()
 }

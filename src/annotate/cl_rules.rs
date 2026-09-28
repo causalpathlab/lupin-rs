@@ -160,46 +160,49 @@ fn strip_docs(v: &mut Value) {
     }
 }
 
-/// Curated label → CL term aliases, each with where it came from.
+/// Curated label → CL term aliases.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Aliases {
-    /// [`label_key`], lower case → (term, source).
-    map: BTreeMap<String, (String, String)>,
+    /// [`label_key`], lower case → term.
+    map: BTreeMap<String, String>,
 }
 
 impl Aliases {
-    /// Add the rows of an alias table from `source`, overriding earlier ones:
-    /// `label<TAB>CL:id[<TAB>note]`; `#` comments, blank lines and a
-    /// `label` header are skipped. Errs on a row without a CL id.
-    pub fn add_tsv(&mut self, text: &str, source: &str) -> anyhow::Result<usize> {
-        let mut n = 0;
-        for (i, line) in text.lines().enumerate() {
-            let line = line.trim_end();
-            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+    /// Add the rows of an alias table, overriding earlier ones:
+    /// `label<TAB>CL:id[<TAB>note]`, or `label,CL:id` as `--label-cl` maps
+    /// have been written. `#` comments and blank lines are skipped, and so,
+    /// with a warning naming `source`, is any row without a CL-style id (a
+    /// header, `NA`). Returns how many rows were taken.
+    pub fn add_tsv(&mut self, text: &str, source: &str) -> usize {
+        let (mut n, mut skipped) = (0, 0);
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let mut cols = line.split('\t');
-            let label = cols.next().unwrap_or_default().trim();
-            let id = cols.next().unwrap_or_default().trim();
-            if label.eq_ignore_ascii_case("label") {
+            let (label, rest) = line
+                .split_once('\t')
+                .or_else(|| line.split_once(','))
+                .unwrap_or((line, ""));
+            let id = rest.split(['\t', ',']).next().unwrap_or_default().trim();
+            let label = label.trim();
+            if label.is_empty() || !id.contains(':') {
+                skipped += 1;
                 continue;
             }
-            anyhow::ensure!(
-                !label.is_empty() && id.contains(':'),
-                "{source} line {}: want `label<TAB>CL:id`, got {line:?}",
-                i + 1
-            );
-            self.map
-                .insert(key(label), (id.to_string(), source.to_string()));
+            self.map.insert(key(label), id.to_string());
             n += 1;
         }
-        Ok(n)
+        if skipped > 0 {
+            log::warn!("{source}: skipped {skipped} row(s) without a `label<TAB>CL:id` pair");
+        }
+        n
     }
 
     /// The term `label` is aliased to.
     #[must_use]
     pub fn get(&self, label: &str) -> Option<&str> {
-        self.map.get(&key(label)).map(|(id, _)| id.as_str())
+        self.map.get(&key(label)).map(String::as_str)
     }
 
     /// How many labels are aliased.

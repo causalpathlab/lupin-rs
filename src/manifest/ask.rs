@@ -66,7 +66,7 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
         out: out.clone().into_boxed_str(),
         ontology_mode: false,
     };
-    let inputs = load_enrichment_inputs(&eargs, &plan, &loaded)?;
+    let inputs = load_enrichment_inputs(&eargs, &plan, &loaded, None)?;
 
     // The round: clusters, no labels, the profile, and the cache.
     let clusters_path = format!("{out}{CLUSTERS}");
@@ -117,6 +117,8 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
         &mut a.fine_argmax,
         &mut a.cluster_celltype_q,
         &mut a.cluster_celltype_q_values,
+        &mut a.cluster_celltype_p,
+        &mut a.cluster_celltype_nes,
     ] {
         *p = None;
     }

@@ -249,6 +249,43 @@ fn next_grows_the_chain_and_refuses_a_stale_round() {
 }
 
 #[test]
+fn superseding_moves_only_the_later_rounds_files() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path();
+    for f in [
+        "run.senna.json",
+        "run.r1.senna.json",
+        "run.r1.argmax.tsv",
+        "run.r2.senna.json",
+        "run.rest.keep",
+        "run.rx.keep",
+        "other.r1.senna.json",
+    ] {
+        fs::write(dir.join(f), "{}").unwrap();
+    }
+    let moved = supersede_later(&dir.join("run.senna.json")).unwrap();
+    assert_eq!(moved, 2);
+    let aside = dir.join("run.superseded");
+    for f in [
+        "run.r1.senna.json",
+        "run.r1.argmax.tsv",
+        "run.r2.senna.json",
+    ] {
+        assert!(aside.join(f).is_file(), "{f} set aside");
+        assert!(!dir.join(f).exists(), "{f} gone from the chain");
+    }
+    for f in [
+        "run.senna.json",
+        "run.rest.keep",
+        "run.rx.keep",
+        "other.r1.senna.json",
+    ] {
+        assert!(dir.join(f).is_file(), "{f} left alone");
+    }
+    assert_eq!(supersede_later(&dir.join("run.senna.json")).unwrap(), 0);
+}
+
+#[test]
 fn a_chain_lists_rounds_after_its_base_and_skips_gaps() {
     let root = tempfile::tempdir().unwrap();
     let src = first_round(root.path());

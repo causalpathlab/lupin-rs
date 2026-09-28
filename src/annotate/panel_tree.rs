@@ -28,6 +28,20 @@ pub struct PanelNode {
     pub depth: usize,
 }
 
+impl PanelNode {
+    /// A node on its own: no parent, children or panel types yet.
+    fn new(cl_id: Option<String>, name: String) -> Self {
+        Self {
+            cl_id,
+            name,
+            parent: None,
+            children: Vec::new(),
+            labels: Vec::new(),
+            depth: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PanelTree {
     pub nodes: Vec<PanelNode>,
@@ -66,20 +80,19 @@ impl PanelTree {
             .copied()
             .chain(sharers.iter().filter(|(_, &n)| n >= 2).map(|(t, _)| *t))
             .collect();
-        // How far below the ontology's top a term is, to order ancestors.
-        let rank = |id: &str| terms.ancestors_or_self(id).len();
+        // How far below the ontology's top each node is, to order ancestors.
+        let rank: BTreeMap<&str, usize> = ids
+            .iter()
+            .map(|id| (*id, terms.ancestors_or_self(id).len()))
+            .collect();
 
         let mut tree = Self::empty(TreeSource::CellOntology, terms.release.clone());
         let index: BTreeMap<&str, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
         for id in &ids {
-            tree.nodes.push(PanelNode {
-                cl_id: Some((*id).to_string()),
-                name: label_key(terms.name(id).unwrap_or(id)),
-                parent: None,
-                children: Vec::new(),
-                labels: Vec::new(),
-                depth: 0,
-            });
+            tree.nodes.push(PanelNode::new(
+                Some((*id).to_string()),
+                label_key(terms.name(id).unwrap_or(id)),
+            ));
         }
         // Each node hangs under its nearest ancestor among the nodes.
         for (i, id) in ids.iter().enumerate() {
@@ -91,7 +104,11 @@ impl PanelTree {
                 .iter()
                 .filter(|t| t.as_str() != *id)
                 .filter_map(|t| index.get(t.as_str()).map(|&j| (t, j)))
-                .max_by(|(x, _), (y, _)| rank(x).cmp(&rank(y)).then_with(|| y.cmp(x)))
+                .max_by(|(x, _), (y, _)| {
+                    rank[x.as_str()]
+                        .cmp(&rank[y.as_str()])
+                        .then_with(|| y.cmp(x))
+                })
                 .map(|(_, j)| j);
         }
         for (label, id) in &mapped {
@@ -118,14 +135,7 @@ impl PanelTree {
             let parent = match g.cl_id.as_deref().and_then(|id| index.get(id)) {
                 Some(&i) => Some(i),
                 None if g.members.len() > 1 => {
-                    tree.nodes.push(PanelNode {
-                        cl_id: None,
-                        name: label_key(&g.name),
-                        parent: None,
-                        children: Vec::new(),
-                        labels: Vec::new(),
-                        depth: 0,
-                    });
+                    tree.nodes.push(PanelNode::new(None, label_key(&g.name)));
                     Some(tree.nodes.len() - 1)
                 }
                 None => None,
@@ -147,14 +157,8 @@ impl PanelTree {
                 tree.push_leaf(only, None);
                 continue;
             }
-            tree.nodes.push(PanelNode {
-                cl_id: g.cl_id.clone(),
-                name: g.name.clone(),
-                parent: None,
-                children: Vec::new(),
-                labels: Vec::new(),
-                depth: 0,
-            });
+            tree.nodes
+                .push(PanelNode::new(g.cl_id.clone(), g.name.clone()));
             let group = tree.nodes.len() - 1;
             for m in &g.members {
                 tree.push_leaf(m, Some(group));
@@ -178,12 +182,9 @@ impl PanelTree {
     fn push_leaf(&mut self, label: &str, parent: Option<usize>) {
         let key = label_key(label);
         self.nodes.push(PanelNode {
-            cl_id: None,
-            name: key.clone(),
             parent,
-            children: Vec::new(),
             labels: vec![key.clone()],
-            depth: 0,
+            ..PanelNode::new(None, key.clone())
         });
         self.of_label.insert(key, self.nodes.len() - 1);
     }

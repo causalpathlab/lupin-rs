@@ -14,7 +14,8 @@
 //!   `{out}.marker_history.json` (`annotate.marker_history`, per cell type)
 
 use crate::annotate::outputs::{
-    CLUSTER_CELLTYPE_ES_STD, CLUSTER_CELLTYPE_NES, CLUSTER_CELLTYPE_P, CLUSTER_CELLTYPE_Z,
+    write_cluster_tables, CLUSTER_CELLTYPE_ES_STD, CLUSTER_CELLTYPE_NES, CLUSTER_CELLTYPE_P,
+    CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_CELLTYPE_Z,
 };
 use crate::annotate::rounds::{
     self, apply, apply_markers, digest, next_cluster_id, parse_cluster_id, prepend_history,
@@ -431,6 +432,32 @@ pub(crate) fn chain_rounds(round: &Path) -> (PathBuf, Vec<PathBuf>) {
     (chain.latest().1, later)
 }
 
+/// Set aside the rounds after `round` in its chain, under the chain's lock:
+/// each round's files (`X.rK.*`) move into `X.superseded/`, so a new pass
+/// that rewrote `round` starts a fresh chain. Returns how many rounds moved.
+pub(crate) fn supersede_later(round: &Path) -> Result<usize> {
+    let chain = Chain::of(round);
+    let _lock = chain.lock()?;
+    let later = chain.rounds();
+    let prefix = Path::new(&chain.prefix);
+    let dir = parent_dir(prefix);
+    let chain_name = prefix
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let aside = dir.join(format!("{chain_name}.superseded"));
+    for (k, _) in &later {
+        let round_name = format!("{chain_name}.r{k}.");
+        fs::create_dir_all(&aside)?;
+        for e in fs::read_dir(&dir)?.flatten() {
+            if e.file_name().to_string_lossy().starts_with(&round_name) {
+                fs::rename(e.path(), aside.join(e.file_name()))?;
+            }
+        }
+    }
+    Ok(later.len())
+}
+
 /// A text's lines, numbered from 1.
 fn numbered(raw: &str) -> impl Iterator<Item = (usize, &str)> {
     raw.lines().enumerate().map(|(n, l)| (n + 1, l))
@@ -720,10 +747,12 @@ fn relabel(
 
     let mut next = source.copy_to(manifest_path)?;
     let rel = |p: &str| Some(rel_to_manifest(&next.dir, p));
-    if let Some((q, q_values)) = &tables {
+    if let Some(t) = &tables {
         let a = &mut next.manifest.annotate;
-        a.cluster_celltype_q = rel(q);
-        a.cluster_celltype_q_values = rel(q_values);
+        a.cluster_celltype_q = rel(&t.q);
+        a.cluster_celltype_q_values = rel(&t.q_values);
+        a.cluster_celltype_p = rel(&t.p);
+        a.cluster_celltype_nes = rel(&t.nes);
         let rounds = source
             .manifest
             .annotate
@@ -751,31 +780,38 @@ fn relabel(
     Ok(next.file)
 }
 
-/// Write a rescored round's cluster × type tables under `out`: the Q
-/// probabilities, the FDR q-values, the p-values, z and NES.
-fn write_rescored(r: &super::recalibrate::Rescored, out: &str) -> Result<(String, String)> {
-    let rows = r.row_names();
-    let q = format!("{out}.cluster_celltype_q.parquet");
-    r.q_probs
-        .to_parquet_with_names(&q, (Some(&rows), Some("cluster")), Some(&r.types))?;
-    let q_values = format!("{out}.cluster_celltype_q_values.parquet");
-    r.q_values
-        .to_parquet_with_names(&q_values, (Some(&rows), Some("cluster")), Some(&r.types))?;
-    // Beside the q-values, as a pass writes them.
-    for (m, suffix) in [
-        (&r.p_values, CLUSTER_CELLTYPE_P),
-        (&r.z, CLUSTER_CELLTYPE_ES_STD),
-        (&r.nes, CLUSTER_CELLTYPE_NES),
-        (&r.probit_z, CLUSTER_CELLTYPE_Z),
-    ] {
-        m.to_parquet_with_names(
-            &format!("{out}{suffix}"),
-            (Some(&rows), Some("cluster")),
-            Some(&r.types),
-        )?;
-    }
-    info!("wrote the rescored round's q, p and z tables under {out}");
-    Ok((q, q_values))
+/// The tables a rescored round writes under its prefix.
+struct RescoredTables {
+    q: String,
+    q_values: String,
+    p: String,
+    nes: String,
+}
+
+/// Write a rescored round's cluster × type tables under `out`, as a pass
+/// writes them: the Q probabilities, q-values, p-values, z and NES.
+fn write_rescored(r: &super::recalibrate::Rescored, out: &str) -> Result<RescoredTables> {
+    let written = write_cluster_tables(
+        out,
+        &r.row_names(),
+        &r.types,
+        &[
+            (&r.q_probs, CLUSTER_CELLTYPE_Q),
+            (&r.q_values, CLUSTER_CELLTYPE_Q_VALUES),
+            (&r.p_values, CLUSTER_CELLTYPE_P),
+            (&r.nes, CLUSTER_CELLTYPE_NES),
+            (&r.z, CLUSTER_CELLTYPE_ES_STD),
+            (&r.probit_z, CLUSTER_CELLTYPE_Z),
+        ],
+    )?;
+    let mut w = written.into_iter();
+    let mut next = || w.next().unwrap_or_default();
+    Ok(RescoredTables {
+        q: next(),
+        q_values: next(),
+        p: next(),
+        nes: next(),
+    })
 }
 
 /////////////

@@ -338,6 +338,12 @@ pub struct RunAnnotate {
     /// Enrichment: nClusters × C FDR q-values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_celltype_q_values: Option<String>,
+    /// Enrichment: nClusters × C p-values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_celltype_p: Option<String>,
+    /// Enrichment: nClusters × C NES (fgsea's normalized enrichment score).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_celltype_nes: Option<String>,
     /// Projection: nClusters × term FDR q-values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_term_q: Option<String>,

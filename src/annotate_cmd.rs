@@ -228,19 +228,27 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     // A marker pass on a run: group the panel's cell types (finding the Cell
     // Ontology, whose walk then runs by default), and call a first round at
     // the coarse level.
-    let prepared = match &loaded {
-        Some(l) if !args.markers.is_empty() => Some(crate::manifest::first_round::prepare(
-            &args.markers,
-            &args.out,
-            &crate::manifest::ontology::load(
-                Some(&l.dir),
-                args.obo.as_deref(),
-                args.label_cl.as_deref(),
-            )?,
+    // The run's Cell Ontology data, read once for the grouping and the pass.
+    let cl_data = match &loaded {
+        Some(l) if !args.markers.is_empty() => Some(crate::manifest::ontology::load(
+            Some(&l.dir),
+            args.obo.as_deref(),
             args.label_cl.as_deref(),
+            crate::manifest::data_files::Fetch::Allowed,
         )?),
         _ => None,
     };
+    let prepared = cl_data
+        .as_ref()
+        .map(|d| {
+            crate::manifest::first_round::prepare(
+                &args.markers,
+                &args.out,
+                d,
+                args.label_cl.as_deref(),
+            )
+        })
+        .transpose()?;
     if let Some((obo, label_cl)) = prepared.as_ref().and_then(|p| p.ontology.clone()) {
         args.obo = Some(obo.into_boxed_str());
         args.label_cl = Some(label_cl.into_boxed_str());
@@ -257,7 +265,7 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
             let loaded = loaded
                 .as_ref()
                 .context("--from is required for enrichment annotation")?;
-            annotate_by_enrichment(&build_enrichment_args(args), loaded)?;
+            annotate_by_enrichment(&build_enrichment_args(args), loaded, cl_data.as_ref())?;
         }
         Route::Projection => {
             anyhow::ensure!(!args.markers.is_empty(), "projection needs --markers");

@@ -3,33 +3,37 @@
 //! at hand (offline, say), a panel's types are grouped by the marker genes
 //! they share instead.
 
-use super::data_files::{ClData, SearchPath};
+use super::data_files::{ClData, Fetch, SearchPath};
 use crate::annotate::celltype_tree::{ClTerms, TypeTree};
 use crate::annotate::panel_tree::PanelTree;
 use anyhow::Result;
 use log::{info, warn};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The ontology data for a run whose manifest sits in `run_dir`: `obo`
 /// (`--obo`) and `label_cl` (`--label-cl`) are the run's own files, the most
-/// specific layer.
-pub fn load(run_dir: Option<&Path>, obo: Option<&str>, label_cl: Option<&str>) -> Result<ClData> {
-    ClData::load(SearchPath::new(run_dir), obo, label_cl)
+/// specific layer; `fetch` says whether what is missing may be downloaded.
+pub fn load(
+    run_dir: Option<&Path>,
+    obo: Option<&str>,
+    label_cl: Option<&str>,
+    fetch: Fetch,
+) -> Result<ClData> {
+    ClData::load(SearchPath::new(run_dir), obo, label_cl, fetch)
 }
 
 /// The coarse level over `panel`: on the Cell Ontology when there is one and
 /// at least two of the panel's types match its terms, else by shared markers.
-/// Also the ontology file used, if any.
-pub fn type_tree(data: &ClData, panel: &[(String, String)]) -> Result<(TypeTree, Option<PathBuf>)> {
+pub fn type_tree(data: &ClData, panel: &[(String, String)]) -> Result<TypeTree> {
     if let Some(terms) = data.terms()? {
-        if let Some(tree) = TypeTree::from_ontology(&terms, panel) {
+        if let Some(tree) = TypeTree::from_ontology(terms, panel) {
             info!(
                 "cell-type groups from the Cell Ontology ({}): {} group(s), {} type(s) matched",
                 terms.release.as_deref().unwrap_or("release unknown"),
                 tree.groups.len(),
                 tree.label_cl.len()
             );
-            return Ok((tree, data.ontology.clone()));
+            return Ok(tree);
         }
         warn!("fewer than two panel types match a Cell Ontology term; grouping by shared markers");
     }
@@ -38,14 +42,14 @@ pub fn type_tree(data: &ClData, panel: &[(String, String)]) -> Result<(TypeTree,
         "cell-type groups by shared markers: {} group(s)",
         tree.groups.len()
     );
-    Ok((tree, data.ontology.clone()))
+    Ok(tree)
 }
 
 /// The panel's types on the Cell Ontology, else grouped by the markers they
 /// share: the tree a round's labels are picked from and its q-values
 /// adjusted over.
 pub fn panel_tree(data: &ClData, panel: &[(String, String)]) -> Result<PanelTree> {
-    Ok(panel_tree_on(data.terms()?.as_ref(), panel))
+    Ok(panel_tree_on(data.terms()?, panel))
 }
 
 /// [`panel_tree`] on an ontology already read.

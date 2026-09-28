@@ -64,9 +64,14 @@ impl Default for LeidenArgs {
 /// `lupin annotate --method enrichment`: re-open the raw counts the manifest
 /// points at, aggregate them per cluster, run the enrichment, and record what
 /// it wrote.
-pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &Loaded) -> Result<()> {
+/// `data` is the run's Cell Ontology data when the caller already loaded it.
+pub fn annotate_by_enrichment(
+    args: &AnnotateArgs,
+    loaded: &Loaded,
+    data: Option<&super::data_files::ClData>,
+) -> Result<()> {
     let plan = by_enrichment::plan(args)?;
-    let inputs = load_enrichment_inputs(args, &plan, loaded)?;
+    let inputs = load_enrichment_inputs(args, &plan, loaded, data)?;
     let mut outputs = by_enrichment::run(args, &plan, &inputs)?;
     // The ids the cluster tables' `K{id}` rows refer to, so later rounds and
     // viewers key on the same clusters.
@@ -238,6 +243,8 @@ fn record(
             a.ontology_assignment = rel(&out.ontology_assignment);
             a.ontology_node_mass = rel(&out.ontology_node_mass);
             a.cluster_celltype_q_values = rel(&out.cluster_celltype_q_values);
+            a.cluster_celltype_p = rel(&out.cluster_celltype_p);
+            a.cluster_celltype_nes = rel(&out.cluster_celltype_nes);
             a.cluster_term_q = rel(&out.cluster_term_q);
             a.marker_embedding = rel(&out.marker_embedding);
             loaded.manifest.defaults.colour_by = Some("annotation".into());
@@ -367,6 +374,7 @@ pub(super) fn load_enrichment_inputs(
     args: &AnnotateArgs,
     plan: &EnrichmentPlan,
     loaded: &Loaded,
+    data: Option<&super::data_files::ClData>,
 ) -> Result<EnrichmentInputs> {
     let (manifest, manifest_dir) = (&loaded.manifest, loaded.dir.as_path());
     anyhow::ensure!(
@@ -413,17 +421,21 @@ pub(super) fn load_enrichment_inputs(
             annot.membership_ga.ncols()
         );
         // The tree each cluster's q-values are TreeBH-adjusted over.
-        let panel: Vec<(String, String)> =
-            crate::annotate::markers::read_marker_pairs(&args.markers)?
-                .into_iter()
-                .map(|(g, t)| (g.into_string(), t.into_string()))
-                .collect();
-        let data = super::ontology::load(
-            Some(&loaded.dir),
-            args.obo.as_deref(),
-            args.label_cl.as_deref(),
-        )?;
-        let tree = super::ontology::panel_tree(&data, &panel)?;
+        let panel = crate::annotate::markers::read_panel(&args.markers)?;
+        let own;
+        let data = match data {
+            Some(d) => d,
+            None => {
+                own = super::ontology::load(
+                    Some(&loaded.dir),
+                    args.obo.as_deref(),
+                    args.label_cl.as_deref(),
+                    super::data_files::Fetch::Never,
+                )?;
+                &own
+            }
+        };
+        let tree = super::ontology::panel_tree(data, &panel)?;
         cl_record = Some(data.record(tree.release.as_deref()));
         let type_tree = Some(tree.treebh(&annot.annot_names));
         (annot.membership_ga, annot.annot_names, type_tree)

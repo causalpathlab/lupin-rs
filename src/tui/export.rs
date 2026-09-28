@@ -163,10 +163,9 @@ pub fn marker_rows(
             .flatten()
             .map(String::as_str)
             .collect();
-        let fc = expr.map(|e| pooled_fold_change(e, &ids));
+        let inside = expr.map(|e| e.cols(&ids)).unwrap_or_default();
         let fc_of = |g: &str| {
-            fc.as_ref()
-                .and_then(|(names, v)| names.get(g).map(|&r| v[r]))
+            expr.and_then(|e| e.log2fc(e.row(g)?, &inside))
                 .unwrap_or(f32::NAN)
         };
         let mut rows: Vec<MarkerRow> = genes
@@ -188,11 +187,14 @@ pub fn marker_rows(
                 .reverse()
                 .then(b.log2fc.total_cmp(&a.log2fc))
         });
-        if let (Some(e), Some((_, v))) = (expr, &fc) {
-            let floor = mean_in(e, &ids);
-            let mut suggested: Vec<(usize, f32)> = (0..e.rows.len())
-                .filter(|&r| !genes.contains(&*e.rows[r]) && in_mean(e, &ids, r) > floor)
-                .map(|r| (r, v[r]))
+        if let Some(e) = expr {
+            let names = &e.table.rows;
+            // A suggestion must be above the label's clusters' average.
+            let floor = (0..names.len()).map(|r| e.mean_in(r, &inside)).sum::<f32>()
+                / names.len().max(1) as f32;
+            let mut suggested: Vec<(usize, f32)> = (0..names.len())
+                .filter(|&r| !genes.contains(&*names[r]) && e.mean_in(r, &inside) > floor)
+                .filter_map(|r| e.log2fc(r, &inside).map(|f| (r, f)))
                 .filter(|(_, f)| f.is_finite() && *f > 0.0)
                 .collect();
             suggested.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -202,7 +204,7 @@ pub fn marker_rows(
                     .take(SUGGESTED)
                     .map(|(r, f)| MarkerRow {
                         celltype: label.to_string(),
-                        gene: e.rows[r].to_string(),
+                        gene: names[r].to_string(),
                         source: "suggested",
                         log2fc: f,
                     }),
@@ -211,64 +213,6 @@ pub fn marker_rows(
         out.extend(rows);
     }
     out
-}
-
-type Expr = legume_numeric::matrix::traits::MatWithNames<legume_numeric::matrix::dense_mat_io::Mat>;
-
-/// The columns of `expr` for clusters `ids`.
-fn columns_of(expr: &Expr, ids: &BTreeSet<ClusterId>) -> Vec<usize> {
-    (0..expr.cols.len())
-        .filter(|&k| {
-            crate::annotate::rounds::parse_cluster_id(&expr.cols[k])
-                .is_some_and(|id| ids.contains(&id))
-        })
-        .collect()
-}
-
-/// Gene `r`'s mean over clusters `ids`.
-fn in_mean(expr: &Expr, ids: &BTreeSet<ClusterId>, r: usize) -> f32 {
-    let cols = columns_of(expr, ids);
-    cols.iter().map(|&k| expr.mat[(r, k)]).sum::<f32>() / cols.len().max(1) as f32
-}
-
-/// The mean over every gene of clusters `ids`: a gene must beat it to be suggested.
-fn mean_in(expr: &Expr, ids: &BTreeSet<ClusterId>) -> f32 {
-    let cols = columns_of(expr, ids);
-    let n = (expr.rows.len() * cols.len()).max(1) as f32;
-    cols.iter().map(|&k| expr.mat.column(k).sum()).sum::<f32>() / n
-}
-
-/// Per gene, log2 of its mean over clusters `ids` over its mean over the
-/// rest, with the table's mean as pseudo-count (as for the specific genes);
-/// NaN with no other cluster to compare with.
-fn pooled_fold_change(
-    expr: &Expr,
-    ids: &BTreeSet<ClusterId>,
-) -> (BTreeMap<String, usize>, Vec<f32>) {
-    let inside = columns_of(expr, ids);
-    let outside: Vec<usize> = (0..expr.cols.len())
-        .filter(|k| !inside.contains(k))
-        .collect();
-    let eps = expr.mat.mean().max(f32::MIN_POSITIVE);
-    let mean = |r: usize, ks: &[usize]| {
-        ks.iter().map(|&k| expr.mat[(r, k)]).sum::<f32>() / ks.len() as f32
-    };
-    let v = (0..expr.rows.len())
-        .map(|r| {
-            if inside.is_empty() || outside.is_empty() {
-                f32::NAN
-            } else {
-                ((mean(r, &inside) + eps) / (mean(r, &outside) + eps)).log2()
-            }
-        })
-        .collect();
-    let names = expr
-        .rows
-        .iter()
-        .enumerate()
-        .map(|(r, g)| (g.to_string(), r))
-        .collect();
-    (names, v)
 }
 
 /// Write both files next to the round; returns their paths.

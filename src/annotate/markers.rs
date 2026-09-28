@@ -46,6 +46,14 @@ pub fn read_marker_pairs(path: &str) -> anyhow::Result<Vec<(Box<str>, Box<str>)>
         .collect())
 }
 
+/// [`read_marker_pairs`] as owned `(gene, cell type)` strings.
+pub fn read_panel(path: &str) -> anyhow::Result<Vec<(String, String)>> {
+    Ok(read_marker_pairs(path)?
+        .into_iter()
+        .map(|(g, t)| (g.into_string(), t.into_string()))
+        .collect())
+}
+
 /// Read a marker TSV and match its genes to `row_names` (exact → symbol →
 /// flexible); unmatched markers are logged and dropped. Cell-type names are
 /// in their [`label_key`] form.

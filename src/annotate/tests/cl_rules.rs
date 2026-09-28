@@ -58,21 +58,24 @@ fn aliases_layer_and_compare_as_labels() {
     a.add_tsv(
         "# note\nlabel\tcl_id\tnote\nPro B\tCL:1\tbuilt-in\nNK\tCL:2\n",
         "built-in",
-    )
-    .unwrap();
-    a.add_tsv("pro_b\tCL:9\tmine\n", "project").unwrap();
+    );
+    a.add_tsv("pro_b\tCL:9\tmine\n", "project");
     assert_eq!(a.get("PRO B"), Some("CL:9"), "the later file wins");
     assert_eq!(a.get("nk"), Some("CL:2"));
     assert_eq!(a.len(), 2);
-    assert!(a.add_tsv("broken line\n", "x").is_err());
+    // As `--label-cl` maps have been written: commas, a header, an NA row.
+    let n = a.add_tsv(
+        "cell_type,cl_id\nCD4 T,CL:0000624\nDoublet\tNA\nbroken line\n",
+        "x",
+    );
+    assert_eq!(n, 1, "only the CL pair is taken");
+    assert_eq!(a.get("cd4_t"), Some("CL:0000624"));
 }
 
 #[test]
 fn the_shipped_aliases_parse() {
     let mut a = Aliases::default();
-    let n = a
-        .add_tsv(include_str!("../../../data/cl_aliases.tsv"), "shipped")
-        .unwrap();
+    let n = a.add_tsv(include_str!("../../../data/cl_aliases.tsv"), "shipped");
     assert!(n > 10);
     assert_eq!(a.get("CD14 Mono"), Some("CL:0001054"));
 }

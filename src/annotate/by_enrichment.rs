@@ -6,8 +6,9 @@ use super::args::{AnnotateArgs, KEEP_IEA, MAX_GENE_SET, MIN_CONFIDENCE, MIN_GENE
 use super::inputs::EnrichmentInputs;
 use super::outputs::{clean_outputs, AnnotationOutputs, ENRICHMENT_OUTPUT_SUFFIXES};
 use super::outputs::{
-    ARGMAX_TSV, CLUSTER_CELLTYPE_ES_STD, CLUSTER_CELLTYPE_NES, CLUSTER_CELLTYPE_P,
-    CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_CELLTYPE_Z,
+    write_cluster_tables, ARGMAX_TSV, CLUSTER_CELLTYPE_ES, CLUSTER_CELLTYPE_ES_STD,
+    CLUSTER_CELLTYPE_NES, CLUSTER_CELLTYPE_P, CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES,
+    CLUSTER_CELLTYPE_Z,
 };
 use enrichment::{annotate, AnnotateConfig, AnnotateOutputs, GroupInputs, SpecificityMode};
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -260,60 +261,32 @@ pub fn run(
         graph_embedding_util::type_annotation::write_label_tsvs(out, &cells, &labels, &probs)?;
     }
 
-    let q_path = format!("{out}.cluster_celltype_q.parquet");
-    q_kc.to_parquet_with_names(
-        &q_path,
-        (Some(&cluster_names), Some("cluster")),
-        Some(&inputs.celltype_names),
+    let written = write_cluster_tables(
+        out,
+        &cluster_names,
+        &inputs.celltype_names,
+        &[
+            (&q_kc, CLUSTER_CELLTYPE_Q),
+            (&es_kc, CLUSTER_CELLTYPE_ES),
+            (&es_restandardized_kc, CLUSTER_CELLTYPE_ES_STD),
+            (&nes_kc, CLUSTER_CELLTYPE_NES),
+            (&z_kc, CLUSTER_CELLTYPE_Z),
+            (&pvalue_kc, CLUSTER_CELLTYPE_P),
+            (&qvalue_kc, CLUSTER_CELLTYPE_Q_VALUES),
+        ],
     )?;
-    info!("wrote {q_path}");
-
-    let es_path = format!("{out}.cluster_celltype_es.parquet");
-    es_kc.to_parquet_with_names(
-        &es_path,
-        (Some(&cluster_names), Some("cluster")),
-        Some(&inputs.celltype_names),
-    )?;
-    info!("wrote {es_path}");
-
-    let es_std_path = format!("{out}{CLUSTER_CELLTYPE_ES_STD}");
-    es_restandardized_kc.to_parquet_with_names(
-        &es_std_path,
-        (Some(&cluster_names), Some("cluster")),
-        Some(&inputs.celltype_names),
-    )?;
-    for (m, suffix) in [(&nes_kc, CLUSTER_CELLTYPE_NES), (&z_kc, CLUSTER_CELLTYPE_Z)] {
-        m.to_parquet_with_names(
-            &format!("{out}{suffix}"),
-            (Some(&cluster_names), Some("cluster")),
-            Some(&inputs.celltype_names),
-        )?;
-    }
-
+    let [q_path, es_path, _, nes_path, _, p_path, q_val_path] =
+        <[String; 7]>::try_from(written).map_err(|_| anyhow::anyhow!("seven tables written"))?;
     // Correlation-preserving sample-permutation z (when num_perm > 0): the
     // preferred ontology input — graded, unlike the pooled p-value.
     if let Some(pz) = &perm_z_kc {
-        let perm_z_path = format!("{out}.cluster_celltype_perm_z.parquet");
-        pz.to_parquet_with_names(
-            &perm_z_path,
-            (Some(&cluster_names), Some("cluster")),
-            Some(&inputs.celltype_names),
+        write_cluster_tables(
+            out,
+            &cluster_names,
+            &inputs.celltype_names,
+            &[(pz, ".cluster_celltype_perm_z.parquet")],
         )?;
     }
-
-    let p_path = format!("{out}{CLUSTER_CELLTYPE_P}");
-    pvalue_kc.to_parquet_with_names(
-        &p_path,
-        (Some(&cluster_names), Some("cluster")),
-        Some(&inputs.celltype_names),
-    )?;
-
-    let q_val_path = format!("{out}{CLUSTER_CELLTYPE_Q_VALUES}");
-    qvalue_kc.to_parquet_with_names(
-        &q_val_path,
-        (Some(&cluster_names), Some("cluster")),
-        Some(&inputs.celltype_names),
-    )?;
 
     display_annotation_histogram(&cell_annotation_nc, &inputs.celltype_names);
 
@@ -350,6 +323,8 @@ pub fn run(
     info!("annotate --method enrichment complete");
     Ok(AnnotationOutputs {
         cluster_celltype_q_values: Some(q_val_path),
+        cluster_celltype_p: Some(p_path),
+        cluster_celltype_nes: Some(nes_path),
         argmax: Some(argmax_path),
         annotation: Some(annotation_path),
         cluster_celltype_q: Some(q_path),

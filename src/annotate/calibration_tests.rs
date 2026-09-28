@@ -109,7 +109,8 @@ fn run(batches: usize, planted: &[(usize, usize, f32)], seed: u64) -> Summary {
         min_markers: 3,
         stratify_null: true,
         bootstrap: None,
-        multilevel: Some(enrichment::fgsea::Multilevel::default()),
+        // As the pass runs: the plain permutation p.
+        multilevel: None,
         type_tree: None,
     };
     let out = annotate(&group, &markers, &names, &config).unwrap();
