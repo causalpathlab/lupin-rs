@@ -154,6 +154,11 @@ and `{out}.marker_history.json` keeps each cell type's edits with their
 rationale. `lupin annotate -f <round>` without `-m` re-annotates from that
 panel.
 
+## Method write-ups
+
+`lupin docs` lists them; `lupin docs <topic>` prints one (compiled into the
+binary): `annotation`, `grouping`, `ontology-plan`, `rooting-plan`.
+
 ## Related crates
 
 [`senna-rs`](https://crates.io/crates/senna-rs) (train / embed / layout; produces the runs lupin reads),
