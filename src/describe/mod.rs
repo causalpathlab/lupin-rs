@@ -16,6 +16,7 @@ use crate::annotate::outputs::{
 use crate::gene_text::vocab::Vocabulary;
 use anyhow::{bail, Context, Result};
 use clap::Args;
+use legume_numeric::matrix::common_io::open_buf_reader;
 use legume_numeric::matrix::parquet::peek_parquet_field_names;
 use log::info;
 use serde_json::json;
@@ -165,7 +166,6 @@ struct EvidenceFiles {
     /// Projection's cluster × term FDR q-values.
     term_q: Option<String>,
     argmax: Option<String>,
-    marker_support: Option<String>,
     marker_embedding: Option<String>,
     /// The marker panel annotate was run with.
     markers_tsv: Option<String>,
@@ -191,7 +191,6 @@ impl EvidenceFiles {
                     enrichment_q: at(&a.cluster_celltype_q_values),
                     term_q,
                     argmax: at(&a.argmax),
-                    marker_support: at(&a.marker_support),
                     marker_embedding: at(&a.marker_embedding),
                     // Manifest-relative; older manifests recorded the path as
                     // typed on the command line, so fall back to it as given.
@@ -216,7 +215,6 @@ impl EvidenceFiles {
                     enrichment_q: found(CLUSTER_CELLTYPE_Q_VALUES),
                     term_q: found(CLUSTER_TERM_Q),
                     argmax: found(ARGMAX_TSV),
-                    marker_support: found(".marker_support.parquet"),
                     marker_embedding: found(".marker_embedding.parquet"),
                     markers_tsv: None,
                 }
@@ -381,63 +379,20 @@ fn load_from_argmax_tsv(path: &str) -> Result<Vec<ClusterEvidence>> {
 
 /// Load panel markers keyed by cell-type name.
 ///
-/// Preference: projection's `marker_support` (bootstrap live genes), then its
-/// `marker_embedding`, then a marker TSV (`--markers`, else the one annotate used).
+/// Preference: projection's `marker_embedding`, then a marker TSV
+/// (`--markers`, else the one annotate used).
 fn load_markers_by_type(
     files: &EvidenceFiles,
     markers_tsv: Option<&str>,
 ) -> Result<BTreeMap<String, Vec<String>>> {
-    if let Some(p) = &files.marker_support {
-        return load_markers_from_support_parquet(p);
-    }
     if let Some(p) = &files.marker_embedding {
         return load_markers_from_embedding_parquet(p);
     }
     if let Some(path) = markers_tsv {
         return load_markers_from_tsv(path);
     }
-    info!("describe: no marker_support / marker_embedding; pass --markers for a gene<TAB>celltype TSV");
+    info!("describe: no marker_embedding; pass --markers for a gene<TAB>celltype TSV");
     Ok(BTreeMap::new())
-}
-
-fn load_markers_from_support_parquet(path: &str) -> Result<BTreeMap<String, Vec<String>>> {
-    let fields = peek_parquet_field_names(path).with_context(|| format!("peek {path}"))?;
-    let has = |name: &str| fields.iter().any(|f| f.as_ref() == name);
-    anyhow::ensure!(
-        has("gene") && has("cell_type"),
-        "{path}: need gene and cell_type"
-    );
-
-    let string_cols = vec!["gene", "cell_type"];
-    let mut numeric_cols: Vec<&str> = Vec::new();
-    if has("live") {
-        numeric_cols.push("live");
-    }
-    if has("idf_weight") {
-        numeric_cols.push("idf_weight");
-    }
-    let (strings, nums) =
-        legume_numeric::matrix::parquet::read_table_columns(path, &string_cols, &numeric_cols)
-            .with_context(|| format!("read {path}"))?;
-    let genes = &strings[0];
-    let types = &strings[1];
-    let live_col = numeric_cols.iter().position(|&c| c == "live");
-    let weight_col = numeric_cols.iter().position(|&c| c == "idf_weight");
-
-    // (weight, gene) per type — prefer live markers, higher IDF first.
-    let mut scored: BTreeMap<String, Vec<(i32, f32, String)>> = BTreeMap::new();
-    for i in 0..genes.len() {
-        let live = live_col.map(|j| nums[j][i] as i32).unwrap_or(1);
-        if live == 0 {
-            continue;
-        }
-        let w = weight_col.map(|j| nums[j][i] as f32).unwrap_or(1.0);
-        scored
-            .entry(types[i].to_string())
-            .or_default()
-            .push((live, w, genes[i].to_string()));
-    }
-    Ok(finalize_marker_lists(scored))
 }
 
 fn load_markers_from_embedding_parquet(path: &str) -> Result<BTreeMap<String, Vec<String>>> {
@@ -468,9 +423,9 @@ fn load_markers_from_embedding_parquet(path: &str) -> Result<BTreeMap<String, Ve
 }
 
 fn load_markers_from_tsv(path: &str) -> Result<BTreeMap<String, Vec<String>>> {
-    let f = File::open(path).with_context(|| format!("open {path}"))?;
+    let reader = open_buf_reader(path).with_context(|| format!("open {path}"))?;
     let mut scored: BTreeMap<String, Vec<(i32, f32, String)>> = BTreeMap::new();
-    for line in BufReader::new(f).lines() {
+    for line in reader.lines() {
         let line = line?;
         if line.is_empty() || line.starts_with('#') {
             continue;

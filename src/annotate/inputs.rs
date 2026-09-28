@@ -40,6 +40,11 @@ pub struct EnrichmentInputs {
     pub gene_sum_kg: Vec<f64>,
     /// Per-gene weights `profile_gk` was built with (NB-Fisher).
     pub gene_weights: Vec<f32>,
+    /// The cell types' tree, over which each cluster's q-values are TreeBH-adjusted; flat BH
+    /// without one.
+    pub type_tree: Option<enrichment::treebh::TypeTree>,
+    /// The Cell Ontology files and release the pass used, for its record.
+    pub cl_record: Option<serde_json::Value>,
 }
 
 /// Read the cluster parquet (cells × 1 cluster column, NaN for unassigned)

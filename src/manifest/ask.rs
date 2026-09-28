@@ -117,7 +117,6 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
         &mut a.fine_argmax,
         &mut a.cluster_celltype_q,
         &mut a.cluster_celltype_q_values,
-        &mut a.cluster_celltype_support,
     ] {
         *p = None;
     }

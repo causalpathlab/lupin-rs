@@ -20,13 +20,6 @@ use std::path::Path;
 
 const TREE: &str = ".celltype_tree.json";
 
-/// The support a call needs, as the pass that made it was set.
-fn min_support(settings: Option<&serde_json::Value>) -> f32 {
-    settings
-        .and_then(|s| s.pointer("/enrichment/min_support"))
-        .and_then(serde_json::Value::as_f64)
-        .map_or(0.5, |v| v as f32)
-}
 const LABEL_CL: &str = ".label_cl.tsv";
 const FINE_ARGMAX: &str = ".fine_argmax.tsv";
 
@@ -54,14 +47,14 @@ pub fn is_first_round(source: &Loaded) -> bool {
 pub fn prepare(
     markers: &str,
     out: &str,
-    obo: Option<&str>,
+    data: &super::data_files::ClData,
     label_cl: Option<&str>,
 ) -> Result<Prepared> {
     let panel: Vec<(String, String)> = crate::annotate::markers::read_marker_pairs(markers)?
         .into_iter()
         .map(|(g, t)| (g.into_string(), t.into_string()))
         .collect();
-    let (tree, found) = super::ontology::type_tree(obo, &panel)?;
+    let (tree, found) = super::ontology::type_tree(data, &panel)?;
     mkdir_parent(out)?;
     fs::write(format!("{out}{TREE}"), serde_json::to_string_pretty(&tree)?)?;
 
@@ -111,19 +104,15 @@ pub fn finish(manifest: &Path, tree: &TypeTree, coarse: bool) -> Result<()> {
         return loaded.manifest.save(&loaded.file);
     }
     let cells = read_cells(&loaded)?;
-    // Per cluster × type, the pass's shares (enrichment): the bootstrap's
-    // support when it ran, whose abstentions a group call must respect (a
-    // group is called only if its types together reach the support bar),
-    // else the Q probabilities.
-    let a = &loaded.manifest.annotate;
-    let (share_rel, min_share) = match (&a.cluster_celltype_support, &a.cluster_celltype_q) {
-        (Some(s), _) => (Some(s.as_str()), min_support(a.settings.as_ref())),
-        (None, Some(q)) => (Some(q.as_str()), 0.0),
-        (None, None) => (None, 0.0),
-    };
-    let probs = share_rel
+    // Per cluster × type, the pass's shares (enrichment): its Q probabilities.
+    let probs = loaded
+        .manifest
+        .annotate
+        .cluster_celltype_q
+        .as_deref()
         .map(|rel| read_table(&resolve(&loaded.dir, rel)))
         .transpose()?;
+    let min_share = 0.0;
     let mut votes: BTreeMap<ClusterId, Vec<&str>> = BTreeMap::new();
     for (id, label) in cells.clusters.iter().zip(&cells.labels) {
         if let Some(id) = id {

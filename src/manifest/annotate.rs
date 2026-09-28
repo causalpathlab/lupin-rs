@@ -91,6 +91,9 @@ pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &Loaded) -> Result<()
     let mut used = settings(args)?;
     if let serde_json::Value::Object(m) = &mut used {
         let draws = by_enrichment::sample_perm_draws(inputs.n_batches, args.num_perm);
+        if let Some(r) = &inputs.cl_record {
+            m.insert("cell_ontology".into(), r.clone());
+        }
         m.insert(
             "null".into(),
             serde_json::json!({
@@ -236,9 +239,7 @@ fn record(
             a.ontology_node_mass = rel(&out.ontology_node_mass);
             a.cluster_celltype_q_values = rel(&out.cluster_celltype_q_values);
             a.cluster_term_q = rel(&out.cluster_term_q);
-            a.marker_support = rel(&out.marker_support);
             a.marker_embedding = rel(&out.marker_embedding);
-            a.cluster_celltype_support = rel(&out.cluster_celltype_support);
             loaded.manifest.defaults.colour_by = Some("annotation".into());
         }
         Pass::GeneSets => {
@@ -400,9 +401,10 @@ pub(super) fn load_enrichment_inputs(
     // Markers aligned to data row order. Optional: GO/GMT ontology mode supplies
     // gene-sets instead of a curated marker TSV, so an empty path yields an empty
     // marker matrix (the marker-enrichment path is skipped by the caller).
-    let (markers_gc, celltype_names) = if args.markers.is_empty() {
+    let mut cl_record = None;
+    let (markers_gc, celltype_names, type_tree) = if args.markers.is_empty() {
         info!("No marker TSV (ontology gene-set mode); skipping marker matrix");
-        (Mat::zeros(gene_names.len(), 0), Vec::new())
+        (Mat::zeros(gene_names.len(), 0), Vec::new(), None)
     } else {
         let annot = build_annotation_matrix(&args.markers, &gene_names)?;
         info!(
@@ -410,7 +412,21 @@ pub(super) fn load_enrichment_inputs(
             annot.membership_ga.nrows(),
             annot.membership_ga.ncols()
         );
-        (annot.membership_ga, annot.annot_names)
+        // The tree each cluster's q-values are TreeBH-adjusted over.
+        let panel: Vec<(String, String)> =
+            crate::annotate::markers::read_marker_pairs(&args.markers)?
+                .into_iter()
+                .map(|(g, t)| (g.into_string(), t.into_string()))
+                .collect();
+        let data = super::ontology::load(
+            Some(&loaded.dir),
+            args.obo.as_deref(),
+            args.label_cl.as_deref(),
+        )?;
+        let tree = super::ontology::panel_tree(&data, &panel)?;
+        cl_record = Some(data.record(tree.release.as_deref()));
+        let type_tree = Some(tree.treebh(&annot.annot_names));
+        (annot.membership_ga, annot.annot_names, type_tree)
     };
 
     let nb_fisher = nb_fisher_weights(&loaded.run_prefix(), data_vec, &gene_names)?;
@@ -438,6 +454,8 @@ pub(super) fn load_enrichment_inputs(
         pb_gene_gp,
         gene_sum_kg,
         gene_weights: nb_fisher,
+        type_tree,
+        cl_record,
     })
 }
 

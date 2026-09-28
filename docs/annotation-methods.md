@@ -5,7 +5,7 @@ quoted here is the shipped default. Where a design choice is justified by a meas
 measurement was made on a marker panel that includes types absent from the tissue (the negative
 control of §7); results are stated qualitatively.
 
-Code: `type_annotation::{term_ora, marker_bootstrap, panel_null}` in the `legume-graph-embedding`
+Code: `type_annotation::{term_ora, panel_null}` in the `legume-graph-embedding`
 crate, driven by `lupin annotate` and `lupin lineage --markers`.
 
 ---
@@ -95,8 +95,7 @@ else left uncalled; its cells inherit the call.
 group memberships held fixed makes the count in (K, T) *exactly* Hypergeometric(N, m_T, n_K)
 conditional on the margins (Fisher's argument), which is what the analytic form already computes;
 the two agree to numerical precision on every run. The permutation is therefore a
-*self-consistency check*, not an independent test, and it is only run on the reported pass; the
-bootstrap's replicates use the exact analytic p (which also has no `1/(pool+1)` floor).
+*self-consistency check*, not an independent test.
 
 Calibration diagnostics (`{out}.null_calibration.tsv`): analytic-vs-permutation agreement, and a
 genomic-inflation-style λ plus a Kolmogorov–Smirnov statistic on the permutation null itself. λ is
@@ -105,82 +104,22 @@ at a constant, an artifact of the numerical clamp rather than inflation.
 
 ---
 
-## 4. Stability bootstrap (default ON)
+## 4. Removed: stability bootstrap and set-valued annotation
 
-`argmin` always returns something, and returns it with no error bar. Two error sources are
-therefore treated as zero: the **marker list can be wrong** (a listed gene is not specific to its
-type in this dataset), and the **embedding can disagree with it** (a type's markers do not sit
-together, so its centroid is a fiction).
+Earlier builds ran a marker-panel stability bootstrap by default (`--n-boot 200`): each replicate
+resampled every type's panel and re-derived the grouping, a call shipped only if its type won at
+least `--min-support` of the replicates, and near-ties were reported as a set (`label_set`,
+`--set-coverage`, `--max-set-size`). On the negative control of §7 it cut the absent-type share
+by an order of magnitude, at the cost of abstaining on a substantial fraction of cells.
 
-Rather than posit a generative density, we resample the evidence. For each of `B` replicates
-(`--n-boot`, default **200**):
+It was removed for both costs. **Too stringent:** on sorted human bone-marrow progenitors
+(GSE117498) with a mature-cell panel, enrichment's bootstrap abstained on 99.7% of cells, where the
+single-pass FDR call labelled all but 5. **Too slow:** it was over 90% of an enrichment pass
+(5.5 min against 25 s without it).
 
-1. **Resample the panel.** For each type, draw `|live(T)|` of its live markers *with replacement*
-   and rebuild `e_T` from that multiset (Efron's bootstrap over the marker panel).
-2. **Re-derive the grouping.** Re-run Leiden under a fresh seed (`lupin annotate`), or refit the
-   k-means MST nodes under a fresh seed (`lupin lineage`).
-3. Re-run §2–3 end to end and record each cell's resulting label.
-
-The shipped label is the consensus; `label_support` is the fraction of replicates that agreed.
-
-Three points of method:
-
-- **The bootstrap perturbs exactly the decision variable**, so the jitter it induces is
-  automatically on the scale of the decision. Nothing needs calibrating against the
-  (incommensurable) spread of the cells.
-- **The grouping must be resampled too, or the bootstrap has no teeth.** Holding the partition
-  fixed and resampling only the panel measures almost nothing: a large cluster's `argmax` does not
-  flip because a few markers were redrawn. With the partition held fixed, essentially no cells
-  abstained, and support lost much of its ability to separate spurious calls. The partition is
-  where the instability lives. This is not optional stochasticity: the kNN graph is built by
-  `hnsw_rs`, which seeds itself from OS entropy with no API to set it, and Leiden amplifies a tiny
-  edge difference, so identical runs of the same binary on the same cells can produce very
-  different community counts.
-- **The kNN graph is built once and only Leiden is reseeded.** The cell embedding is identical on
-  every replicate (the bootstrap resamples the *panel*, not the cells), so rebuilding the graph
-  would only re-randomise an approximate-nearest-neighbour index's internal seed, which is
-  implementation noise, not uncertainty about the data. Building it once is far faster and leaves
-  support essentially unchanged.
-
-**`label_support` is not a posterior.** It is the sampling variability of the pipeline's own
-output: it sees **variance, not bias**. A systematically wrong call that every replicate agrees on
-returns support 1.0. That is what §6 is for.
-
-A type with fewer than 2 live markers is excluded from the competition entirely: a one-element
-panel resampled with replacement always returns itself, so its centroid never moves and it appears
-*perfectly* stable, the opposite of the truth.
-
----
-
-## 5. Set-valued ("mixed") annotation
-
-Collapsing the replicate distribution to `argmax` plus a threshold discards the information the
-bootstrap exists to produce. We instead report, for every cell, the **smallest set of types whose
-replicate shares sum to `--set-coverage`** (default **0.8**), rendered in canonical order and
-capped at `--max-set-size` (default **3**):
-
-    label_set = CT1/CT2        label_set_size = 2        label_set_support = 0.87
-
-The set is taken over *types*, while the shares remain shares of *all* replicates, so any mass the
-replicates spent on "no call" makes the coverage harder to reach, and a cell its replicates mostly
-declined to call falls out as uncalled rather than being given the nonsense set `CT1/unassigned`.
-
-The cap is a test, not a truncation: a cell needing a 4th type to reach coverage is reported
-`unassigned`, because past that point a set stops narrowing anything down and would launder "we
-don't know" as a finding.
-
-With a matched panel, single, two-way and three-way sets each covered a substantial share of the
-cells and almost none went uncalled; under a single-label rule every two- and three-way cell would
-have been reported as "unassigned".
-
-**Abstention rule for the single-label column.** Default `--min-support` (0.5): the top type must
-win at least that share. This bar is *not* scale-free: with `C` types, chance agreement is `1/C`,
-so 0.5 sits at 3× chance for a 6-type panel and 12× chance for a 24-type one, and the same setting
-is a different test on different panels. `--abstain-separable` offers a scale-free alternative: an
-exact binomial sign test of the top type against the runner-up (among the `m` replicates choosing
-one of the two, `n₁ ~ Binomial(m, ½)` under equal probability). It resolves more cells but does not
-improve correctness: an abstention rule decides *when to stay silent*, never *whether a call is
-right*.
+What replaces it: each call is the single-pass call (FDR-gated, with Q as the cluster's evidence
+split over the types). A contested cluster shows up as a low top share, and is settled by hand in
+`lupin annotate --tui`, where every decision is kept with its rationale in the round's history.
 
 ---
 
@@ -188,7 +127,7 @@ right*.
 
 *A library option (`panel_perm` in `TermOraConfig`); `lupin annotate` does not expose it yet and runs with it off.*
 
-The bootstrap is blind to bias. The panel null asks the complementary question: *is this answer
+A single call is blind to bias. The panel null asks the complementary question: *is this answer
 better than one a panel that means nothing would have given?*
 
 For each type *T* and each of `P` draws: replace **only** *T*'s panel with `|live(T)|` genes drawn
@@ -243,41 +182,6 @@ fail. On a *mismatched* panel it finds nothing significant, which is itself the 
 
 ---
 
-## 6b. Support permutation null: calibrating the cutoff
-
-*A library option (`support_perm` in `TermOraConfig`); `lupin annotate` does not expose it yet and runs with it off.*
-
-`label_support` is a raw agreement fraction, and the bar it is compared against (`--min-support`,
-0.5) is arbitrary. Worse, it is **not scale-free** (§5): the same flag is a different test on
-different panels, and their abstention rates are not comparable.
-
-So calibrate it. Shuffle **which type each marker gene belongs to**, within norm strata so no
-type's norm profile changes (§6), and re-run the whole bootstrap. That is the literal statement of
-"the panel carries no information about cell type". Then
-
-    p_i = P( support under a meaningless panel ≥ support observed )
-
-with Benjamini–Hochberg across the cells, giving `support_q`. **A cutoff on an FDR means the same
-thing whatever the number of types.**
-
-Three points of method:
-
-- **The null must use the same `B`.** `s_i = max_t n_it/B` is a maximum over noisy proportions and
-  is biased upward, the more so the smaller `B` is; matching `B` makes that bias appear on both
-  sides and cancel. There is no closed form and no CLT shortcut: a maximum is an extreme-value
-  statistic, not an asymptotically normal one, and the variance that matters is *across shuffled
-  panels*, not across replicates.
-- **The null cannot be pooled across cells.** A cell deep inside a dense cluster gets high support
-  under *any* panel, because it is stably assigned to whichever centroid is nearest. Pooling would
-  hand it a small p for a reason that has nothing to do with markers.
-- **It is affordable because the partitions do not depend on the panel.** The `B` Leiden partitions
-  are drawn once and reused by the observed run *and* every shuffle, so `P × B` re-clusterings
-  collapse to `B`. (It also holds partition variability fixed between observed and null.)
-
-**Why this matters:** a *shuffled* panel can still earn a mean support above the default bar of
-0.5. The default then sits **below the null**, keeping cells whose agreement is no better than
-chance; the calibrated cutoff keeps far fewer.
-
 ## 7. Validation design
 
 **Negative control without ground truth.** Use a marker panel that includes types the tissue is
@@ -285,14 +189,8 @@ known not to contain (for example mature or terminal types in a progenitor-rich 
 cell they capture is a *countable false positive*, needing no labels. We report this as the
 **absent-type share**.
 
-**Support calibration.** Bin cells by `label_support` and measure agreement with the point-estimate
-label. High-support cells agree with it almost always; low-support cells barely better than a coin
-flip. As a detector of spurious (absent-type) calls, support separates them well with no ground
-truth.
-
-**Headline.** The bootstrap cut the absent-type share by an order of magnitude relative to the
-point estimate. Independently, training the whole panel (rather than part of it) cut it several
-fold.
+**Headline.** Training the whole panel (rather than part of it) cut the absent-type share several
+fold. (The removed bootstrap of §4 cut it by an order of magnitude, by abstaining.)
 
 ---
 
@@ -315,7 +213,7 @@ confidence, not as uncertainty.
 
 **High Leiden resolution is a bad operating point.** Across replicates, raising `--resolution`
 multiplied the number of communities, made the count far less stable between runs, and lowered
-both the fraction of cells labelled and their mean support. A low resolution (around 0.5) did best.
+the fraction of cells labelled. A low resolution (around 0.5) did best.
 
 ---
 
@@ -328,25 +226,16 @@ both the fraction of cells labelled and their mean support. A low resolution (ar
 | `--assign-mad` | 2.5 | 2 |
 | `--num-perm` | 500 (pool capped at 10⁵) | 3 |
 | `--fdr-alpha` | 0.1 | 3 |
-| `--n-boot` | 200 (0 disables the bootstrap) | 4 |
-| `--min-support` / `--abstain-separable` | 0.5 / off | 5 |
-| `--set-coverage`, `--max-set-size` | 0.8, 3 | 5 |
 | `--seed` | 42 | · |
 
 | output | contents |
 |---|---|
-| `{out}.annot.parquet` | per cell: `coarse_label`, `label_set`, `label_set_size`, `label_set_support`, `label_support`, `label_entropy`, `fine_label`, `fine_distance`, `cluster_size`, `community` |
-| `{out}.label_stability.parquet` | per cell × type: the full replicate distribution |
-| `{out}.marker_support.parquet` | per (gene, type): the marker's deviation from its type's centroid, and whether it is live |
-| `{out}.type_qc.tsv` | per type: `n_live`, `centroid_jitter`, `decision_gap`, `noise_ratio`, `occupancy` |
+| `{out}.annot.parquet` | per cell: `community`, `coarse_label` with its `coarse_z`/`_p`/`_q`, `fine_label` with its `fine_z`/`_p`/`_q`, and `fine_margin` |
 | `{out}.panel_null.tsv` | per type: `n_live`, `occupancy`, `cost`, `null_cost`, `p` |
 | `{out}.null_calibration.tsv` | permutation-null diagnostics (λ, KS, analytic agreement) |
 | `{out}.cluster_term_{p,q,softq}.parquet` | group × type test matrices |
 
 `lupin lineage --markers` runs the same core over the trajectory's MST nodes instead of Leiden
-communities (the bootstrap's regroup step reseeds the k-means), writing `{out}.lineage_annot.*`
-and `{out}.trajectory_annotation.parquet` (node → role → cell type → confidence). With the
-bootstrap on, that `confidence` is the mean bootstrap support of the cells that voted for the
-node's label (a reproducibility) rather than a softmaxed test statistic. This matters because
-`--root-type` selects the trajectory root as the highest-confidence node of a named type, so the
-entire trajectory hangs off that number.
+communities, writing `{out}.lineage_annot.*` and `{out}.trajectory_annotation.parquet` (node →
+role → cell type → confidence). `--root-type` selects the trajectory root as the
+highest-confidence node of a named type, so the entire trajectory hangs off that number.

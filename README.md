@@ -137,12 +137,11 @@ Rounds of an enrichment run are rescored. The pass caches its sufficient
 statistics (per-cluster gene sums, the per-batch profile, gene weights and
 each cell's batch; `annotate.stats_cache`), and every relabel round reruns the
 same scoring on its merged clusters and edited marker panel without reading
-the counts: fresh q-values every round, and bootstrap support whenever the
-round edits markers or `--support` asks for it (otherwise support is marked
-stale). These statistics come after curation on the same data, so the round
-records `annotate.stats = {kind: post_selection, rounds_of_curation, support_stale}`;
-a fresh `lupin annotate` pass is the confirmatory one. Each cluster's summary
-entry carries `evidence` (the top call, its q and support, and whether the
+the counts: fresh q-values every round. These statistics come after curation
+on the same data, so the round records
+`annotate.stats = {kind: post_selection, rounds_of_curation}`; a fresh
+`lupin annotate` pass is the confirmatory one. Each cluster's summary
+entry carries `evidence` (the top call, its q, and whether the
 cluster's label agrees). `--preview` uses the same rescoring when it can.
 
 A round is never overwritten, whichever way it is written.
@@ -153,6 +152,36 @@ name a cell type (`label`) and `features`. The round then writes its own
 and `{out}.marker_history.json` keeps each cell type's edits with their
 rationale. `lupin annotate -f <round>` without `-m` re-annotates from that
 panel.
+
+## Cell Ontology data
+
+lupin places panel labels on the Cell Ontology using three data files, kept out
+of the binary so they can be updated and amended without rebuilding:
+
+| file | what |
+|---|---|
+| `cl-basic.obo` | the Cell Ontology (downloaded once, then cached) |
+| `cl_matching.json` | matching rules: which synonyms count (abbreviations such as HSC, GMP), plurals, word order, which ontology subsets are classes |
+| `cl_aliases.tsv` | curated `label<TAB>CL:id<TAB>note` mappings for names matching cannot settle (Azimuth's `CD14 Mono`, `Prog Mk`, …) |
+
+Each is looked up in layers, later ones winning (rules key by key, aliases row
+by row): the install's `share/lupin/` (or `LUPIN_DATA_DIR`) or the source's
+`data/`, else a cache filled by download; your `~/.config/lupin/`
+(`LUPIN_CONFIG_DIR`); a project `lupin/` folder beside the run manifest; and
+`--label-cl` / `--obo` for one run. Without a rules file, matching is literal
+(names and exact synonyms). Each pass records the files and ontology release it
+used under `annotate.settings.enrichment.cell_ontology`.
+
+```sh
+lupin data where -f run.senna.json   # which file each layer contributes
+lupin data fetch                     # cache everything, for offline machines
+```
+
+In `lupin annotate --tui`, `o` in the tree pane switches to the Cell Ontology
+itself: browse a term's parents and children, `/` to search names, synonyms and
+abbreviations, `Enter` to label a cluster with any term. When the cluster's top
+candidate has no term, lupin offers to remember the pick in the project's
+`lupin/cl_aliases.tsv`.
 
 ## Method write-ups
 

@@ -29,7 +29,7 @@ fraction of cells they capture the **absent-type share**, and compare groupings 
 
 On such a control we compared the untested per-cell `argmin`, Leiden communities at a low
 resolution, per-cell kNN neighbourhoods (small k, and k grown to Leiden's own community size), and
-each of those with the panel bootstrap. The findings:
+each of those with the panel bootstrap (since removed; see `lupin docs annotation` §4). The findings:
 
 - **Leiden at a low resolution cut the absent-type share to well under half of the untested
   `argmin`**, and assigned no cells at all to the types `argmin` used only sparsely.
@@ -54,9 +54,10 @@ is the disanalogy; do not lean on the precedent.
 
 Not the grouping. On the same negative control:
 
-- **The panel bootstrap** (on by default; resample the marker panel *and* re-derive the
-  clustering, ship the consensus) reduced the absent-type share by an order of magnitude, at the
-  cost of abstaining on a substantial fraction of cells.
+- **The panel bootstrap** (resample the marker panel *and* re-derive the clustering, ship the
+  consensus) reduced the absent-type share by an order of magnitude, at the cost of abstaining on
+  a substantial fraction of cells. It has since been removed as too stringent and too slow
+  (`lupin docs annotation` §4).
 - **The embedding.** When most types have fewer than half their markers trained, no grouping and no
   statistic can rescue a centroid built from genes the model never saw. The loss is type-dependent:
   a highly-variable-gene filter rewards variance, and a rare population's markers are high-variance

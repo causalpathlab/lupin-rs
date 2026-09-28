@@ -76,9 +76,13 @@ pub struct Rescored {
     pub q_probs: Mat,
     /// FDR q-values.
     pub q_values: Mat,
-    /// Bootstrap support per type plus a trailing `unassigned` column, when
-    /// the bootstrap ran.
-    pub support: Option<Mat>,
+    pub p_values: Mat,
+    /// The ES restandardized by the gene-set null.
+    pub z: Mat,
+    /// fgsea's normalized enrichment score.
+    pub nes: Mat,
+    /// z = Φ⁻¹(1 − p), which the Q probabilities are a softmax of.
+    pub probit_z: Mat,
 }
 
 impl Rescored {
@@ -90,14 +94,13 @@ impl Rescored {
 }
 
 /// Rescore the clusters of `after` against `panel` from `source`'s cached
-/// statistics, with the settings `source`'s enrichment pass recorded and
-/// `n_boot` bootstrap resamples (0 for none). `None` when `source` carries no
+/// statistics, with the settings `source`'s enrichment pass recorded. `None`
+/// when `source` carries no
 /// cache (a projection run, or a round from before caching).
 pub(super) fn rescore(
     source: &Loaded,
     after: &Cells,
     panel: &[(String, String)],
-    n_boot: usize,
 ) -> Result<Option<Rescored>> {
     let a = &source.manifest.annotate;
     let (Some(cache), Some(ids_rel)) = (&a.stats_cache, &a.expression_clusters) else {
@@ -106,7 +109,7 @@ pub(super) fn rescore(
     if panel.is_empty() {
         return Ok(None);
     }
-    let mut args: AnnotateArgs = a
+    let args: AnnotateArgs = a
         .settings
         .as_ref()
         .and_then(|s| s.get("enrichment"))
@@ -115,7 +118,6 @@ pub(super) fn rescore(
         .transpose()
         .context("reading the enrichment pass's settings")?
         .context("the round records no enrichment settings")?;
-    args.n_boot = n_boot;
     let at = |rel: &str| resolve(&source.dir, rel);
 
     // The pass's cluster of each cell, and which new cluster each of those
@@ -207,32 +209,32 @@ pub(super) fn rescore(
         pb_gene_gp: Some(pb.mat),
         gene_sum_kg: Vec::new(),
         gene_weights: Vec::new(),
+        type_tree: Some(
+            super::ontology::panel_tree(
+                &super::ontology::load(
+                    Some(&source.dir),
+                    args.obo.as_deref(),
+                    args.label_cl.as_deref(),
+                )?,
+                panel,
+            )?
+            .treebh(&annot.annot_names),
+        ),
+        cl_record: None,
     };
     info!(
-        "rescoring {k} cluster(s) against {} cell type(s){}",
-        annot.annot_names.len(),
-        if n_boot > 0 {
-            format!(", bootstrap {n_boot}")
-        } else {
-            String::new()
-        }
+        "rescoring {k} cluster(s) against {} cell type(s)",
+        annot.annot_names.len()
     );
     let out = by_enrichment::score(&args, &inputs)?;
-    let support = out.bootstrap.map(|b| {
-        let w = b.c + 1;
-        let mut m = Mat::zeros(k, w);
-        for r in 0..k {
-            for c in 0..w {
-                m[(r, c)] = b.consensus.post[r * w + c];
-            }
-        }
-        m
-    });
     Ok(Some(Rescored {
         ids: new_ids,
         types: annot.annot_names,
         q_probs: out.q_kc,
         q_values: out.qvalue_kc,
-        support,
+        p_values: out.pvalue_kc,
+        z: out.es_restandardized_kc,
+        nes: out.nes_kc,
+        probit_z: out.z_kc,
     }))
 }

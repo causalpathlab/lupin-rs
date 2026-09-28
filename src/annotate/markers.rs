@@ -2,6 +2,7 @@
 //! to the data's gene order.
 
 use data_beans::utilities::name_matching::GeneIndex;
+use legume_numeric::matrix::common_io::read_lines;
 use legume_numeric::matrix::dense_mat_io::Mat;
 
 /// IDF-weighted gene × cell-type membership plus the sorted cell-type names
@@ -26,12 +27,12 @@ pub fn label_key(label: &str) -> String {
 /// A marker panel as `(gene, cell type)` pairs, each label in its
 /// [`label_key`] form. Lines split on the tab; a line with none splits at its
 /// first comma, so the label keeps anything after it. Blank lines, `#`
-/// comments and a `gene`/`symbol` header are skipped.
+/// comments and a `gene`/`symbol` header are skipped. Reads through gzip.
 pub fn read_marker_pairs(path: &str) -> anyhow::Result<Vec<(Box<str>, Box<str>)>> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("reading marker panel {path}: {e}"))?;
-    Ok(text
-        .lines()
+    let lines =
+        read_lines(path).map_err(|e| anyhow::anyhow!("reading marker panel {path}: {e}"))?;
+    Ok(lines
+        .iter()
         .filter_map(|line| {
             let line = line.trim();
             let (gene, label) = line.split_once('\t').or_else(|| line.split_once(','))?;
@@ -139,5 +140,23 @@ mod tests {
                 ("GENE3", "CT3_sub_b")
             ]
         );
+    }
+
+    #[test]
+    fn a_gzipped_panel_reads_like_the_plain_one() {
+        use legume_numeric::matrix::common_io::write_lines;
+        let dir = tempfile::tempdir().unwrap();
+        let lines: Vec<Box<str>> = ["gene\tcelltype", "GENE1\tCT1", "GENE2\tCT 2"]
+            .into_iter()
+            .map(Box::from)
+            .collect();
+        let plain = dir.path().join("p.tsv").to_string_lossy().into_owned();
+        let gz = dir.path().join("p.tsv.gz").to_string_lossy().into_owned();
+        write_lines(&lines, &plain).unwrap();
+        write_lines(&lines, &gz).unwrap();
+        assert!(!std::fs::read(&gz).unwrap().starts_with(b"gene"));
+        let got = read_marker_pairs(&gz).unwrap();
+        assert_eq!(got, read_marker_pairs(&plain).unwrap());
+        assert_eq!(got.len(), 2);
     }
 }

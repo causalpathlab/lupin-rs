@@ -5,13 +5,11 @@ use legume_numeric::matrix::dense_mat_io::axis_id_names;
 use log::info;
 
 use graph_embedding_util::type_annotation::{
-    annotate_with_communities, CommunityCalls, InputEmbeddings, MarkerBootstrapConfig, Regroup,
-    TermOraConfig,
+    annotate_with_communities, CommunityCalls, InputEmbeddings, TermOraConfig,
 };
 use legume_numeric::matrix::branching::Branching;
 use legume_numeric::matrix::dmatrix_io::DMatrix;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
-use legume_numeric::matrix::principal_graph::kmeans_centroids_seeded;
 use legume_numeric::matrix::traits::MatWithNames;
 
 /// Inputs for [`annotate_trajectory`] — bundled to keep the fan-in a struct.
@@ -32,11 +30,6 @@ pub(super) struct AnnotateTrajArgs<'a> {
     pub(super) num_perm: usize,
     pub(super) obo: Option<&'a str>,
     pub(super) label_cl: Option<&'a str>,
-    /// Stability bootstrap over the marker panel + the k-means grouping (`None` ⇒ point estimate).
-    pub(super) bootstrap: Option<MarkerBootstrapConfig>,
-    /// θ `[N × H]`, kept so a replicate can re-run k-means on it under a fresh seed.
-    pub(super) theta: &'a DMatrix<f32>,
-    pub(super) kmeans_iter: usize,
     pub(super) seed: u64,
 }
 
@@ -54,14 +47,14 @@ pub(super) fn compute_node_calls(a: &AnnotateTrajArgs) -> Result<CommunityCalls>
         n_perm: a.num_perm,
         // `--seed` drives the whole fit; it should drive the annotation's randomness too. It was
         // silently falling through to `TermOraConfig`'s own default of 42, so varying `--seed`
-        // moved the centroids but left the permutation null (and now the bootstrap) untouched.
+        // moved the centroids but left the permutation null untouched.
         min_markers: 3,
         seed: a.seed,
         obo: a.obo.map(str::to_owned),
         label_cl: a.label_cl.map(str::to_owned),
         panel_perm: 0,
         support_perm: 0,
-        bootstrap: a.bootstrap.clone(),
+        bootstrap: None,
         ..TermOraConfig::default()
     };
     let input = InputEmbeddings {
@@ -71,21 +64,6 @@ pub(super) fn compute_node_calls(a: &AnnotateTrajArgs) -> Result<CommunityCalls>
         cell_names: a.cell_names,
     };
 
-    // One replicate's grouping: the same k-means, reseeded.
-    //
-    // The trajectory's own nodes stay put — they are the structure, and `--seed` is meant to
-    // reproduce them. This redraws the grouping *inside* the annotation bootstrap only, which is
-    // what gives the resampling something to disagree about. Holding the partition fixed and
-    // resampling the panel alone is close to a no-op: a node's argmax does not flip because a
-    // few markers were redrawn, so every call comes back with support ≈ 1 and nothing abstains.
-    // k-means++ from a fresh seed lands on genuinely different nodes, and a label that survives
-    // *that* is a label worth printing on a trajectory.
-    let regroup = |seed: u64| -> Result<Vec<usize>> {
-        let (_, labels) = kmeans_centroids_seeded(a.theta, a.k, a.kmeans_iter, seed);
-        Ok(labels)
-    };
-    let regroup: Option<&Regroup<'_>> = a.bootstrap.as_ref().map(|_| &regroup as &Regroup<'_>);
-
     annotate_with_communities(
         &input,
         a.markers,
@@ -93,7 +71,7 @@ pub(super) fn compute_node_calls(a: &AnnotateTrajArgs) -> Result<CommunityCalls>
         true, // IDF-weight markers, as `lupin annotate --method projection` does by default
         a.labels,
         a.k,
-        regroup,
+        None,
         &cfg,
     )
 }

@@ -1,14 +1,11 @@
-//! Calibration of the enrichment nulls and the marker bootstrap, on
-//! synthetic data where the truth is known: with no signal the p-values must
-//! not over-call at any batch count (the sample permutation is skipped when
-//! there are too few batches, see [`super::by_enrichment::sample_perm_draws`]);
-//! planted markers must be called; the bootstrap must split an ambiguous
-//! cluster. Slow, so ignored: `cargo test --release -- --ignored calibration`.
+//! Calibration of the enrichment nulls, on synthetic data where the truth is
+//! known: with no signal the p-values must not over-call at any batch count
+//! (the sample permutation is skipped when there are too few batches, see
+//! [`super::by_enrichment::sample_perm_draws`]); planted markers must be
+//! called. Slow, so ignored: `cargo test --release -- --ignored calibration`.
 
-use super::args::{BOOT_NUM_DRAWS, MIN_CONFIDENCE, NUM_DRAWS};
+use super::args::{MIN_CONFIDENCE, NUM_DRAWS};
 use super::by_enrichment::sample_perm_draws;
-use enrichment::consensus::Abstain;
-use enrichment::marker_bootstrap::EnrichmentBootstrapConfig;
 use enrichment::{annotate, AnnotateConfig, GroupInputs, SpecificityMode};
 use legume_numeric::matrix::dense_mat_io::Mat;
 
@@ -41,15 +38,13 @@ struct Summary {
     null_calls: usize,
     /// q of each planted (cluster, type) pair.
     planted_q: Vec<f32>,
-    /// Per cluster: bootstrap support and credible-set size.
-    boot: Option<Vec<(f32, usize)>>,
 }
 
 /// Score a synthetic run with lupin's null settings. Type `t` owns genes
 /// `t * MARKERS_PER_TYPE ..`; each `(cluster, type, fold)` in `planted` raises
 /// that type's markers `fold`-fold in that cluster. Cells spread over
 /// `batches` batches at random, so each batch has its own cluster mix.
-fn run(batches: usize, planted: &[(usize, usize, f32)], seed: u64, n_boot: usize) -> Summary {
+fn run(batches: usize, planted: &[(usize, usize, f32)], seed: u64) -> Summary {
     let mut rng = Rng(seed);
     let mut markers = Mat::zeros(GENES, TYPES);
     for t in 0..TYPES {
@@ -113,13 +108,9 @@ fn run(batches: usize, planted: &[(usize, usize, f32)], seed: u64, n_boot: usize
         seed,
         min_markers: 3,
         stratify_null: true,
-        bootstrap: (n_boot > 0).then_some(EnrichmentBootstrapConfig {
-            n_boot,
-            abstain: Abstain::Support(0.5),
-            set_coverage: 0.8,
-            max_set_size: 3,
-            boot_num_draws: BOOT_NUM_DRAWS,
-        }),
+        bootstrap: None,
+        multilevel: Some(enrichment::fgsea::Multilevel::default()),
+        type_tree: None,
     };
     let out = annotate(&group, &markers, &names, &config).unwrap();
 
@@ -139,16 +130,10 @@ fn run(batches: usize, planted: &[(usize, usize, f32)], seed: u64, n_boot: usize
         }
     }
     let null_frac05 = null_p.iter().filter(|&&p| p < 0.05).count() as f32 / null_p.len() as f32;
-    let boot = out.bootstrap.map(|b| {
-        (0..CLUSTERS)
-            .map(|k| (b.consensus.support[k], b.consensus.label_set[k].len()))
-            .collect()
-    });
     Summary {
         null_frac05,
         null_calls,
         planted_q,
-        boot,
     }
 }
 
@@ -156,7 +141,7 @@ fn run(batches: usize, planted: &[(usize, usize, f32)], seed: u64, n_boot: usize
 #[ignore]
 fn calibration_null_does_not_over_call_at_any_batch_count() {
     for batches in [1usize, 2, 6] {
-        let s = run(batches, &[], 7, 0);
+        let s = run(batches, &[], 7);
         assert!(
             s.null_frac05 <= 0.10,
             "{batches} batch(es): {:.3} of null p below 0.05",
@@ -172,25 +157,7 @@ fn calibration_null_does_not_over_call_at_any_batch_count() {
 
 #[test]
 #[ignore]
-fn calibration_planted_markers_are_called_and_the_bootstrap_splits_ties() {
-    let s = run(
-        6,
-        &[(0, 0, 3.0), (1, 1, 3.0), (2, 2, 2.0), (3, 3, 1.4)],
-        11,
-        50,
-    );
+fn calibration_planted_markers_are_called() {
+    let s = run(6, &[(0, 0, 3.0), (1, 1, 3.0), (2, 2, 2.0), (3, 3, 1.4)], 11);
     assert!(s.planted_q.iter().all(|&q| q < 0.05), "{:?}", s.planted_q);
-    let boot = s.boot.unwrap();
-    assert!(
-        boot[..4].iter().all(|&(support, _)| support >= 0.9),
-        "{boot:?}"
-    );
-
-    // Cluster 5 carries two types' markers equally.
-    let s = run(6, &[(5, 4, 2.5), (5, 5, 2.5)], 13, 50);
-    let (support, set) = s.boot.unwrap()[5];
-    assert!(
-        support < 0.8 && set == 2,
-        "support {support}, set size {set}"
-    );
 }

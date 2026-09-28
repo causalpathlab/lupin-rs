@@ -48,16 +48,14 @@ pub struct Digest {
 pub struct EvidenceCheck {
     pub top: String,
     pub q: Option<f32>,
-    pub support: Option<f32>,
     pub agrees: bool,
 }
 
-/// A candidate label with its FDR q-value and bootstrap support, where known.
+/// A candidate label with its FDR q-value, where known.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Call {
     pub label: String,
     pub q: Option<f32>,
-    pub support: Option<f32>,
 }
 
 /// A gene-set term (GO or GMT) and its effect on the cluster.
@@ -98,8 +96,6 @@ impl Table {
 pub struct Evidence {
     /// Cluster × label FDR q-values.
     pub q: Option<Table>,
-    /// Cluster × label bootstrap support.
-    pub support: Option<Table>,
     /// Per cluster, terms in rank order.
     pub terms: BTreeMap<ClusterId, Vec<Term>>,
     pub cl: BTreeMap<ClusterId, ClPlacement>,
@@ -140,7 +136,6 @@ pub fn digest(
         d.evidence = d.calls.first().map(|c| EvidenceCheck {
             top: c.label.clone(),
             q: c.q,
-            support: c.support,
             agrees: d
                 .label
                 .as_deref()
@@ -162,19 +157,16 @@ fn calls_for(id: ClusterId, ev: &Evidence) -> Vec<Call> {
             let call = by_label.entry(c.clone()).or_insert_with(|| Call {
                 label: c.clone(),
                 q: None,
-                support: None,
             });
             set(call, v);
         }
     };
     take(&ev.q, |c, v| c.q = Some(v));
-    take(&ev.support, |c, v| c.support = Some(v));
     let mut calls: Vec<Call> = by_label.into_values().collect();
-    // Support first (more is better), then q (less is better); unknowns last.
+    // Smallest q first; unknowns last.
     calls.sort_by(|a, b| {
-        let s = |c: &Call| c.support.unwrap_or(f32::NEG_INFINITY);
         let q = |c: &Call| c.q.unwrap_or(f32::INFINITY);
-        s(b).total_cmp(&s(a)).then(q(a).total_cmp(&q(b)))
+        q(a).total_cmp(&q(b))
     });
     calls.truncate(TOP);
     calls

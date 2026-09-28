@@ -10,6 +10,7 @@ mod lineage;
 mod manifest;
 mod marker_embedding;
 mod plot;
+mod tui;
 
 use crate::annotate_cmd::{run_annotate, AnnotateCliArgs};
 use crate::gene_text::cli::{run_knn_graph, run_qc, KnnGraphCmd, QcCmd};
@@ -140,6 +141,10 @@ enum Commands {
     #[command(about = "Print the method write-ups (omit the topic to list them)")]
     Docs(docs::DocsArgs),
     #[command(
+        about = "Where lupin's data files (Cell Ontology, matching rules, aliases) come from; fetch them for offline use"
+    )]
+    Data(manifest::data_files::DataArgs),
+    #[command(
         about = "Without a marker panel: write an unlabelled first round and a prompt for any AI chat",
         long_about = "Writes a first round whose clusters carry no labels yet,\n\
                       and prints a prompt listing each cluster's most specific genes.\n\
@@ -171,10 +176,18 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(if cli.verbose { "debug" } else { "info" }),
-    )
-    .init();
+    if matches!(&cli.cmd, Commands::Annotate(c) if c.tui) {
+        tui::init_logger(cli.verbose);
+    } else {
+        env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or(if cli.verbose {
+                "debug"
+            } else {
+                "info"
+            }),
+        )
+        .init();
+    }
     match cli.cmd {
         Commands::TextQc(c) => run_qc(&c),
         Commands::WordGraph(c) => run_knn_graph(&c),
@@ -188,6 +201,7 @@ fn main() -> Result<()> {
         Commands::Relabel(c) => manifest::rounds::run_relabel(&c),
         Commands::Ask(c) => manifest::ask::run_ask(&c),
         Commands::Docs(c) => docs::run_docs(&c),
+        Commands::Data(c) => manifest::data_files::run_data(&c),
         Commands::Plot(c) => fit_plot(&c),
         Commands::PlotTopic(c) => fit_plot_topic(&c),
         Commands::PlotStrand(c) => fit_plot_strand(&c),

@@ -1,0 +1,21 @@
+{
+  "_doc": "How lupin matches marker-panel cell-type labels to Cell Ontology terms. Layered: this file, then ~/.config/lupin/cl_matching.json, then <run dir>/lupin/cl_matching.json; later files override the keys they set. See `lupin data where`.",
+  "ontology_url": "https://purl.obolibrary.org/obo/cl/cl-basic.obo",
+  "synonyms": {
+    "_doc": "synonym scope -> synonym types that count; [] = every synonym of that scope. OMO:0003000 marks abbreviations (HSC, CMP, GMP).",
+    "EXACT": [],
+    "RELATED": ["OMO:0003000"]
+  },
+  "classes": {
+    "_doc": "Terms in these OBO subsets are the analysis classes panel types are grouped under.",
+    "subsets": ["cellxgene_subset"],
+    "subset_suffixes": ["_upper_slim"],
+    "exclude_subset_suffixes": ["upper_level"]
+  },
+  "plural": {
+    "_doc": "Trailing word replacements, then a trailing 's' dropped from words of at least min_len letters (not 'ss').",
+    "suffixes": [["cells", "cell"]],
+    "singular_min_len": 4
+  },
+  "any_word_order": true
+}

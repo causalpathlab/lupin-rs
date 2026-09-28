@@ -27,6 +27,7 @@ is_a: CL:9000000 ! root cell
 [Term]
 id: CL:9000011
 name: CT1
+synonym: \"C1X\" RELATED OMO:0003000 []
 is_a: CL:9000001 ! group a
 
 [Term]
@@ -68,7 +69,7 @@ fn members(tree: &TypeTree, group: &str) -> Vec<String> {
 
 #[test]
 fn obo_terms_keep_names_exact_synonyms_parents_and_release() {
-    let t = ClTerms::parse(OBO);
+    let t = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
     assert_eq!(t.release.as_deref(), Some("test/2026-01-01"));
     assert_eq!(t.term_count(), 6, "the obsolete term is skipped");
     let (mapped, unmapped) = t.map_labels(["CT1", "ct3_alias", "CT3 loose", "CT9", "CT7", "CT1s"]);
@@ -85,8 +86,28 @@ fn obo_terms_keep_names_exact_synonyms_parents_and_release() {
 }
 
 #[test]
+fn labels_match_terms_whose_words_come_in_another_order() {
+    let obo = "[Term]\nid: CL:1\nname: memory B cell\n\n\
+               [Term]\nid: CL:2\nname: gamma-delta T cell\n\n\
+               [Term]\nid: CL:3\nname: cell B memory\nis_obsolete: true\n\n\
+               [Term]\nid: CL:4\nname: alpha beta cell\n\n\
+               [Term]\nid: CL:5\nname: beta alpha cell\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels([
+        "B cells memory",
+        "Gamma delta T cells",
+        "Alpha beta cells",
+        "Cells alpha beta",
+    ]);
+    assert_eq!(mapped["B cells memory"], "CL:1");
+    assert_eq!(mapped["Gamma delta T cells"], "CL:2", "hyphens are spaces");
+    assert_eq!(mapped["Alpha beta cells"], "CL:4", "an exact name wins");
+    assert_eq!(unmapped, ["Cells alpha beta"], "two terms share its words");
+}
+
+#[test]
 fn ontology_groups_are_the_nearest_shared_classes() {
-    let t = ClTerms::parse(OBO);
+    let t = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
     let p = panel(&[
         ("GENE1", "CT1"),
         ("GENE2", "CT2"),
@@ -111,7 +132,7 @@ fn ontology_groups_are_the_nearest_shared_classes() {
 
 #[test]
 fn ontology_groups_need_an_analysis_class_shared_by_two_types() {
-    let t = ClTerms::parse(OBO);
+    let t = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
     // CT1 and CT3 share only the root, which is no analysis class.
     let tree = TypeTree::from_ontology(&t, &panel(&[("GENE1", "CT1"), ("GENE3", "CT3")])).unwrap();
     assert_eq!(members(&tree, "CT1"), ["CT1"]);
@@ -176,7 +197,7 @@ fn a_coarse_call_sums_evidence_over_a_group() {
         coarse_call(&index, Some((&types, &probs)), &[], 0.5).as_deref(),
         Some("CT1/CT2")
     );
-    // Below the bar the cluster stays uncalled, as the bootstrap left it.
+    // Below the bar the cluster stays uncalled.
     assert_eq!(
         coarse_call(&index, Some((&types, &[0.2, 0.2, 0.3])), &[], 0.5),
         None
@@ -187,4 +208,45 @@ fn a_coarse_call_sums_evidence_over_a_group() {
         Some("CT3")
     );
     assert_eq!(coarse_call(&index, None, &[], 0.5), None);
+}
+
+#[test]
+fn abbreviations_match_but_other_related_synonyms_do_not() {
+    let t = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels(["C1X", "C1Xs", "CT3 loose"]);
+    assert_eq!(
+        mapped["C1X"], "CL:9000011",
+        "an abbreviation (OMO:0003000) matches"
+    );
+    assert_eq!(mapped["C1Xs"], "CL:9000011", "in the plural too");
+    assert_eq!(
+        unmapped,
+        ["CT3 loose"],
+        "a plain RELATED synonym still does not"
+    );
+}
+
+#[test]
+fn the_ontology_can_be_walked_and_searched() {
+    let t = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
+    assert!(
+        t.has("CL:9000001") && !t.has("CL:9000099"),
+        "obsolete terms are gone"
+    );
+    assert_eq!(t.parents("CL:9000011"), ["CL:9000001"]);
+    assert_eq!(t.children("CL:9000001"), ["CL:9000011", "CL:9000012"]);
+    assert!(t.children("CL:9000011").is_empty());
+    assert_eq!(
+        t.lineage("CL:9000011"),
+        ["CL:9000000", "CL:9000001", "CL:9000011"]
+    );
+    // Whole-name hits first, then shorter names.
+    assert_eq!(t.search("group", 10), ["CL:9000001", "CL:9000002"]);
+    assert_eq!(
+        t.search("c1x", 10),
+        ["CL:9000011"],
+        "abbreviations are searchable"
+    );
+    assert_eq!(t.search("ct", 2).len(), 2, "capped at the limit");
+    assert!(t.search("  ", 10).is_empty());
 }

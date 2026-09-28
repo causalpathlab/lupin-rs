@@ -104,52 +104,6 @@ pub struct AnnotateCliArgs {
     #[arg(long = "assign-mad", default_value_t = 2.5)]
     pub assign_mad: f64,
 
-    // ── marker stability bootstrap (enrichment and projection) ──
-    #[arg(
-        long = "n-boot",
-        default_value_t = 200,
-        help = "Marker-panel bootstrap resamples behind each call's support"
-    )]
-    pub n_boot: usize,
-    #[arg(
-        long = "min-support",
-        default_value_t = 0.5,
-        help = "Minimum fraction of resamples the top label must win to be called",
-        long_help = "Minimum fraction of resamples the top label must win.\n\
-                     Below this bar the cell is not called at all.\n\
-                     \n\
-                     Not scale-free: with C types chance agreement is 1/C,\n\
-                     so 0.5 is ~3x chance on a 6-type panel and ~12x on a 24-type one.\n\
-                     --abstain-separable uses a sign test instead."
-    )]
-    pub min_support: f32,
-    #[arg(
-        long = "abstain-separable",
-        help = "Abstain by a sign test (top vs runner-up) instead of --min-support",
-        long_help = "Keep the top label only if it beat the runner-up by more than\n\
-                     resampling noise: an exact binomial sign test at --abstain-alpha.\n\
-                     Means the same thing at any number of types, which --min-support does not."
-    )]
-    pub abstain_separable: bool,
-    #[arg(
-        long = "abstain-alpha",
-        default_value_t = 0.05,
-        help = "[--abstain-separable] Significance level of the sign test"
-    )]
-    pub abstain_alpha: f64,
-    #[arg(
-        long = "set-coverage",
-        default_value_t = 0.8,
-        help = "Coverage of the reported `label_set`: the smallest label set covering this share of resamples"
-    )]
-    pub set_coverage: f32,
-    #[arg(
-        long = "max-set-size",
-        default_value_t = 3,
-        help = "Largest `label_set` reported; a cell needing more to reach --set-coverage is unassigned"
-    )]
-    pub max_set_size: usize,
-
     // ── ontology (inline on annotate, or follow-up without markers) ──
     #[arg(long = "obo")]
     pub obo: Option<Box<str>>,
@@ -168,9 +122,87 @@ pub struct AnnotateCliArgs {
                 (later rounds are always fine)"
     )]
     pub fine: bool,
+
+    #[arg(
+        long,
+        help = "Interactive: re-cluster, re-run and pick the Cell Ontology level in a terminal UI"
+    )]
+    pub tui: bool,
+}
+
+impl AnnotateCliArgs {
+    /// The `annotate` arguments that give back `self` (less `--tui`), for
+    /// re-running a pass as a child process.
+    #[must_use]
+    pub fn to_argv(&self) -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        let mut val = |flag: &str, x: String| {
+            v.push(format!("--{flag}"));
+            v.push(x);
+        };
+        let method = match self.method {
+            AnnotateMethod::Auto => "auto",
+            AnnotateMethod::Enrichment => "enrichment",
+            AnnotateMethod::Projection => "projection",
+        };
+        val("method", method.into());
+        val("markers", self.markers.to_string());
+        val("out", self.out.to_string());
+        val("resolution", self.resolution.to_string());
+        val("seed", self.seed.to_string());
+        val("num-perm", self.num_perm.to_string());
+        val("min-markers", self.min_markers.to_string());
+        val("fdr-alpha", self.fdr_alpha.to_string());
+        val("q-temperature", self.q_temperature.to_string());
+        val("min-cluster-size", self.min_cluster_size.to_string());
+        val("assign-mad", self.assign_mad.to_string());
+        val("ontology-fdr-q", self.ontology_fdr_q.to_string());
+        let opts: [(&str, Option<String>); 11] = [
+            ("from", self.from.as_deref().map(String::from)),
+            (
+                "feature-embedding",
+                self.feature_embedding.as_deref().map(String::from),
+            ),
+            (
+                "cell-embedding",
+                self.cell_embedding.as_deref().map(String::from),
+            ),
+            ("knn", self.knn.map(|x| x.to_string())),
+            ("clusters", self.clusters.as_deref().map(String::from)),
+            ("num-clusters", self.num_clusters.map(|x| x.to_string())),
+            ("cluster-seed", self.cluster_seed.map(|x| x.to_string())),
+            ("gaf", self.gaf.as_deref().map(String::from)),
+            ("gmt", self.gmt.as_deref().map(String::from)),
+            ("obo", self.obo.as_deref().map(String::from)),
+            ("label-cl", self.label_cl.as_deref().map(String::from)),
+        ];
+        for (flag, x) in opts {
+            if let Some(x) = x {
+                val(flag, x);
+            }
+        }
+        let flags = [
+            ("no-clean", self.no_clean),
+            ("no-idf", self.no_idf),
+            ("no-assign-qc", self.no_assign_qc),
+            ("ontology-by", self.ontology_by),
+            ("use-perm-p", self.use_perm_p),
+            ("fine", self.fine),
+        ];
+        v.extend(
+            flags
+                .iter()
+                .filter(|(_, on)| *on)
+                .map(|(f, _)| format!("--{f}")),
+        );
+        v
+    }
 }
 
 pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
+    if args.tui {
+        return crate::tui::run(args);
+    }
     // One manifest load per invocation; every route below reuses it.
     let loaded = args
         .from
@@ -197,10 +229,14 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     // Ontology, whose walk then runs by default), and call a first round at
     // the coarse level.
     let prepared = match &loaded {
-        Some(_) if !args.markers.is_empty() => Some(crate::manifest::first_round::prepare(
+        Some(l) if !args.markers.is_empty() => Some(crate::manifest::first_round::prepare(
             &args.markers,
             &args.out,
-            args.obo.as_deref(),
+            &crate::manifest::ontology::load(
+                Some(&l.dir),
+                args.obo.as_deref(),
+                args.label_cl.as_deref(),
+            )?,
             args.label_cl.as_deref(),
         )?),
         _ => None,
@@ -321,7 +357,7 @@ fn manifest_prefers_projection(manifest: &RunManifest) -> bool {
 }
 
 /// Explicit embedding pair: the same projection pass as the manifest route
-/// (bootstrap and abstention included), fed from the two parquets directly.
+/// fed from the two parquets directly.
 /// No manifest is touched.
 fn run_projection_from_files(
     args: &AnnotateCliArgs,
@@ -377,12 +413,6 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
         label_cl: args.label_cl.clone(),
         ontology_fdr_q: args.ontology_fdr_q,
         ontology_by: args.ontology_by,
-        n_boot: args.n_boot,
-        min_support: args.min_support,
-        abstain_separable: args.abstain_separable,
-        abstain_alpha: args.abstain_alpha,
-        set_coverage: args.set_coverage,
-        max_set_size: args.max_set_size,
     }
 }
 
@@ -404,12 +434,6 @@ fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
         label_cl: args.label_cl.clone(),
         ontology_fdr_q: args.ontology_fdr_q,
         ontology_by: args.ontology_by,
-        n_boot: args.n_boot,
-        min_support: args.min_support,
-        abstain_separable: args.abstain_separable,
-        abstain_alpha: args.abstain_alpha,
-        set_coverage: args.set_coverage,
-        max_set_size: args.max_set_size,
         no_clean: args.no_clean,
     }
 }
@@ -428,3 +452,7 @@ mod route_tests {
         assert!(manifest_prefers_projection(&m));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/annotate_cmd.rs"]
+mod argv_tests;

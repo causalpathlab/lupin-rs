@@ -15,6 +15,14 @@ pub const ANNOT_PARQUET: &str = ".annot.parquet";
 pub const CLUSTER_TERM_Q: &str = ".cluster_term_q.parquet";
 /// `{out}.cluster_celltype_q_values.parquet`: enrichment's cluster × cell-type FDR q.
 pub const CLUSTER_CELLTYPE_Q_VALUES: &str = ".cluster_celltype_q_values.parquet";
+/// Enrichment: cluster × cell type p-values.
+pub const CLUSTER_CELLTYPE_P: &str = ".cluster_celltype_p.parquet";
+/// Enrichment: cluster × cell type NES (fgsea's normalized enrichment score), the effect size.
+pub const CLUSTER_CELLTYPE_NES: &str = ".cluster_celltype_nes.parquet";
+/// Enrichment: cluster × cell type z = Φ⁻¹(1 − p), which Q (the share) is a softmax of.
+pub const CLUSTER_CELLTYPE_Z: &str = ".cluster_celltype_z.parquet";
+/// Enrichment: cluster × cell type ES restandardized by the gene-set null.
+pub const CLUSTER_CELLTYPE_ES_STD: &str = ".cluster_celltype_es_std.parquet";
 
 /// `{prefix}{suffix}` files written by `annotate --method enrichment` (relative to its
 /// bare `{out}` prefix). NOTE: this prefix is shared with the training run's
@@ -26,14 +34,16 @@ pub const ENRICHMENT_OUTPUT_SUFFIXES: &[&str] = &[
     ".membership.tsv",
     ".cluster_celltype_q.parquet",
     ".cluster_celltype_es.parquet",
-    ".cluster_celltype_es_std.parquet",
-    ".cluster_celltype_p.parquet",
+    CLUSTER_CELLTYPE_ES_STD,
+    CLUSTER_CELLTYPE_NES,
+    CLUSTER_CELLTYPE_P,
+    CLUSTER_CELLTYPE_Z,
     CLUSTER_CELLTYPE_Q_VALUES,
     ".cluster_celltype_perm_z.parquet",
     ".cluster_expression.parquet",
     ".ontology_assignment.tsv",
     ".ontology_node_mass.parquet",
-    // marker-panel stability bootstrap
+    // written by the marker bootstrap of older builds; erased so none outlive it
     ".cluster_celltype_support.parquet",
     ".cluster_qc.tsv",
     ".type_qc.tsv",
@@ -79,9 +89,7 @@ pub struct AnnotationOutputs {
     pub ontology_term_effect: Option<String>,
     pub cluster_celltype_q_values: Option<String>,
     pub cluster_term_q: Option<String>,
-    pub marker_support: Option<String>,
     pub marker_embedding: Option<String>,
-    pub cluster_celltype_support: Option<String>,
     /// Per-cell cluster ids whose values match the cluster tables' `K{id}` rows.
     pub clusters: Option<String>,
     /// The pass's sufficient statistics, for rescoring later rounds.

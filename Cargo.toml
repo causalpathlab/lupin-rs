@@ -1,6 +1,6 @@
 [package]
 name = "lupin-rs"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -58,7 +58,7 @@ statrs = { version = "0.18", default-features = false }
 
 # Published legume stack
 data-beans = { version = "0.6.12", features = ["aux", "alg"] }
-enrichment = { version = "0.3.9", package = "legume-enrichment" }
+enrichment = { version = "0.4.0", package = "legume-enrichment" }
 genomic-data = { version = "0.4.1", package = "legume-genomic-types" }
 graph-embedding-util = { version = "0.8.4", package = "legume-graph-embedding" }
 legume-numeric = { version = "0.8.10", features = ["matrix", "param", "candle", "mcmc"] }
@@ -76,6 +76,12 @@ dirs = "6"
 stop-words = "0.10"
 rust-stemmers = "1.2"
 unicode-segmentation = "1.13"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 
 [dev-dependencies]
 tempfile = "3.2"
+
+# legume-enrichment 0.4.0 (fgsea NES, TreeBH q) from its open PR until it is published
+# (causalpathlab/legume-enrichment#1); drop this patch once 0.4.0 is on crates.io.
+[patch.crates-io]
+legume-enrichment = { git = "https://github.com/causalpathlab/legume-enrichment", branch = "fgsea-treebh-0.4.0" }
