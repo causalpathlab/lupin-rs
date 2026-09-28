@@ -242,3 +242,14 @@ fn marker_edits_name_a_type_and_features_not_clusters() {
     assert!(run(r#"{"action": "markers_add", "features": ["GENE1"], "rationale": "r", "decided_by": "user"}"#).is_err());
     assert!(run(r#"{"cluster": 0, "action": "markers_add", "label": "CT1", "features": ["GENE1"], "rationale": "r", "decided_by": "user"}"#).is_err());
 }
+
+#[test]
+fn decided_labels_take_the_canonical_spelling() {
+    let mut clusters = some(&[0, 1]);
+    let mut labs = labels(&["CT1", "CT2"]);
+    let mut ds = decisions(
+        r#"{"cluster": 0, "action": "label", "label": "CT 4, a", "rationale": "r", "decided_by": "user"}"#,
+    );
+    apply(&mut ds, &mut clusters, &mut labs, 2, "r1", "T").unwrap();
+    assert_eq!(labs[0].as_deref(), Some("CT_4_a"));
+}

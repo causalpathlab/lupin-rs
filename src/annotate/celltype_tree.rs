@@ -470,7 +470,13 @@ fn attach_by_sharing(
             .filter(|(_, j)| *j > 0.0)
             .max_by(|a, b| a.1.total_cmp(&b.1));
         match best {
-            Some((i, _)) => groups[i].members.push(t),
+            Some((i, _)) => {
+                groups[i].members.push(t);
+                // A group no ontology term names is named for its members.
+                if groups[i].cl_id.is_none() {
+                    groups[i].name = group_name(&groups[i].members);
+                }
+            }
             None => groups.push(TypeGroup {
                 name: t.clone(),
                 cl_id: None,
@@ -481,14 +487,16 @@ fn attach_by_sharing(
 }
 
 /// A cluster's coarse call from its evidence: per group (via
-/// [`TypeTree::index`]), the cluster's probabilities for the group's types
-/// summed, when there are any (`types` and their `values`); otherwise the
-/// group most of its cells' fine labels fall in.
+/// [`TypeTree::index`]), the cluster's shares for the group's types summed,
+/// when there are any (`types` and their `values`), and the best group called
+/// only if its share reaches `min_share`; otherwise the group most of its
+/// cells' fine labels fall in.
 #[must_use]
 pub fn coarse_call(
     index: &HashMap<String, &str>,
     probs: Option<(&[String], &[f32])>,
     cell_labels: &[&str],
+    min_share: f32,
 ) -> Option<String> {
     let group = |t: &str| index.get(&label_key(t)).copied();
     let mut mass: BTreeMap<&str, f32> = BTreeMap::new();
@@ -513,8 +521,9 @@ pub fn coarse_call(
             }
         }
     }
+    let floor = if probs.is_some() { min_share } else { 0.0 };
     mass.into_iter()
-        .filter(|(_, m)| *m > 0.0)
+        .filter(|(_, m)| *m > 0.0 && *m >= floor)
         .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(a.0)))
         .map(|(g, _)| g.to_string())
 }

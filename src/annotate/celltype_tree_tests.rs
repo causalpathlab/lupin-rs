@@ -173,13 +173,18 @@ fn a_coarse_call_sums_evidence_over_a_group() {
     let types = ["CT1".to_string(), "CT2".to_string(), "CT3".to_string()];
     let probs = [0.3, 0.3, 0.4];
     assert_eq!(
-        coarse_call(&index, Some((&types, &probs)), &[]).as_deref(),
+        coarse_call(&index, Some((&types, &probs)), &[], 0.5).as_deref(),
         Some("CT1/CT2")
+    );
+    // Below the bar the cluster stays uncalled, as the bootstrap left it.
+    assert_eq!(
+        coarse_call(&index, Some((&types, &[0.2, 0.2, 0.3])), &[], 0.5),
+        None
     );
     // Without probabilities, the cells' fine labels vote.
     assert_eq!(
-        coarse_call(&index, None, &["CT3", "CT3", "CT1"]).as_deref(),
+        coarse_call(&index, None, &["CT3", "CT3", "CT1"], 0.5).as_deref(),
         Some("CT3")
     );
-    assert_eq!(coarse_call(&index, None, &[]), None);
+    assert_eq!(coarse_call(&index, None, &[], 0.5), None);
 }

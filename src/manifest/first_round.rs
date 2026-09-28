@@ -19,6 +19,14 @@ use std::fs;
 use std::path::Path;
 
 const TREE: &str = ".celltype_tree.json";
+
+/// The support a call needs, as the pass that made it was set.
+fn min_support(settings: Option<&serde_json::Value>) -> f32 {
+    settings
+        .and_then(|s| s.pointer("/enrichment/min_support"))
+        .and_then(serde_json::Value::as_f64)
+        .map_or(0.5, |v| v as f32)
+}
 const LABEL_CL: &str = ".label_cl.tsv";
 const FINE_ARGMAX: &str = ".fine_argmax.tsv";
 
@@ -103,12 +111,17 @@ pub fn finish(manifest: &Path, tree: &TypeTree, coarse: bool) -> Result<()> {
         return loaded.manifest.save(&loaded.file);
     }
     let cells = read_cells(&loaded)?;
-    // The cluster × type probabilities, when the pass wrote them (enrichment).
-    let probs = loaded
-        .manifest
-        .annotate
-        .cluster_celltype_q
-        .as_deref()
+    // Per cluster × type, the pass's shares (enrichment): the bootstrap's
+    // support when it ran, whose abstentions a group call must respect (a
+    // group is called only if its types together reach the support bar),
+    // else the Q probabilities.
+    let a = &loaded.manifest.annotate;
+    let (share_rel, min_share) = match (&a.cluster_celltype_support, &a.cluster_celltype_q) {
+        (Some(s), _) => (Some(s.as_str()), min_support(a.settings.as_ref())),
+        (None, Some(q)) => (Some(q.as_str()), 0.0),
+        (None, None) => (None, 0.0),
+    };
+    let probs = share_rel
         .map(|rel| read_table(&resolve(&loaded.dir, rel)))
         .transpose()?;
     let mut votes: BTreeMap<ClusterId, Vec<&str>> = BTreeMap::new();
@@ -125,7 +138,7 @@ pub fn finish(manifest: &Path, tree: &TypeTree, coarse: bool) -> Result<()> {
             let row = probs
                 .as_ref()
                 .and_then(|t| t.row(*id).map(|r| (&t.cols[..], r)));
-            (*id, coarse_call(&index, row, labels))
+            (*id, coarse_call(&index, row, labels, min_share))
         })
         .collect();
 

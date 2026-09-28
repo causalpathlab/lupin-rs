@@ -311,10 +311,13 @@ fn route<'a>(
     }
 }
 
-/// A run with a co-embedded gene space annotates by projection.
+/// A run with a co-embedded gene space annotates by projection. A kind that
+/// co-embeds needs that space itself: its raw gene embedding is not on the
+/// cell manifold, so a run written before the co-embedding existed falls back
+/// to enrichment.
 fn manifest_prefers_projection(manifest: &RunManifest) -> bool {
     manifest.outputs.feature_coembedding.is_some()
-        || (manifest.kind.coembeds() && manifest.outputs.feature_embedding.is_some())
+        || (!manifest.kind.coembeds() && manifest.outputs.feature_embedding.is_some())
 }
 
 /// Explicit embedding pair: the same projection pass as the manifest route
@@ -396,5 +399,20 @@ fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
         set_coverage: args.set_coverage,
         max_set_size: args.max_set_size,
         no_clean: args.no_clean,
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+    use crate::manifest::run::RunKind;
+
+    #[test]
+    fn a_co_embedding_kind_without_its_co_embedding_falls_back_to_enrichment() {
+        let mut m = RunManifest::new(RunKind::Bge, "run");
+        m.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
+        assert!(!manifest_prefers_projection(&m));
+        m.outputs.feature_coembedding = Some("run.feature_coembedding.parquet".into());
+        assert!(manifest_prefers_projection(&m));
     }
 }

@@ -473,7 +473,7 @@ pub fn apply(
             Action::Label | Action::Keep => {
                 let id = d.cluster[0];
                 if let Some(l) = &d.label {
-                    relabel_cells(clusters, labels, id, l);
+                    relabel_cells(clusters, labels, id, &label_key(l));
                 }
                 for &id in &d.cluster {
                     history.entry(id).or_default().push(entry(d.label.clone()));
@@ -488,7 +488,7 @@ pub fn apply(
                     }
                 }
                 if let Some(l) = &d.label {
-                    relabel_cells(clusters, labels, new_id, l);
+                    relabel_cells(clusters, labels, new_id, &label_key(l));
                 }
                 for &old in &d.cluster {
                     history.entry(old).or_default().push(HistoryEntry {
