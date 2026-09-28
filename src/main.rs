@@ -4,6 +4,7 @@ mod annotate;
 mod annotate_cmd;
 mod cell_labels;
 mod describe;
+mod docs;
 mod gene_text;
 mod lineage;
 mod manifest;
@@ -136,6 +137,8 @@ enum Commands {
                       Counts are not re-read; merged clusters take fresh ids."
     )]
     Relabel(manifest::rounds::RelabelArgs),
+    #[command(about = "Print the method write-ups (omit the topic to list them)")]
+    Docs(docs::DocsArgs),
     #[command(
         about = "Without a marker panel: write an unlabelled first round and a prompt for any AI chat",
         long_about = "Writes a first round whose clusters carry no labels yet,\n\
@@ -184,6 +187,7 @@ fn main() -> Result<()> {
         Commands::Review(c) => manifest::rounds::run_review(&c),
         Commands::Relabel(c) => manifest::rounds::run_relabel(&c),
         Commands::Ask(c) => manifest::ask::run_ask(&c),
+        Commands::Docs(c) => docs::run_docs(&c),
         Commands::Plot(c) => fit_plot(&c),
         Commands::PlotTopic(c) => fit_plot_topic(&c),
         Commands::PlotStrand(c) => fit_plot_strand(&c),
