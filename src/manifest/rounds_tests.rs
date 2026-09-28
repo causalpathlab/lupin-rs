@@ -723,3 +723,64 @@ fn a_marker_edit_refreshes_support_and_preview_is_rescored() {
     .unwrap();
     assert_eq!(support.rows, vec![0, 1, 2]);
 }
+
+#[test]
+fn a_round_with_no_decisions_only_refreshes_support() {
+    let root = tempfile::tempdir().unwrap();
+    let src = enriched_round(root.path());
+    let d = root.path().join("empty.jsonl");
+    fs::write(&d, "").unwrap();
+    assert!(run_relabel(&args(&src, &d, Some(&root.path().join("x/run")))).is_err());
+
+    run_relabel(&RelabelArgs {
+        support: true,
+        ..args(&src, &d, Some(&root.path().join("r1/run")))
+    })
+    .unwrap();
+    let r1 = run::load(&root.path().join("r1/run.senna.json").to_string_lossy()).unwrap();
+    assert_eq!(
+        r1.manifest.annotate.stats.as_ref().unwrap()["support_stale"],
+        false
+    );
+    let before = read_cells(&run::load(&src.to_string_lossy()).unwrap()).unwrap();
+    assert_eq!(
+        read_cells(&r1).unwrap().labels,
+        before.labels,
+        "no label moves"
+    );
+}
+
+#[test]
+fn a_coarse_label_agrees_with_a_top_call_inside_its_group() {
+    let root = tempfile::tempdir().unwrap();
+    let src = enriched_round(root.path());
+    let dir = src.parent().unwrap();
+    fs::write(
+        dir.join("run.celltype_tree.json"),
+        json!({"source": "marker_sharing", "groups": [
+            {"name": "CT1/CT2", "members": ["CT1", "CT2"]},
+            {"name": "CT3", "members": ["CT3"]}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let mut m = RunManifest::load(&src).unwrap().0;
+    m.annotate.celltype_tree = Some("run.celltype_tree.json".into());
+    m.save(&src).unwrap();
+
+    let d = root.path().join("d.jsonl");
+    fs::write(&d, line(json!({"cluster": 0, "action": "label", "label": "CT1/CT2", "rationale": "r", "decided_by": "user"})))
+        .unwrap();
+    run_relabel(&args(&src, &d, Some(&root.path().join("r1/run")))).unwrap();
+    let r1 = run::load(&root.path().join("r1/run.senna.json").to_string_lossy()).unwrap();
+    let summary: Value = serde_json::from_str(
+        &fs::read_to_string(resolve(
+            &r1.dir,
+            r1.manifest.annotate.cluster_summary.as_deref().unwrap(),
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(summary["0"]["evidence"]["top"], "CT1");
+    assert_eq!(summary["0"]["evidence"]["agrees"], true);
+}

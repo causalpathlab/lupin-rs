@@ -269,7 +269,23 @@ fn read_evidence(loaded: &Loaded) -> Result<Evidence> {
 /// it in the manifest (which the caller saves).
 pub fn write_summary(loaded: &mut Loaded, out_prefix: &str) -> Result<BTreeMap<ClusterId, Digest>> {
     let cells = read_cells(loaded)?;
-    let d = digest(&cells.clusters, &cells.labels, &read_evidence(loaded)?);
+    let mut d = digest(&cells.clusters, &cells.labels, &read_evidence(loaded)?);
+    // A cluster labelled with a coarse group agrees with a top call that is
+    // one of the group's types.
+    if let Some(rel) = loaded.manifest.annotate.celltype_tree.as_deref() {
+        let tree: crate::annotate::celltype_tree::TypeTree =
+            serde_json::from_str(&fs::read_to_string(resolve(&loaded.dir, rel))?)?;
+        let index = tree.index();
+        for digest in d.values_mut() {
+            let label = digest.label.clone();
+            if let (Some(e), Some(label)) = (digest.evidence.as_mut(), label) {
+                let group = index
+                    .get(&crate::annotate::markers::label_key(&e.top))
+                    .copied();
+                e.agrees |= group.is_some_and(|g| g == label);
+            }
+        }
+    }
     let path = format!("{out_prefix}{SUMMARY}");
     fs::write(&path, serde_json::to_string_pretty(&d)?)?;
     info!("wrote {path}");
@@ -389,6 +405,12 @@ pub fn run_relabel(args: &RelabelArgs) -> Result<()> {
         (raw, parent_dir(Path::new(&*args.decisions)))
     };
     let decisions = parse_decisions(numbered(&raw), &args.decisions)?;
+    // With nothing decided, a round only rescores: that needs --support.
+    anyhow::ensure!(
+        !decisions.is_empty() || (args.support && !args.preview),
+        "{}: no decisions (a round with none only refreshes support: pass --support)",
+        args.decisions
+    );
     let source = run::load(&args.from)?;
     if args.preview {
         let (_, latest) = Chain::of(&source.file).latest();
@@ -430,7 +452,6 @@ fn parse_decisions<'a>(
             serde_json::from_str(l).with_context(|| format!("{file} line {n}: not a decision"))
         })
         .collect::<Result<_>>()?;
-    anyhow::ensure!(!decisions.is_empty(), "{file}: no decisions");
     Ok(decisions)
 }
 
