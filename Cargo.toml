@@ -80,8 +80,3 @@ ratatui = { version = "0.30.2", default-features = false, features = ["crossterm
 
 [dev-dependencies]
 tempfile = "3.2"
-
-# legume-enrichment 0.4.0 (fgsea NES, TreeBH q) from its main branch, where
-# causalpathlab/legume-enrichment#1 merged; drop this patch once 0.4.0 is on crates.io.
-[patch.crates-io]
-legume-enrichment = { git = "https://github.com/causalpathlab/legume-enrichment", rev = "ccd217c8d4de6d32c90313dcbb5a0538a3c608e8" }
