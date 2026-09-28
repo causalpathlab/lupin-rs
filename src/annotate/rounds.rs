@@ -73,7 +73,7 @@ pub struct Table {
 }
 
 impl Table {
-    fn row(&self, id: ClusterId) -> Option<&[f32]> {
+    pub(crate) fn row(&self, id: ClusterId) -> Option<&[f32]> {
         let r = self.rows.iter().position(|&x| x == id)?;
         let w = self.cols.len();
         Some(&self.values[r * w..(r + 1) * w])

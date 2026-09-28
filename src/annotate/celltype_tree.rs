@@ -14,6 +14,7 @@
 //! Pure: [`crate::manifest`] finds the ontology and the evidence.
 
 use crate::annotate::markers::label_key;
+use data_beans::alg::union_find::UnionFind;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -210,13 +211,23 @@ pub struct TypeTree {
 
 impl TypeTree {
     /// The group a fine type belongs to.
+    #[cfg(test)]
     #[must_use]
     pub fn group_of(&self, label: &str) -> Option<&str> {
-        let key = label_key(label);
+        self.index().get(&label_key(label)).copied()
+    }
+
+    /// Each member type's group, keyed by its [`label_key`].
+    #[must_use]
+    pub fn index(&self) -> HashMap<String, &str> {
         self.groups
             .iter()
-            .find(|g| g.members.iter().any(|m| label_key(m) == key))
-            .map(|g| g.name.as_str())
+            .flat_map(|g| {
+                g.members
+                    .iter()
+                    .map(move |m| (label_key(m), g.name.as_str()))
+            })
+            .collect()
     }
 
     /// The panel's types on the Cell Ontology. `None` when fewer than two
@@ -235,34 +246,42 @@ impl TypeTree {
         // Each type goes under its nearest ancestor (or itself) among the
         // ontology's analysis classes that it shares with another panel type.
         // A type sharing none stands as its own group.
-        let depth = |t: &str| terms.ancestors_or_self(t).len();
-        let shared = |t: &str| ancestry.values().filter(|a| a.contains(t)).count() >= 2;
+        // Per analysis class: how many panel types sit under it, and its depth.
+        let mut sharers: HashMap<&str, usize> = HashMap::new();
+        for a in ancestry.values() {
+            for t in a.iter().filter(|t| terms.classes.contains(*t)) {
+                *sharers.entry(t.as_str()).or_default() += 1;
+            }
+        }
+        let depth: HashMap<&str, usize> = sharers
+            .keys()
+            .map(|t| (*t, terms.ancestors_or_self(t).len()))
+            .collect();
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (label, a) in &ancestry {
             let node = a
                 .iter()
-                .filter(|t| terms.classes.contains(*t) && shared(t))
-                .max_by(|x, y| depth(x).cmp(&depth(y)).then_with(|| y.cmp(x)))
+                .filter(|t| sharers.get(t.as_str()).is_some_and(|&n| n >= 2))
+                .max_by(|x, y| {
+                    depth[x.as_str()]
+                        .cmp(&depth[y.as_str()])
+                        .then_with(|| y.cmp(x))
+                })
                 .cloned()
                 .unwrap_or_else(|| mapped[*label].clone());
             groups.entry(node).or_default().push((*label).to_string());
         }
-        // A class every sharer left for a nearer one groups nothing: its lone
-        // type is named for itself, not for the broader class.
-        let lone: Vec<(String, String)> = groups
-            .iter()
-            .filter(|(node, m)| m.len() == 1 && mapped[&m[0]] != **node)
-            .map(|(node, m)| (node.clone(), m[0].clone()))
-            .collect();
-        for (node, label) in lone {
-            groups.remove(&node);
-            groups
-                .entry(mapped[&label].clone())
-                .or_default()
-                .push(label);
-        }
         let mut groups: Vec<TypeGroup> = groups
             .into_iter()
+            .map(|(id, members)| {
+                // A class every sharer left for a nearer one groups nothing:
+                // its lone type is named for itself, not for the broader class.
+                if members.len() == 1 {
+                    (mapped[&members[0]].clone(), members)
+                } else {
+                    (id, members)
+                }
+            })
             .map(|(id, members)| TypeGroup {
                 name: label_key(terms.name(&id).unwrap_or(&id)),
                 cl_id: Some(id),
@@ -286,26 +305,17 @@ impl TypeTree {
         let types = panel_types(panel);
         let sets = marker_sets(panel);
         let n = types.len();
-        let mut parent: Vec<usize> = (0..n).collect();
-        fn find(p: &mut [usize], i: usize) -> usize {
-            if p[i] != i {
-                let r = find(p, p[i]);
-                p[i] = r;
-            }
-            p[i]
-        }
+        let mut uf = UnionFind::new(n);
         for i in 0..n {
             for j in (i + 1)..n {
-                if jaccard(&sets[&types[i]], &sets[&types[j]]) > 0.0 {
-                    let (a, b) = (find(&mut parent, i), find(&mut parent, j));
-                    parent[a] = b;
+                if !sets[&types[i]].is_disjoint(&sets[&types[j]]) {
+                    uf.union(i, j);
                 }
             }
         }
         let mut comps: BTreeMap<usize, Vec<String>> = BTreeMap::new();
         for (i, t) in types.iter().enumerate() {
-            let r = find(&mut parent, i);
-            comps.entry(r).or_default().push(t.clone());
+            comps.entry(uf.find(i)).or_default().push(t.clone());
         }
         let mut members: Vec<Vec<String>> = comps.into_values().collect();
         if members.len() == 1 && n >= 3 {
@@ -450,28 +460,35 @@ fn attach_by_sharing(
     }
 }
 
-/// A cluster's coarse call from its evidence: per group, the cluster's
-/// probabilities for the group's types summed, when there are any; otherwise
-/// the group most of its cells' fine labels fall in.
+/// A cluster's coarse call from its evidence: per group (via
+/// [`TypeTree::index`]), the cluster's probabilities for the group's types
+/// summed, when there are any (`types` and their `values`); otherwise the
+/// group most of its cells' fine labels fall in.
 #[must_use]
 pub fn coarse_call(
-    tree: &TypeTree,
-    probs: Option<&[(String, f32)]>,
+    index: &HashMap<String, &str>,
+    probs: Option<(&[String], &[f32])>,
     cell_labels: &[&str],
 ) -> Option<String> {
+    let group = |t: &str| index.get(&label_key(t)).copied();
     let mut mass: BTreeMap<&str, f32> = BTreeMap::new();
-    match probs.filter(|p| p.iter().any(|(_, v)| *v > 0.0)) {
-        Some(p) => {
-            for (t, v) in p {
-                if let Some(g) = tree.group_of(t) {
+    match probs.filter(|(_, v)| v.iter().any(|&v| v > 0.0)) {
+        Some((types, values)) => {
+            for (t, v) in types.iter().zip(values) {
+                if let Some(g) = group(t) {
                     *mass.entry(g).or_default() += v.max(0.0);
                 }
             }
         }
         None => {
+            // Distinct labels first, so each is looked up once.
+            let mut counts: BTreeMap<&str, f32> = BTreeMap::new();
             for l in cell_labels {
-                if let Some(g) = tree.group_of(l) {
-                    *mass.entry(g).or_default() += 1.0;
+                *counts.entry(l).or_default() += 1.0;
+            }
+            for (l, n) in counts {
+                if let Some(g) = group(l) {
+                    *mass.entry(g).or_default() += n;
                 }
             }
         }

@@ -47,20 +47,22 @@ pub fn resolve_obo(explicit: Option<&str>) -> Option<PathBuf> {
 
 fn download(to: &std::path::Path) -> Result<()> {
     info!("downloading the Cell Ontology from {CL_URL}");
-    let body = ureq::AgentBuilder::new()
+    let response = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(60))
         .build()
         .get(CL_URL)
         .call()
-        .context("request failed")?
-        .into_string()
-        .context("reading the response")?;
-    anyhow::ensure!(body.contains("[Term]"), "the response is not an OBO file");
+        .context("request failed")?;
     let dir = to.parent().context("no cache directory")?;
     fs::create_dir_all(dir)?;
-    // Written whole then renamed, so a half-finished download is never read.
+    // Streamed to a side file and renamed once whole, so a half-finished
+    // download is never read.
     let tmp = to.with_extension("obo.part");
-    fs::write(&tmp, body)?;
+    let mut file = fs::File::create(&tmp)?;
+    std::io::copy(&mut response.into_reader(), &mut file).context("reading the response")?;
+    drop(file);
+    let head = fs::read_to_string(&tmp).unwrap_or_default();
+    anyhow::ensure!(head.contains("[Term]"), "the response is not an OBO file");
     fs::rename(&tmp, to)?;
     info!("cached {}", to.display());
     Ok(())

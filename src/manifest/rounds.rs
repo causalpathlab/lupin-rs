@@ -112,14 +112,14 @@ pub(super) fn write_argmax(
 
 /// One round's cells: ids from `cluster.clusters`, labels and their
 /// probabilities from `annotate.argmax`, joined by cell name.
-struct Cells {
-    names: Vec<Box<str>>,
-    clusters: Vec<Option<ClusterId>>,
-    labels: Vec<Option<String>>,
-    probs: Vec<f32>,
+pub(super) struct Cells {
+    pub(super) names: Vec<Box<str>>,
+    pub(super) clusters: Vec<Option<ClusterId>>,
+    pub(super) labels: Vec<Option<String>>,
+    pub(super) probs: Vec<f32>,
 }
 
-fn read_cells(loaded: &Loaded) -> Result<Cells> {
+pub(super) fn read_cells(loaded: &Loaded) -> Result<Cells> {
     let a = &loaded.manifest.annotate;
     let clusters_rel = loaded
         .manifest
@@ -733,20 +733,20 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
         .collect();
 
     let profile = expression_profile(source, &after.cells)?;
+    // `calls_before` is `None` when marker edits cannot move the calls.
     let (calls_before, calls_after) = match &profile {
-        Some((table, groups)) => (
-            approx_calls(table, groups, &panel_before)?,
-            approx_calls(table, groups, &after.markers)?,
-        ),
+        Some((table, groups)) => {
+            let [b, a] = approx_calls(table, groups, [&panel_before, &after.markers])?;
+            (Some(b), a)
+        }
         None => {
-            // No profile: the round's recorded calls, which marker edits do
-            // not move.
+            // No profile: the round's recorded calls.
             let recorded = digest(&before.clusters, &before.labels, &read_evidence(source)?);
             let calls: RankedCalls = recorded
                 .into_iter()
                 .map(|(id, d)| (id, d.calls.into_iter().map(|c| (c.label, None)).collect()))
                 .collect();
-            (calls.clone(), calls)
+            (None, calls)
         }
     };
     let top = |calls: &RankedCalls, id: &ClusterId| {
@@ -759,7 +759,10 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
     let mut clusters = serde_json::Map::new();
     for (id, after_d) in &label_after {
         let before_label = label_before.get(id).and_then(|d| d.label.clone());
-        let (top_before, top_after) = (top(&calls_before, id), top(&calls_after, id));
+        let top_after = top(&calls_after, id);
+        let top_before = calls_before
+            .as_ref()
+            .map_or_else(|| top_after.clone(), |c| top(c, id));
         if !(touched.contains(id) || before_label != after_d.label || top_before != top_after) {
             continue;
         }
@@ -851,28 +854,62 @@ fn expression_profile(
 /// ranking comes from recorded evidence rather than a score).
 type RankedCalls = BTreeMap<ClusterId, Vec<(String, Option<f32>)>>;
 
-/// Cell types ranked per cluster by a marker module score: each cluster's
-/// profile is the cell-weighted mean of the profile columns its cells come
-/// from; genes are `log1p`, z-scored across clusters; a type scores the
-/// IDF-weighted mean z of its markers. It ranks as enrichment would, in
-/// milliseconds, but carries no q or support.
-fn approx_calls(
+/// A cell type and its marker rows with their weights.
+type TypeMarkers = (String, Vec<(usize, f32)>);
+
+/// Cell types ranked per cluster by a marker module score, for each of
+/// `panels`: each cluster's profile is the cell-weighted mean of the profile
+/// columns its cells come from; genes are `log1p`, z-scored across clusters;
+/// a type scores the IDF-weighted mean z of its markers. Only the panels'
+/// marker genes are read, and the profiles are built once for all panels. It
+/// ranks as enrichment would, in milliseconds, but carries no q or support.
+fn approx_calls<const N: usize>(
     table: &MatWithNames<Mat>,
     groups: &Groups,
-    panel: &[(String, String)],
-) -> Result<RankedCalls> {
-    if panel.is_empty() {
-        return Ok(BTreeMap::new());
+    panels: [&[(String, String)]; N],
+) -> Result<[RankedCalls; N]> {
+    // Per panel: each type's marker rows and weights.
+    let mut sparse: Vec<Vec<TypeMarkers>> = Vec::with_capacity(N);
+    for panel in panels {
+        let types = if panel.is_empty() {
+            Vec::new()
+        } else {
+            let pairs: Vec<(Box<str>, Box<str>)> = panel
+                .iter()
+                .map(|(g, t)| (g.as_str().into(), t.as_str().into()))
+                .collect();
+            let annot =
+                crate::annotate::markers::annotation_matrix_from_pairs(&pairs, &table.rows)?;
+            let w = &annot.membership_ga;
+            annot
+                .annot_names
+                .iter()
+                .enumerate()
+                .map(|(t, name)| {
+                    let rows = (0..w.nrows())
+                        .filter(|&r| w[(r, t)] > 0.0)
+                        .map(|r| (r, w[(r, t)]))
+                        .collect();
+                    (name.to_string(), rows)
+                })
+                .collect()
+        };
+        sparse.push(types);
     }
+    let marker_rows: BTreeSet<usize> = sparse
+        .iter()
+        .flatten()
+        .flat_map(|(_, rows)| rows.iter().map(|&(r, _)| r))
+        .collect();
+
+    // Per cluster: log1p of its cell-weighted mean profile, marker rows only.
     let col: HashMap<ClusterId, usize> = table
         .cols
         .iter()
         .enumerate()
         .filter_map(|(j, c)| parse_cluster_id(c).map(|id| (id, j)))
         .collect();
-    let g = table.mat.nrows();
-    // Per cluster: log1p of its cell-weighted mean profile.
-    let profiles: Vec<(ClusterId, Vec<f32>)> = groups
+    let profiles: Vec<(ClusterId, HashMap<usize, f32>)> = groups
         .iter()
         .filter_map(|(id, from)| {
             let parts: Vec<(usize, f32)> = from
@@ -881,62 +918,52 @@ fn approx_calls(
                 .collect();
             let total: f32 = parts.iter().map(|(_, n)| n).sum();
             (total > 0.0).then(|| {
-                let v = (0..g)
-                    .map(|r| {
+                let v = marker_rows
+                    .iter()
+                    .map(|&r| {
                         let m: f32 = parts.iter().map(|&(j, n)| n * table.mat[(r, j)]).sum();
-                        (m / total).max(0.0).ln_1p()
+                        (r, (m / total).max(0.0).ln_1p())
                     })
                     .collect();
                 (*id, v)
             })
         })
         .collect();
-    let k = profiles.len() as f32;
-    if profiles.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    // Per gene: mean and sd across clusters, for the z-score.
-    let stats: Vec<(f32, f32)> = (0..g)
-        .map(|r| {
-            let mean = profiles.iter().map(|(_, v)| v[r]).sum::<f32>() / k;
+    // Per marker row: its z-score in each cluster.
+    let k = profiles.len().max(1) as f32;
+    let z: HashMap<usize, (f32, f32)> = marker_rows
+        .iter()
+        .map(|&r| {
+            let mean = profiles.iter().map(|(_, v)| v[&r]).sum::<f32>() / k;
             let var = profiles
                 .iter()
-                .map(|(_, v)| (v[r] - mean).powi(2))
+                .map(|(_, v)| (v[&r] - mean).powi(2))
                 .sum::<f32>()
                 / k;
-            (mean, var.sqrt())
+            (r, (mean, var.sqrt()))
         })
         .collect();
-    let pairs: Vec<(Box<str>, Box<str>)> = panel
-        .iter()
-        .map(|(g, t)| (g.as_str().into(), t.as_str().into()))
-        .collect();
-    let annot = crate::annotate::markers::annotation_matrix_from_pairs(&pairs, &table.rows)?;
-    let w = &annot.membership_ga;
-    Ok(profiles
-        .iter()
-        .map(|(id, v)| {
-            let mut scored: Vec<(String, Option<f32>)> = annot
-                .annot_names
-                .iter()
-                .enumerate()
-                .filter_map(|(t, name)| {
-                    let (mut num, mut den) = (0.0f32, 0.0f32);
-                    for (r, &(mean, sd)) in stats.iter().enumerate() {
-                        let wt = w[(r, t)];
-                        if wt > 0.0 {
-                            let z = if sd > 0.0 { (v[r] - mean) / sd } else { 0.0 };
-                            num += wt * z;
-                            den += wt;
-                        }
-                    }
-                    (den > 0.0).then(|| (name.to_string(), Some(num / den)))
-                })
-                .collect();
-            scored.sort_by(|a, b| b.1.unwrap_or(0.0).total_cmp(&a.1.unwrap_or(0.0)));
-            (*id, scored)
-        })
-        .collect())
+
+    Ok(std::array::from_fn(|p| {
+        profiles
+            .iter()
+            .map(|(id, v)| {
+                let mut scored: Vec<(String, Option<f32>)> = sparse[p]
+                    .iter()
+                    .filter_map(|(name, rows)| {
+                        let (num, den) = rows.iter().fold((0.0f32, 0.0f32), |(n, d), &(r, wt)| {
+                            let (mean, sd) = z[&r];
+                            let zr = if sd > 0.0 { (v[&r] - mean) / sd } else { 0.0 };
+                            (n + wt * zr, d + wt)
+                        });
+                        (den > 0.0).then(|| (name.clone(), Some(num / den)))
+                    })
+                    .collect();
+                scored.sort_by(|a, b| b.1.unwrap_or(0.0).total_cmp(&a.1.unwrap_or(0.0)));
+                (*id, scored)
+            })
+            .collect()
+    }))
 }
 
 /// Refuse decisions that name a round other than `source`, the one they are

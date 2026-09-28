@@ -164,7 +164,8 @@ pub struct AnnotateCliArgs {
 
     #[arg(
         long,
-        help = "Call the first round at the panel's fine cell types instead of its coarse groups"
+        help = "Call a first round at the panel's fine cell types instead of its coarse groups \
+                (later rounds are always fine)"
     )]
     pub fine: bool,
 }
@@ -176,57 +177,42 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         .as_deref()
         .map(crate::manifest::run::load)
         .transpose()?;
+    let mut args = args.clone();
 
     // A round carries its marker panel (revised by `relabel`); use it when
     // no other source of labels is given.
-    let defaulted;
-    let args = match loaded.as_ref().and_then(|l| round_markers(args, l)) {
-        Some(markers) => {
-            log::info!("No -m given: using the round's marker panel {markers}");
-            defaulted = AnnotateCliArgs {
-                markers: markers.into_boxed_str(),
-                ..args.clone()
-            };
-            &defaulted
-        }
-        None => args,
-    };
+    if let Some(markers) = loaded.as_ref().and_then(|l| round_markers(&args, l)) {
+        log::info!("No -m given: using the round's marker panel {markers}");
+        args.markers = markers.into_boxed_str();
+    }
 
-    if is_ontology_followup(args) {
+    if is_ontology_followup(&args) {
         let loaded = loaded
             .as_ref()
             .context("--from required for ontology follow-up")?;
-        return annotate_ontology(&build_ontology_args(args)?, loaded);
+        return annotate_ontology(&build_ontology_args(&args)?, loaded);
     }
 
-    // A marker pass on a run: group the panel first (wiring in the Cell
-    // Ontology when it is found), and call the round at that level after.
-    let marker_pass = loaded.is_some() && !args.markers.is_empty();
-    let prepared = marker_pass
-        .then(|| {
-            crate::manifest::first_round::prepare(
-                &args.markers,
-                &args.out,
-                args.obo.as_deref(),
-                args.label_cl.as_deref(),
-            )
-        })
-        .transpose()?;
-    let wired;
-    let args = match &prepared {
-        Some(p) if args.obo.is_none() && p.obo.is_some() => {
-            wired = AnnotateCliArgs {
-                obo: p.obo.as_deref().map(Into::into),
-                label_cl: p.label_cl.as_deref().map(Into::into),
-                ..args.clone()
-            };
-            &wired
-        }
-        _ => args,
+    // A marker pass on a run: group the panel's cell types (finding the Cell
+    // Ontology, whose walk then runs by default), and call a first round at
+    // the coarse level.
+    let prepared = match &loaded {
+        Some(_) if !args.markers.is_empty() => Some(crate::manifest::first_round::prepare(
+            &args.markers,
+            &args.out,
+            args.obo.as_deref(),
+            args.label_cl.as_deref(),
+        )?),
+        _ => None,
     };
+    if let Some((obo, label_cl)) = prepared.as_ref().and_then(|p| p.ontology.clone()) {
+        args.obo = Some(obo.into_boxed_str());
+        args.label_cl = Some(label_cl.into_boxed_str());
+    }
+    let args = &args;
 
-    let result = match route(args, loaded.as_ref()) {
-        Route::EmbeddingFiles { feat, cell } => run_projection_from_files(args, feat, cell),
+    match route(args, loaded.as_ref()) {
+        Route::EmbeddingFiles { feat, cell } => run_projection_from_files(args, feat, cell)?,
         Route::Enrichment => {
             anyhow::ensure!(
                 !args.markers.is_empty() || args.gaf.is_some() || args.gmt.is_some(),
@@ -235,22 +221,20 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
             let loaded = loaded
                 .as_ref()
                 .context("--from is required for enrichment annotation")?;
-            annotate_by_enrichment(&build_enrichment_args(args), loaded)
+            annotate_by_enrichment(&build_enrichment_args(args), loaded)?;
         }
         Route::Projection => {
             anyhow::ensure!(!args.markers.is_empty(), "projection needs --markers");
             let loaded = loaded
                 .as_ref()
                 .context("--from is required for projection annotation")?;
-            annotate_by_projection(&build_projection_args(args), loaded)
+            annotate_by_projection(&build_projection_args(args), loaded)?;
         }
-    };
-    result?;
+    }
     if let (Some(p), Some(l)) = (&prepared, &loaded) {
+        let coarse = !args.fine && crate::manifest::first_round::is_first_round(l);
         let manifest = crate::manifest::run::annotated_path(&l.file, &args.out);
-        if manifest.is_file() {
-            crate::manifest::first_round::finish(&manifest, p, args.fine)?;
-        }
+        crate::manifest::first_round::finish(&manifest, &p.tree, coarse)?;
     }
     Ok(())
 }

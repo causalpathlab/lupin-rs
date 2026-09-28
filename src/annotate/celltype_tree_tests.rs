@@ -168,20 +168,18 @@ fn a_coarse_call_sums_evidence_over_a_group() {
         ("GENE1", "CT2"),
         ("GENE3", "CT3"),
     ]));
+    let index = tree.index();
     // CT3 is the single best type, but CT1 and CT2 together outweigh it.
-    let probs = [
-        ("CT1".to_string(), 0.3),
-        ("CT2".to_string(), 0.3),
-        ("CT3".to_string(), 0.4),
-    ];
+    let types = ["CT1".to_string(), "CT2".to_string(), "CT3".to_string()];
+    let probs = [0.3, 0.3, 0.4];
     assert_eq!(
-        coarse_call(&tree, Some(&probs), &[]).as_deref(),
+        coarse_call(&index, Some((&types, &probs)), &[]).as_deref(),
         Some("CT1/CT2")
     );
     // Without probabilities, the cells' fine labels vote.
     assert_eq!(
-        coarse_call(&tree, None, &["CT3", "CT3", "CT1"]).as_deref(),
+        coarse_call(&index, None, &["CT3", "CT3", "CT1"]).as_deref(),
         Some("CT3")
     );
-    assert_eq!(coarse_call(&tree, None, &[]), None);
+    assert_eq!(coarse_call(&index, None, &[]), None);
 }

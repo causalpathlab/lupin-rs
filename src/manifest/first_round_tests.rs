@@ -1,6 +1,8 @@
 //! The coarse first round for [`super`].
 
 use super::*;
+use crate::annotate::celltype_tree::TreeSource;
+use crate::manifest::rounds::read_argmax;
 use crate::manifest::rounds::write_clusters;
 use crate::manifest::run::RunManifest;
 use legume_numeric::matrix::dense_mat_io::Mat;
@@ -59,17 +61,23 @@ fn prepare_groups_the_panel_on_the_ontology_and_maps_its_labels() {
     let out = root.path().join("o/run").to_string_lossy().into_owned();
     let p = prepare(&markers, &out, Some(&obo), None).unwrap();
     assert_eq!(p.tree.source, TreeSource::CellOntology);
-    assert_eq!(p.obo.as_deref(), Some(obo.as_str()));
-    let map = fs::read_to_string(p.label_cl.as_ref().unwrap()).unwrap();
+    let (wired_obo, map_path) = p.ontology.clone().unwrap();
+    assert_eq!(wired_obo, obo);
+    let map = fs::read_to_string(map_path).unwrap();
     // One spelling per type: the panel's labels are already keyed.
     let ct2: Vec<&str> = map.lines().filter(|l| l.contains("CL:9000012")).collect();
     assert_eq!(ct2, ["CT_2\tCL:9000012"]);
-    let tree: TypeTree = serde_json::from_str(&fs::read_to_string(&p.tree_path).unwrap()).unwrap();
+    let tree: TypeTree =
+        serde_json::from_str(&fs::read_to_string(format!("{out}.celltype_tree.json")).unwrap())
+            .unwrap();
     assert_eq!(tree.group_of("CT_2"), Some("group_a"));
 
     // The user's own map is kept, not replaced.
     let own = prepare(&markers, &out, Some(&obo), Some("mine.tsv")).unwrap();
-    assert_eq!(own.label_cl.as_deref(), Some("mine.tsv"));
+    assert!(
+        own.ontology.is_none(),
+        "the user's map stands; nothing is wired in"
+    );
 }
 
 #[test]
@@ -120,7 +128,7 @@ fn finish_calls_each_cluster_by_its_group_and_keeps_the_fine_labels() {
     let manifest = root.path().join("run.senna.json");
     m.save(&manifest).unwrap();
 
-    finish(&manifest, &p, false).unwrap();
+    finish(&manifest, &p.tree, true).unwrap();
 
     let loaded = run::load(&manifest.to_string_lossy()).unwrap();
     let a = &loaded.manifest.annotate;
@@ -149,7 +157,7 @@ fn a_fine_first_round_only_records_the_groups() {
     m.annotate.argmax = Some("run.argmax.tsv".into());
     let manifest = root.path().join("run.senna.json");
     m.save(&manifest).unwrap();
-    finish(&manifest, &p, true).unwrap();
+    finish(&manifest, &p.tree, false).unwrap();
     let loaded = run::load(&manifest.to_string_lossy()).unwrap();
     assert!(loaded.manifest.annotate.celltype_tree.is_some());
     assert!(loaded.manifest.annotate.fine_argmax.is_none());
