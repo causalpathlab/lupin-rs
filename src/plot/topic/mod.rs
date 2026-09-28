@@ -550,8 +550,7 @@ fn load_annotation_labels(
 
 /// Cell indices grouped by label, returned in **alphabetical** label
 /// order. Matches the canonical fastTopics structure-plot facet order
-/// (B cell, CD14+, CD34+, NK cell, T cell …) and is stable across
-/// reruns regardless of cell input order.
+/// and is stable across reruns regardless of cell input order.
 fn cells_by_batch(batch_labels: &[Box<str>]) -> Vec<(Box<str>, Vec<usize>)> {
     let mut buckets: FxHashMap<Box<str>, Vec<usize>> = FxHashMap::default();
     for (i, b) in batch_labels.iter().enumerate() {

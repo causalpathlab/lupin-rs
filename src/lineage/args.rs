@@ -501,7 +501,7 @@ pub struct LineageArgs {
                      `concat` is [θ|δ], each channel L2-normalised.\n\
                      It additionally splits cells by VELOCITY direction.\n\
                      Two transcriptionally-central cells heading to different fates then land in different clusters.\n\
-                     That helps on a progenitor-enriched sample, such as CD34+,\n\
+                     That helps on a progenitor-enriched sample,\n\
                      where θ alone cannot resolve the committing structure.\n\
                      \n\
                      `nascent` is θ+δ, and blends the two.\n\

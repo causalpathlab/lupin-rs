@@ -78,7 +78,7 @@ fn celltype_level_has_no_branch_column_and_keeps_slashes() {
     let sites = two_sites();
     // A Cell-Ontology label with a `/` in it — the old `/`-joined row key forced this to be
     // rewritten as `-`, silently corrupting the name. In its own column it survives.
-    let names: Vec<Box<str>> = vec!["B cell/plasma".into(), "CD8+ T".into()];
+    let names: Vec<Box<str>> = vec!["CT1/sub a".into(), "CT2+ b".into()];
     let level = ReportLevel {
         names: Some(&names),
         drop_group: None,
@@ -107,7 +107,7 @@ fn celltype_level_has_no_branch_column_and_keeps_slashes() {
 
     assert_eq!(
         read_parquet_string_column(p, 3).unwrap(),
-        vec!["B cell/plasma".into(), "CD8+ T".into()] as Vec<Box<str>>,
+        vec!["CT1/sub a".into(), "CT2+ b".into()] as Vec<Box<str>>,
         "the cell-type name is written verbatim, `/` and all"
     );
 

@@ -78,7 +78,7 @@ pub fn tokenize(text: &str, opts: &TokenizeOpts) -> Vec<Occurrence> {
     let mut out = Vec::new();
     for (start, w) in text.unicode_word_indices() {
         let lower = w.to_lowercase();
-        // Length counts letters and digits (`tp53` is four), and a dotted
+        // Length counts letters and digits (`abc1` is four), and a dotted
         // abbreviation — every alphabetic run a single letter, as in `e.g`
         // and `i.e` — is dropped whatever its length.
         let n_alnum = lower.chars().filter(|c| c.is_alphanumeric()).count();
