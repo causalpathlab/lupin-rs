@@ -21,7 +21,7 @@ fn gem() -> LatentContract {
 }
 
 /// `auto` reads the simplex exactly when the producing run has one. Which
-/// kinds have one is `crate::lineage_manifest`'s call, tested there.
+/// kinds have one is `crate::manifest::lineage`'s call, tested there.
 #[test]
 fn auto_reads_the_simplex_only_for_a_run_that_has_one() {
     assert_eq!(

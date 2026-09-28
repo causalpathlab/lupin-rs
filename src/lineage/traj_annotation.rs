@@ -18,7 +18,7 @@ use legume_numeric::matrix::traits::MatWithNames;
 pub(super) struct AnnotateTrajArgs<'a> {
     /// The co-embedded gene vectors `[G × H]` the node calls score against.
     /// Loading these needs the producing run's manifest, so the caller hands
-    /// them in already loaded — see [`crate::lineage_manifest`].
+    /// them in already loaded — see [`crate::manifest::lineage`].
     pub(super) feature_embedding: &'a MatWithNames<DMatrix<f32>>,
     pub(super) out: &'a str,
     pub(super) markers: &'a str,

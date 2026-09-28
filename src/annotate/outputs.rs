@@ -3,7 +3,7 @@
 //! `annotate --method enrichment`) so their I/O contract stays in lock-step.
 //!
 //! Wiring these paths into `manifest.annotate.*` is the caller's job — see
-//! [`crate::annotate_manifest`].
+//! [`crate::manifest::annotate`].
 
 use std::path::Path;
 
@@ -81,4 +81,9 @@ pub struct AnnotationOutputs {
     pub cluster_term_q: Option<String>,
     pub marker_support: Option<String>,
     pub marker_embedding: Option<String>,
+    pub cluster_celltype_support: Option<String>,
+    /// Per-cell cluster ids whose values match the cluster tables' `K{id}` rows.
+    pub clusters: Option<String>,
+    /// The pass's sufficient statistics, for rescoring later rounds.
+    pub stats_cache: Option<crate::manifest::run::StatsCache>,
 }

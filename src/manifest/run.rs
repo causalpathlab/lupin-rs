@@ -7,7 +7,8 @@
 //!
 //! `--from` may name the manifest file itself or the run's output prefix; every
 //! command resolves it through [`load`], which also remembers the file so
-//! updates are saved back where they were read.
+//! updates are saved back where they were read. Annotation instead writes a
+//! new manifest through [`Loaded::copy_to`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -293,6 +294,42 @@ pub struct RunAnnotate {
     /// Input marker TSV (provenance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markers: Option<String>,
+    /// The manifest this one was copied from when annotate wrote it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Enrichment: nClusters × C bootstrap support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_celltype_support: Option<String>,
+    /// Per-cluster digest for review, keyed by cluster id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_summary: Option<String>,
+    /// Every round's decisions per cluster id, newest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<String>,
+    /// The decisions that made this round (JSONL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
+    /// The coarse cell-type groups the first round was called with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub celltype_tree: Option<String>,
+    /// The fine per-cell labels behind a coarse first round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fine_argmax: Option<String>,
+    /// The cluster table `cluster_expression`'s columns refer to: the ids of
+    /// the pass that wrote it, which later rounds' merges do not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression_clusters: Option<String>,
+    /// What an enrichment pass cached so later rounds can be rescored
+    /// without re-reading counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats_cache: Option<StatsCache>,
+    /// How this round's statistics were made (e.g. post-selection after
+    /// curation), for readers to caveat them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<Value>,
+    /// Every round's marker edits per cell type, newest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_history: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ontology_assignment: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -319,6 +356,17 @@ pub struct RunAnnotate {
     pub settings: Option<Value>,
     #[serde(flatten)]
     pub extra: Extra,
+}
+
+/// An enrichment pass's sufficient statistics, manifest-relative: the raw
+/// per-cluster gene sums (columns `K{id}` of `annotate.expression_clusters`),
+/// the per-batch profile, the per-gene weights and each cell's batch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatsCache {
+    pub gene_sum: String,
+    pub batch_profile: String,
+    pub gene_weight: String,
+    pub cell_batch: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -352,8 +400,7 @@ pub struct RunDefaults {
 }
 
 impl RunManifest {
-    /// A bare manifest stating only the kind (test fixtures).
-    #[cfg(test)]
+    /// A bare manifest stating only the kind.
     #[must_use]
     pub fn new(kind: RunKind, prefix: &str) -> Self {
         Self {
@@ -386,17 +433,16 @@ impl RunManifest {
                 m.version
             );
         }
+        // A `pinto-*` kind is a pinto run lupin annotated, not a stranger.
         if let RunKind::Other(k) = &m.kind {
-            log::warn!(
-                "manifest {}: run kind `{k}` is unknown to lupin; treating its cells as signed scores",
-                path.display()
-            );
+            if !k.starts_with("pinto-") {
+                log::warn!(
+                    "manifest {}: run kind `{k}` is unknown to lupin; treating its cells as signed scores",
+                    path.display()
+                );
+            }
         }
-        let dir = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-        Ok((m, dir))
+        Ok((m, parent_dir(path)))
     }
 
     /// v1 embedding runs stored the co-embed as `feature_embedding` and ρ as
@@ -432,11 +478,36 @@ pub fn rel_to_manifest(manifest_dir: &Path, written_path: &str) -> String {
     let abs = cwd.join(written_path);
     let manifest_dir = cwd.join(manifest_dir);
     let manifest_abs = manifest_dir.canonicalize().unwrap_or(manifest_dir);
-    let written_abs = abs.canonicalize().unwrap_or(abs);
+    // A stem or a file not yet written: canonicalize its directory instead.
+    let written_abs = abs.canonicalize().unwrap_or_else(|_| {
+        match (
+            abs.parent().and_then(|d| d.canonicalize().ok()),
+            abs.file_name(),
+        ) {
+            (Some(d), Some(name)) => d.join(name),
+            _ => abs.clone(),
+        }
+    });
     match written_abs.strip_prefix(&manifest_abs) {
         Ok(rel) => rel.to_string_lossy().into_owned(),
         Err(_) => written_abs.to_string_lossy().into_owned(),
     }
+}
+
+/// The directory a file is in; `.` for a bare file name.
+#[must_use]
+pub fn parent_dir(p: &Path) -> PathBuf {
+    p.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
+/// Whether two paths name the same file. Paths that cannot be resolved (a
+/// file not written yet) are compared as written.
+#[must_use]
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    canon(a) == canon(b)
 }
 
 /// Resolve a manifest-relative path against the manifest's directory.
@@ -451,10 +522,37 @@ pub fn resolve(manifest_dir: &Path, rel: &str) -> String {
     }
 }
 
+/// Rewrite every relative path in `value` that names an existing file or
+/// directory from `from_dir` so it names the same one from `to_dir`. The walk
+/// covers keys lupin does not model, so another tool's paths survive a move;
+/// strings that resolve to nothing are left alone.
+pub fn rebase_paths(value: &mut Value, from_dir: &Path, to_dir: &Path) {
+    match value {
+        Value::String(s) => {
+            if Path::new(s.as_str()).is_absolute() || s.is_empty() {
+                return;
+            }
+            let old = from_dir.join(s.as_str());
+            if old.exists() {
+                *s = rel_to_manifest(to_dir, &old.to_string_lossy());
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|v| rebase_paths(v, from_dir, to_dir)),
+        Value::Object(map) => map
+            .values_mut()
+            .for_each(|v| rebase_paths(v, from_dir, to_dir)),
+        _ => {}
+    }
+}
+
 /// The run's output prefix from `--from`: strip `.senna.json` or a trailing `.json`.
 #[must_use]
 pub fn derive_out_prefix(from: &str) -> String {
     from.strip_suffix(".senna.json")
+        .or_else(|| from.strip_suffix(LUPIN_SUFFIX))
+        .or_else(|| from.strip_suffix(super::pinto::SUFFIX))
         .or_else(|| from.strip_suffix(".json"))
         .unwrap_or(from)
         .to_string()
@@ -466,16 +564,40 @@ pub fn default_path(prefix: &str) -> String {
     format!("{prefix}.senna.json")
 }
 
+/// The suffix of a manifest lupin writes for a run senna did not train (a
+/// pinto run). Same layout as a senna manifest; senna does not read it.
+pub const LUPIN_SUFFIX: &str = ".lupin.json";
+
+/// Where annotation writes its manifest for `-o prefix`: `.senna.json` for a
+/// senna run, `.lupin.json` for anything else (a pinto run, or a round of one).
+#[must_use]
+pub fn annotated_path(source: &Path, prefix: &str) -> PathBuf {
+    let name = source.to_string_lossy();
+    if name.ends_with(LUPIN_SUFFIX) || super::pinto::is_pinto(source) {
+        PathBuf::from(format!("{prefix}{LUPIN_SUFFIX}"))
+    } else {
+        PathBuf::from(default_path(prefix))
+    }
+}
+
 /// The manifest file `--from` names: the path itself when it is a file,
-/// otherwise `{prefix}.senna.json`.
+/// otherwise `{prefix}.senna.json`, else `{prefix}.lupin.json` or
+/// `{prefix}.pinto.json`, whichever exists first.
 #[must_use]
 pub fn manifest_file(from: &str) -> PathBuf {
     let direct = Path::new(from);
     if direct.is_file() {
-        direct.to_path_buf()
-    } else {
-        PathBuf::from(default_path(&derive_out_prefix(from)))
+        return direct.to_path_buf();
     }
+    let prefix = derive_out_prefix(from);
+    let senna = PathBuf::from(default_path(&prefix));
+    [
+        PathBuf::from(format!("{prefix}{LUPIN_SUFFIX}")),
+        PathBuf::from(format!("{prefix}{}", super::pinto::SUFFIX)),
+    ]
+    .into_iter()
+    .find(|p| !senna.is_file() && p.is_file())
+    .unwrap_or(senna)
 }
 
 /// A loaded manifest, its directory (for resolving relative paths), and the
@@ -508,9 +630,45 @@ impl Loaded {
     }
 }
 
+impl Loaded {
+    /// This run as a new manifest at `file`, which must not be the one it was
+    /// read from. Paths are rebased onto `file`'s directory; `prefix`, a stem
+    /// rather than a file, keeps naming the original run, whose tables live
+    /// there. Nothing is written.
+    pub fn copy_to(&self, file: PathBuf) -> anyhow::Result<Loaded> {
+        anyhow::ensure!(
+            !same_file(&self.file, &file),
+            "{} is the manifest annotate reads from; choose a different --out",
+            file.display()
+        );
+        let dir = parent_dir(&file);
+        let mut value = serde_json::to_value(&self.manifest)?;
+        let prefix = value.as_object_mut().and_then(|m| m.remove("prefix"));
+        rebase_paths(&mut value, &self.dir, &dir);
+        if let (Some(Value::String(p)), Some(m)) = (prefix, value.as_object_mut()) {
+            let p = if Path::new(&p).is_absolute() {
+                p
+            } else {
+                rel_to_manifest(&dir, &self.dir.join(&p).to_string_lossy())
+            };
+            m.insert("prefix".into(), Value::String(p));
+        }
+        let mut manifest: RunManifest = serde_json::from_value(value)?;
+        manifest.annotate.source = Some(rel_to_manifest(&dir, &self.file.to_string_lossy()));
+        Ok(Loaded {
+            manifest,
+            dir,
+            file,
+        })
+    }
+}
+
 /// Load `--from`, given as a manifest path or a bare prefix.
 pub fn load(from: &str) -> anyhow::Result<Loaded> {
     let file = manifest_file(from);
+    if super::pinto::is_pinto(&file) {
+        return super::pinto::load(&file);
+    }
     let (manifest, dir) = RunManifest::load(&file).map_err(|e| {
         anyhow::anyhow!(
             "{e}\n\n`{from}` is neither a readable run manifest nor the prefix of one \
@@ -567,6 +725,83 @@ mod tests {
         assert_eq!(back["train_args"]["args"]["k"], 7);
         assert_eq!(back["outputs"]["pb_tree"], "run.pb_tree.parquet");
         assert_eq!(back["annotate"]["future_slot"], 3);
+    }
+
+    #[test]
+    fn a_copy_in_a_sibling_directory_resolves_the_same_files() {
+        let root = tempfile::tempdir().unwrap();
+        let (a, b) = (root.path().join("a"), root.path().join("b"));
+        fs::create_dir_all(a.join("layouts")).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        for f in [
+            "counts.zarr",
+            "run.latent.parquet",
+            "layouts/run.umap.cells.parquet",
+        ] {
+            fs::write(a.join(f), "").unwrap();
+        }
+        let raw = r#"{
+            "version": 2,
+            "kind": "topic",
+            "prefix": "run",
+            "data": {"input": ["counts.zarr"]},
+            "outputs": {"latent": "run.latent.parquet"},
+            "layout": {
+                "current": "umap",
+                "methods": {"umap": {"cell_coords": "layouts/run.umap.cells.parquet"}}
+            }
+        }"#;
+        let file = a.join("run.senna.json");
+        fs::write(&file, raw).unwrap();
+        let src = load(&file.to_string_lossy()).unwrap();
+
+        let copy = src.copy_to(b.join("out.senna.json")).unwrap();
+        copy.manifest.save(&copy.file).unwrap();
+        let v: Value = serde_json::from_str(&fs::read_to_string(&copy.file).unwrap()).unwrap();
+
+        let same_file = |from_b: &Value, in_a: &str| {
+            let got = Path::new(&resolve(&b, from_b.as_str().unwrap())).canonicalize();
+            assert_eq!(
+                got.unwrap(),
+                a.join(in_a).canonicalize().unwrap(),
+                "{from_b}"
+            );
+        };
+        same_file(&v["data"]["input"][0], "counts.zarr");
+        same_file(&v["outputs"]["latent"], "run.latent.parquet");
+        same_file(
+            &v["layout"]["methods"]["umap"]["cell_coords"],
+            "layouts/run.umap.cells.parquet",
+        );
+        same_file(&v["annotate"]["source"], "run.senna.json");
+        assert_eq!(v["layout"]["current"], "umap");
+
+        let prefix = PathBuf::from(resolve(&b, v["prefix"].as_str().unwrap()));
+        assert_eq!(
+            prefix.parent().unwrap().canonicalize().unwrap(),
+            a.canonicalize().unwrap()
+        );
+        assert_eq!(prefix.file_name().unwrap(), "run");
+
+        // The input is untouched.
+        assert_eq!(fs::read_to_string(&file).unwrap(), raw);
+    }
+
+    #[test]
+    fn a_copy_onto_its_own_source_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("run.senna.json");
+        fs::write(&file, r#"{"version": 2, "kind": "topic", "prefix": "run"}"#).unwrap();
+        let src = load(&file.to_string_lossy()).unwrap();
+        assert!(src.copy_to(dir.path().join("run.senna.json")).is_err());
+    }
+
+    #[test]
+    fn annotating_a_non_senna_run_writes_a_lupin_manifest() {
+        let to = |src: &str| annotated_path(Path::new(src), "o/out");
+        assert_eq!(to("r/run.senna.json"), PathBuf::from("o/out.senna.json"));
+        assert_eq!(to("r/run.pinto.json"), PathBuf::from("o/out.lupin.json"));
+        assert_eq!(to("r/round1.lupin.json"), PathBuf::from("o/out.lupin.json"));
     }
 
     #[test]

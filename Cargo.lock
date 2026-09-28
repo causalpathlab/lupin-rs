@@ -3110,6 +3110,7 @@ dependencies = [
  "candle-transformers",
  "clap",
  "data-beans",
+ "dirs",
  "env_logger",
  "hf-hub",
  "legume-enrichment",
@@ -3132,6 +3133,7 @@ dependencies = [
  "tiny-skia 0.12.0",
  "tokenizers",
  "unicode-segmentation",
+ "ureq",
 ]
 
 [[package]]

@@ -13,14 +13,14 @@
 //! rasterization via rayon, emits SVG, then renders PNG + PDF.
 
 use crate::annotate::inputs::load_cluster_labels;
-use crate::annotate_manifest::{compute_clusters_from_latent, LeidenArgs};
+use crate::manifest::annotate::{compute_clusters_from_latent, LeidenArgs};
+use crate::manifest::run::RunManifest;
+use crate::manifest::run::{load_optional, manifest_file, resolve};
 use crate::plot::hull::{convex_hull, hull_centroid, median_xy, trim_outliers_by_median, Pt};
 use crate::plot::palette::{self, Palette};
 use crate::plot::rasterize::{rasterize_group_png, DataBounds, Extent, PointShape};
 use crate::plot::svg_emit::{emit_svg, SvgOpts, TopicLayer};
 use crate::plot::to_pixel;
-use crate::run_manifest::{self, RunManifest};
-use crate::run_manifest::{load_optional, manifest_file, resolve};
 use clap::{Args, ValueEnum};
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dense_mat_io::{Mat, MatWithNames};
@@ -971,7 +971,7 @@ fn resolve_cluster_ids_for_plot(
     info!("Wrote {parquet_path}");
 
     if let Some(manifest_path) = resolved.manifest_path.as_deref() {
-        let rel = run_manifest::rel_to_manifest(&resolved.manifest_dir, &parquet_path);
+        let rel = crate::manifest::run::rel_to_manifest(&resolved.manifest_dir, &parquet_path);
         manifest.cluster.clusters = Some(rel);
         manifest.save(Path::new(manifest_path))?;
     }

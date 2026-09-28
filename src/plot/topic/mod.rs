@@ -23,8 +23,8 @@
 //! ```
 
 use super::sanitize_filename as sanitize;
+use crate::manifest::run::{load_optional, resolve};
 use crate::plot::axis_ids_or_positions;
-use crate::run_manifest::{load_optional, resolve};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use clap::{Args, ValueEnum};

@@ -2,8 +2,10 @@
 
 use crate::annotate::args::{AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs};
 use crate::annotate::by_projection::{self, ProjectionInputs};
-use crate::annotate_manifest::{annotate_by_enrichment, annotate_by_projection, annotate_ontology};
-use crate::run_manifest::{self, RunManifest};
+use crate::manifest::annotate::{
+    annotate_by_enrichment, annotate_by_projection, annotate_ontology,
+};
+use crate::manifest::run::RunManifest;
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 use legume_numeric::matrix::dmatrix_io::DMatrix;
@@ -17,7 +19,7 @@ pub enum AnnotateMethod {
     Projection,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct AnnotateCliArgs {
     #[arg(
         long,
@@ -30,7 +32,7 @@ pub struct AnnotateCliArgs {
     #[arg(
         long,
         short = 'f',
-        help = "Run manifest (`run.senna.json`) or its output prefix"
+        help = "Run manifest (`run.senna.json` or pinto's `run.pinto.json`) or its output prefix"
     )]
     pub from: Option<Box<str>>,
 
@@ -50,7 +52,7 @@ pub struct AnnotateCliArgs {
         long,
         short = 'm',
         default_value = "",
-        help = "Marker TSV (`gene<TAB>celltype`); omit for ontology-only follow-up on enrichment output"
+        help = "Marker TSV (`gene<TAB>celltype`); defaults to the round's `annotate.markers`. Omit for ontology-only follow-up on enrichment output"
     )]
     pub markers: Box<str>,
 
@@ -159,39 +161,97 @@ pub struct AnnotateCliArgs {
     pub ontology_by: bool,
     #[arg(long = "use-perm-p")]
     pub use_perm_p: bool,
+
+    #[arg(
+        long,
+        help = "Call a first round at the panel's fine cell types instead of its coarse groups \
+                (later rounds are always fine)"
+    )]
+    pub fine: bool,
 }
 
 pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     // One manifest load per invocation; every route below reuses it.
-    let mut loaded = args.from.as_deref().map(run_manifest::load).transpose()?;
+    let loaded = args
+        .from
+        .as_deref()
+        .map(crate::manifest::run::load)
+        .transpose()?;
+    let mut args = args.clone();
 
-    if is_ontology_followup(args) {
-        let loaded = loaded
-            .as_mut()
-            .context("--from required for ontology follow-up")?;
-        return annotate_ontology(&build_ontology_args(args)?, loaded);
+    // A round carries its marker panel (revised by `relabel`); use it when
+    // no other source of labels is given.
+    if let Some(markers) = loaded.as_ref().and_then(|l| round_markers(&args, l)) {
+        log::info!("No -m given: using the round's marker panel {markers}");
+        args.markers = markers.into_boxed_str();
     }
 
+    if is_ontology_followup(&args) {
+        let loaded = loaded
+            .as_ref()
+            .context("--from required for ontology follow-up")?;
+        return annotate_ontology(&build_ontology_args(&args)?, loaded);
+    }
+
+    // A marker pass on a run: group the panel's cell types (finding the Cell
+    // Ontology, whose walk then runs by default), and call a first round at
+    // the coarse level.
+    let prepared = match &loaded {
+        Some(_) if !args.markers.is_empty() => Some(crate::manifest::first_round::prepare(
+            &args.markers,
+            &args.out,
+            args.obo.as_deref(),
+            args.label_cl.as_deref(),
+        )?),
+        _ => None,
+    };
+    if let Some((obo, label_cl)) = prepared.as_ref().and_then(|p| p.ontology.clone()) {
+        args.obo = Some(obo.into_boxed_str());
+        args.label_cl = Some(label_cl.into_boxed_str());
+    }
+    let args = &args;
+
     match route(args, loaded.as_ref()) {
-        Route::EmbeddingFiles { feat, cell } => run_projection_from_files(args, feat, cell),
+        Route::EmbeddingFiles { feat, cell } => run_projection_from_files(args, feat, cell)?,
         Route::Enrichment => {
             anyhow::ensure!(
                 !args.markers.is_empty() || args.gaf.is_some() || args.gmt.is_some(),
                 "enrichment needs --markers, --gaf, or --gmt"
             );
             let loaded = loaded
-                .as_mut()
+                .as_ref()
                 .context("--from is required for enrichment annotation")?;
-            annotate_by_enrichment(&build_enrichment_args(args), loaded)
+            annotate_by_enrichment(&build_enrichment_args(args), loaded)?;
         }
         Route::Projection => {
             anyhow::ensure!(!args.markers.is_empty(), "projection needs --markers");
             let loaded = loaded
-                .as_mut()
+                .as_ref()
                 .context("--from is required for projection annotation")?;
-            annotate_by_projection(&build_projection_args(args), loaded)
+            annotate_by_projection(&build_projection_args(args), loaded)?;
         }
     }
+    if let (Some(p), Some(l)) = (&prepared, &loaded) {
+        let coarse = !args.fine && crate::manifest::first_round::is_first_round(l);
+        let manifest = crate::manifest::run::annotated_path(&l.file, &args.out);
+        crate::manifest::first_round::finish(&manifest, &p.tree, coarse)?;
+    }
+    Ok(())
+}
+
+/// The round's `annotate.markers`, resolved, when `-m`, `--gaf` and `--gmt`
+/// are all absent and this is not an ontology follow-up.
+fn round_markers(args: &AnnotateCliArgs, loaded: &crate::manifest::run::Loaded) -> Option<String> {
+    if !args.markers.is_empty()
+        || args.gaf.is_some()
+        || args.gmt.is_some()
+        || is_ontology_followup(args)
+    {
+        return None;
+    }
+    let rel = loaded.manifest.annotate.markers.as_deref()?;
+    let path = crate::manifest::run::resolve(&loaded.dir, rel);
+    std::path::Path::new(&path).is_file().then_some(path)
 }
 
 fn is_ontology_followup(args: &AnnotateCliArgs) -> bool {
@@ -227,7 +287,10 @@ enum Route<'a> {
 
 /// Pick the backend. An explicit embedding pair wins; otherwise the run
 /// manifest decides between co-embed projection and enrichment.
-fn route<'a>(args: &'a AnnotateCliArgs, loaded: Option<&run_manifest::Loaded>) -> Route<'a> {
+fn route<'a>(
+    args: &'a AnnotateCliArgs,
+    loaded: Option<&crate::manifest::run::Loaded>,
+) -> Route<'a> {
     if let (Some(feat), Some(cell)) = (
         args.feature_embedding.as_deref(),
         args.cell_embedding.as_deref(),
@@ -248,10 +311,13 @@ fn route<'a>(args: &'a AnnotateCliArgs, loaded: Option<&run_manifest::Loaded>) -
     }
 }
 
-/// A run with a co-embedded gene space annotates by projection.
+/// A run with a co-embedded gene space annotates by projection. A kind that
+/// co-embeds needs that space itself: its raw gene embedding is not on the
+/// cell manifold, so a run written before the co-embedding existed falls back
+/// to enrichment.
 fn manifest_prefers_projection(manifest: &RunManifest) -> bool {
     manifest.outputs.feature_coembedding.is_some()
-        || (manifest.kind.coembeds() && manifest.outputs.feature_embedding.is_some())
+        || (!manifest.kind.coembeds() && manifest.outputs.feature_embedding.is_some())
 }
 
 /// Explicit embedding pair: the same projection pass as the manifest route
@@ -277,7 +343,19 @@ fn run_projection_from_files(
     Ok(())
 }
 
-fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
+/// The enrichment settings `lupin annotate` uses by default, writing under
+/// `out`: parsed from the command's own defaults, so the two cannot drift.
+pub(crate) fn default_enrichment_args(out: &str) -> AnnotateArgs {
+    #[derive(clap::Parser)]
+    struct Defaults {
+        #[command(flatten)]
+        annotate: AnnotateCliArgs,
+    }
+    let d = <Defaults as clap::Parser>::parse_from(["lupin", "-o", out]);
+    build_enrichment_args(&d.annotate)
+}
+
+pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
     AnnotateArgs {
         clusters: args.clusters.clone(),
         knn: args.knn.unwrap_or(15),
@@ -333,5 +411,20 @@ fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
         set_coverage: args.set_coverage,
         max_set_size: args.max_set_size,
         no_clean: args.no_clean,
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+    use crate::manifest::run::RunKind;
+
+    #[test]
+    fn a_co_embedding_kind_without_its_co_embedding_falls_back_to_enrichment() {
+        let mut m = RunManifest::new(RunKind::Bge, "run");
+        m.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
+        assert!(!manifest_prefers_projection(&m));
+        m.outputs.feature_coembedding = Some("run.feature_coembedding.parquet".into());
+        assert!(manifest_prefers_projection(&m));
     }
 }

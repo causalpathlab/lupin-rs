@@ -14,15 +14,17 @@ use crate::annotate::by_enrichment::{self, EnrichmentPlan};
 use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
 use crate::annotate::ontology;
-use crate::annotate::outputs::AnnotationOutputs;
-use crate::run_manifest::{self, resolve, Loaded};
+use crate::annotate::outputs::{AnnotationOutputs, ANNOT_PARQUET};
+use crate::manifest::rounds;
+use crate::manifest::run::{annotated_path, resolve, Loaded};
+use legume_numeric::matrix::parquet::read_table_columns;
 
 use crate::annotate::aggregate::{
     accumulate_gene_sum, accumulate_gene_sum_pair, weighted_mean_profile,
 };
 use crate::annotate::markers::build_annotation_matrix;
+use crate::manifest::run::{CellSpace, RunManifest};
 use crate::marker_embedding::load_marker_feature_embedding;
-use crate::run_manifest::{CellSpace, RunManifest};
 use data_beans::aux::data_loading::{
     read_data_on_shared_rows, ReadSharedRowsArgs, SparseDataWithBatch,
 };
@@ -62,21 +64,48 @@ impl Default for LeidenArgs {
 /// `lupin annotate --method enrichment`: re-open the raw counts the manifest
 /// points at, aggregate them per cluster, run the enrichment, and record what
 /// it wrote.
-pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &mut Loaded) -> Result<()> {
+pub fn annotate_by_enrichment(args: &AnnotateArgs, loaded: &Loaded) -> Result<()> {
     let plan = by_enrichment::plan(args)?;
     let inputs = load_enrichment_inputs(args, &plan, loaded)?;
-    let outputs = by_enrichment::run(args, &plan, &inputs)?;
+    let mut outputs = by_enrichment::run(args, &plan, &inputs)?;
+    // The ids the cluster tables' `K{id}` rows refer to, so later rounds and
+    // viewers key on the same clusters.
+    let clusters_path = format!("{}{}", args.out, rounds::CLUSTERS);
+    let ids: Vec<Option<u32>> = inputs
+        .cluster_labels
+        .iter()
+        .map(|&k| u32::try_from(k).ok())
+        .collect();
+    rounds::write_clusters(&clusters_path, &inputs.cell_names, &ids)?;
+    outputs.clusters = Some(clusters_path);
+    if !plan.ontology_mode {
+        outputs.stats_cache = crate::manifest::recalibrate::write_cache(&args.out, &inputs)?;
+    }
     let pass = if plan.ontology_mode {
         Pass::GeneSets
     } else {
         Pass::Markers(&args.markers)
     };
-    record(loaded, pass, &outputs, "enrichment", settings(args)?)
+    // Which nulls actually ran: the sample permutation is skipped when there
+    // are too few batches to shuffle.
+    let mut used = settings(args)?;
+    if let serde_json::Value::Object(m) = &mut used {
+        let draws = by_enrichment::sample_perm_draws(inputs.n_batches, args.num_perm);
+        m.insert(
+            "null".into(),
+            serde_json::json!({
+                "gene_set_randomization": crate::annotate::args::NUM_DRAWS,
+                "sample_permutation": draws,
+                "batches": inputs.n_batches,
+            }),
+        );
+    }
+    record(loaded, &args.out, pass, &outputs, "enrichment", used)
 }
 
 /// `lupin annotate --method projection`: score the run's co-embedded gene
 /// space and cell embedding against the marker panel, and record what it wrote.
-pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &mut Loaded) -> Result<()> {
+pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &Loaded) -> Result<()> {
     let run = loaded.file.display().to_string();
     // Genes on the cell manifold; for a `gem` run only the spliced rows,
     // re-keyed by gene — see [`crate::marker_embedding`].
@@ -90,15 +119,17 @@ pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &mut Loaded
     let cell = DMatrix::<f32>::from_parquet(&cell_path)
         .with_context(|| format!("reading cell embedding {cell_path}"))?;
 
-    let outputs = by_projection::run(
+    let mut outputs = by_projection::run(
         args,
         &ProjectionInputs {
             feature_embedding: &feat,
             cell_embedding: &cell,
         },
     )?;
+    outputs.clusters = Some(projection_clusters(&args.out)?);
     record(
         loaded,
+        &args.out,
         Pass::Markers(&args.markers),
         &outputs,
         "projection",
@@ -108,7 +139,7 @@ pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &mut Loaded
 
 /// `lupin annotate` without markers: walk the CL tree over the cluster ×
 /// cell-type matrix an earlier enrichment run recorded.
-pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &mut Loaded) -> Result<()> {
+pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &Loaded) -> Result<()> {
     let q_rel = loaded
         .manifest
         .annotate
@@ -125,6 +156,7 @@ pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &mut Loaded) -> Re
     let outputs = ontology::run(args, &q_abs)?;
     record(
         loaded,
+        &args.out,
         Pass::Ontology,
         &outputs,
         "ontology",
@@ -157,27 +189,44 @@ enum Pass<'a> {
     Ontology,
 }
 
+/// Projection clusters the cells itself; its per-cell `community` becomes
+/// the round's cluster table.
+fn projection_clusters(out: &str) -> Result<String> {
+    let annot = format!("{out}{ANNOT_PARQUET}");
+    let (strings, nums) = read_table_columns(&annot, &["cell"], &["community"])
+        .with_context(|| format!("reading {annot}"))?;
+    let ids: Vec<Option<u32>> = nums[0]
+        .iter()
+        .map(|&k| (k.is_finite() && k >= 0.0).then_some(k as u32))
+        .collect();
+    let path = format!("{out}{}", rounds::CLUSTERS);
+    rounds::write_clusters(&path, &strings[0], &ids)?;
+    Ok(path)
+}
+
 /// Record a pass's artifacts in the manifest, relative to its directory, plus
 /// the settings it ran with under `annotate.settings.{method}`, and save it
-/// back to the file it was read from.
+/// as a new manifest (see [`annotated_path`]); the one it was read from is left as is.
 fn record(
-    loaded: &mut Loaded,
+    loaded: &Loaded,
+    out_prefix: &str,
     pass: Pass<'_>,
     out: &AnnotationOutputs,
     method: &str,
     settings: serde_json::Value,
 ) -> Result<()> {
+    let mut loaded = loaded.copy_to(annotated_path(&loaded.file, out_prefix))?;
     let dir = &loaded.dir;
     let rel = |p: &Option<String>| {
         p.as_deref()
-            .map(|abs| run_manifest::rel_to_manifest(dir, abs))
+            .map(|abs| crate::manifest::run::rel_to_manifest(dir, abs))
     };
     let a = &mut loaded.manifest.annotate;
     match pass {
         Pass::Markers(markers) => {
             // Stored like every other path here, relative to the manifest,
             // so it still resolves when read from another directory.
-            a.markers = Some(run_manifest::rel_to_manifest(dir, markers));
+            a.markers = Some(crate::manifest::run::rel_to_manifest(dir, markers));
             a.argmax = rel(&out.argmax);
             a.annotation = rel(&out.annotation);
             a.cluster_celltype_q = rel(&out.cluster_celltype_q);
@@ -189,6 +238,7 @@ fn record(
             a.cluster_term_q = rel(&out.cluster_term_q);
             a.marker_support = rel(&out.marker_support);
             a.marker_embedding = rel(&out.marker_embedding);
+            a.cluster_celltype_support = rel(&out.cluster_celltype_support);
             loaded.manifest.defaults.colour_by = Some("annotation".into());
         }
         Pass::GeneSets => {
@@ -201,6 +251,29 @@ fn record(
             a.ontology_node_mass = rel(&out.ontology_node_mass);
         }
     }
+    if let Some(c) = &out.clusters {
+        let c = crate::manifest::run::rel_to_manifest(dir, c);
+        if out.cluster_expression.is_some() {
+            loaded.manifest.annotate.expression_clusters = Some(c.clone());
+        }
+        loaded.manifest.cluster.clusters = Some(c);
+    }
+    // The previous round's decisions are in its own log; this round made none.
+    loaded.manifest.annotate.log = None;
+    // A fresh pass: its statistics are not post-selection.
+    loaded.manifest.annotate.stats = None;
+    if matches!(pass, Pass::Markers(_)) {
+        // Enrichment caches its statistics; projection has none to cache.
+        loaded.manifest.annotate.stats_cache = out.stats_cache.clone().map(|c| {
+            let rel = |p: &str| crate::manifest::run::rel_to_manifest(&loaded.dir, p);
+            crate::manifest::run::StatsCache {
+                gene_sum: rel(&c.gene_sum),
+                batch_profile: rel(&c.batch_profile),
+                gene_weight: rel(&c.gene_weight),
+                cell_batch: rel(&c.cell_batch),
+            }
+        });
+    }
     let recorded = loaded
         .manifest
         .annotate
@@ -208,6 +281,10 @@ fn record(
         .get_or_insert_with(|| serde_json::json!({}));
     if let serde_json::Value::Object(m) = recorded {
         m.insert(method.into(), settings);
+    }
+    // Derived from what was just written; a failure here should not cost the pass.
+    if let Err(e) = rounds::write_summary(&mut loaded, out_prefix) {
+        log::warn!("no cluster summary for this round: {e:#}");
     }
     loaded.manifest.save(&loaded.file)
 }
@@ -285,7 +362,7 @@ fn drop_small_clusters(labels: &mut [usize], min_size: usize) -> usize {
 /// Re-open the raw counts, resolve the clustering, parse the marker TSV, and
 /// aggregate the NB-Fisher-weighted cluster (and, for the marker path,
 /// per-batch) expression the enrichment pass scores.
-fn load_enrichment_inputs(
+pub(super) fn load_enrichment_inputs(
     args: &AnnotateArgs,
     plan: &EnrichmentPlan,
     loaded: &Loaded,
@@ -337,7 +414,7 @@ fn load_enrichment_inputs(
     };
 
     let nb_fisher = nb_fisher_weights(&loaded.run_prefix(), data_vec, &gene_names)?;
-    let (profile_gk, pb_gene_gp) = aggregate_expression(
+    let (profile_gk, pb_gene_gp, gene_sum_kg) = aggregate_expression(
         plan,
         data_vec,
         &cluster_labels,
@@ -359,6 +436,8 @@ fn load_enrichment_inputs(
         celltype_names,
         profile_gk,
         pb_gene_gp,
+        gene_sum_kg,
+        gene_weights: nb_fisher,
     })
 }
 
@@ -464,7 +543,7 @@ fn aggregate_expression(
     n_batches: usize,
     g: usize,
     nb_fisher: &[f32],
-) -> Result<(Mat, Option<Mat>)> {
+) -> Result<(Mat, Option<Mat>, Vec<f64>)> {
     if plan.ontology_mode {
         let gene_sum_kg = accumulate_gene_sum(data_vec, cluster_labels, n_clusters, g, BLOCK_SIZE)?;
         // μ[g, c] = w_NBF[g] · (Σ counts[g, n ∈ c]) / size_sum[c]; Simplex
@@ -473,6 +552,7 @@ fn aggregate_expression(
         return Ok((
             weighted_mean_profile(&gene_sum_kg, n_clusters, g, nb_fisher),
             None,
+            gene_sum_kg,
         ));
     }
 
@@ -488,6 +568,7 @@ fn aggregate_expression(
     Ok((
         weighted_mean_profile(&gene_sum_kg, n_clusters, g, nb_fisher),
         Some(weighted_mean_profile(&gene_sum_pg, n_batches, g, nb_fisher)),
+        gene_sum_kg,
     ))
 }
 

@@ -2,15 +2,13 @@
 
 mod annotate;
 mod annotate_cmd;
-mod annotate_manifest;
 mod cell_labels;
 mod describe;
 mod gene_text;
 mod lineage;
-mod lineage_manifest;
+mod manifest;
 mod marker_embedding;
 mod plot;
-mod run_manifest;
 
 use crate::annotate_cmd::{run_annotate, AnnotateCliArgs};
 use crate::gene_text::cli::{run_knn_graph, run_qc, KnnGraphCmd, QcCmd};
@@ -21,7 +19,7 @@ use crate::lineage::pseudotime::PseudotimeArgs;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use describe::{run_describe, DescribeArgs};
-use lineage_manifest::{run_lineage_from_manifest, run_pseudotime_from_manifest};
+use manifest::lineage::{run_lineage_from_manifest, run_pseudotime_from_manifest};
 use plot::scatter::{fit_plot, PlotArgs};
 use plot::strand::{fit_plot_strand, PlotStrandArgs};
 use plot::topic::{fit_plot_topic, PlotTopicArgs};
@@ -121,6 +119,34 @@ enum Commands {
     )]
     Describe(DescribeArgs),
     #[command(
+        about = "Show an annotation round cluster by cluster: calls, terms, CL placement, history",
+        long_about = "Reads an annotated manifest (a round) and prints, per cluster,\n\
+                      its size and current label, the candidate labels with q and support,\n\
+                      the top GO/GMT terms, the Cell Ontology placement,\n\
+                      and every decision made on it so far with its rationale.\n\
+                      `--json` prints the same for a program or an agent to read."
+    )]
+    Review(manifest::rounds::ReviewArgs),
+    #[command(
+        about = "Apply a decisions file to an annotation round and write the next round",
+        long_about = "Reads a round and a decisions file (JSONL; see `lupin review --help`),\n\
+                      relabels or merges clusters, and writes a new manifest at `-o`\n\
+                      whose `annotate.source` points back to the round it started from.\n\
+                      Every decision needs a rationale, kept in `{out}.annotation_history.json`.\n\
+                      Counts are not re-read; merged clusters take fresh ids."
+    )]
+    Relabel(manifest::rounds::RelabelArgs),
+    #[command(
+        about = "Without a marker panel: write an unlabelled first round and a prompt for any AI chat",
+        long_about = "Writes a first round whose clusters carry no labels yet,\n\
+                      and prints a prompt listing each cluster's most specific genes.\n\
+                      Paste it into an AI chat; the prompt asks for decision lines only.\n\
+                      Paste the answer into `lupin relabel -f <round> -d - --next`:\n\
+                      labels, rationales and suggested markers become the next round,\n\
+                      rescored like any enrichment run. Nothing is sent anywhere by lupin."
+    )]
+    Ask(manifest::ask::AskArgs),
+    #[command(
         name = "plot",
         about = "Publication-quality scatter over a senna layout embedding",
         long_about = "Rasterized scatter with vector labels over a transparent background.\n\
@@ -155,6 +181,9 @@ fn main() -> Result<()> {
         Commands::DynAssoc(c) => run_assoc(&c),
         Commands::Pseudotime(c) => run_pseudotime_from_manifest(&c),
         Commands::Describe(c) => run_describe(&c),
+        Commands::Review(c) => manifest::rounds::run_review(&c),
+        Commands::Relabel(c) => manifest::rounds::run_relabel(&c),
+        Commands::Ask(c) => manifest::ask::run_ask(&c),
         Commands::Plot(c) => fit_plot(&c),
         Commands::PlotTopic(c) => fit_plot_topic(&c),
         Commands::PlotStrand(c) => fit_plot_strand(&c),

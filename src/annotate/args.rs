@@ -36,7 +36,7 @@ pub fn fixed_settings() -> serde_json::Value {
     })
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AnnotateArgs {
     /// Cluster parquet (cells × 1 cluster column); overrides `manifest.cluster.clusters`
     pub clusters: Option<Box<str>>,

@@ -70,6 +70,9 @@ candle-nn = { version = "0.10" }
 candle-transformers = { version = "0.10" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 hf-hub = "0.4"
+# Fetching the Cell Ontology (both already in the tree via hf-hub).
+ureq = "2.12"
+dirs = "6"
 stop-words = "0.10"
 rust-stemmers = "1.2"
 unicode-segmentation = "1.13"

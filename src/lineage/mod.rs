@@ -1,7 +1,7 @@
 //! Lineage family: velocity-oriented lineage inference over a `senna gem`
 //! embedding (driven by [`run::run_lineage`]), plus `lineage_plot`, `assoc`
 //! and `pseudotime`. Everything here takes plain file paths and loaded
-//! matrices; [`crate::lineage_manifest`] resolves a `run.senna.json` into the
+//! matrices; [`crate::manifest::lineage`] resolves a `run.senna.json` into the
 //! input structs.
 //!
 //! The generic numeric primitives live in `legume_numeric::matrix`: seeded k-means centroids
@@ -31,5 +31,5 @@ mod velocity_grid;
 pub(crate) mod write;
 
 /// What the producing run promised about its per-cell tables. Read from a run
-/// manifest by [`crate::lineage_manifest`].
+/// manifest by [`crate::manifest::lineage`].
 pub use input::{LatentContract, RunTables};

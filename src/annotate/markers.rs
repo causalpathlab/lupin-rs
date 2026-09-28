@@ -11,14 +11,56 @@ pub struct AnnotInfo {
     pub annot_names: Vec<Box<str>>,
 }
 
+/// A cell-type label's canonical form: words split on whitespace, `,` and
+/// `_`, joined by `_`. Labels that differ only in those separators name one
+/// type (`CT 1`, `CT_1` and `CT, 1` are all `CT_1`).
+#[must_use]
+pub fn label_key(label: &str) -> String {
+    label
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '_')
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+/// A marker panel as `(gene, cell type)` pairs, each label in its
+/// [`label_key`] form. Lines split on the tab; a line with none splits at its
+/// first comma, so the label keeps anything after it. Blank lines, `#`
+/// comments and a `gene`/`symbol` header are skipped.
+pub fn read_marker_pairs(path: &str) -> anyhow::Result<Vec<(Box<str>, Box<str>)>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("reading marker panel {path}: {e}"))?;
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let (gene, label) = line.split_once('\t').or_else(|| line.split_once(','))?;
+            let (gene, label) = (gene.trim(), label.split('\t').next().unwrap_or(label));
+            let skip = gene.is_empty()
+                || gene.starts_with('#')
+                || matches!(gene.to_lowercase().as_str(), "gene" | "symbol");
+            let label = label_key(label);
+            (!skip && !label.is_empty()).then(|| (Box::from(gene), label.into_boxed_str()))
+        })
+        .collect())
+}
+
 /// Read a marker TSV and match its genes to `row_names` (exact → symbol →
-/// flexible); unmatched markers are logged and dropped. Cell-type names have
-/// spaces replaced by `_`.
+/// flexible); unmatched markers are logged and dropped. Cell-type names are
+/// in their [`label_key`] form.
 pub fn build_annotation_matrix(
     marker_gene_path: &str,
     row_names: &[Box<str>],
 ) -> anyhow::Result<AnnotInfo> {
-    let marker_pairs = data_beans::aux::gene_sets::read_membership_pairs(marker_gene_path)?;
+    let marker_pairs = read_marker_pairs(marker_gene_path)?;
+    annotation_matrix_from_pairs(&marker_pairs, row_names)
+}
+
+/// [`build_annotation_matrix`] for `(gene, cell type)` pairs already in memory.
+pub fn annotation_matrix_from_pairs(
+    marker_pairs: &[(Box<str>, Box<str>)],
+    row_names: &[Box<str>],
+) -> anyhow::Result<AnnotInfo> {
     anyhow::ensure!(
         !marker_pairs.is_empty(),
         "empty/invalid marker gene information"
@@ -26,7 +68,7 @@ pub fn build_annotation_matrix(
 
     let normalized: Vec<Box<str>> = marker_pairs
         .iter()
-        .map(|(_, t)| t.replace(' ', "_").into_boxed_str())
+        .map(|(_, t)| label_key(t).into_boxed_str())
         .collect();
     let mut annot_names = normalized.clone();
     annot_names.sort_unstable();
@@ -65,4 +107,37 @@ pub fn build_annotation_matrix(
         membership_ga: membership,
         annot_names,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn labels_differing_only_in_separators_are_one_type() {
+        for l in ["CT 1, a", "CT_1_a", "  CT,1 a ", "CT__1 ,a"] {
+            assert_eq!(label_key(l), "CT_1_a", "{l}");
+        }
+    }
+
+    #[test]
+    fn a_panel_splits_on_tabs_or_the_first_comma_and_keys_its_labels() {
+        let dir = tempfile::tempdir().unwrap();
+        let tsv = dir.path().join("p.tsv");
+        std::fs::write(
+            &tsv,
+            "gene\tcelltype\n# note\nGENE1\tCT1, sub a\nGENE2\tCT 2\tignored\n\nGENE3,CT3, sub b\n",
+        )
+        .unwrap();
+        let pairs = read_marker_pairs(&tsv.to_string_lossy()).unwrap();
+        let pairs: Vec<(&str, &str)> = pairs.iter().map(|(g, t)| (&**g, &**t)).collect();
+        assert_eq!(
+            pairs,
+            [
+                ("GENE1", "CT1_sub_a"),
+                ("GENE2", "CT_2"),
+                ("GENE3", "CT3_sub_b")
+            ]
+        );
+    }
 }

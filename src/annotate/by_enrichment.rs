@@ -1,6 +1,6 @@
 //! Cluster-based annotation: marker-set enrichment on the per-cluster
 //! expression matrix (NB-Fisher adjusted, re-aggregated from raw counts by the
-//! caller — see [`crate::annotate_manifest`]).
+//! caller — see [`crate::manifest::annotate`]).
 
 use super::args::{
     AnnotateArgs, BOOT_NUM_DRAWS, KEEP_IEA, MAX_GENE_SET, MIN_CONFIDENCE, MIN_GENE_SET, NUM_DRAWS,
@@ -73,36 +73,34 @@ pub fn plan(args: &AnnotateArgs) -> anyhow::Result<EnrichmentPlan> {
 /// GO/GMT mode, against the gene sets) and write the artifacts under
 /// `plan.out`. Returns their paths; recording them in a run manifest is the
 /// caller's job.
-pub fn run(
-    args: &AnnotateArgs,
-    plan: &EnrichmentPlan,
-    inputs: &EnrichmentInputs,
-) -> anyhow::Result<AnnotationOutputs> {
-    let out = plan.out.as_ref();
-    let g = inputs.gene_names.len();
+/// Fewest batches the sample-permutation null may shuffle. It permutes whole
+/// batches, so `P` batches allow only `P!` distinct orderings: with one or
+/// two, null (cluster, type) pairs came out "significant" far above the
+/// nominal rate on synthetic data, while four or more were calibrated.
+pub const MIN_PERM_BATCHES: usize = 4;
+
+/// The sample permutations to run for `n_batches`: the requested number, or
+/// none when there are too few batches to permute. The gene-set
+/// randomization null, which stays calibrated at any batch count, then
+/// carries the test alone.
+#[must_use]
+pub fn sample_perm_draws(n_batches: usize, requested: usize) -> usize {
+    if n_batches < MIN_PERM_BATCHES {
+        0
+    } else {
+        requested
+    }
+}
+
+/// The marker-path scoring of one enrichment pass: marker enrichment per
+/// cluster against the gene-set null (and the sample-permutation null with
+/// enough batches), FDR, and the marker bootstrap when `args.n_boot > 0`.
+/// Writes nothing; [`run`] writes the outputs, and a relabel round rescores
+/// through this on its merged clusters and edited panel.
+pub fn score(args: &AnnotateArgs, inputs: &EnrichmentInputs) -> anyhow::Result<AnnotateOutputs> {
     let n_clusters = inputs.n_clusters;
     let n_batches = inputs.n_batches;
     let profile_gk = &inputs.profile_gk;
-    let cluster_names = axis_id_names("K", n_clusters);
-    info!("Cluster expression: {g} genes × {n_clusters} clusters");
-    let profile_max = profile_gk.iter().fold(0f32, |m, &v| m.max(v));
-    if profile_max <= 1e-12 {
-        anyhow::bail!(
-            "Cluster expression matrix is all zero — every cell-axis cluster_label is \
-             out of range (>= n_clusters). Check the cluster file's barcodes match the \
-             data backend, or that the manifest's `clusters` path resolves correctly."
-        );
-    }
-
-    ///////////////////////////////////
-    // GO/GMT ontology gene-set mode //
-    ///////////////////////////////////
-    // Descriptive module-score signature on the cluster profile (no cell-level
-    // labels, no permutation, no tree). Diverges from the marker path entirely.
-    if plan.ontology_mode {
-        return run_ontology_gene_sets(args, out, profile_gk, &inputs.gene_names, &cluster_names);
-    }
-
     // pb_membership[batch, cluster] = (# cells in batch with cluster id) / batch_size.
     let pb_membership_pk = build_pb_membership(
         &inputs.batch_labels,
@@ -143,10 +141,17 @@ pub fn run(
         cell_names: inputs.cell_names.clone(),
     };
 
+    let perm_draws = sample_perm_draws(n_batches, args.num_perm);
+    if perm_draws < args.num_perm {
+        log::warn!(
+            "{n_batches} batch(es): too few for the sample-permutation null (needs \
+             {MIN_PERM_BATCHES}); testing against the gene-set null alone"
+        );
+    }
     let config = AnnotateConfig {
         specificity: SpecificityMode::Simplex,
         num_row_randomization: NUM_DRAWS,
-        num_sample_perm: args.num_perm,
+        num_sample_perm: perm_draws,
         // pb_membership_pk's rows ARE batches (one pseudobulk per batch),
         // so the sample-permutation null shuffles batches directly with no
         // inner stratification. Cell-level labels would be the wrong length
@@ -183,6 +188,38 @@ pub fn run(
         args.num_perm,
     );
 
+    annotate(&group, &markers_gc, &inputs.celltype_names, &config)
+}
+
+pub fn run(
+    args: &AnnotateArgs,
+    plan: &EnrichmentPlan,
+    inputs: &EnrichmentInputs,
+) -> anyhow::Result<AnnotationOutputs> {
+    let out = plan.out.as_ref();
+    let g = inputs.gene_names.len();
+    let n_clusters = inputs.n_clusters;
+    let profile_gk = &inputs.profile_gk;
+    let cluster_names = axis_id_names("K", n_clusters);
+    info!("Cluster expression: {g} genes × {n_clusters} clusters");
+    let profile_max = profile_gk.iter().fold(0f32, |m, &v| m.max(v));
+    if profile_max <= 1e-12 {
+        anyhow::bail!(
+            "Cluster expression matrix is all zero — every cell-axis cluster_label is \
+             out of range (>= n_clusters). Check the cluster file's barcodes match the \
+             data backend, or that the manifest's `clusters` path resolves correctly."
+        );
+    }
+
+    ///////////////////////////////////
+    // GO/GMT ontology gene-set mode //
+    ///////////////////////////////////
+    // Descriptive module-score signature on the cluster profile (no cell-level
+    // labels, no permutation, no tree). Diverges from the marker path entirely.
+    if plan.ontology_mode {
+        return run_ontology_gene_sets(args, out, profile_gk, &inputs.gene_names, &cluster_names);
+    }
+
     let AnnotateOutputs {
         q_kc,
         es_kc,
@@ -193,7 +230,7 @@ pub fn run(
         cell_annotation_nc,
         argmax_labels,
         bootstrap,
-    } = annotate(&group, &markers_gc, &inputs.celltype_names, &config)?;
+    } = score(args, inputs)?;
 
     /////////////
     // Outputs //
@@ -329,6 +366,10 @@ pub fn run(
         cluster_expression: Some(cell_expr_path),
         ontology_assignment: ontology_assign,
         ontology_node_mass: ontology_mass,
+        cluster_celltype_support: {
+            let p = format!("{out}.cluster_celltype_support.parquet");
+            std::path::Path::new(&p).exists().then_some(p)
+        },
         ..AnnotationOutputs::default()
     })
 }
@@ -731,4 +772,17 @@ fn display_annotation_histogram(annot: &Mat, annot_names: &[Box<str>]) {
         );
     }
     eprintln!();
+}
+
+#[cfg(test)]
+mod perm_tests {
+    use super::*;
+
+    #[test]
+    fn too_few_batches_skip_the_sample_permutation() {
+        assert_eq!(sample_perm_draws(1, 500), 0);
+        assert_eq!(sample_perm_draws(MIN_PERM_BATCHES - 1, 500), 0);
+        assert_eq!(sample_perm_draws(MIN_PERM_BATCHES, 500), 500);
+        assert_eq!(sample_perm_draws(1, 0), 0, "none requested, none run");
+    }
 }

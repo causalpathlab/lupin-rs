@@ -3,7 +3,7 @@
 //!
 //! Re-opening the raw counts, resolving where the clustering comes from, and
 //! aggregating per-cluster/per-batch gene sums all need the run manifest and
-//! the sparse backend, so they live in [`crate::annotate_manifest`]; what arrives
+//! the sparse backend, so they live in [`crate::manifest::annotate`]; what arrives
 //! here is the result.
 
 use legume_numeric::matrix::dense_mat_io::{read_mat, Mat, MatWithNames};
@@ -35,10 +35,20 @@ pub struct EnrichmentInputs {
     /// G × P weighted mean per-batch expression. `None` in GO/GMT gene-set
     /// mode, which scores the cluster profile directly and runs no permutation.
     pub pb_gene_gp: Option<Mat>,
+    /// G × K raw per-cluster gene sums behind `profile_gk`, column-major
+    /// (cluster `k` is `[k * G .. (k + 1) * G]`): merged clusters add them.
+    pub gene_sum_kg: Vec<f64>,
+    /// Per-gene weights `profile_gk` was built with (NB-Fisher).
+    pub gene_weights: Vec<f32>,
 }
 
 /// Read the cluster parquet (cells × 1 cluster column, NaN for unassigned)
 /// and align to the `cell_names` order from the data backend.
+///
+/// A membership table may carry an `entropy` column beside `cluster` (pinto's
+/// propensity does). A non-finite entropy marks a row with no membership at
+/// all, whose `cluster` is only the argmax of zeros, so that cell is
+/// unassigned too.
 pub fn load_cluster_labels(
     clusters_path: &str,
     cell_names: &[Box<str>],
@@ -62,6 +72,7 @@ pub fn load_cluster_labels(
         .iter()
         .position(|c| c.as_ref() == "cluster")
         .unwrap_or(0);
+    let entropy_col = cluster_cols.iter().position(|c| c.as_ref() == "entropy");
 
     // Map cell name → row index in cluster parquet.
     let mut cluster_idx: HashMap<&str, usize> = HashMap::default();
@@ -77,7 +88,8 @@ pub fn load_cluster_labels(
     for cell in cell_names {
         if let Some(&i) = cluster_idx.get(cell.as_ref()) {
             let v = cluster_mat[(i, label_col)];
-            if v.is_nan() || v < 0.0 {
+            let empty = entropy_col.is_some_and(|e| !cluster_mat[(i, e)].is_finite());
+            if v.is_nan() || v < 0.0 || empty {
                 labels.push(usize::MAX);
                 unassigned += 1;
             } else {
