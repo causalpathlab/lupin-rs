@@ -823,9 +823,12 @@ fn write_rescored(r: &super::recalibrate::Rescored, out: &str) -> Result<Rescore
 const PREVIEW_CALLS: usize = 5;
 
 /// What `decisions` would do to `source`, written nowhere: per cluster the
-/// label before and after and, when the round records a cluster expression
-/// profile, the cell types re-ranked against the edited marker panel (an
-/// approximation of the next `lupin annotate`, see [`approx_calls`]).
+/// label before and after, and the cell types re-ranked against the edited
+/// marker panel. When the pass cached its statistics they are rescored as a
+/// save would (only the types the edits touch, when no cluster changes; see
+/// [`super::recalibrate::rescore_types`]) and `scores` holds every cluster's
+/// share, NES, p and q; else, from the cluster expression profile, ranked
+/// approximately (see [`approx_calls`]).
 fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> Result<Value> {
     let before = read_cells(source)?;
     let (panel_before, _) = read_markers(source)?;
@@ -868,9 +871,18 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
     // Best first: rescored with the round's own scoring when the pass cached
     // its statistics, else ranked approximately on the expression profile,
     // else as recorded.
+    // With the clusters as they were, only the cell types the marker edits
+    // touch are scored again.
+    let rescored = if after.cells.clusters == before.clusters {
+        let touched = touched_types(&panel_before, &after.markers);
+        super::recalibrate::rescore_types(source, &after.cells, &after.markers, &touched)?
+    } else {
+        super::recalibrate::rescore(source, &after.cells, &after.markers)?
+    };
+    let scores = rescored.as_ref().map(rescored_scores);
     let (stats, calls_before, calls_after): (&str, Option<Calls>, Calls) =
-        if let Some(r) = super::recalibrate::rescore(source, &after.cells, &after.markers)? {
-            ("recalibrated", Some(recorded), rescored_calls(&r))
+        if let Some(r) = &rescored {
+            ("recalibrated", Some(recorded), rescored_calls(r))
         } else if let Some((table, groups)) = expression_profile(source, &after.cells)? {
             let [b, a] = approx_calls(&table, &groups, [&panel_before, &after.markers])?;
             ("approximate", Some(scored_calls(b)), scored_calls(a))
@@ -923,7 +935,62 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
         "clusters": clusters,
         "cells_changed": cells_changed,
         "markers": marker_diff(&panel_before, &after.markers),
+        "scores": scores,
     }))
+}
+
+/// The cell types (label keys) whose scores a panel edit changes: those
+/// whose markers it edits, and those sharing an edited gene (whose IDF
+/// weight moves).
+fn touched_types(before: &[(String, String)], after: &[(String, String)]) -> BTreeSet<String> {
+    use crate::annotate::markers::label_key;
+    let pairs = |p: &[(String, String)]| -> BTreeSet<(String, String)> {
+        p.iter().map(|(g, t)| (label_key(t), g.clone())).collect()
+    };
+    let (b, a) = (pairs(before), pairs(after));
+    let edited: BTreeSet<&(String, String)> = b.symmetric_difference(&a).collect();
+    let genes: BTreeSet<&str> = edited.iter().map(|(_, g)| g.as_str()).collect();
+    edited
+        .iter()
+        .map(|(t, _)| t.clone())
+        .chain(
+            a.iter()
+                .filter(|(_, g)| genes.contains(g.as_str()))
+                .map(|(t, _)| t.clone()),
+        )
+        .collect()
+}
+
+/// A rescored round's every cluster × type, as a preview reports it: per
+/// cluster id, each type's share (Q), NES, p and q, highest share first.
+fn rescored_scores(r: &super::recalibrate::Rescored) -> Value {
+    let finite = |v: f32| v.is_finite().then_some(v);
+    r.ids
+        .iter()
+        .enumerate()
+        .map(|(row, id)| {
+            let mut types: Vec<usize> = (0..r.types.len()).collect();
+            types.sort_by(|&a, &b| {
+                r.q_probs[(row, b)]
+                    .total_cmp(&r.q_probs[(row, a)])
+                    .then(r.p_values[(row, a)].total_cmp(&r.p_values[(row, b)]))
+            });
+            let calls: Vec<Value> = types
+                .into_iter()
+                .map(|t| {
+                    json!({
+                        "label": &*r.types[t],
+                        "share": r.q_probs[(row, t)],
+                        "nes": finite(r.nes[(row, t)]),
+                        "p": finite(r.p_values[(row, t)]),
+                        "q": finite(r.q_values[(row, t)]),
+                    })
+                })
+                .collect();
+            (id.to_string(), Value::Array(calls))
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
 }
 
 /// One ranked call as a preview reports it.

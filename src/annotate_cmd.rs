@@ -71,7 +71,7 @@ pub struct AnnotateCliArgs {
     pub resolution: f64,
     #[arg(long, default_value_t = 42)]
     pub seed: u64,
-    #[arg(long = "num-perm", default_value_t = 500)]
+    #[arg(long = "num-perm", default_value_t = 1000)]
     pub num_perm: usize,
     #[arg(long = "min-markers", default_value_t = 3)]
     pub min_markers: usize,

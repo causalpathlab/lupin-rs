@@ -10,6 +10,7 @@ use crate::annotate::aggregate::weighted_mean_profile;
 use crate::annotate::args::AnnotateArgs;
 use crate::annotate::by_enrichment;
 use crate::annotate::inputs::EnrichmentInputs;
+use crate::annotate::markers::label_key;
 use crate::annotate::rounds::{parse_cluster_id, ClusterId};
 use crate::manifest::rounds::{read_clusters, write_clusters, Cells};
 use crate::manifest::run::{resolve, Loaded, StatsCache};
@@ -17,7 +18,7 @@ use anyhow::{Context, Result};
 use legume_numeric::matrix::dense_mat_io::{read_mat, Mat};
 use legume_numeric::matrix::traits::IoOps;
 use log::info;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const GENE_SUM: &str = ".cluster_gene_sum.parquet";
 const BATCH_PROFILE: &str = ".batch_profile.parquet";
@@ -126,6 +127,123 @@ pub(super) fn rescore(
     after: &Cells,
     panel: &[(String, String)],
 ) -> Result<Option<Rescored>> {
+    let Some((args, inputs, new_ids)) = rescore_inputs(source, after, panel)? else {
+        return Ok(None);
+    };
+    info!(
+        "rescoring {} cluster(s) against {} cell type(s)",
+        new_ids.len(),
+        inputs.celltype_names.len()
+    );
+    let out = by_enrichment::score(&args, &inputs)?;
+    Ok(Some(Rescored {
+        ids: new_ids,
+        types: inputs.celltype_names,
+        q_probs: out.q_kc,
+        q_values: out.qvalue_kc,
+        p_values: out.pvalue_kc,
+        z: out.es_restandardized_kc,
+        nes: out.nes_kc,
+        probit_z: out.z_kc,
+    }))
+}
+
+/// [`rescore`] of a round whose clusters are `source`'s own, where only the
+/// cell types in `touched` (label keys) scored differently: those are scored
+/// again, every other type keeps `source`'s p-value and NES, and the q-values
+/// and Q are redone over the whole row. The types a marker edit touches are
+/// the ones it edits and the ones sharing an edited gene; a type added to the
+/// panel also shifts the others' IDF weights a little, which only a full
+/// rescore (a save) takes in. `z` is left NaN for the types not rescored:
+/// this is for previews, not for writing. A full rescore when `source`
+/// records no p-values or NES for a cluster or kept type.
+pub(super) fn rescore_types(
+    source: &Loaded,
+    after: &Cells,
+    panel: &[(String, String)],
+    touched: &BTreeSet<String>,
+) -> Result<Option<Rescored>> {
+    let a = &source.manifest.annotate;
+    let table = |rel: &Option<String>| {
+        rel.as_deref()
+            .map(|r| crate::manifest::rounds::read_table(&resolve(&source.dir, r)))
+            .transpose()
+    };
+    let (Some(p_old), Some(nes_old)) = (
+        table(&a.cluster_celltype_p)?,
+        table(&a.cluster_celltype_nes)?,
+    ) else {
+        return rescore(source, after, panel);
+    };
+    let Some((args, inputs, ids)) = rescore_inputs(source, after, panel)? else {
+        return Ok(None);
+    };
+    let names = &inputs.celltype_names;
+    // Kept types read from the old tables; a type or cluster they lack is
+    // rescored, or everything is when a cluster is missing.
+    let col =
+        |t: &crate::annotate::rounds::Table, name: &str| t.cols.iter().position(|c| c == name);
+    if ids
+        .iter()
+        .any(|id| p_old.row(*id).is_none() || nes_old.row(*id).is_none())
+    {
+        return rescore(source, after, panel);
+    }
+    let types: Vec<usize> = (0..names.len())
+        .filter(|&t| {
+            touched.contains(&label_key(&names[t]))
+                || col(&p_old, &names[t]).is_none()
+                || col(&nes_old, &names[t]).is_none()
+        })
+        .collect();
+    let (k, c) = (ids.len(), names.len());
+    let mut p = Mat::zeros(k, c);
+    let mut nes = Mat::zeros(k, c);
+    let mut z = Mat::from_element(k, c, f32::NAN);
+    for (i, id) in ids.iter().enumerate() {
+        for (t, name) in names.iter().enumerate() {
+            if let (Some(jp), Some(jn)) = (col(&p_old, name), col(&nes_old, name)) {
+                p[(i, t)] = p_old.row(*id).map_or(1.0, |r| r[jp]);
+                nes[(i, t)] = nes_old.row(*id).map_or(0.0, |r| r[jn]);
+            }
+        }
+    }
+    let (markers_gc, config) = if types.is_empty() {
+        let (_, m, cfg) = by_enrichment::score_types(&args, &inputs, &[])?;
+        (m, cfg)
+    } else {
+        let (scores, m, cfg) = by_enrichment::score_types(&args, &inputs, &types)?;
+        for (j, &t) in scores.types.iter().enumerate() {
+            for i in 0..k {
+                p[(i, t)] = scores.pvalue_kc[(i, j)];
+                nes[(i, t)] = scores.nes_kc[(i, j)];
+                z[(i, t)] = scores.es_restandardized_kc[(i, j)];
+            }
+        }
+        (m, cfg)
+    };
+    let adjusted = enrichment::adjust(&p, &markers_gc, &config)?;
+    Ok(Some(Rescored {
+        ids,
+        types: inputs.celltype_names,
+        q_probs: adjusted.q_kc,
+        q_values: adjusted.qvalue_kc,
+        p_values: adjusted.pvalue_kc,
+        z,
+        nes,
+        probit_z: adjusted.z_kc,
+    }))
+}
+
+/// What [`rescore`] scores: the enrichment settings of `source`'s pass, its
+/// cached statistics regrouped by `after`'s clusters against `panel`, and the
+/// clusters' ids by row. `None` when the pass cached nothing or the panel is
+/// empty.
+fn rescore_inputs(
+    source: &Loaded,
+    after: &Cells,
+    panel: &[(String, String)],
+) -> Result<Option<(AnnotateArgs, EnrichmentInputs, Vec<ClusterId>)>> {
     let a = &source.manifest.annotate;
     let (Some(cache), Some(ids_rel)) = (&a.stats_cache, &a.expression_clusters) else {
         return Ok(None);
@@ -239,19 +357,5 @@ pub(super) fn rescore(
         ),
         cl_record: None,
     };
-    info!(
-        "rescoring {k} cluster(s) against {} cell type(s)",
-        annot.annot_names.len()
-    );
-    let out = by_enrichment::score(&args, &inputs)?;
-    Ok(Some(Rescored {
-        ids: new_ids,
-        types: annot.annot_names,
-        q_probs: out.q_kc,
-        q_values: out.qvalue_kc,
-        p_values: out.pvalue_kc,
-        z: out.es_restandardized_kc,
-        nes: out.nes_kc,
-        probit_z: out.z_kc,
-    }))
+    Ok(Some((args, inputs, new_ids)))
 }

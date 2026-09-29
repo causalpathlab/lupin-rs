@@ -10,7 +10,10 @@ use super::outputs::{
     CLUSTER_CELLTYPE_NES, CLUSTER_CELLTYPE_P, CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES,
     CLUSTER_CELLTYPE_Z,
 };
-use enrichment::{annotate, AnnotateConfig, AnnotateOutputs, GroupInputs, SpecificityMode};
+use enrichment::{
+    annotate, annotate_types, AnnotateConfig, AnnotateOutputs, GroupInputs, SpecificityMode,
+    TypeScores,
+};
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dense_mat_io::{axis_id_names, Mat};
 use legume_numeric::matrix::traits::IoOps;
@@ -98,6 +101,43 @@ pub fn sample_perm_draws(n_batches: usize, requested: usize) -> usize {
 /// Writes nothing; [`run`] writes the outputs, and a relabel round rescores
 /// through this on its merged clusters and edited panel.
 pub fn score(args: &AnnotateArgs, inputs: &EnrichmentInputs) -> anyhow::Result<AnnotateOutputs> {
+    let (group, markers_gc, config) = prepare(args, inputs)?;
+    info!(
+        "Running cluster × marker enrichment: {} clusters × {} celltypes, \
+         row-rand B={}, sample-perm B={}",
+        inputs.n_clusters,
+        inputs.celltype_names.len(),
+        NUM_DRAWS,
+        args.num_perm,
+    );
+    annotate(&group, &markers_gc, &inputs.celltype_names, &config)
+}
+
+/// [`score`] for the cell types `types` (indices into
+/// `inputs.celltype_names`) alone: their columns exactly as `score` gives
+/// them, with the weighted panel and config to finish the rows with
+/// [`enrichment::adjust`] once the other types' p-values are known.
+pub fn score_types(
+    args: &AnnotateArgs,
+    inputs: &EnrichmentInputs,
+    types: &[usize],
+) -> anyhow::Result<(TypeScores, Mat, AnnotateConfig)> {
+    let (group, markers_gc, config) = prepare(args, inputs)?;
+    info!(
+        "Rescoring {} of {} celltype(s) over {} clusters",
+        types.len(),
+        inputs.celltype_names.len(),
+        inputs.n_clusters,
+    );
+    let scores = annotate_types(&group, &markers_gc, &inputs.celltype_names, &config, types)?;
+    Ok((scores, markers_gc, config))
+}
+
+/// The enrichment's inputs, weighted panel and config for `inputs`.
+fn prepare(
+    args: &AnnotateArgs,
+    inputs: &EnrichmentInputs,
+) -> anyhow::Result<(GroupInputs, Mat, AnnotateConfig)> {
     let n_clusters = inputs.n_clusters;
     let n_batches = inputs.n_batches;
     let profile_gk = &inputs.profile_gk;
@@ -170,16 +210,7 @@ pub fn score(args: &AnnotateArgs, inputs: &EnrichmentInputs) -> anyhow::Result<A
         type_tree: inputs.type_tree.clone(),
     };
 
-    info!(
-        "Running cluster × marker enrichment: {} clusters × {} celltypes, \
-         row-rand B={}, sample-perm B={}",
-        n_clusters,
-        inputs.celltype_names.len(),
-        NUM_DRAWS,
-        args.num_perm,
-    );
-
-    annotate(&group, &markers_gc, &inputs.celltype_names, &config)
+    Ok((group, markers_gc, config))
 }
 
 pub fn run(

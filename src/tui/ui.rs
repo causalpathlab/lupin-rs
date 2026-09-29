@@ -9,7 +9,9 @@ use enrichment::UNASSIGNED_LABEL;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap,
+};
 use ratatui::Frame;
 
 const BAR: usize = 8;
@@ -117,7 +119,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("a", "add as markers of the cluster's label"),
             (
                 "A",
-                "add as markers of any cell type (a new name makes a new type)",
+                "add as markers of any cell type (a new name makes a new type), then offer to label the cluster with it",
             ),
             ("d", "drop from the label's markers"),
             ("x / X", "hide the genes / hide by pattern (MT-*)"),
@@ -161,15 +163,26 @@ fn draw_guide(f: &mut Frame) {
         .areas(area);
     f.render_widget(Clear, area);
     f.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title(" keys ")
-                .title_bottom(Line::from(" any key closes ").dim()),
-        ),
+        Paragraph::new(lines)
+            .style(POPUP)
+            .block(popup(" keys ".into(), " any key closes ")),
         area,
     );
+}
+
+/// A popup's text: light on a dark ground, apart from the panes under it
+/// whatever the terminal's theme.
+const POPUP: Style = Style::new().fg(Color::Indexed(255)).bg(Color::Indexed(236));
+
+/// A popup's frame: a bright border and title over [`POPUP`].
+fn popup(title: String, hint: &'static str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::new().fg(Color::LightYellow).bg(Color::Indexed(236)))
+        .title(Line::from(title).bold())
+        .title_bottom(Line::from(hint).fg(Color::Indexed(250)))
+        .style(POPUP)
 }
 
 fn pane(title: String, focused: bool) -> Block<'static> {
@@ -288,13 +301,11 @@ fn draw_settings(f: &mut Frame, app: &App) {
     };
     let mut state = TableState::default().with_selected(Some(app.setting));
     let t = Table::new(rows, [Constraint::Length(14), Constraint::Min(8)])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow))
-                .title(format!(" cluster & run · {note} "))
-                .title_bottom(Line::from(" ↑↓ setting · ←→ change · enter run · esc close ").dim()),
-        )
+        .style(POPUP)
+        .block(popup(
+            format!(" cluster & run · {note} "),
+            " ↑↓ setting · ←→ change · enter run · esc close ",
+        ))
         .row_highlight_style(highlight(true));
     f.render_widget(Clear, area);
     f.render_stateful_widget(t, area, &mut state);
@@ -340,6 +351,38 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             }
         })
         .collect();
+    // A label picked off the candidates (a new type, or one that did not
+    // pass FDR) is shown too: it is scored once the edits are saved.
+    if let Some(l) = now.as_deref().filter(|l| {
+        !c.candidates
+            .iter()
+            .any(|cand| label_key(&cand.label) == label_key(l))
+    }) {
+        let share = c
+            .shares
+            .iter()
+            .find(|(t, _)| label_key(t) == label_key(l))
+            .map(|(_, s)| *s);
+        rows.insert(
+            0,
+            Row::new(vec![
+                Cell::from("→"),
+                Cell::from(Line::from(vec![
+                    Span::from(l.to_string()).bold(),
+                    Span::from(if app.recorded.is_some() {
+                        " · no call with your markers"
+                    } else if app.rescoring.is_some() {
+                        " · rescoring…"
+                    } else {
+                        " · scored on save"
+                    })
+                    .dim(),
+                ])),
+                Cell::from(share.map_or_else(|| "—".into(), |s| format!("{s:.2}"))),
+                Cell::from(share.map(bar).unwrap_or_default()),
+            ]),
+        );
+    }
     if rows.is_empty() {
         rows.push(Row::new(["", "no candidate passed FDR"]).dim());
     }
@@ -351,8 +394,15 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             .collect::<Vec<_>>()
             .join(" › ")
     });
+    let scored = if app.rescoring.is_some() {
+        " · rescoring…"
+    } else if app.recorded.is_some() {
+        " · rescored with your marker edits"
+    } else {
+        ""
+    };
     let title = format!(
-        " K{} · {} cells · {} ",
+        " K{} · {} cells · {}{scored} ",
         c.id,
         c.cells,
         now.as_deref().unwrap_or(UNASSIGNED_LABEL)
@@ -724,21 +774,39 @@ fn draw_log(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_prompt(f: &mut Frame, app: &App) {
     let Some(p) = &app.prompt else { return };
-    let [area] = Layout::vertical([Constraint::Length(3)])
+    // Wider for longer questions (a long gene list), then as tall as the
+    // question and the answer need once wrapped.
+    let screen = f.area();
+    let question = p.title.trim();
+    let answer = format!("{}▏", p.text);
+    let want = question.chars().count().max(answer.chars().count()) as u16 + 4;
+    let width = want
+        .clamp(screen.width.min(60), screen.width * 9 / 10)
+        .min(screen.width);
+    let inner = width.saturating_sub(2).max(1) as usize;
+    // Word wrapping can take a row more than the characters alone.
+    let rows = |t: &str| {
+        let n = t.chars().count().div_ceil(inner).max(1) as u16;
+        n + u16::from(n > 1)
+    };
+    let height = (rows(question) + 1 + rows(&answer) + 2).min(screen.height);
+    let [area] = Layout::vertical([Constraint::Length(height)])
         .flex(Flex::Center)
-        .areas(f.area());
-    let [area] = Layout::horizontal([Constraint::Percentage(70)])
+        .areas(screen);
+    let [area] = Layout::horizontal([Constraint::Length(width)])
         .flex(Flex::Center)
         .areas(area);
+    let lines = vec![
+        Line::from(question.to_string()).bold(),
+        Line::default(),
+        Line::from(answer),
+    ];
     f.render_widget(Clear, area);
     f.render_widget(
-        Paragraph::new(format!("{}▏", p.text)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow))
-                .title(p.title.clone())
-                .title_bottom(Line::from(" enter: keep · esc: cancel ").dim()),
-        ),
+        Paragraph::new(lines)
+            .style(POPUP)
+            .wrap(Wrap { trim: false })
+            .block(popup(String::new(), " enter: ok · esc: cancel ")),
         area,
     );
 }

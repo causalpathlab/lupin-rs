@@ -58,7 +58,7 @@ statrs = { version = "0.18", default-features = false }
 
 # Published legume stack
 data-beans = { version = "0.6.12", features = ["aux", "alg"] }
-enrichment = { version = "0.4.0", package = "legume-enrichment" }
+enrichment = { version = "0.4.1", package = "legume-enrichment" }
 genomic-data = { version = "0.4.1", package = "legume-genomic-types" }
 graph-embedding-util = { version = "0.8.4", package = "legume-graph-embedding" }
 legume-numeric = { version = "0.8.10", features = ["matrix", "param", "candle", "mcmc"] }

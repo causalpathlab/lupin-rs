@@ -86,7 +86,7 @@ hypergeometric null with margins `(N, m_T, n_K)`, where **N and m_T are counted 
 
 `S` is then **calibrated against a permutation null**: the per-cell labels are shuffled with the
 group memberships held fixed, and `S` is pooled across groups within a type (the statistic is
-relabeling-invariant). `--num-perm` (default 500) draws; the pool is `n_perm × n_groups`, capped
+relabeling-invariant). `--num-perm` (default 1000) draws; the pool is `n_perm × n_groups`, capped
 at 10⁵ per type. The permutation p is Benjamini–Hochberg-adjusted across the types within each
 group. A group is called by its top over-represented type if `q < --fdr-alpha` (default **0.1**),
 else left uncalled; its cells inherit the call.
@@ -224,7 +224,7 @@ the fraction of cells labelled. A low resolution (around 0.5) did best.
 | `--knn` | 30 | 3 |
 | `--resolution` | 1.0 (0.5 recommended) | 3, 8 |
 | `--assign-mad` | 2.5 | 2 |
-| `--num-perm` | 500 (pool capped at 10⁵) | 3 |
+| `--num-perm` | 1000 (pool capped at 10⁵) | 3 |
 | `--fdr-alpha` | 0.1 | 3 |
 | `--seed` | 42 | · |
 

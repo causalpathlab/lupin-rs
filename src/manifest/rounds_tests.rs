@@ -758,6 +758,59 @@ fn a_marker_edit_rescores_the_round_and_its_preview() {
 }
 
 #[test]
+fn a_preview_rescores_the_touched_types_as_a_save_does() {
+    let root = tempfile::tempdir().unwrap();
+    let src = enriched_round(root.path());
+    let edit = line(
+        json!({"action": "markers_drop", "label": "CT3", "features": ["GENE14"], "rationale": "r", "decided_by": "user"}),
+    );
+    let p = preview_of(&src, &edit);
+    assert_eq!(p["stats"], "recalibrated");
+
+    let d = root.path().join("d.jsonl");
+    fs::write(&d, edit).unwrap();
+    run_relabel(&args(&src, &d, Some(&root.path().join("r1/run")))).unwrap();
+    let r1 = run::load(&root.path().join("r1/run.senna.json").to_string_lossy()).unwrap();
+    let saved = read_table(&resolve(
+        &r1.dir,
+        r1.manifest.annotate.cluster_celltype_p.as_deref().unwrap(),
+    ))
+    .unwrap();
+    let j = saved.cols.iter().position(|c| c == "CT3").unwrap();
+    for id in &saved.rows {
+        let calls = p["scores"][id.to_string()].as_array().unwrap();
+        let ct3 = calls.iter().find(|c| c["label"] == "CT3").unwrap();
+        let (preview_p, save_p) = (
+            ct3["p"].as_f64().unwrap(),
+            f64::from(saved.row(*id).unwrap()[j]),
+        );
+        assert!(
+            (preview_p - save_p).abs() < 1e-6,
+            "K{id}: preview p {preview_p} vs save {save_p}"
+        );
+        assert!(calls.iter().all(|c| c["share"].is_number()));
+    }
+}
+
+#[test]
+fn an_edit_touches_its_type_and_the_types_sharing_its_genes() {
+    let panel = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(g, t)| ((*g).into(), (*t).into()))
+            .collect()
+    };
+    let before = panel(&[("G1", "A"), ("G2", "A"), ("G2", "B"), ("G3", "C")]);
+    let after = panel(&[("G1", "A"), ("G2", "B"), ("G3", "C"), ("G4", "New")]);
+    let touched = touched_types(&before, &after);
+    assert_eq!(
+        touched.into_iter().collect::<Vec<_>>(),
+        ["A", "B", "New"],
+        "A lost G2, B shares G2, New is new; C is untouched"
+    );
+}
+
+#[test]
 fn a_round_needs_decisions() {
     let root = tempfile::tempdir().unwrap();
     let src = enriched_round(root.path());

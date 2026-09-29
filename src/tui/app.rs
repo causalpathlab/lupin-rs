@@ -7,6 +7,7 @@
 
 use super::round::{decisions, Edit, RoundView};
 use super::runner;
+use crate::annotate::markers::label_key;
 use crate::annotate::panel_tree::PanelTree;
 use crate::annotate::rounds::ClusterId;
 use crate::annotate_cmd::{AnnotateCliArgs, AnnotateMethod};
@@ -171,6 +172,22 @@ pub enum Job {
     Save(usize),
 }
 
+/// A `lupin relabel --preview` rescoring the round against `edits`.
+pub struct Rescoring {
+    child: Child,
+    out: Receiver<String>,
+    edits: Vec<Edit>,
+    file: PathBuf,
+}
+
+impl Rescoring {
+    fn stop(mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.file);
+    }
+}
+
 /// A key that needs pressing twice, and what it will do.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Armed {
@@ -223,6 +240,12 @@ pub struct App {
     log_tx: Sender<String>,
     log_rx: Receiver<String>,
     pub child: Option<(Child, Instant, Job)>,
+    /// A preview rescoring the round against the marker edits, running.
+    pub rescoring: Option<Rescoring>,
+    /// The marker edits the scores on screen reflect (none: the round's own).
+    scored_for: Vec<Edit>,
+    /// The round's own scores while rescored ones are shown.
+    pub recorded: Option<super::round::Scores>,
     pub status: String,
     /// Settings changed since the round on screen was made.
     pub stale: bool,
@@ -264,6 +287,9 @@ impl App {
             log_tx,
             log_rx,
             child: None,
+            rescoring: None,
+            scored_for: Vec::new(),
+            recorded: None,
             status: "r: run a pass".into(),
             stale: false,
             armed: None,
@@ -286,6 +312,7 @@ impl App {
         for line in super::drain_own_log() {
             self.push_log(line);
         }
+        self.keep_scores_current();
         let Some((child, started, job)) = &mut self.child else {
             return;
         };
@@ -352,6 +379,9 @@ impl App {
                     file_name(manifest),
                     r.clusters.len()
                 );
+                self.stop_rescoring();
+                self.recorded = None;
+                self.scored_for.clear();
                 self.round = Some(r);
                 self.edits.clear();
                 self.marked.clear();
@@ -361,6 +391,110 @@ impl App {
                 self.cluster_sel = self.cluster_sel.min(self.n_clusters().saturating_sub(1));
             }
             Err(e) => self.status = format!("could not read {}: {e:#}", manifest.display()),
+        }
+    }
+
+    /// The unsaved marker edits, in order.
+    fn marker_edits(&self) -> Vec<Edit> {
+        self.edits
+            .iter()
+            .filter(|e| matches!(e, Edit::Markers { .. }))
+            .cloned()
+            .collect()
+    }
+
+    /// Show scores that reflect the marker edits: take in a finished
+    /// rescoring, restart one the edits have moved past, start one for new
+    /// edits (not while a pass or save runs), and put the round's own
+    /// scores back when no marker edit is left.
+    fn keep_scores_current(&mut self) {
+        let want = self.marker_edits();
+        if let Some(r) = &mut self.rescoring {
+            match r.child.try_wait() {
+                Ok(None) if r.edits == want => return,
+                Ok(None) => {}
+                Ok(Some(st)) => {
+                    let r = self.rescoring.take().expect("a rescoring");
+                    let out = r.out.recv_timeout(std::time::Duration::from_secs(2));
+                    let _ = std::fs::remove_file(&r.file);
+                    if r.edits == want {
+                        self.scored_for = want.clone();
+                        match out.ok().filter(|_| st.success()) {
+                            Some(json) => self.show_scores(&json),
+                            None => self.status = "rescoring failed; see the log".into(),
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+            if self.rescoring.as_ref().is_some_and(|r| r.edits != want) {
+                self.stop_rescoring();
+            }
+        }
+        if self.rescoring.is_some() || want == self.scored_for || self.child.is_some() {
+            return;
+        }
+        let Some(round) = &mut self.round else { return };
+        if want.is_empty() {
+            if let Some(old) = self.recorded.take() {
+                round.swap_scores(old);
+            }
+            self.scored_for.clear();
+            return;
+        }
+        let file = std::env::temp_dir().join(format!(
+            "lupin-rescore-{}-{}.jsonl",
+            std::process::id(),
+            self.edits.len()
+        ));
+        let started = (|| -> anyhow::Result<_> {
+            let lines: Vec<String> = decisions(&want, round)
+                .iter()
+                .map(serde_json::to_string)
+                .collect::<Result<_, _>>()?;
+            std::fs::write(&file, lines.join("\n") + "\n")?;
+            runner::spawn_preview(&round.manifest, &file, self.log_tx.clone())
+        })();
+        match started {
+            Ok((child, out)) => {
+                self.status = "rescoring the edited types…".into();
+                self.rescoring = Some(Rescoring {
+                    child,
+                    out,
+                    edits: want,
+                    file,
+                });
+            }
+            Err(e) => {
+                self.scored_for = want;
+                self.status = format!("could not rescore: {e:#}");
+            }
+        }
+    }
+
+    /// Show a preview's rescored candidates, keeping the round's own.
+    fn show_scores(&mut self, json: &str) {
+        let Some(round) = &mut self.round else { return };
+        let scores = serde_json::from_str::<serde_json::Value>(json)
+            .ok()
+            .as_ref()
+            .and_then(super::round::parse_scores);
+        let Some(scores) = scores else {
+            self.status =
+                "this round cannot be rescored (no cached statistics): save to rescore".into();
+            return;
+        };
+        let old = round.swap_scores(scores);
+        // The round's own are what is kept, across several rescorings.
+        if self.recorded.is_none() {
+            self.recorded = Some(old);
+        }
+        self.status = "rescored with your marker edits".into();
+    }
+
+    fn stop_rescoring(&mut self) {
+        if let Some(r) = self.rescoring.take() {
+            r.stop();
         }
     }
 
@@ -636,6 +770,24 @@ impl App {
         });
     }
 
+    /// After adding markers of `label`, ask whether the selected cluster is
+    /// a `label` too; the markers' reason is the label's.
+    fn ask_label_too(&mut self, label: String, reason: String) {
+        let Some(c) = self.selected() else { return };
+        self.prompt = Some(Prompt {
+            title: format!(
+                " label K{} as {label} too? enter: yes (the text is why) · esc: markers only ",
+                c.id
+            ),
+            text: reason,
+            pending: Pending::Label {
+                cluster: c.id,
+                label,
+                remember: None,
+            },
+        });
+    }
+
     /// Label the selected cluster by its `k`-th candidate.
     fn pick_candidate(&mut self, k: usize) {
         let Some(c) = self.selected() else { return };
@@ -659,8 +811,7 @@ impl App {
     fn pick_node(&mut self, i: usize) {
         let label = self.tree.label(i).to_string();
         let under = self.tree.labels_under(i);
-        let pooled =
-            self.pooled(|t| under.contains(&crate::annotate::markers::label_key(t).as_str()));
+        let pooled = self.pooled(|t| under.contains(&label_key(t).as_str()));
         let reason = if pooled.is_empty() {
             format!("{label} from the ontology")
         } else {
@@ -910,18 +1061,35 @@ impl App {
                         };
                     }
                     Pending::Markers { label, genes, add } => {
+                        let moved = if add {
+                            super::round::take_added(&mut self.edits, &genes, &label)
+                        } else {
+                            Vec::new()
+                        };
                         self.status = format!(
-                            "{} {} {label}'s markers on save (the next round is rescored)",
+                            "{} {} {label}'s markers on save (the next round is rescored){}",
                             genes.len(),
-                            if add { "added to" } else { "dropped from" }
+                            if add { "added to" } else { "dropped from" },
+                            if moved.is_empty() {
+                                String::new()
+                            } else {
+                                format!("; moved from {}", moved.join(", "))
+                            }
                         );
                         self.edits.push(Edit::Markers {
-                            label,
+                            label: label.clone(),
                             genes,
                             add,
-                            reason,
+                            reason: reason.clone(),
                         });
                         self.marked.clear();
+                        // Markers only change what the next round scores on:
+                        // offer to label the cluster the genes came from too.
+                        let other =
+                            self.current_label().map(|l| label_key(&l)) != Some(label_key(&label));
+                        if add && other {
+                            self.ask_label_too(label, reason);
+                        }
                     }
                 }
             }
@@ -939,6 +1107,7 @@ impl App {
             if self.pass_running() {
                 self.stop();
             }
+            self.stop_rescoring();
             self.quit = true;
             return;
         }
@@ -991,6 +1160,7 @@ impl App {
                     self.status = format!("a pass is running{unsaved}: q again stops it and quits");
                 } else if armed == Some(Armed::Quit) || self.edits.is_empty() {
                     self.stop();
+                    self.stop_rescoring();
                     self.quit = true;
                 } else {
                     self.armed = Some(Armed::Quit);

@@ -198,3 +198,59 @@ fn a_rounds_history_says_which_clusters_are_decided() {
     let d = decided_in(&p.to_string_lossy()).unwrap();
     assert_eq!(d, BTreeSet::from([1, 3]));
 }
+
+#[test]
+fn adding_a_gene_again_moves_it_from_an_unsaved_addition() {
+    let add = |label: &str, genes: &[&str]| Edit::Markers {
+        label: label.into(),
+        genes: genes.iter().map(|g| (*g).to_string()).collect(),
+        add: true,
+        reason: "why".into(),
+    };
+    let mut edits = vec![add("X", &["G1", "G2"]), add("Z", &["G3"])];
+    let from = take_added(&mut edits, &["G1".into(), "G3".into()], "Y");
+    assert_eq!(from, ["X", "Z"]);
+    assert_eq!(edits.len(), 1, "Z's addition is left empty and dropped");
+    let r = round();
+    assert_eq!(
+        r.markers_of("X", &edits)
+            .into_iter()
+            .filter(|(_, added)| *added)
+            .map(|(g, _)| g)
+            .collect::<Vec<_>>(),
+        ["G2"]
+    );
+    // Adding to the same type again leaves its own addition alone.
+    assert!(take_added(&mut edits, &["G2".into()], "X").is_empty());
+    assert_eq!(edits.len(), 1);
+}
+
+#[test]
+fn rescored_scores_replace_a_clusters_and_swap_back() {
+    let preview = serde_json::json!({"scores": {"0": [
+        {"label": "HSC", "share": 0.8, "nes": 2.1, "p": 1e-4, "q": 1e-3},
+        {"label": "T", "share": 0.2, "nes": 1.2, "p": 0.01, "q": 0.04},
+        {"label": "B", "share": 0.0, "nes": null, "p": 0.9, "q": 1.0}
+    ]}});
+    let scores = parse_scores(&preview).unwrap();
+    let (candidates, shares) = &scores[&0];
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|c| c.label.as_str())
+            .collect::<Vec<_>>(),
+        ["HSC", "T"],
+        "a type with no share is no candidate"
+    );
+    assert_eq!(candidates[0].nes, Some(2.1));
+    assert_eq!(shares.len(), 3, "every type keeps its share");
+
+    let mut r = round();
+    let old = r.swap_scores(scores);
+    assert_eq!(r.clusters[0].candidates[0].label, "HSC");
+    assert_eq!(r.clusters[1].candidates[0].label, "T", "K1 not rescored");
+    r.swap_scores(old);
+    assert_eq!(r.clusters[0].candidates[0].label, "T");
+    assert_eq!(r.clusters[0].shares.len(), 3);
+    assert!(parse_scores(&serde_json::json!({"scores": null})).is_none());
+}

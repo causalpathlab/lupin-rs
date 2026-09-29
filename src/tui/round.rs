@@ -355,6 +355,91 @@ impl RoundView {
     }
 }
 
+/// Per cluster, its candidates and shares, as [`RoundView::load`] reads them
+/// or a rescoring gave them.
+pub type Scores = BTreeMap<ClusterId, (Vec<Candidate>, Vec<(String, f32)>)>;
+
+/// A `lupin relabel --preview`'s `scores` (per cluster id, each type's
+/// share, NES, p and q) as candidates and shares; `None` when it has none.
+#[must_use]
+pub fn parse_scores(preview: &serde_json::Value) -> Option<Scores> {
+    let num = |v: &serde_json::Value| v.as_f64().map(|x| x as f32);
+    preview["scores"]
+        .as_object()?
+        .iter()
+        .map(|(id, calls)| {
+            let id: ClusterId = id.parse().ok()?;
+            let all: Vec<Candidate> = calls
+                .as_array()?
+                .iter()
+                .map(|c| {
+                    Some(Candidate {
+                        label: c["label"].as_str()?.to_string(),
+                        share: num(&c["share"]).unwrap_or(0.0),
+                        nes: num(&c["nes"]),
+                        p: num(&c["p"]),
+                        q: num(&c["q"]),
+                    })
+                })
+                .collect::<Option<_>>()?;
+            let shares = all.iter().map(|c| (c.label.clone(), c.share)).collect();
+            let candidates = all
+                .into_iter()
+                .filter(|c| c.share > 0.0 && c.label != UNASSIGNED_LABEL)
+                .take(CANDIDATES)
+                .collect();
+            Some((id, (candidates, shares)))
+        })
+        .collect()
+}
+
+impl RoundView {
+    /// Show `scores` in place of the clusters' own; the ones replaced, to
+    /// put back.
+    pub fn swap_scores(&mut self, mut scores: Scores) -> Scores {
+        let mut old = Scores::new();
+        for c in &mut self.clusters {
+            if let Some((candidates, shares)) = scores.remove(&c.id) {
+                old.insert(
+                    c.id,
+                    (
+                        std::mem::replace(&mut c.candidates, candidates),
+                        std::mem::replace(&mut c.shares, shares),
+                    ),
+                );
+            }
+        }
+        old
+    }
+}
+
+/// Take `genes` out of the unsaved additions to types other than `label`,
+/// so adding a gene again moves it rather than giving it a second type;
+/// marker edits left empty are dropped. The types they came from, by name.
+pub fn take_added(edits: &mut Vec<Edit>, genes: &[String], label: &str) -> Vec<String> {
+    let key = label_key(label);
+    let mut from = BTreeSet::new();
+    for e in edits.iter_mut() {
+        if let Edit::Markers {
+            label: other,
+            genes: added,
+            add: true,
+            ..
+        } = e
+        {
+            if label_key(other) != key {
+                let before = added.len();
+                added.retain(|g| !genes.contains(g));
+                if added.len() < before {
+                    from.insert(other.clone());
+                }
+            }
+        }
+    }
+    edits.retain(|e| !matches!(e, Edit::Markers { genes, .. } if genes.is_empty()));
+    from.into_iter().collect()
+}
+
 /// The last edit per cluster, and every marker edit, as the next
 /// round's decisions; marker edits first, as they change what the labels
 /// are scored on.

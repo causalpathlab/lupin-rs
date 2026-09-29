@@ -109,12 +109,16 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
 
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
-        // Drawn when something changed: a key, a resize, the log or the status.
+        // Drawn when something changed: a key, a resize, the log, the status
+        // or a rescoring starting or ending.
         let mut dirty = true;
         while !app.quit {
             let (logged, status) = (app.log.len(), app.status.clone());
+            let rescoring = app.rescoring.is_some();
             app.tick();
-            dirty |= app.log.len() != logged || app.status != status;
+            dirty |= app.log.len() != logged
+                || app.status != status
+                || app.rescoring.is_some() != rescoring;
             if dirty {
                 terminal.draw(|f| ui::draw(f, &app))?;
                 dirty = false;
