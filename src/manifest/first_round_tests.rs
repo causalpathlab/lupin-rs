@@ -54,12 +54,25 @@ fn setup(root: &Path) -> (String, String) {
     )
 }
 
+/// The fixture ontology under the shipped rules, no aliases.
+fn data(obo: &str) -> crate::manifest::data_files::ClData {
+    crate::manifest::data_files::ClData {
+        rules: crate::annotate::cl_rules::shipped(),
+        aliases: crate::annotate::cl_rules::Aliases::default(),
+        ontology: Some(obo.into()),
+        rule_files: Vec::new(),
+        alias_files: Vec::new(),
+        search: crate::manifest::data_files::SearchPath::new(None),
+        parsed: std::sync::OnceLock::new(),
+    }
+}
+
 #[test]
 fn prepare_groups_the_panel_on_the_ontology_and_maps_its_labels() {
     let root = tempfile::tempdir().unwrap();
     let (obo, markers) = setup(root.path());
     let out = root.path().join("o/run").to_string_lossy().into_owned();
-    let p = prepare(&markers, &out, Some(&obo), None).unwrap();
+    let p = prepare(&markers, &out, &data(&obo), None).unwrap();
     assert_eq!(p.tree.source, TreeSource::CellOntology);
     let (wired_obo, map_path) = p.ontology.clone().unwrap();
     assert_eq!(wired_obo, obo);
@@ -73,7 +86,7 @@ fn prepare_groups_the_panel_on_the_ontology_and_maps_its_labels() {
     assert_eq!(tree.group_of("CT_2"), Some("group_a"));
 
     // The user's own map is kept, not replaced.
-    let own = prepare(&markers, &out, Some(&obo), Some("mine.tsv")).unwrap();
+    let own = prepare(&markers, &out, &data(&obo), Some("mine.tsv")).unwrap();
     assert!(
         own.ontology.is_none(),
         "the user's map stands; nothing is wired in"
@@ -85,7 +98,7 @@ fn finish_calls_each_cluster_by_its_group_and_keeps_the_fine_labels() {
     let root = tempfile::tempdir().unwrap();
     let (obo, markers) = setup(root.path());
     let out = root.path().join("run").to_string_lossy().into_owned();
-    let p = prepare(&markers, &out, Some(&obo), None).unwrap();
+    let p = prepare(&markers, &out, &data(&obo), None).unwrap();
 
     // Cluster 0: CT1 and CT 2 cells; cluster 1: CT3. Q says cluster 0 leans
     // CT3 by the single best type, but group a by the sum.
@@ -152,7 +165,7 @@ fn a_fine_first_round_only_records_the_groups() {
     let root = tempfile::tempdir().unwrap();
     let (obo, markers) = setup(root.path());
     let out = root.path().join("run").to_string_lossy().into_owned();
-    let p = prepare(&markers, &out, Some(&obo), None).unwrap();
+    let p = prepare(&markers, &out, &data(&obo), None).unwrap();
     let mut m = RunManifest::new(crate::manifest::run::RunKind::Topic, "run");
     m.annotate.argmax = Some("run.argmax.tsv".into());
     let manifest = root.path().join("run.senna.json");
@@ -175,7 +188,7 @@ fn an_unmatched_panel_type_keeps_the_ontology_walk_off() {
     )
     .unwrap();
     let out = root.path().join("o/run").to_string_lossy().into_owned();
-    let p = prepare(&markers.to_string_lossy(), &out, Some(&obo), None).unwrap();
+    let p = prepare(&markers.to_string_lossy(), &out, &data(&obo), None).unwrap();
     assert!(p.ontology.is_none());
     assert_eq!(
         p.tree.source,
@@ -189,7 +202,7 @@ fn without_cluster_probabilities_each_cell_keeps_its_own_groups_call() {
     let root = tempfile::tempdir().unwrap();
     let (obo, markers) = setup(root.path());
     let out = root.path().join("run").to_string_lossy().into_owned();
-    let p = prepare(&markers, &out, Some(&obo), None).unwrap();
+    let p = prepare(&markers, &out, &data(&obo), None).unwrap();
     // One cluster: a CT1 cell, a CT3 cell and an abstained cell (projection).
     let cells: Vec<Box<str>> = ["a", "b", "c"].iter().map(|s| Box::from(*s)).collect();
     write_clusters(

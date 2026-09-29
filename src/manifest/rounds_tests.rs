@@ -67,7 +67,7 @@ fn next_from(from: &Path, text: &str) -> Result<PathBuf> {
     let chain = Chain::of(&source.file);
     let lock = chain.lock()?;
     let ds = parse_decisions(numbered(text), "test")?;
-    chain.write_next(&lock, &source.file, ds, Path::new("."), false)
+    chain.write_next(&lock, &source.file, ds, Path::new("."))
 }
 
 /// Start a watch on `src`'s chain with decisions at `decisions`.
@@ -246,6 +246,43 @@ fn next_grows_the_chain_and_refuses_a_stale_round() {
     let err = next_from(&r1, &keep0(None)).unwrap_err().to_string();
     assert!(err.contains("not the latest round"), "{err}");
     assert!(!root.path().join("r0/run.r3.senna.json").exists());
+}
+
+#[test]
+fn superseding_moves_only_the_later_rounds_files() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path();
+    for f in [
+        "run.senna.json",
+        "run.r1.senna.json",
+        "run.r1.argmax.tsv",
+        "run.r2.senna.json",
+        "run.rest.keep",
+        "run.rx.keep",
+        "other.r1.senna.json",
+    ] {
+        fs::write(dir.join(f), "{}").unwrap();
+    }
+    let moved = supersede_later(&dir.join("run.senna.json")).unwrap();
+    assert_eq!(moved, 2);
+    let aside = dir.join("run.superseded");
+    for f in [
+        "run.r1.senna.json",
+        "run.r1.argmax.tsv",
+        "run.r2.senna.json",
+    ] {
+        assert!(aside.join(f).is_file(), "{f} set aside");
+        assert!(!dir.join(f).exists(), "{f} gone from the chain");
+    }
+    for f in [
+        "run.senna.json",
+        "run.rest.keep",
+        "run.rx.keep",
+        "other.r1.senna.json",
+    ] {
+        assert!(dir.join(f).is_file(), "{f} left alone");
+    }
+    assert_eq!(supersede_later(&dir.join("run.senna.json")).unwrap(), 0);
 }
 
 #[test]
@@ -467,7 +504,7 @@ fn round_with_profile(root: &Path) -> PathBuf {
 fn preview_of(src: &Path, text: &str) -> Value {
     let source = run::load(&src.to_string_lossy()).unwrap();
     let ds = parse_decisions(numbered(text), "test").unwrap();
-    preview(&source, ds, Path::new("."), false).unwrap()
+    preview(&source, ds, Path::new(".")).unwrap()
 }
 
 #[test]
@@ -683,8 +720,6 @@ fn a_relabel_round_is_rescored_on_its_merged_clusters() {
     let stats = a.stats.as_ref().unwrap();
     assert_eq!(stats["kind"], "post_selection");
     assert_eq!(stats["rounds_of_curation"], 1);
-    assert_eq!(stats["support_stale"], true, "no marker edit, no bootstrap");
-    assert!(a.cluster_celltype_support.is_none());
 
     let summary: Value = serde_json::from_str(
         &fs::read_to_string(resolve(&r1.dir, a.cluster_summary.as_deref().unwrap())).unwrap(),
@@ -699,7 +734,7 @@ fn a_relabel_round_is_rescored_on_its_merged_clusters() {
 }
 
 #[test]
-fn a_marker_edit_refreshes_support_and_preview_is_rescored() {
+fn a_marker_edit_rescores_the_round_and_its_preview() {
     let root = tempfile::tempdir().unwrap();
     let src = enriched_round(root.path());
     let edit = line(
@@ -708,46 +743,133 @@ fn a_marker_edit_refreshes_support_and_preview_is_rescored() {
 
     let p = preview_of(&src, &edit);
     assert_eq!(p["stats"], "recalibrated");
-    assert_eq!(p["support_stale"], false);
 
     let d = root.path().join("d.jsonl");
     fs::write(&d, edit).unwrap();
     run_relabel(&args(&src, &d, Some(&root.path().join("r1/run")))).unwrap();
     let r1 = run::load(&root.path().join("r1/run.senna.json").to_string_lossy()).unwrap();
     let a = &r1.manifest.annotate;
-    assert_eq!(a.stats.as_ref().unwrap()["support_stale"], false);
-    let support = read_table(&resolve(
+    let q = read_table(&resolve(
         &r1.dir,
-        a.cluster_celltype_support.as_deref().unwrap(),
+        a.cluster_celltype_q_values.as_deref().unwrap(),
     ))
     .unwrap();
-    assert_eq!(support.rows, vec![0, 1, 2]);
+    assert_eq!(q.rows, vec![0, 1, 2]);
 }
 
 #[test]
-fn a_round_with_no_decisions_only_refreshes_support() {
+fn a_preview_rescores_the_touched_types_as_a_save_does() {
+    let root = tempfile::tempdir().unwrap();
+    let src = enriched_round(root.path());
+    let edit = line(
+        json!({"action": "markers_drop", "label": "CT3", "features": ["GENE14"], "rationale": "r", "decided_by": "user"}),
+    );
+    let p = preview_of(&src, &edit);
+    assert_eq!(p["stats"], "recalibrated");
+
+    let d = root.path().join("d.jsonl");
+    fs::write(&d, edit).unwrap();
+    run_relabel(&args(&src, &d, Some(&root.path().join("r1/run")))).unwrap();
+    let r1 = run::load(&root.path().join("r1/run.senna.json").to_string_lossy()).unwrap();
+    let saved = read_table(&resolve(
+        &r1.dir,
+        r1.manifest.annotate.cluster_celltype_p.as_deref().unwrap(),
+    ))
+    .unwrap();
+    let j = saved.cols.iter().position(|c| c == "CT3").unwrap();
+    for id in &saved.rows {
+        let calls = p["scores"][id.to_string()].as_array().unwrap();
+        let ct3 = calls.iter().find(|c| c["label"] == "CT3").unwrap();
+        let (preview_p, save_p) = (
+            ct3["p"].as_f64().unwrap(),
+            f64::from(saved.row(*id).unwrap()[j]),
+        );
+        assert!(
+            (preview_p - save_p).abs() < 1e-6,
+            "K{id}: preview p {preview_p} vs save {save_p}"
+        );
+        assert!(calls.iter().all(|c| c["share"].is_number()));
+    }
+}
+
+/// `enriched_round` relabelled once, so it records p-values and NES.
+fn rescored_round(root: &Path) -> Loaded {
+    let src = enriched_round(root);
+    let d = root.join("d0.jsonl");
+    fs::write(
+        &d,
+        line(json!({"action": "markers_drop", "label": "CT3", "features": ["GENE14"], "rationale": "r", "decided_by": "user"})),
+    )
+    .unwrap();
+    run_relabel(&args(&src, &d, Some(&root.join("r1/run")))).unwrap();
+    run::load(&root.join("r1/run.senna.json").to_string_lossy()).unwrap()
+}
+
+#[test]
+fn only_the_touched_types_are_rescored_and_they_match_a_full_rescore() {
+    use super::super::recalibrate::{rescore, rescore_types};
+    let root = tempfile::tempdir().unwrap();
+    let r1 = rescored_round(root.path());
+    let cells = read_cells(&r1).unwrap();
+    let (before, _) = read_markers(&r1).unwrap();
+    let after: Vec<(String, String)> = before
+        .iter()
+        .filter(|(g, t)| !(g == "GENE13" && t == "CT3"))
+        .cloned()
+        .collect();
+    let touched = touched_types(&before, &after);
+    assert_eq!(touched.iter().collect::<Vec<_>>(), ["CT3"]);
+
+    let part = rescore_types(&r1, &cells, &after, &touched)
+        .unwrap()
+        .unwrap();
+    let full = rescore(&r1, &cells, &after).unwrap().unwrap();
+    let col = |name: &str| part.types.iter().position(|t| &**t == name).unwrap();
+    let (ct3, ct1) = (col("CT3"), col("CT1"));
+    for row in 0..part.ids.len() {
+        assert_eq!(part.p_values[(row, ct3)], full.p_values[(row, ct3)]);
+        assert_eq!(part.nes[(row, ct3)], full.nes[(row, ct3)]);
+        assert!(part.z[(row, ct3)].is_finite(), "CT3 rescored");
+        assert!(part.z[(row, ct1)].is_nan(), "CT1 kept, not rescored");
+        assert!((part.p_values[(row, ct1)] - full.p_values[(row, ct1)]).abs() < 1e-6);
+    }
+
+    // A new type moves every type's IDF weight: all are rescored.
+    let mut grown = after.clone();
+    for g in ["GENE20", "GENE21", "GENE22"] {
+        grown.push((g.into(), "CT9".into()));
+    }
+    let all = rescore_types(&r1, &cells, &grown, &touched_types(&after, &grown))
+        .unwrap()
+        .unwrap();
+    assert!((0..all.types.len()).all(|t| all.z[(0, t)].is_finite()));
+}
+
+#[test]
+fn an_edit_touches_its_type_and_the_types_sharing_its_genes() {
+    let panel = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(g, t)| ((*g).into(), (*t).into()))
+            .collect()
+    };
+    let before = panel(&[("G1", "A"), ("G2", "A"), ("G2", "B"), ("G3", "C")]);
+    let after = panel(&[("G1", "A"), ("G2", "B"), ("G3", "C"), ("G4", "New")]);
+    let touched = touched_types(&before, &after);
+    assert_eq!(
+        touched.into_iter().collect::<Vec<_>>(),
+        ["A", "B", "New"],
+        "A lost G2, B shares G2, New is new; C is untouched"
+    );
+}
+
+#[test]
+fn a_round_needs_decisions() {
     let root = tempfile::tempdir().unwrap();
     let src = enriched_round(root.path());
     let d = root.path().join("empty.jsonl");
     fs::write(&d, "").unwrap();
     assert!(run_relabel(&args(&src, &d, Some(&root.path().join("x/run")))).is_err());
-
-    run_relabel(&RelabelArgs {
-        support: true,
-        ..args(&src, &d, Some(&root.path().join("r1/run")))
-    })
-    .unwrap();
-    let r1 = run::load(&root.path().join("r1/run.senna.json").to_string_lossy()).unwrap();
-    assert_eq!(
-        r1.manifest.annotate.stats.as_ref().unwrap()["support_stale"],
-        false
-    );
-    let before = read_cells(&run::load(&src.to_string_lossy()).unwrap()).unwrap();
-    assert_eq!(
-        read_cells(&r1).unwrap().labels,
-        before.labels,
-        "no label moves"
-    );
 }
 
 #[test]

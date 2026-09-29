@@ -9,9 +9,11 @@ pub mod by_projection;
 #[cfg(test)]
 mod calibration_tests;
 pub mod celltype_tree;
+pub mod cl_rules;
 mod go_signature;
 pub mod inputs;
 pub mod markers;
 pub mod ontology;
 pub mod outputs;
+pub mod panel_tree;
 pub mod rounds;

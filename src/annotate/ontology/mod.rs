@@ -12,9 +12,10 @@
 //! `{out}.ontology_node_mass.parquet` (Σ of descendant-leaf Q per node).
 
 use crate::annotate::args::AnnotateOntologyArgs;
+use crate::annotate::celltype_tree::ClTerms;
+use crate::annotate::cl_rules::MatchRules;
 use crate::annotate::outputs::AnnotationOutputs;
 use anyhow::{anyhow, Context, Result};
-use graph_embedding_util::type_annotation::annotate_ontology_from_obo;
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dense_mat_io::Mat;
 use legume_numeric::matrix::traits::IoOps;
@@ -40,10 +41,10 @@ fn sibling_artifact(q_path: &str, suffix: &str) -> Result<String> {
 }
 
 /// Load the Cell Ontology + the curated `label→CL` map and run the shared TreeBH
-/// core. The OBO glue (load + inject the generic-core access closures) lives once
-/// in [`graph_embedding_util::type_annotation::annotate_ontology_from_obo`]; this
-/// is the entry shared by the standalone `annotate-ontology` subcommand ([`run`])
-/// and the inline ontology pass in `annotate --method enrichment`.
+/// core ([`enrichment::annotate_ontology_core`]), with the ontology read by
+/// lupin's own [`ClTerms`]. The entry shared by the standalone
+/// `annotate-ontology` subcommand ([`run`]) and the inline ontology pass in
+/// `annotate --method enrichment`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn annotate_ontology_with_obo(
     out: &str,
@@ -56,14 +57,30 @@ pub(crate) fn annotate_ontology_with_obo(
     cluster_names: &[Box<str>],
     celltype_names: &[Box<str>],
 ) -> Result<(String, String)> {
-    annotate_ontology_from_obo(
-        out,
-        label_cl,
-        obo,
-        fdr_q,
-        by,
+    let label_to_id = enrichment::parse_label_map(label_cl, |id| id.starts_with("CL:"))?;
+    let text = std::fs::read_to_string(obo).with_context(|| format!("reading {obo}"))?;
+    // Only terms, names and `is_a` parents are needed, which no matching rule changes.
+    let terms = ClTerms::parse(&text, &MatchRules::default());
+    info!("loaded Cell Ontology from {obo}");
+    let ancestors_or_self = |id: &str| {
+        terms
+            .ancestors_or_self(id)
+            .into_iter()
+            .map(String::into_boxed_str)
+            .collect()
+    };
+    let name_of = |id: &str| terms.name(id).map(Box::from);
+    let contains = |id: &str| terms.has(id);
+    enrichment::annotate_ontology_core(
+        &enrichment::OntologyParams { out, fdr_q, by },
         score,
         q,
+        &label_to_id,
+        &enrichment::OntologyAccess {
+            ancestors_or_self: &ancestors_or_self,
+            name_of: &name_of,
+            contains: &contains,
+        },
         cluster_names,
         celltype_names,
     )

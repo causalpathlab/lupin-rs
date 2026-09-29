@@ -297,9 +297,6 @@ pub struct RunAnnotate {
     /// The manifest this one was copied from when annotate wrote it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// Enrichment: nClusters × C bootstrap support.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cluster_celltype_support: Option<String>,
     /// Per-cluster digest for review, keyed by cluster id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_summary: Option<String>,
@@ -341,12 +338,15 @@ pub struct RunAnnotate {
     /// Enrichment: nClusters × C FDR q-values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_celltype_q_values: Option<String>,
+    /// Enrichment: nClusters × C p-values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_celltype_p: Option<String>,
+    /// Enrichment: nClusters × C NES (fgsea's normalized enrichment score).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_celltype_nes: Option<String>,
     /// Projection: nClusters × term FDR q-values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_term_q: Option<String>,
-    /// Projection: per-marker bootstrap support (live markers per type).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub marker_support: Option<String>,
     /// Projection: the marker panel's gene embedding per type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marker_embedding: Option<String>,

@@ -28,11 +28,6 @@ fn digest_takes_the_majority_label_and_ranks_calls() {
             cols: vec!["CT1".into(), "CT2".into(), "unassigned".into()],
             values: vec![0.01, 0.2, 0.0, 0.5, 0.001, 0.0],
         }),
-        support: Some(Table {
-            rows: vec![0],
-            cols: vec!["CT1".into(), "CT2".into()],
-            values: vec![0.9, 0.1],
-        }),
         ..Evidence::default()
     };
     let d = digest(&clusters, &labs, &ev);
@@ -40,10 +35,8 @@ fn digest_takes_the_majority_label_and_ranks_calls() {
     assert_eq!(d[&0].label.as_deref(), Some("CT1"));
     let top: Vec<&str> = d[&0].calls.iter().map(|c| c.label.as_str()).collect();
     assert_eq!(top, ["CT1", "CT2"], "unassigned is not a call");
-    assert_eq!(d[&0].calls[0].support, Some(0.9));
-    // No support for cluster 1: ranked by q alone.
+    assert_eq!(d[&0].calls[0].q, Some(0.01), "smallest q first");
     assert_eq!(d[&1].calls[0].label, "CT2");
-    assert_eq!(d[&1].calls[0].support, None);
 }
 
 #[test]

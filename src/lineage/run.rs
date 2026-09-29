@@ -20,7 +20,6 @@
 use anyhow::Result;
 use log::{info, warn};
 
-use graph_embedding_util::type_annotation::{Abstain, MarkerBootstrapConfig};
 use legume_numeric::matrix::branching::max_branching;
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dmatrix_io::DMatrix;
@@ -205,15 +204,6 @@ pub fn run_lineage(args: &LineageArgs, inputs: &LineageInputs) -> Result<()> {
             num_perm: args.marker_num_perm,
             obo: args.marker_obo.as_deref(),
             label_cl: args.marker_label_cl.as_deref(),
-            bootstrap: (!args.no_bootstrap_markers).then_some(MarkerBootstrapConfig {
-                n_boot: args.marker_n_boot,
-                abstain: Abstain::Support(args.marker_min_support),
-                set_coverage: 0.8,
-                max_set_size: 3,
-                recluster: true,
-            }),
-            theta: &theta,
-            kmeans_iter: args.kmeans_iter,
             seed: args.seed,
         })?),
         _ => None,

@@ -23,8 +23,7 @@ use super::args::AnnotateProjectionArgs;
 use super::outputs::{clean_outputs, AnnotationOutputs, CLUSTER_TERM_Q};
 use anyhow::Result;
 use graph_embedding_util::type_annotation::{
-    annotate_embeddings_ora, Abstain, InputEmbeddings, MarkerBootstrapConfig, TermOraConfig,
-    TERM_ORA_OUTPUT_SUFFIXES,
+    annotate_embeddings_ora, InputEmbeddings, TermOraConfig, TERM_ORA_OUTPUT_SUFFIXES,
 };
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dense_mat_io::{Mat, MatWithNames};
@@ -78,19 +77,7 @@ pub fn run(
         ontology_by: args.ontology_by,
         panel_perm: 0,
         support_perm: 0,
-        // ON by default, as in `lupin annotate --method projection`: a bare `argmin` over marker centroids always
-        // returns something, and returns it with no error bar.
-        bootstrap: (args.n_boot > 0).then_some(MarkerBootstrapConfig {
-            n_boot: args.n_boot,
-            abstain: if args.abstain_separable {
-                Abstain::Separable(args.abstain_alpha)
-            } else {
-                Abstain::Support(args.min_support)
-            },
-            set_coverage: args.set_coverage,
-            max_set_size: args.max_set_size,
-            recluster: true,
-        }),
+        bootstrap: None,
     };
 
     annotate_embeddings_ora(
@@ -126,7 +113,6 @@ pub fn run(
         ontology_assignment: has_onto.then_some(onto_assign),
         ontology_node_mass: has_onto.then_some(onto_mass),
         cluster_term_q: written(CLUSTER_TERM_Q),
-        marker_support: written(".marker_support.parquet"),
         marker_embedding: written(".marker_embedding.parquet"),
         ..AnnotationOutputs::default()
     })

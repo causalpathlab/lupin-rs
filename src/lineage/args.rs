@@ -386,51 +386,6 @@ pub struct LineageArgs {
     pub marker_label_cl: Option<Box<str>>,
 
     #[arg(
-        long = "no-bootstrap-markers",
-        hide_short_help = true,
-        help_heading = "Marker annotation",
-        help = "[--markers] Turn OFF the stability bootstrap on the node calls",
-        long_help = "Turn OFF the stability bootstrap on the node calls,\n\
-                     naming each node by a bare point estimate.\n\
-                     \n\
-                     The bootstrap is ON by default.\n\
-                     Each draw resamples every type's marker panel with replacement AND re-derives the k-means grouping;\n\
-                     the consensus is what ships,\n\
-                     so a node's name carries the fraction of resamples that agreed on it.\n\
-                     \n\
-                     This matters most for --root-type,\n\
-                     which picks the trajectory root as the highest-confidence node of a given type.\n\
-                     Without the bootstrap that `confidence` is a softmaxed test statistic rather than a reproducibility —\n\
-                     and the whole trajectory hangs off it.\n\
-                     \n\
-                     Costs ~6 min at --marker-n-boot 200:\n\
-                     the replicate k-means has nothing to cache,\n\
-                     unlike `lupin annotate --method projection`'s kNN graph"
-    )]
-    pub no_bootstrap_markers: bool,
-
-    #[arg(
-        long,
-        default_value_t = 200,
-        hide_short_help = true,
-        help_heading = "Marker annotation",
-        help = "Bootstrap resamples on the node calls (--no-bootstrap-markers to disable)"
-    )]
-    pub marker_n_boot: usize,
-
-    #[arg(
-        long,
-        default_value_t = 0.5,
-        hide_short_help = true,
-        help_heading = "Marker annotation",
-        help = "[--markers] Minimum resample support for a node call",
-        long_help = "Minimum fraction of resamples the top label must win. Below it,\n\
-                     a node is not called at all.\n\
-                     --no-bootstrap-markers ignores this."
-    )]
-    pub marker_min_support: f32,
-
-    #[arg(
         long,
         value_enum,
         default_value_t = LayoutKind::Phate,

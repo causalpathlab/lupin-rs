@@ -13,22 +13,29 @@
 //!
 //! Pure: [`crate::manifest`] finds the ontology and the evidence.
 
+use crate::annotate::cl_rules::{Aliases, MatchRules};
 use crate::annotate::markers::label_key;
 use data_beans::alg::union_find::UnionFind;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// The Cell Ontology terms a panel is placed on: names, exact synonyms and
-/// `is_a` parents, from an OBO file.
+/// The Cell Ontology terms a panel is placed on: names, the synonyms the
+/// [`MatchRules`] count, and `is_a` parents, from an OBO file; plus curated
+/// [`Aliases`] checked before any name.
 #[derive(Default)]
 pub struct ClTerms {
-    /// Normalised name or exact synonym → term ids.
+    rules: MatchRules,
+    aliases: Aliases,
+    /// Normalised name or counted synonym → term ids.
     by_name: HashMap<String, BTreeSet<String>>,
+    /// The same names by [`word_bag`], for labels whose words come in
+    /// another order (`B cells memory` for `memory B cell`).
+    by_words: HashMap<String, BTreeSet<String>>,
     name_of: HashMap<String, String>,
     parents: HashMap<String, Vec<String>>,
-    /// Terms in the ontology's analysis subsets: its curated upper-level
-    /// slims (`*_upper_slim`) and `cellxgene_subset`, less the abstract
-    /// `upper_level` terms.
+    /// `is_a` children, the reverse of `parents`.
+    children: HashMap<String, Vec<String>>,
+    /// Terms in the analysis subsets the rules name (`ClassRules`).
     classes: BTreeSet<String>,
     /// The file's `data-version`, when it states one.
     pub release: Option<String>,
@@ -38,7 +45,7 @@ pub struct ClTerms {
 #[derive(Default)]
 struct Stanza {
     id: String,
-    /// The name first, then exact synonyms.
+    /// The name first, then the synonyms the rules count.
     names: Vec<String>,
     parents: Vec<String>,
     subsets: Vec<String>,
@@ -51,54 +58,46 @@ impl Stanza {
             return;
         }
         for n in &self.names {
-            terms
-                .by_name
-                .entry(normalise(n))
-                .or_default()
-                .insert(self.id.clone());
+            let n = terms.rules.normalise(n);
+            if terms.rules.any_word_order {
+                terms
+                    .by_words
+                    .entry(word_bag(&terms.rules.singular(&n)))
+                    .or_default()
+                    .insert(self.id.clone());
+            }
+            terms.by_name.entry(n).or_default().insert(self.id.clone());
         }
         if let Some(first) = self.names.first() {
             terms.name_of.insert(self.id.clone(), first.clone());
         }
-        let upper = self.subsets.iter().any(|s| s.ends_with("upper_level"));
-        let class = |s: &String| s.ends_with("_upper_slim") || s == "cellxgene_subset";
-        if !upper && self.subsets.iter().any(class) {
+        if terms.rules.classes.is_class(&self.subsets) {
             terms.classes.insert(self.id.clone());
         }
         terms.parents.insert(self.id, self.parents);
     }
 }
 
-/// How labels and CL names are compared: case, the separators
-/// [`label_key`] ignores (whitespace, `,`, `_`) and a plural `cells` do not
-/// matter.
-fn normalise(s: &str) -> String {
-    let mut s = label_key(&s.to_lowercase()).replace('_', " ");
-    if let Some(stem) = s.strip_suffix(" cells") {
-        s = format!("{stem} cell");
-    }
-    s
-}
-
-/// A normalised label with each plural word made singular: a trailing `s`
-/// dropped from words longer than three letters that do not end in `ss`.
-fn singular(normalised: &str) -> String {
-    normalised
-        .split(' ')
-        .map(|w| match w.strip_suffix('s') {
-            Some(stem) if w.len() > 3 && !stem.ends_with('s') => stem,
-            _ => w,
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+/// A normalised name's words, hyphenated ones split, in sorted order.
+fn word_bag(normalised: &str) -> String {
+    let mut words: Vec<&str> = normalised
+        .split([' ', '-'])
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.sort_unstable();
+    words.join(" ")
 }
 
 impl ClTerms {
-    /// Parse the `[Term]` stanzas of an OBO file: `id`, `name`, exact
-    /// synonyms, `is_a` parents and subsets; obsolete terms are skipped.
+    /// Parse the `[Term]` stanzas of an OBO file under `rules`: `id`, `name`,
+    /// the synonyms the rules count, `is_a` parents and subsets; obsolete
+    /// terms are skipped.
     #[must_use]
-    pub fn parse(obo: &str) -> Self {
-        let mut terms = ClTerms::default();
+    pub fn parse(obo: &str, rules: &MatchRules) -> Self {
+        let mut terms = ClTerms {
+            rules: rules.clone(),
+            ..ClTerms::default()
+        };
         let mut stanza: Option<Stanza> = None;
         for line in obo.lines() {
             let line = line.trim();
@@ -125,7 +124,11 @@ impl ClTerms {
                 if let (Some(""), Some(text), Some(rest)) =
                     (parts.next(), parts.next(), parts.next())
                 {
-                    if rest.trim_start().starts_with("EXACT") {
+                    // `SCOPE [TYPE…] [xrefs]`: the rules say which count.
+                    let mut words = rest.split_whitespace();
+                    let scope = words.next().unwrap_or_default();
+                    let types: Vec<&str> = words.take_while(|w| !w.starts_with('[')).collect();
+                    if terms.rules.counts(scope, &types) {
                         t.names.push(text.to_string());
                     }
                 }
@@ -142,6 +145,21 @@ impl ClTerms {
         if let Some(t) = stanza {
             t.add_to(&mut terms);
         }
+        for (child, parents) in &terms.parents {
+            for p in parents {
+                terms
+                    .children
+                    .entry(p.clone())
+                    .or_default()
+                    .push(child.clone());
+            }
+        }
+        for kids in terms.children.values_mut() {
+            kids.sort_by(|a, b| {
+                let name = |id: &String| terms.name_of.get(id).cloned().unwrap_or_default();
+                name(a).cmp(&name(b))
+            });
+        }
         terms
     }
 
@@ -156,8 +174,9 @@ impl ClTerms {
     }
 
     /// Match panel labels to terms by name or exact synonym, as written or
-    /// with plural words made singular. A label that matches no term, or
-    /// several, stays unmapped rather than guessed.
+    /// with plural words made singular, else by the same words in any order
+    /// (hyphens as spaces). A label that matches no term, or several, stays
+    /// unmapped rather than guessed.
     #[must_use]
     pub fn map_labels<'a>(
         &self,
@@ -166,12 +185,19 @@ impl ClTerms {
         let mut mapped = BTreeMap::new();
         let mut unmapped = Vec::new();
         for label in labels {
+            // A curated alias first, when its term is in this ontology.
+            if let Some(id) = self.aliases.get(label).filter(|id| self.has(id)) {
+                mapped.insert(label.to_string(), id.to_string());
+                continue;
+            }
             // As written, else with plural words made singular.
-            let exact = normalise(label);
+            let exact = self.rules.normalise(label);
+            let single = self.rules.singular(&exact);
             let found = self
                 .by_name
                 .get(&exact)
-                .or_else(|| self.by_name.get(&singular(&exact)));
+                .or_else(|| self.by_name.get(&single))
+                .or_else(|| self.by_words.get(&word_bag(&single)));
             match found {
                 Some(ids) if ids.len() == 1 => {
                     mapped.insert(
@@ -185,8 +211,83 @@ impl ClTerms {
         (mapped, unmapped)
     }
 
+    /// Check `aliases` before any name when matching labels.
+    #[must_use]
+    pub fn with_aliases(mut self, aliases: Aliases) -> Self {
+        self.aliases = aliases;
+        self
+    }
+
+    /// Whether `id` is a term of the ontology.
+    #[must_use]
+    pub fn has(&self, id: &str) -> bool {
+        self.name_of.contains_key(id)
+    }
+
+    /// `id`'s `is_a` parents.
+    #[must_use]
+    pub fn parents(&self, id: &str) -> &[String] {
+        self.parents.get(id).map_or(&[], Vec::as_slice)
+    }
+
+    /// `id`'s `is_a` children, by name.
+    #[must_use]
+    pub fn children(&self, id: &str) -> &[String] {
+        self.children.get(id).map_or(&[], Vec::as_slice)
+    }
+
+    /// `id` and a chain of first-listed parents up to a term with none, top first.
+    #[must_use]
+    pub fn lineage(&self, id: &str) -> Vec<String> {
+        let mut out = vec![id.to_string()];
+        while let Some(p) = self.parents(out.last().map_or(id, String::as_str)).first() {
+            if out.contains(p) {
+                break;
+            }
+            out.push(p.clone());
+        }
+        out.reverse();
+        out
+    }
+
+    /// Terms whose name, exact synonym or abbreviation contains `query`
+    /// (compared as [`normalise`]d), those matching whole first, then by
+    /// name length; at most `limit`.
+    #[must_use]
+    pub fn search(&self, query: &str, limit: usize) -> Vec<String> {
+        let q = self.rules.normalise(query);
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let mut hits: BTreeMap<String, (bool, usize)> = BTreeMap::new();
+        for (name, ids) in &self.by_name {
+            if !name.contains(&q) {
+                continue;
+            }
+            for id in ids {
+                let len = self.name_of.get(id).map_or(usize::MAX, String::len);
+                let e = hits.entry(id.clone()).or_insert((false, len));
+                e.0 |= *name == q;
+            }
+        }
+        let mut v: Vec<(String, (bool, usize))> = hits.into_iter().collect();
+        v.sort_by(|a, b| {
+            b.1 .0
+                .cmp(&a.1 .0)
+                .then(a.1 .1.cmp(&b.1 .1))
+                .then(a.0.cmp(&b.0))
+        });
+        v.into_iter().take(limit).map(|(id, _)| id).collect()
+    }
+
+    /// Whether `id` is one of the ontology's analysis classes.
+    #[must_use]
+    pub(crate) fn is_class(&self, id: &str) -> bool {
+        self.classes.contains(id)
+    }
+
     /// `id` and every term above it by `is_a`.
-    fn ancestors_or_self(&self, id: &str) -> BTreeSet<String> {
+    pub(crate) fn ancestors_or_self(&self, id: &str) -> BTreeSet<String> {
         let mut seen = BTreeSet::new();
         let mut stack = vec![id.to_string()];
         while let Some(t) = stack.pop() {
@@ -358,7 +459,7 @@ impl TypeTree {
 }
 
 /// The panel's cell types, in first-seen order, one per scoring name.
-fn panel_types(panel: &[(String, String)]) -> Vec<String> {
+pub(crate) fn panel_types(panel: &[(String, String)]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     panel
         .iter()
@@ -488,15 +589,13 @@ fn attach_by_sharing(
 
 /// A cluster's coarse call from its evidence: per group (via
 /// [`TypeTree::index`]), the cluster's shares for the group's types summed,
-/// when there are any (`types` and their `values`), and the best group called
-/// only if its share reaches `min_share`; otherwise the group most of its
-/// cells' fine labels fall in.
+/// when there are any (`types` and their `values`), else the cells' fine
+/// labels counted per group; the group with the most called.
 #[must_use]
 pub fn coarse_call(
     index: &HashMap<String, &str>,
     probs: Option<(&[String], &[f32])>,
     cell_labels: &[&str],
-    min_share: f32,
 ) -> Option<String> {
     let group = |t: &str| index.get(&label_key(t)).copied();
     let mut mass: BTreeMap<&str, f32> = BTreeMap::new();
@@ -521,9 +620,8 @@ pub fn coarse_call(
             }
         }
     }
-    let floor = if probs.is_some() { min_share } else { 0.0 };
     mass.into_iter()
-        .filter(|(_, m)| *m > 0.0 && *m >= floor)
+        .filter(|(_, m)| *m > 0.0)
         .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(a.0)))
         .map(|(g, _)| g.to_string())
 }

@@ -2,15 +2,18 @@
 //! expression matrix (NB-Fisher adjusted, re-aggregated from raw counts by the
 //! caller — see [`crate::manifest::annotate`]).
 
-use super::args::{
-    AnnotateArgs, BOOT_NUM_DRAWS, KEEP_IEA, MAX_GENE_SET, MIN_CONFIDENCE, MIN_GENE_SET, NUM_DRAWS,
-};
+use super::args::{AnnotateArgs, KEEP_IEA, MAX_GENE_SET, MIN_CONFIDENCE, MIN_GENE_SET, NUM_DRAWS};
 use super::inputs::EnrichmentInputs;
 use super::outputs::{clean_outputs, AnnotationOutputs, ENRICHMENT_OUTPUT_SUFFIXES};
-use super::outputs::{ARGMAX_TSV, CLUSTER_CELLTYPE_Q_VALUES};
-use enrichment::consensus::{Abstain, UNASSIGNED};
-use enrichment::marker_bootstrap::{ClusterBootstrap, EnrichmentBootstrapConfig};
-use enrichment::{annotate, AnnotateConfig, AnnotateOutputs, GroupInputs, SpecificityMode};
+use super::outputs::{
+    write_cluster_tables, ARGMAX_TSV, CLUSTER_CELLTYPE_ES, CLUSTER_CELLTYPE_ES_STD,
+    CLUSTER_CELLTYPE_NES, CLUSTER_CELLTYPE_P, CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES,
+    CLUSTER_CELLTYPE_Z,
+};
+use enrichment::{
+    annotate, annotate_types, AnnotateConfig, AnnotateOutputs, GroupInputs, SpecificityMode,
+    TypeScores,
+};
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dense_mat_io::{axis_id_names, Mat};
 use legume_numeric::matrix::traits::IoOps;
@@ -94,10 +97,47 @@ pub fn sample_perm_draws(n_batches: usize, requested: usize) -> usize {
 
 /// The marker-path scoring of one enrichment pass: marker enrichment per
 /// cluster against the gene-set null (and the sample-permutation null with
-/// enough batches), FDR, and the marker bootstrap when `args.n_boot > 0`.
+/// enough batches), and FDR.
 /// Writes nothing; [`run`] writes the outputs, and a relabel round rescores
 /// through this on its merged clusters and edited panel.
 pub fn score(args: &AnnotateArgs, inputs: &EnrichmentInputs) -> anyhow::Result<AnnotateOutputs> {
+    let (group, markers_gc, config) = prepare(args, inputs)?;
+    info!(
+        "Running cluster × marker enrichment: {} clusters × {} celltypes, \
+         row-rand B={}, sample-perm B={}",
+        inputs.n_clusters,
+        inputs.celltype_names.len(),
+        NUM_DRAWS,
+        args.num_perm,
+    );
+    annotate(&group, &markers_gc, &inputs.celltype_names, &config)
+}
+
+/// [`score`] for the cell types `types` (indices into
+/// `inputs.celltype_names`) alone: their columns exactly as `score` gives
+/// them, with the weighted panel and config to finish the rows with
+/// [`enrichment::adjust`] once the other types' p-values are known.
+pub fn score_types(
+    args: &AnnotateArgs,
+    inputs: &EnrichmentInputs,
+    types: &[usize],
+) -> anyhow::Result<(TypeScores, Mat, AnnotateConfig)> {
+    let (group, markers_gc, config) = prepare(args, inputs)?;
+    info!(
+        "Rescoring {} of {} celltype(s) over {} clusters",
+        types.len(),
+        inputs.celltype_names.len(),
+        inputs.n_clusters,
+    );
+    let scores = annotate_types(&group, &markers_gc, &inputs.celltype_names, &config, types)?;
+    Ok((scores, markers_gc, config))
+}
+
+/// The enrichment's inputs, weighted panel and config for `inputs`.
+pub fn prepare(
+    args: &AnnotateArgs,
+    inputs: &EnrichmentInputs,
+) -> anyhow::Result<(GroupInputs, Mat, AnnotateConfig)> {
     let n_clusters = inputs.n_clusters;
     let n_batches = inputs.n_batches;
     let profile_gk = &inputs.profile_gk;
@@ -163,32 +203,14 @@ pub fn score(args: &AnnotateArgs, inputs: &EnrichmentInputs) -> anyhow::Result<A
         seed: args.seed,
         min_markers: args.min_markers,
         stratify_null: true,
-        // ON by default, as in `lupin annotate --method projection`. A single pass over one marker panel always
-        // returns a winner, and returns it with a softmaxed `confidence` that says nothing
-        // about whether the panel could have said otherwise.
-        bootstrap: (args.n_boot > 0).then_some(EnrichmentBootstrapConfig {
-            n_boot: args.n_boot,
-            abstain: if args.abstain_separable {
-                Abstain::Separable(args.abstain_alpha)
-            } else {
-                Abstain::Support(args.min_support)
-            },
-            set_coverage: args.set_coverage,
-            max_set_size: args.max_set_size,
-            boot_num_draws: BOOT_NUM_DRAWS,
-        }),
+        bootstrap: None,
+        // The plain permutation p of the gene-set null's draws (floor 1 / (NUM_DRAWS + 1)).
+        multilevel: None,
+        // TreeBH over the panel's cell-type tree; flat BH within the cluster without one.
+        type_tree: inputs.type_tree.clone(),
     };
 
-    info!(
-        "Running cluster × marker enrichment: {} clusters × {} celltypes, \
-         row-rand B={}, sample-perm B={}",
-        n_clusters,
-        inputs.celltype_names.len(),
-        NUM_DRAWS,
-        args.num_perm,
-    );
-
-    annotate(&group, &markers_gc, &inputs.celltype_names, &config)
+    Ok((group, markers_gc, config))
 }
 
 pub fn run(
@@ -224,12 +246,15 @@ pub fn run(
         q_kc,
         es_kc,
         es_restandardized_kc,
+        nes_kc,
+        z_kc,
+        p_log2err_kc: _,
         perm_z_kc,
         pvalue_kc,
         qvalue_kc,
         cell_annotation_nc,
         argmax_labels,
-        bootstrap,
+        bootstrap: _,
     } = score(args, inputs)?;
 
     /////////////
@@ -267,61 +292,31 @@ pub fn run(
         graph_embedding_util::type_annotation::write_label_tsvs(out, &cells, &labels, &probs)?;
     }
 
-    let q_path = format!("{out}.cluster_celltype_q.parquet");
-    q_kc.to_parquet_with_names(
-        &q_path,
-        (Some(&cluster_names), Some("cluster")),
-        Some(&inputs.celltype_names),
+    let written = write_cluster_tables(
+        out,
+        &cluster_names,
+        &inputs.celltype_names,
+        &[
+            (&q_kc, CLUSTER_CELLTYPE_Q),
+            (&es_kc, CLUSTER_CELLTYPE_ES),
+            (&es_restandardized_kc, CLUSTER_CELLTYPE_ES_STD),
+            (&nes_kc, CLUSTER_CELLTYPE_NES),
+            (&z_kc, CLUSTER_CELLTYPE_Z),
+            (&pvalue_kc, CLUSTER_CELLTYPE_P),
+            (&qvalue_kc, CLUSTER_CELLTYPE_Q_VALUES),
+        ],
     )?;
-    info!("wrote {q_path}");
-
-    let es_path = format!("{out}.cluster_celltype_es.parquet");
-    es_kc.to_parquet_with_names(
-        &es_path,
-        (Some(&cluster_names), Some("cluster")),
-        Some(&inputs.celltype_names),
-    )?;
-    info!("wrote {es_path}");
-
-    let es_std_path = format!("{out}.cluster_celltype_es_std.parquet");
-    es_restandardized_kc.to_parquet_with_names(
-        &es_std_path,
-        (Some(&cluster_names), Some("cluster")),
-        Some(&inputs.celltype_names),
-    )?;
-
+    let [q_path, es_path, _, nes_path, _, p_path, q_val_path] =
+        <[String; 7]>::try_from(written).map_err(|_| anyhow::anyhow!("seven tables written"))?;
     // Correlation-preserving sample-permutation z (when num_perm > 0): the
     // preferred ontology input — graded, unlike the pooled p-value.
     if let Some(pz) = &perm_z_kc {
-        let perm_z_path = format!("{out}.cluster_celltype_perm_z.parquet");
-        pz.to_parquet_with_names(
-            &perm_z_path,
-            (Some(&cluster_names), Some("cluster")),
-            Some(&inputs.celltype_names),
+        write_cluster_tables(
+            out,
+            &cluster_names,
+            &inputs.celltype_names,
+            &[(pz, ".cluster_celltype_perm_z.parquet")],
         )?;
-    }
-
-    let p_path = format!("{out}.cluster_celltype_p.parquet");
-    pvalue_kc.to_parquet_with_names(
-        &p_path,
-        (Some(&cluster_names), Some("cluster")),
-        Some(&inputs.celltype_names),
-    )?;
-
-    let q_val_path = format!("{out}{CLUSTER_CELLTYPE_Q_VALUES}");
-    qvalue_kc.to_parquet_with_names(
-        &q_val_path,
-        (Some(&cluster_names), Some("cluster")),
-        Some(&inputs.celltype_names),
-    )?;
-
-    // The bootstrap's own artifacts. The K x C matrices above are NOT withheld under the
-    // bootstrap — they are a different granularity in a different file, and the ontology layer
-    // below consumes them. What the bootstrap replaces is the per-CELL story: `argmax_labels`
-    // now carries `cluster_label_support` instead of a softmaxed test statistic, and
-    // `cell_annotation_nc` is the consensus distribution. Both were swapped inside `annotate`.
-    if let Some(boot) = &bootstrap {
-        write_bootstrap_outputs(out, boot, &cluster_names, &inputs.celltype_names)?;
     }
 
     display_annotation_histogram(&cell_annotation_nc, &inputs.celltype_names);
@@ -359,6 +354,8 @@ pub fn run(
     info!("annotate --method enrichment complete");
     Ok(AnnotationOutputs {
         cluster_celltype_q_values: Some(q_val_path),
+        cluster_celltype_p: Some(p_path),
+        cluster_celltype_nes: Some(nes_path),
         argmax: Some(argmax_path),
         annotation: Some(annotation_path),
         cluster_celltype_q: Some(q_path),
@@ -366,10 +363,6 @@ pub fn run(
         cluster_expression: Some(cell_expr_path),
         ontology_assignment: ontology_assign,
         ontology_node_mass: ontology_mass,
-        cluster_celltype_support: {
-            let p = format!("{out}.cluster_celltype_support.parquet");
-            std::path::Path::new(&p).exists().then_some(p)
-        },
         ..AnnotationOutputs::default()
     })
 }
@@ -542,142 +535,6 @@ fn build_pb_membership(
         }
     }
     out
-}
-
-/////////////////////////
-// bootstrap artifacts //
-/////////////////////////
-
-/// Write what the marker bootstrap learned: the per-cluster consensus distribution, a per-cluster
-/// QC row, and a per-celltype QC row.
-///
-/// These are all keyed by **cluster** or by **celltype**, never by cell — on this path a cell's
-/// call is its cluster's call, and reporting a per-cell support would be inventing resolution the
-/// method does not have. See `enrichment::marker_bootstrap`'s module doc.
-fn write_bootstrap_outputs(
-    out: &str,
-    boot: &ClusterBootstrap,
-    cluster_names: &[Box<str>],
-    celltype_names: &[Box<str>],
-) -> anyhow::Result<()> {
-    use anyhow::Context;
-    use std::io::Write;
-
-    let k = cluster_names.len();
-    let c = boot.c;
-    let width = c + 1; // the trailing `unassigned` column
-
-    ///////////////////////////////////////////////////////////////////////
-    // K x (C+1): what the resamples actually said about each cluster.   //
-    ///////////////////////////////////////////////////////////////////////
-    let support_path = format!("{out}.cluster_celltype_support.parquet");
-    let mut support = Mat::zeros(k, width);
-    for kk in 0..k {
-        for j in 0..width {
-            support[(kk, j)] = boot.consensus.post[kk * width + j];
-        }
-    }
-    let mut support_cols: Vec<Box<str>> = celltype_names.to_vec();
-    support_cols.push(Box::from(enrichment::UNASSIGNED_LABEL));
-    support.to_parquet_with_names(
-        &support_path,
-        (Some(cluster_names), Some("cluster")),
-        Some(&support_cols),
-    )?;
-    info!("wrote {support_path}");
-
-    ///////////////////////////////////////////////////////
-    // Per-cluster: the call, the set, and its stability //
-    ///////////////////////////////////////////////////////
-    let qc_path = format!("{out}.cluster_qc.tsv");
-    let mut f = std::fs::File::create(&qc_path).with_context(|| format!("creating {qc_path}"))?;
-    writeln!(
-        f,
-        "cluster\tconsensus_label\tlabel_set\tsupport\tset_support\tentropy\tdecision_gap\tn_draws"
-    )?;
-    let name_of = |t: usize| -> &str {
-        if t == UNASSIGNED {
-            enrichment::UNASSIGNED_LABEL
-        } else {
-            &celltype_names[t]
-        }
-    };
-    for (kk, cname) in cluster_names.iter().enumerate() {
-        // The set is printed in canonical celltype order, NOT support order: a label's position
-        // should not shift between runs because two shares swapped by 0.01.
-        let mut set: Vec<usize> = boot.consensus.label_set[kk].clone();
-        set.sort_unstable();
-        let set_str = if set.is_empty() {
-            String::from("-")
-        } else {
-            set.iter()
-                .map(|&t| celltype_names[t].to_string())
-                .collect::<Vec<_>>()
-                .join("/")
-        };
-        writeln!(
-            f,
-            "{cname}\t{}\t{set_str}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}",
-            name_of(boot.consensus.label[kk]),
-            boot.consensus.support[kk],
-            boot.consensus.set_support[kk],
-            boot.consensus.entropy[kk],
-            boot.decision_gap[kk],
-            boot.n_draws,
-        )?;
-    }
-    info!("wrote {qc_path}");
-
-    ////////////////////////////////////////////////////////////////////////
-    // Per-celltype: is this panel even in a state to be bootstrapped?    //
-    ////////////////////////////////////////////////////////////////////////
-    let type_qc_path = format!("{out}.type_qc.tsv");
-    let mut f =
-        std::fs::File::create(&type_qc_path).with_context(|| format!("creating {type_qc_path}"))?;
-    writeln!(
-        f,
-        "cell_type\tn_live\tusable\tmean_es_std_sd\tclusters_won\tmean_support_where_won"
-    )?;
-    for (cc, name) in celltype_names.iter().enumerate() {
-        let jitter: f32 =
-            (0..k).map(|kk| boot.es_std_sd[(kk, cc)]).sum::<f32>() / (k.max(1) as f32);
-        let won: Vec<usize> = (0..k)
-            .filter(|&kk| boot.consensus.label[kk] == cc)
-            .collect();
-        let mean_support = if won.is_empty() {
-            0.0
-        } else {
-            won.iter()
-                .map(|&kk| boot.consensus.support[kk])
-                .sum::<f32>()
-                / won.len() as f32
-        };
-        writeln!(
-            f,
-            "{name}\t{}\t{}\t{:.4}\t{}\t{:.4}",
-            boot.n_live[cc],
-            boot.usable[cc],
-            jitter,
-            won.len(),
-            mean_support,
-        )?;
-    }
-    info!("wrote {type_qc_path}");
-
-    let called = boot
-        .consensus
-        .label
-        .iter()
-        .filter(|&&t| t != UNASSIGNED)
-        .count();
-    info!(
-        "marker bootstrap: {called}/{k} clusters called over {} resamples \
-         (mean cluster_label_support {:.2}); {} celltype(s) unusable",
-        boot.n_draws,
-        boot.consensus.support.iter().sum::<f32>() / (k.max(1) as f32),
-        boot.usable.iter().filter(|&&u| !u).count(),
-    );
-    Ok(())
 }
 
 fn display_annotation_histogram(annot: &Mat, annot_names: &[Box<str>]) {

@@ -10,10 +10,8 @@ pub const MAX_GENE_SET: usize = 500;
 pub const KEEP_IEA: bool = true;
 /// Cells per block when streaming the raw counts.
 pub const BLOCK_SIZE: usize = 1024;
-/// Random gene sets for the enrichment restandardization moments.
-pub const NUM_DRAWS: usize = 1000;
-/// Random gene sets per bootstrap draw for the restandardization moments.
-pub const BOOT_NUM_DRAWS: usize = 100;
+/// Random gene sets in the gene-set null: its p-values go no lower than `1 / (NUM_DRAWS + 1)`.
+pub const NUM_DRAWS: usize = 10_000;
 /// Minimum per-cell label confidence (0 = keep every call).
 pub const MIN_CONFIDENCE: f32 = 0.0;
 
@@ -26,13 +24,16 @@ pub fn fixed_settings() -> serde_json::Value {
         "keep_iea": KEEP_IEA,
         "block_size": BLOCK_SIZE,
         "num_draws": NUM_DRAWS,
-        "boot_num_draws": BOOT_NUM_DRAWS,
         "min_confidence": MIN_CONFIDENCE,
         "empirical_specificity": true,
         "gene_strata": true,
         "recluster": true,
         "panel_perm": 0,
         "support_perm": 0,
+        "effect": "nes",
+        "share": "softmax of z = probit(1 - p) over the FDR survivors",
+        "p": "gene-set null permutation p (fgsea sign-aware)",
+        "q": "treebh over the panel's cell-type tree",
     })
 }
 
@@ -101,25 +102,6 @@ pub struct AnnotateArgs {
 
     /// Ontology TreeBH: Benjamini–Yekutieli within families (any dependence; more conservative)
     pub ontology_by: bool,
-
-    // ── marker-panel stability bootstrap ──
-    /// Bootstrap resamples (0 disables the bootstrap)
-    pub n_boot: usize,
-
-    /// Minimum fraction of resamples the top label must win for a cluster to be called
-    pub min_support: f32,
-
-    /// Abstain by a sign test instead of the `min_support` threshold
-    pub abstain_separable: bool,
-
-    /// Significance level of the `abstain_separable` sign test
-    pub abstain_alpha: f64,
-
-    /// Coverage of the reported `label_set` (the mixed annotation)
-    pub set_coverage: f32,
-
-    /// Largest `label_set` worth printing (a 4-way tie is not an annotation)
-    pub max_set_size: usize,
 }
 
 /// `lupin annotate --method projection` — firm marker-set annotation by projection
@@ -177,24 +159,6 @@ pub struct AnnotateProjectionArgs {
 
     /// Ontology TreeBH: Benjamini–Yekutieli within families (any dependence; more conservative)
     pub ontology_by: bool,
-
-    /// Bootstrap resamples (0 disables the bootstrap)
-    pub n_boot: usize,
-
-    /// Minimum fraction of resamples the top label must win to be called
-    pub min_support: f32,
-
-    /// Abstain by a sign test instead of the `min_support` threshold
-    pub abstain_separable: bool,
-
-    /// Significance level of the `abstain_separable` sign test
-    pub abstain_alpha: f64,
-
-    /// Coverage of the reported `label_set` (the mixed annotation)
-    pub set_coverage: f32,
-
-    /// Largest `label_set` worth printing (a 4-way tie is not an annotation)
-    pub max_set_size: usize,
 
     /// Keep existing {out}.* projection outputs (default: erase the explicit set first)
     pub no_clean: bool,
