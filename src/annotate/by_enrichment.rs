@@ -134,7 +134,7 @@ pub fn score_types(
 }
 
 /// The enrichment's inputs, weighted panel and config for `inputs`.
-fn prepare(
+pub fn prepare(
     args: &AnnotateArgs,
     inputs: &EnrichmentInputs,
 ) -> anyhow::Result<(GroupInputs, Mat, AnnotateConfig)> {

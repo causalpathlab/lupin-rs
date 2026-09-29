@@ -421,7 +421,7 @@ impl App {
                         self.scored_for = want.clone();
                         match out.ok().filter(|_| st.success()) {
                             Some(json) => self.show_scores(&json),
-                            None => self.status = "rescoring failed; see the log".into(),
+                            None => self.rescore_failed("rescoring failed; see the log"),
                         }
                     }
                 }
@@ -442,13 +442,18 @@ impl App {
             self.scored_for.clear();
             return;
         }
+        if !round.rescorable {
+            self.scored_for = want;
+            self.status = "this round cached no statistics: marker edits are scored on save".into();
+            return;
+        }
         let file = std::env::temp_dir().join(format!(
             "lupin-rescore-{}-{}.jsonl",
             std::process::id(),
             self.edits.len()
         ));
         let started = (|| -> anyhow::Result<_> {
-            let lines: Vec<String> = decisions(&want, round)
+            let lines: Vec<String> = decisions(&want, round, None)
                 .iter()
                 .map(serde_json::to_string)
                 .collect::<Result<_, _>>()?;
@@ -456,8 +461,9 @@ impl App {
             runner::spawn_preview(&round.manifest, &file, self.log_tx.clone())
         })();
         match started {
+            // The table's title says it is rescoring; the status keeps what
+            // the edit said.
             Ok((child, out)) => {
-                self.status = "rescoring the edited types…".into();
                 self.rescoring = Some(Rescoring {
                     child,
                     out,
@@ -474,22 +480,29 @@ impl App {
 
     /// Show a preview's rescored candidates, keeping the round's own.
     fn show_scores(&mut self, json: &str) {
-        let Some(round) = &mut self.round else { return };
-        let scores = serde_json::from_str::<serde_json::Value>(json)
-            .ok()
-            .as_ref()
-            .and_then(super::round::parse_scores);
-        let Some(scores) = scores else {
-            self.status =
-                "this round cannot be rescored (no cached statistics): save to rescore".into();
-            return;
+        let scores = match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(v) => super::round::parse_scores(&v),
+            Err(_) => return self.rescore_failed("rescoring gave no readable result; see the log"),
         };
+        let Some(scores) = scores else {
+            return self
+                .rescore_failed("this round cannot be rescored: marker edits are scored on save");
+        };
+        let Some(round) = &mut self.round else { return };
         let old = round.swap_scores(scores);
         // The round's own are what is kept, across several rescorings.
         if self.recorded.is_none() {
             self.recorded = Some(old);
         }
-        self.status = "rescored with your marker edits".into();
+    }
+
+    /// Say why, and show the round's own scores again rather than ones the
+    /// edits have moved past.
+    fn rescore_failed(&mut self, why: &str) {
+        if let (Some(round), Some(old)) = (&mut self.round, self.recorded.take()) {
+            round.swap_scores(old);
+        }
+        self.status = why.into();
     }
 
     fn stop_rescoring(&mut self) {
@@ -645,10 +658,12 @@ impl App {
             Some(t) => format!("keep {label} ({})", evidence(t)),
             None => format!("keep {label}"),
         };
+        let id = c.id;
+        let reason = self.rescored_note(reason);
         self.prompt = Some(Prompt {
-            title: format!(" K{} keeps {label}: why? ", c.id),
+            title: format!(" K{id} keeps {label}: why? "),
             text: reason,
-            pending: Pending::Keep { cluster: c.id },
+            pending: Pending::Keep { cluster: id },
         });
     }
 
@@ -695,6 +710,15 @@ impl App {
         }
     }
 
+    /// How many of the edits a running save is writing: those stay as they
+    /// are until it is done.
+    fn saving(&self) -> usize {
+        match self.child.as_ref().map(|c| c.2) {
+            Some(Job::Save(n)) => n.min(self.edits.len()),
+            _ => 0,
+        }
+    }
+
     /// Whether a pass is running, which is about to replace the clusters.
     fn pass_running(&self) -> bool {
         self.child.as_ref().is_some_and(|c| c.2 == Job::Pass)
@@ -714,7 +738,7 @@ impl App {
         }
         let file = decisions_file(&round.manifest);
         let written = (|| -> anyhow::Result<()> {
-            let lines: Vec<String> = decisions(&self.edits, round)
+            let lines: Vec<String> = decisions(&self.edits, round, self.recorded.as_ref())
                 .iter()
                 .map(serde_json::to_string)
                 .collect::<Result<_, _>>()?;
@@ -804,7 +828,17 @@ impl App {
             ),
             _ => format!("top candidate {} ({})", pick.label, evidence(&pick)),
         };
+        let reason = self.rescored_note(reason);
         self.ask_label(pick.label, reason, None);
+    }
+
+    /// `reason`, noting when the numbers it quotes are a rescoring's.
+    fn rescored_note(&self, reason: String) -> String {
+        if self.recorded.is_some() {
+            format!("{reason}; rescored with the marker edits")
+        } else {
+            reason
+        }
     }
 
     /// Label the selected cluster by tree node `i`.
@@ -831,6 +865,25 @@ impl App {
             None => "no candidate".into(),
         };
         self.ask_label(UNASSIGNED_LABEL.into(), reason, None);
+    }
+
+    /// Drop the last marker edit not being saved.
+    fn undo_marker(&mut self) {
+        let saving = self.saving();
+        let last = self.edits[saving..]
+            .iter()
+            .rposition(|e| matches!(e, Edit::Markers { .. }))
+            .map(|i| i + saving);
+        self.status = match last.map(|i| self.edits.remove(i)) {
+            Some(Edit::Markers {
+                label, genes, add, ..
+            }) => format!(
+                "undid {} {} {label}'s markers",
+                if add { "adding" } else { "dropping" },
+                genes.join(", ")
+            ),
+            _ => "no marker edit to undo".into(),
+        };
     }
 
     /// Drop the selected cluster's edits.
@@ -1062,7 +1115,8 @@ impl App {
                     }
                     Pending::Markers { label, genes, add } => {
                         let moved = if add {
-                            super::round::take_added(&mut self.edits, &genes, &label)
+                            let saving = self.saving();
+                            super::round::take_added(&mut self.edits, saving, &genes, &label)
                         } else {
                             Vec::new()
                         };
@@ -1283,6 +1337,7 @@ impl App {
                         self.gene_sel = 0;
                     }
                     KeyCode::Char('d') => self.ask_markers(false),
+                    KeyCode::Backspace | KeyCode::Delete => self.undo_marker(),
                     KeyCode::Char('m') => {
                         self.gene_view = match self.gene_view {
                             GeneView::Specific => GeneView::Markers,

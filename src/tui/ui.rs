@@ -122,6 +122,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
                 "add as markers of any cell type (a new name makes a new type), then offer to label the cluster with it",
             ),
             ("d", "drop from the label's markers"),
+            ("⌫", "undo the last marker edit"),
             ("x / X", "hide the genes / hide by pattern (MT-*)"),
             ("H", "show hidden genes"),
         ],
@@ -369,14 +370,7 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
                 Cell::from("→"),
                 Cell::from(Line::from(vec![
                     Span::from(l.to_string()).bold(),
-                    Span::from(if app.recorded.is_some() {
-                        " · no call with your markers"
-                    } else if app.rescoring.is_some() {
-                        " · rescoring…"
-                    } else {
-                        " · scored on save"
-                    })
-                    .dim(),
+                    Span::from(pinned_note(app, l, share)).dim(),
                 ])),
                 Cell::from(share.map_or_else(|| "—".into(), |s| format!("{s:.2}"))),
                 Cell::from(share.map(bar).unwrap_or_default()),
@@ -427,6 +421,19 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             .title_bottom(Line::from(format!(" {} ", path.unwrap_or_default())).cyan()),
     );
     f.render_widget(t, area);
+}
+
+/// Why a cluster's label is not among its candidates.
+fn pinned_note(app: &App, label: &str, share: Option<f32>) -> &'static str {
+    let edited = app.edits.iter().any(|e| {
+        matches!(e, super::round::Edit::Markers { label: l, .. } if label_key(l) == label_key(label))
+    });
+    match share {
+        Some(s) if s > 0.0 => " · below the top candidates",
+        _ if app.rescoring.is_some() => " · rescoring…",
+        _ if edited && app.recorded.is_none() => " · scored on save",
+        _ => " · not called (did not pass FDR)",
+    }
 }
 
 fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
@@ -780,9 +787,9 @@ fn draw_prompt(f: &mut Frame, app: &App) {
     let question = p.title.trim();
     let answer = format!("{}▏", p.text);
     let want = question.chars().count().max(answer.chars().count()) as u16 + 4;
-    let width = want
-        .clamp(screen.width.min(60), screen.width * 9 / 10)
-        .min(screen.width);
+    // At least 60 columns (or the screen), at most 90% of the screen.
+    let lo = screen.width.min(60);
+    let width = want.clamp(lo, (screen.width * 9 / 10).max(lo));
     let inner = width.saturating_sub(2).max(1) as usize;
     // Word wrapping can take a row more than the characters alone.
     let rows = |t: &str| {

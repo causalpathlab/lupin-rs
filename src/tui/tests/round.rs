@@ -37,6 +37,7 @@ fn round() -> RoundView {
         markers: BTreeMap::from([("T".into(), BTreeSet::from(["CD3E".into()]))]),
         loose_cells: 1,
         decided: BTreeSet::new(),
+        rescorable: false,
     }
 }
 
@@ -89,7 +90,7 @@ fn edits_become_one_decision_per_cluster_after_the_marker_edits() {
         },
         relabel(1, "lymph"),
     ];
-    let d = decisions(&edits, &r);
+    let d = decisions(&edits, &r, None);
     assert_eq!(d.len(), 2);
     assert_eq!(d[0].action.as_str(), "markers_add");
     assert_eq!(d[0].features, ["MS4A1"]);
@@ -142,7 +143,7 @@ fn a_labels_markers_follow_the_edits_in_order() {
         markers(false, &["CD3E", "CD5"]),
     ];
     assert_eq!(r.markers_of("T", &edits), [("CD2".to_string(), true)]);
-    let d = decisions(&edits, &r);
+    let d = decisions(&edits, &r, None);
     assert_eq!(d[1].action.as_str(), "markers_drop");
     assert_eq!(d[1].features, ["CD3E", "CD5"]);
 }
@@ -178,7 +179,7 @@ fn keeping_a_label_is_a_decision_that_undoes_an_earlier_relabel() {
         "back to the round's label"
     );
     assert_eq!(keep.cluster(), Some(0));
-    let d = decisions(&edits, &r);
+    let d = decisions(&edits, &r, None);
     assert_eq!(d.len(), 1, "one decision per cluster: the last");
     assert_eq!(d[0].action.as_str(), "keep");
     assert_eq!(d[0].cluster, [0]);
@@ -208,7 +209,7 @@ fn adding_a_gene_again_moves_it_from_an_unsaved_addition() {
         reason: "why".into(),
     };
     let mut edits = vec![add("X", &["G1", "G2"]), add("Z", &["G3"])];
-    let from = take_added(&mut edits, &["G1".into(), "G3".into()], "Y");
+    let from = take_added(&mut edits, 0, &["G1".into(), "G3".into()], "Y");
     assert_eq!(from, ["X", "Z"]);
     assert_eq!(edits.len(), 1, "Z's addition is left empty and dropped");
     let r = round();
@@ -221,7 +222,7 @@ fn adding_a_gene_again_moves_it_from_an_unsaved_addition() {
         ["G2"]
     );
     // Adding to the same type again leaves its own addition alone.
-    assert!(take_added(&mut edits, &["G2".into()], "X").is_empty());
+    assert!(take_added(&mut edits, 0, &["G2".into()], "X").is_empty());
     assert_eq!(edits.len(), 1);
 }
 
@@ -253,4 +254,35 @@ fn rescored_scores_replace_a_clusters_and_swap_back() {
     assert_eq!(r.clusters[0].candidates[0].label, "T");
     assert_eq!(r.clusters[0].shares.len(), 3);
     assert!(parse_scores(&serde_json::json!({"scores": null})).is_none());
+}
+
+#[test]
+fn a_gene_being_saved_is_moved_by_a_drop_not_by_rewriting_the_save() {
+    let add = |label: &str, genes: &[&str]| Edit::Markers {
+        label: label.into(),
+        genes: genes.iter().map(|g| (*g).to_string()).collect(),
+        add: true,
+        reason: "why".into(),
+    };
+    // The first edit is being saved.
+    let mut edits = vec![add("X", &["G1"]), add("Z", &["G1", "G2"])];
+    let from = take_added(&mut edits, 1, &["G1".into()], "Y");
+    assert_eq!(from, ["X", "Z"]);
+    assert_eq!(edits[0], add("X", &["G1"]), "the save's edit untouched");
+    assert_eq!(edits[1], add("Z", &["G2"]));
+    assert!(matches!(
+        &edits[2],
+        Edit::Markers { label, genes, add: false, .. } if label == "X" && genes == &["G1"]
+    ));
+}
+
+#[test]
+fn a_decisions_evidence_is_the_rounds_own_when_rescored_scores_are_shown() {
+    let mut r = round();
+    let recorded = r.swap_scores(Scores::from([(
+        0,
+        (vec![candidate("HSC", 0.9)], vec![("HSC".into(), 0.9)]),
+    )]));
+    let d = decisions(&[relabel(0, "T")], &r, Some(&recorded));
+    assert_eq!(d[0].evidence[0]["term"], "T", "the round's own, not HSC");
 }

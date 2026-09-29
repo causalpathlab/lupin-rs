@@ -127,17 +127,26 @@ pub(super) fn rescore(
     after: &Cells,
     panel: &[(String, String)],
 ) -> Result<Option<Rescored>> {
-    let Some((args, inputs, new_ids)) = rescore_inputs(source, after, panel)? else {
+    let Some((args, inputs, ids)) = rescore_inputs(source, after, panel)? else {
         return Ok(None);
     };
+    score_all(&args, inputs, ids).map(Some)
+}
+
+/// Every cluster × type of `inputs` scored, rows by `ids`.
+fn score_all(
+    args: &AnnotateArgs,
+    inputs: EnrichmentInputs,
+    ids: Vec<ClusterId>,
+) -> Result<Rescored> {
     info!(
         "rescoring {} cluster(s) against {} cell type(s)",
-        new_ids.len(),
+        ids.len(),
         inputs.celltype_names.len()
     );
-    let out = by_enrichment::score(&args, &inputs)?;
-    Ok(Some(Rescored {
-        ids: new_ids,
+    let out = by_enrichment::score(args, &inputs)?;
+    Ok(Rescored {
+        ids,
         types: inputs.celltype_names,
         q_probs: out.q_kc,
         q_values: out.qvalue_kc,
@@ -145,18 +154,18 @@ pub(super) fn rescore(
         z: out.es_restandardized_kc,
         nes: out.nes_kc,
         probit_z: out.z_kc,
-    }))
+    })
 }
 
 /// [`rescore`] of a round whose clusters are `source`'s own, where only the
 /// cell types in `touched` (label keys) scored differently: those are scored
 /// again, every other type keeps `source`'s p-value and NES, and the q-values
 /// and Q are redone over the whole row. The types a marker edit touches are
-/// the ones it edits and the ones sharing an edited gene; a type added to the
-/// panel also shifts the others' IDF weights a little, which only a full
-/// rescore (a save) takes in. `z` is left NaN for the types not rescored:
-/// this is for previews, not for writing. A full rescore when `source`
-/// records no p-values or NES for a cluster or kept type.
+/// the ones it edits and the ones sharing an edited gene. A panel that gains
+/// or loses a type moves every type's IDF weight, so it is rescored in full,
+/// as it is when `source` records no p-values or NES for a cluster. `z` is
+/// left NaN for the types not rescored: this is for previews, not for
+/// writing.
 pub(super) fn rescore_types(
     source: &Loaded,
     after: &Cells,
@@ -179,23 +188,18 @@ pub(super) fn rescore_types(
         return Ok(None);
     };
     let names = &inputs.celltype_names;
-    // Kept types read from the old tables; a type or cluster they lack is
-    // rescored, or everything is when a cluster is missing.
-    let col =
-        |t: &crate::annotate::rounds::Table, name: &str| t.cols.iter().position(|c| c == name);
-    if ids
+    let keys = |cols: &[String]| cols.iter().map(|c| label_key(c)).collect::<BTreeSet<_>>();
+    let same_types = keys(&p_old.cols) == names.iter().map(|n| label_key(n)).collect()
+        && keys(&nes_old.cols) == keys(&p_old.cols);
+    let rows_known = ids
         .iter()
-        .any(|id| p_old.row(*id).is_none() || nes_old.row(*id).is_none())
-    {
-        return rescore(source, after, panel);
+        .all(|id| p_old.row(*id).is_some() && nes_old.row(*id).is_some());
+    if !(same_types && rows_known) {
+        return score_all(&args, inputs, ids).map(Some);
     }
-    let types: Vec<usize> = (0..names.len())
-        .filter(|&t| {
-            touched.contains(&label_key(&names[t]))
-                || col(&p_old, &names[t]).is_none()
-                || col(&nes_old, &names[t]).is_none()
-        })
-        .collect();
+    let col = |t: &crate::annotate::rounds::Table, name: &str| {
+        t.cols.iter().position(|c| label_key(c) == label_key(name))
+    };
     let (k, c) = (ids.len(), names.len());
     let mut p = Mat::zeros(k, c);
     let mut nes = Mat::zeros(k, c);
@@ -208,8 +212,11 @@ pub(super) fn rescore_types(
             }
         }
     }
+    let types: Vec<usize> = (0..c)
+        .filter(|&t| touched.contains(&label_key(&names[t])))
+        .collect();
     let (markers_gc, config) = if types.is_empty() {
-        let (_, m, cfg) = by_enrichment::score_types(&args, &inputs, &[])?;
+        let (_, m, cfg) = by_enrichment::prepare(&args, &inputs)?;
         (m, cfg)
     } else {
         let (scores, m, cfg) = by_enrichment::score_types(&args, &inputs, &types)?;

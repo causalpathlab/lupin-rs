@@ -792,6 +792,59 @@ fn a_preview_rescores_the_touched_types_as_a_save_does() {
     }
 }
 
+/// `enriched_round` relabelled once, so it records p-values and NES.
+fn rescored_round(root: &Path) -> Loaded {
+    let src = enriched_round(root);
+    let d = root.join("d0.jsonl");
+    fs::write(
+        &d,
+        line(json!({"action": "markers_drop", "label": "CT3", "features": ["GENE14"], "rationale": "r", "decided_by": "user"})),
+    )
+    .unwrap();
+    run_relabel(&args(&src, &d, Some(&root.join("r1/run")))).unwrap();
+    run::load(&root.join("r1/run.senna.json").to_string_lossy()).unwrap()
+}
+
+#[test]
+fn only_the_touched_types_are_rescored_and_they_match_a_full_rescore() {
+    use super::super::recalibrate::{rescore, rescore_types};
+    let root = tempfile::tempdir().unwrap();
+    let r1 = rescored_round(root.path());
+    let cells = read_cells(&r1).unwrap();
+    let (before, _) = read_markers(&r1).unwrap();
+    let after: Vec<(String, String)> = before
+        .iter()
+        .filter(|(g, t)| !(g == "GENE13" && t == "CT3"))
+        .cloned()
+        .collect();
+    let touched = touched_types(&before, &after);
+    assert_eq!(touched.iter().collect::<Vec<_>>(), ["CT3"]);
+
+    let part = rescore_types(&r1, &cells, &after, &touched)
+        .unwrap()
+        .unwrap();
+    let full = rescore(&r1, &cells, &after).unwrap().unwrap();
+    let col = |name: &str| part.types.iter().position(|t| &**t == name).unwrap();
+    let (ct3, ct1) = (col("CT3"), col("CT1"));
+    for row in 0..part.ids.len() {
+        assert_eq!(part.p_values[(row, ct3)], full.p_values[(row, ct3)]);
+        assert_eq!(part.nes[(row, ct3)], full.nes[(row, ct3)]);
+        assert!(part.z[(row, ct3)].is_finite(), "CT3 rescored");
+        assert!(part.z[(row, ct1)].is_nan(), "CT1 kept, not rescored");
+        assert!((part.p_values[(row, ct1)] - full.p_values[(row, ct1)]).abs() < 1e-6);
+    }
+
+    // A new type moves every type's IDF weight: all are rescored.
+    let mut grown = after.clone();
+    for g in ["GENE20", "GENE21", "GENE22"] {
+        grown.push((g.into(), "CT9".into()));
+    }
+    let all = rescore_types(&r1, &cells, &grown, &touched_types(&after, &grown))
+        .unwrap()
+        .unwrap();
+    assert!((0..all.types.len()).all(|t| all.z[(0, t)].is_finite()));
+}
+
 #[test]
 fn an_edit_touches_its_type_and_the_types_sharing_its_genes() {
     let panel = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {

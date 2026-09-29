@@ -186,6 +186,8 @@ pub struct RoundView {
     pub loose_cells: usize,
     /// Clusters an earlier round decided (labelled or kept), from its history.
     pub decided: BTreeSet<ClusterId>,
+    /// The pass cached its statistics, so marker edits can be rescored.
+    pub rescorable: bool,
 }
 
 impl RoundView {
@@ -264,6 +266,7 @@ impl RoundView {
             markers,
             loose_cells,
             decided,
+            rescorable: a.stats_cache.is_some() && a.expression_clusters.is_some(),
         })
     }
 
@@ -415,36 +418,69 @@ impl RoundView {
 
 /// Take `genes` out of the unsaved additions to types other than `label`,
 /// so adding a gene again moves it rather than giving it a second type;
-/// marker edits left empty are dropped. The types they came from, by name.
-pub fn take_added(edits: &mut Vec<Edit>, genes: &[String], label: &str) -> Vec<String> {
+/// marker edits left empty are dropped. The first `from` edits are being
+/// saved and stay as they are: a gene they add elsewhere is dropped from
+/// that type by a new edit instead. The types the genes came from, by name.
+pub fn take_added(
+    edits: &mut Vec<Edit>,
+    from: usize,
+    genes: &[String],
+    label: &str,
+) -> Vec<String> {
     let key = label_key(label);
-    let mut from = BTreeSet::new();
-    for e in edits.iter_mut() {
-        if let Edit::Markers {
+    let mut moved = BTreeSet::new();
+    let mut drops: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (i, e) in edits.iter_mut().enumerate() {
+        let Edit::Markers {
             label: other,
             genes: added,
             add: true,
             ..
         } = e
-        {
-            if label_key(other) != key {
-                let before = added.len();
-                added.retain(|g| !genes.contains(g));
-                if added.len() < before {
-                    from.insert(other.clone());
-                }
-            }
+        else {
+            continue;
+        };
+        if label_key(other) == key {
+            continue;
+        }
+        let hit: Vec<String> = added
+            .iter()
+            .filter(|g| genes.contains(g))
+            .cloned()
+            .collect();
+        if hit.is_empty() {
+            continue;
+        }
+        moved.insert(other.clone());
+        if i < from {
+            drops.entry(other.clone()).or_default().extend(hit);
+        } else {
+            added.retain(|g| !genes.contains(g));
         }
     }
-    edits.retain(|e| !matches!(e, Edit::Markers { genes, .. } if genes.is_empty()));
-    from.into_iter().collect()
+    let from = from.min(edits.len());
+    let mut tail = edits.split_off(from);
+    tail.retain(|e| !matches!(e, Edit::Markers { genes, .. } if genes.is_empty()));
+    edits.extend(tail);
+    for (other, genes) in drops {
+        edits.push(Edit::Markers {
+            label: other,
+            genes,
+            add: false,
+            reason: format!("moved to {label}"),
+        });
+    }
+    moved.into_iter().collect()
 }
 
 /// The last edit per cluster, and every marker edit, as the next
 /// round's decisions; marker edits first, as they change what the labels
 /// are scored on.
 #[must_use]
-pub fn decisions(edits: &[Edit], round: &RoundView) -> Vec<Decision> {
+///
+/// A label's evidence is the round's own candidates: `recorded`'s, when a
+/// rescoring is shown in their place.
+pub fn decisions(edits: &[Edit], round: &RoundView, recorded: Option<&Scores>) -> Vec<Decision> {
     let decision = |action, cluster, label, features, evidence, rationale: &str| Decision {
         cluster,
         action,
@@ -487,11 +523,16 @@ pub fn decisions(edits: &[Edit], round: &RoundView) -> Vec<Decision> {
         }
     }
     for (id, e) in last {
-        let evidence = round
-            .clusters
-            .iter()
-            .find(|c| c.id == id)
-            .map(|c| &c.candidates[..])
+        let evidence = recorded
+            .and_then(|r| r.get(&id))
+            .map(|(candidates, _)| &candidates[..])
+            .or_else(|| {
+                round
+                    .clusters
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| &c.candidates[..])
+            })
             .unwrap_or_default()
             .iter()
             .map(|c| {
