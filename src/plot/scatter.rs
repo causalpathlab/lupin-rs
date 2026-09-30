@@ -973,7 +973,12 @@ fn resolve_cluster_ids_for_plot(
     if let Some(manifest_path) = resolved.manifest_path.as_deref() {
         let rel = crate::manifest::run::rel_to_manifest(&resolved.manifest_dir, &parquet_path);
         manifest.cluster.clusters = Some(rel);
-        manifest.save(Path::new(manifest_path))?;
+        // Only a convenience for later runs: not worth asking about.
+        if crate::manifest::run::may_replace_unasked(Path::new(manifest_path)) {
+            manifest.save(Path::new(manifest_path))?;
+        } else {
+            log::info!("clusters not recorded in {manifest_path} (--overwrite records them)");
+        }
     }
     resolved.clusters = Some(parquet_path);
 

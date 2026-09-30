@@ -87,6 +87,9 @@ fn run_tables(loaded: &Loaded) -> RunTables {
 /// run the fit, and record the artifacts it wrote in the manifest.
 pub fn run_pseudotime_from_manifest(args: &PseudotimeArgs) -> Result<()> {
     let manifest_ctx = args.from.as_deref().map(load).transpose()?;
+    if let Some(ctx) = &manifest_ctx {
+        crate::manifest::run::may_replace(&ctx.file)?;
+    }
     let inputs = PseudotimeInputs {
         latent: resolve_latent_path(args, manifest_ctx.as_ref())?,
         cell_coords: manifest_ctx.as_ref().and_then(resolve_cell_coords),

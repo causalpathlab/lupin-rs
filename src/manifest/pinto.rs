@@ -35,6 +35,16 @@ struct PintoManifest {
     data_files: Option<Vec<String>>,
     #[serde(default)]
     outputs: PintoOutputs,
+    #[serde(default)]
+    levels: Vec<PintoLevel>,
+}
+
+/// One level of pinto's cascade (`L1`, `L2`, …, `final`).
+#[derive(Deserialize)]
+struct PintoLevel {
+    tag: String,
+    #[serde(default)]
+    propensity: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -53,6 +63,29 @@ struct PintoOutputs {
 #[must_use]
 pub fn is_pinto(path: &Path) -> bool {
     path.to_string_lossy().ends_with(SUFFIX)
+}
+
+/// Level `tag`'s propensity parquet in pinto run `file`, found as [`load`]
+/// finds paths. Its `cluster` column labels the cells at that level.
+pub fn level_propensity(file: &Path, tag: &str) -> Result<String> {
+    let raw = std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
+    let p: PintoManifest =
+        serde_json::from_str(&raw).with_context(|| format!("parse {}", file.display()))?;
+    let tags: Vec<&str> = p.levels.iter().map(|l| l.tag.as_str()).collect();
+    let level = p.levels.iter().find(|l| l.tag == tag).with_context(|| {
+        format!(
+            "{} has no level {tag} (levels: {})",
+            file.display(),
+            tags.join(", ")
+        )
+    })?;
+    let written = level
+        .propensity
+        .as_deref()
+        .with_context(|| format!("level {tag} of {} records no propensity", file.display()))?;
+    let found = locate(written, &super::run::parent_dir(file))
+        .with_context(|| format!("level {tag}'s propensity `{written}` not found"))?;
+    Ok(found.to_string_lossy().into_owned())
 }
 
 /// Load `file` and translate it into a run manifest whose paths are relative
@@ -126,6 +159,27 @@ mod tests {
     use super::*;
     use crate::manifest::run::resolve;
     use std::fs;
+
+    #[test]
+    fn a_level_is_found_by_its_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("run.L2.propensity.parquet"), "").unwrap();
+        let file = dir.path().join("run.pinto.json");
+        fs::write(
+            &file,
+            r#"{"command":"lc","prefix":"elsewhere/run","levels":[
+                {"tag":"L2","propensity":"elsewhere/run.L2.propensity.parquet"},
+                {"tag":"final","propensity":"elsewhere/run.propensity.parquet"}]}"#,
+        )
+        .unwrap();
+        let found = level_propensity(&file, "L2").unwrap();
+        assert_eq!(
+            Path::new(&found),
+            dir.path().join("run.L2.propensity.parquet")
+        );
+        let err = level_propensity(&file, "L9").unwrap_err().to_string();
+        assert!(err.contains("levels: L2, final"), "{err}");
+    }
 
     #[test]
     fn a_cage_run_maps_onto_projection_inputs() {
