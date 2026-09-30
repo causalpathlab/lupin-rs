@@ -75,7 +75,7 @@ fn read_panel(path: &Path, want: &Want) -> Option<Panel> {
         return None;
     };
     let skip = [
-        "parquet", "zarr", "h5", "h5ad", "json", "bam", "bai", "png", "pdf", "log",
+        "parquet", "zarr", "h5", "h5ad", "json", "bam", "bai", "png", "pdf", "log", "zip",
     ];
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if skip.contains(&ext) || path.metadata().ok()?.len() > MAX_PANEL_BYTES {
