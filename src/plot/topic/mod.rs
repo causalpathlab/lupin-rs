@@ -344,12 +344,12 @@ fn resolve_inputs(args: &PlotTopicArgs) -> anyhow::Result<ResolvedInputs> {
 
     let batch_files = manifest
         .as_ref()
-        .map(|m| m.data.batch.iter().map(|p| resolve_str(p)).collect())
+        .map(|m| m.data_batches(&manifest_dir))
         .unwrap_or_default();
 
     let data_files = manifest
         .as_ref()
-        .map(|m| m.data.input.iter().map(|p| resolve_str(p)).collect())
+        .map(|m| m.data_inputs(&manifest_dir))
         .unwrap_or_default();
 
     let cell_coords = manifest

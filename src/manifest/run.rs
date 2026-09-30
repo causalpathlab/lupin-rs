@@ -418,6 +418,69 @@ impl RunManifest {
         }
     }
 
+    /// The run's input files (`data.input`), found from `manifest_dir` (see
+    /// [`Self::data_file`]).
+    #[must_use]
+    pub fn data_inputs(&self, manifest_dir: &Path) -> Vec<String> {
+        self.data
+            .input
+            .iter()
+            .map(|p| self.data_file(manifest_dir, p))
+            .collect()
+    }
+
+    /// The run's batch files (`data.batch`), found as [`Self::data_inputs`].
+    #[must_use]
+    pub fn data_batches(&self, manifest_dir: &Path) -> Vec<String> {
+        self.data
+            .batch
+            .iter()
+            .map(|p| self.data_file(manifest_dir, p))
+            .collect()
+    }
+
+    /// A data file the run recorded, found here even when the run was
+    /// trained on another machine or the tree has moved: as recorded
+    /// ([`resolve`]); else at the same place relative to the run's
+    /// directory as it was relative to the training `prefix`'s; else under
+    /// the manifest's directory or an ancestor of it, by the longest tail of
+    /// the recorded path that exists there. Unfound, as recorded.
+    #[must_use]
+    pub fn data_file(&self, manifest_dir: &Path, recorded: &str) -> String {
+        let given = resolve(manifest_dir, recorded);
+        if Path::new(&given).exists() {
+            return given;
+        }
+        let here = key(manifest_dir);
+        let recorded_abs = normalize(Path::new(recorded));
+        let trained_in = Path::new(&self.prefix)
+            .is_absolute()
+            .then(|| normalize(Path::new(&self.prefix)))
+            .and_then(|p| p.parent().map(Path::to_path_buf));
+        let rebased = trained_in
+            .filter(|_| recorded_abs.is_absolute())
+            .map(|old| normalize(&here.join(relative_to(&recorded_abs, &old))))
+            .filter(|p| p.exists());
+        let found = rebased.or_else(|| {
+            let parts: Vec<_> = recorded_abs
+                .components()
+                .filter(|c| matches!(c, std::path::Component::Normal(_)))
+                .collect();
+            (0..parts.len()).find_map(|skip| {
+                let tail: PathBuf = parts[skip..].iter().collect();
+                here.ancestors().map(|a| a.join(&tail)).find(|p| p.exists())
+            })
+        });
+        match found {
+            Some(p) => {
+                let p = p.to_string_lossy().into_owned();
+                info!("{recorded} is not here; using {p}");
+                p
+            }
+            None => given,
+        }
+    }
+
     /// Read a manifest file; returns it with its directory, against which the
     /// relative paths inside resolve.
     pub fn load(path: &Path) -> anyhow::Result<(Self, PathBuf)> {
@@ -459,9 +522,13 @@ impl RunManifest {
         }
     }
 
+    /// Write the manifest to `path`. An existing file is replaced only as
+    /// [`may_replace`] allows.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        may_replace(path)?;
         let s = serde_json::to_string_pretty(self)?;
         fs::write(path, s).map_err(|e| anyhow::anyhow!("write {}: {e}", path.display()))?;
+        wrote(path);
         info!("wrote {}", path.display());
         Ok(())
     }
@@ -520,6 +587,94 @@ pub fn resolve(manifest_dir: &Path, rel: &str) -> String {
     } else {
         manifest_dir.join(p).to_string_lossy().into_owned()
     }
+}
+
+/// Set by `--overwrite`: replace existing manifests without asking.
+static OVERWRITE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Manifests this process wrote or was allowed to replace; it may write them again.
+static WRITTEN: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Let every later [`may_replace`] replace existing manifests (`--overwrite`).
+pub fn allow_overwrite() {
+    OVERWRITE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `path` canonical, or as given when it cannot be (it does not exist).
+fn key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn wrote(path: &Path) {
+    if let Ok(mut w) = WRITTEN.lock() {
+        w.insert(key(path));
+    }
+}
+
+/// Whether `path` may be written without asking: it does not exist, this
+/// process wrote it (or was allowed to) already, or `--overwrite` is on.
+#[must_use]
+pub fn may_replace_unasked(path: &Path) -> bool {
+    !path.exists()
+        || OVERWRITE.load(std::sync::atomic::Ordering::Relaxed)
+        || WRITTEN.lock().is_ok_and(|w| w.contains(&key(path)))
+}
+
+/// Whether `path` may be written: yes when it does not exist, when this
+/// process wrote it (or was allowed to) already, or under `--overwrite`.
+/// Otherwise ask on the terminal; with no terminal to ask on, refuse.
+pub fn may_replace(path: &Path) -> anyhow::Result<()> {
+    use std::io::{IsTerminal, Write};
+    if may_replace_unasked(path) {
+        return Ok(());
+    }
+    let refuse = || {
+        anyhow::anyhow!(
+            "{} exists; not replacing it (pass --overwrite to replace it, or choose another -o)",
+            path.display()
+        )
+    };
+    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+        return Err(refuse());
+    }
+    eprint!("lupin: {} exists. Replace it? [y/N] ", path.display());
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+        wrote(path);
+        Ok(())
+    } else {
+        Err(refuse())
+    }
+}
+
+/// `p` with `.` and `..` folded away, without touching the file system.
+fn normalize(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// `p` as a path from `base`, both absolute and normalized.
+fn relative_to(p: &Path, base: &Path) -> PathBuf {
+    let (pc, bc): (Vec<_>, Vec<_>) = (p.components().collect(), base.components().collect());
+    let common = pc.iter().zip(&bc).take_while(|(a, b)| a == b).count();
+    let mut out: PathBuf = bc[common..].iter().map(|_| "..").collect();
+    out.extend(&pc[common..]);
+    out
 }
 
 /// Rewrite every relative path in `value` that names an existing file or
@@ -702,6 +857,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_existing_manifest_is_not_replaced_without_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.senna.json");
+        fs::write(&path, "{}").unwrap();
+        let m: RunManifest =
+            serde_json::from_str(r#"{"version":2,"kind":"topic","prefix":"run"}"#).unwrap();
+        // No terminal under `cargo test`: refused, and the file is untouched.
+        assert!(m.save(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
+        // What this process wrote itself it may write again.
+        let fresh = dir.path().join("fresh.senna.json");
+        m.save(&fresh).unwrap();
+        m.save(&fresh).unwrap();
+    }
+
+    #[test]
+    fn a_moved_runs_absolute_data_paths_are_found_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("moved/proj");
+        std::fs::create_dir_all(proj.join("run")).unwrap();
+        std::fs::create_dir_all(proj.join("data")).unwrap();
+        std::fs::write(proj.join("data/a.zarr"), "").unwrap();
+        std::fs::write(proj.join("b.tsv"), "").unwrap();
+        let m = RunManifest {
+            prefix: "/elsewhere/proj/run/x".into(),
+            ..serde_json::from_str(r#"{"version":2,"kind":"topic","prefix":""}"#).unwrap()
+        };
+        let here = proj.join("run").canonicalize().unwrap();
+        let root = proj.canonicalize().unwrap();
+        // Rebased from the training prefix's directory.
+        let a = m.data_file(&proj.join("run"), "/elsewhere/proj/data/a.zarr");
+        assert_eq!(Path::new(&a), root.join("data/a.zarr"));
+        // Found by its tail under an ancestor.
+        let b = m.data_file(&proj.join("run"), "/other/place/b.tsv");
+        assert_eq!(Path::new(&b), root.join("b.tsv"));
+        // Unfound: as recorded.
+        assert_eq!(m.data_file(&here, "/nowhere/c.tsv"), "/nowhere/c.tsv");
+    }
+
+    #[test]
     fn unknown_fields_and_kinds_survive_a_round_trip() {
         let raw = r#"{
             "version": 2,
@@ -718,9 +913,10 @@ mod tests {
         let (m, _) = RunManifest::load(&path).unwrap();
         assert_eq!(m.kind, RunKind::Other("some-future-kind".into()));
         assert_eq!(m.kind.cell_space(), CellSpace::Signed);
-        m.save(&path).unwrap();
+        let saved = dir.path().join("back.senna.json");
+        m.save(&saved).unwrap();
 
-        let back: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let back: Value = serde_json::from_str(&fs::read_to_string(&saved).unwrap()).unwrap();
         assert_eq!(back["kind"], "some-future-kind");
         assert_eq!(back["train_args"]["args"]["k"], 7);
         assert_eq!(back["outputs"]["pb_tree"], "run.pb_tree.parquet");

@@ -10,14 +10,16 @@ mod app;
 mod export;
 mod genes;
 mod ontology;
+mod picker;
 mod round;
 mod runner;
 mod ui;
 
 use crate::annotate_cmd::AnnotateCliArgs;
 use crate::manifest::run::{self, annotated_path, resolve};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use app::App;
+use data_beans::utilities::name_matching::GeneIndex;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -61,21 +63,44 @@ fn drain_own_log() -> Vec<String> {
 }
 
 pub fn run(args: &AnnotateCliArgs) -> Result<()> {
-    let from = args
-        .from
-        .as_deref()
-        .context("--tui needs a run manifest (-f)")?;
-    let loaded = run::load(from)?;
+    let cwd = std::env::current_dir()?;
+    let from = match args.from.as_deref() {
+        Some(f) => f.to_string(),
+        None => match picker::pick("Pick a run manifest", &cwd, picker::Want::Manifest)? {
+            Some(f) => f.to_string_lossy().into_owned(),
+            None => return Ok(()),
+        },
+    };
+    let loaded = run::load(&from)?;
     let mut args = args.clone();
+    crate::annotate_cmd::apply_level(&mut args, &loaded.file)?;
+    // The screen's genes, NES, p and q and live rescoring all come from an
+    // enrichment pass; projection writes none of them.
+    if args.method == crate::annotate_cmd::AnnotateMethod::Auto {
+        args.method = crate::annotate_cmd::AnnotateMethod::Enrichment;
+    }
     args.from = Some(loaded.file.to_string_lossy().into());
     if args.markers.is_empty() {
-        let rel = loaded
-            .manifest
-            .annotate
-            .markers
-            .as_deref()
-            .context("--tui needs a marker panel (-m)")?;
-        args.markers = resolve(&loaded.dir, rel).into_boxed_str();
+        args.markers = match loaded.manifest.annotate.markers.as_deref() {
+            Some(rel) => resolve(&loaded.dir, rel).into_boxed_str(),
+            None => {
+                let genes = run_genes(&loaded);
+                let n = genes.as_ref().map_or(0, Vec::len);
+                let index = genes.map(|g| GeneIndex::build(&g));
+                let want = picker::Want::Markers(index, n);
+                match picker::pick("Pick a marker panel", &loaded.dir, want)? {
+                    Some(p) => p.to_string_lossy().into(),
+                    None => return Ok(()),
+                }
+            }
+        };
+    }
+    if args.out.is_empty() {
+        // The run's prefix, next to its manifest, one level down: reopening
+        // the same run picks up this session's rounds.
+        let stem = run::derive_out_prefix(&loaded.file.to_string_lossy());
+        args.out = format!("{stem}.L1").into_boxed_str();
+        eprintln!("lupin: writing under -o {}", args.out);
     }
 
     eprintln!("lupin: placing the panel on the Cell Ontology…");
@@ -141,4 +166,14 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
         eprintln!("lupin: latest round {}", r.manifest.display());
     }
     result
+}
+
+/// The genes the run was trained on, from its dictionary (else its feature
+/// embedding), to score marker panels against; `None` when it has neither.
+fn run_genes(loaded: &run::Loaded) -> Option<Vec<Box<str>>> {
+    use legume_numeric::matrix::parquet::read_parquet_string_column;
+    let o = &loaded.manifest.outputs;
+    let rel = o.dictionary.as_deref().or(o.feature_embedding.as_deref())?;
+    // Only the row-name column: the numbers are not needed.
+    read_parquet_string_column(&resolve(&loaded.dir, rel), 0).ok()
 }
