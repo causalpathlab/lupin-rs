@@ -451,7 +451,11 @@ impl RunManifest {
         if Path::new(&given).exists() {
             return given;
         }
-        let here = key(manifest_dir);
+        // Lexically absolute, not canonical: the recorded paths are as
+        // written, so resolving symlinks here alone would skew the rebase.
+        let here = normalize(
+            &std::path::absolute(manifest_dir).unwrap_or_else(|_| manifest_dir.to_path_buf()),
+        );
         let recorded_abs = normalize(Path::new(recorded));
         let trained_in = Path::new(&self.prefix)
             .is_absolute()
@@ -466,7 +470,10 @@ impl RunManifest {
                 .components()
                 .filter(|c| matches!(c, std::path::Component::Normal(_)))
                 .collect();
-            (0..parts.len()).find_map(|skip| {
+            // At least the file and its folder must match, so an unrelated
+            // file of the same name elsewhere is not taken for the data.
+            let min = parts.len().min(2);
+            (0..=parts.len().checked_sub(min.max(1))?).find_map(|skip| {
                 let tail: PathBuf = parts[skip..].iter().collect();
                 here.ancestors().map(|a| a.join(&tail)).find(|p| p.exists())
             })
@@ -474,7 +481,7 @@ impl RunManifest {
         match found {
             Some(p) => {
                 let p = p.to_string_lossy().into_owned();
-                info!("{recorded} is not here; using {p}");
+                log::warn!("{recorded} is not here; using {p}");
                 p
             }
             None => given,
@@ -657,11 +664,15 @@ fn normalize(p: &Path) -> PathBuf {
     for c in p.components() {
         match c {
             Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
+            // `..` cancels a name before it; after nothing, a root or
+            // another `..` it stays.
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
                 }
-            }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => out.push(".."),
+            },
             c => out.push(c),
         }
     }
@@ -873,13 +884,26 @@ mod tests {
     }
 
     #[test]
+    fn normalize_folds_dots_without_losing_leading_parents() {
+        assert_eq!(
+            normalize(Path::new("../../a/b")),
+            PathBuf::from("../../a/b")
+        );
+        assert_eq!(normalize(Path::new("a/./b/../c")), PathBuf::from("a/c"));
+        assert_eq!(normalize(Path::new("/../a")), PathBuf::from("/a"));
+        assert_eq!(normalize(Path::new("a/../../b")), PathBuf::from("../b"));
+    }
+
+    #[test]
     fn a_moved_runs_absolute_data_paths_are_found_again() {
         let tmp = tempfile::tempdir().unwrap();
         let proj = tmp.path().join("moved/proj");
         std::fs::create_dir_all(proj.join("run")).unwrap();
         std::fs::create_dir_all(proj.join("data")).unwrap();
         std::fs::write(proj.join("data/a.zarr"), "").unwrap();
-        std::fs::write(proj.join("b.tsv"), "").unwrap();
+        std::fs::create_dir_all(proj.join("place")).unwrap();
+        std::fs::write(proj.join("place/b.tsv"), "").unwrap();
+        std::fs::write(proj.join("c.tsv"), "").unwrap();
         let m = RunManifest {
             prefix: "/elsewhere/proj/run/x".into(),
             ..serde_json::from_str(r#"{"version":2,"kind":"topic","prefix":""}"#).unwrap()
@@ -889,9 +913,14 @@ mod tests {
         // Rebased from the training prefix's directory.
         let a = m.data_file(&proj.join("run"), "/elsewhere/proj/data/a.zarr");
         assert_eq!(Path::new(&a), root.join("data/a.zarr"));
-        // Found by its tail under an ancestor.
+        // Found by its tail (file and folder) under an ancestor.
         let b = m.data_file(&proj.join("run"), "/other/place/b.tsv");
-        assert_eq!(Path::new(&b), root.join("b.tsv"));
+        assert_eq!(Path::new(&b), root.join("place/b.tsv"));
+        // A same-named file alone is not the data.
+        assert_eq!(
+            m.data_file(&here, "/other/where/c.tsv"),
+            "/other/where/c.tsv"
+        );
         // Unfound: as recorded.
         assert_eq!(m.data_file(&here, "/nowhere/c.tsv"), "/nowhere/c.tsv");
     }
