@@ -144,14 +144,12 @@ pub fn load(file: &Path) -> Result<Loaded> {
 }
 
 /// A path pinto wrote: as written (from the working directory) if it exists,
-/// else its file name in `dir`.
+/// else as written from `dir` (pinto ran there), else its file name in `dir`.
 fn locate(written: &str, dir: &Path) -> Option<PathBuf> {
     let direct = PathBuf::from(written);
-    if direct.exists() {
-        return Some(direct);
-    }
+    let under = dir.join(&direct);
     let beside = dir.join(direct.file_name()?);
-    beside.exists().then_some(beside)
+    [direct, under, beside].into_iter().find(|p| p.exists())
 }
 
 #[cfg(test)]
@@ -159,6 +157,15 @@ mod tests {
     use super::*;
     use crate::manifest::run::resolve;
     use std::fs;
+
+    #[test]
+    fn a_relative_path_is_found_under_the_manifests_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("temp_gbm")).unwrap();
+        fs::write(dir.path().join("temp_gbm/gbm.zarr.zip"), "").unwrap();
+        let found = locate("temp_gbm/gbm.zarr.zip", dir.path()).unwrap();
+        assert_eq!(found, dir.path().join("temp_gbm/gbm.zarr.zip"));
+    }
 
     #[test]
     fn a_level_is_found_by_its_tag() {
