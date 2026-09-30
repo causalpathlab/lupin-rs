@@ -672,20 +672,32 @@ impl App {
             return;
         }
         let (_, later) = chain_rounds(&self.target);
-        if (!self.edits.is_empty() || !later.is_empty()) && self.armed != Some(Armed::Run) {
+        let replaces = self.target.is_file();
+        if (replaces || !self.edits.is_empty() || !later.is_empty())
+            && self.armed != Some(Armed::Run)
+        {
             self.armed = Some(Armed::Run);
-            self.status = format!(
-                "a new pass drops {} unsaved edit(s) and sets aside {} saved round(s): r again to go on",
-                self.edits.len(),
-                later.len()
-            );
+            let mut what = Vec::new();
+            if replaces {
+                what.push(format!(
+                    "replaces {} and its outputs",
+                    self.target.display()
+                ));
+            }
+            if !self.edits.is_empty() {
+                what.push(format!("drops {} unsaved edit(s)", self.edits.len()));
+            }
+            if !later.is_empty() {
+                what.push(format!("sets aside {} saved round(s)", later.len()));
+            }
+            self.status = format!("a new pass {}: r again to go on", what.join(", "));
             return;
         }
         self.push_log(format!(
             "── pass: lupin annotate {}",
             self.args.to_argv().join(" ")
         ));
-        match runner::spawn_pass(&self.args, self.log_tx.clone()) {
+        match runner::spawn_pass(&self.args, replaces, self.log_tx.clone()) {
             Ok(c) => {
                 self.child = Some((c, Instant::now(), Job::Pass));
                 self.status = "running…".into();

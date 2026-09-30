@@ -42,6 +42,9 @@ pub struct AnnotateArgs {
     /// Cluster parquet (cells × 1 cluster column); overrides `manifest.cluster.clusters`
     pub clusters: Option<Box<str>>,
 
+    /// The pinto cascade level `clusters` came from (`--level`)
+    pub level: Option<Box<str>>,
+
     /// Nearest neighbors for the internal Leiden cosine-KNN graph
     pub knn: usize,
 

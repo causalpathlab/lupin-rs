@@ -302,15 +302,16 @@ fn record(
 /////////////////////////////////////
 
 /// How to re-open the raw counts a run trained on: its `data.input` and
-/// `data.batch`, resolved against the manifest's directory, under the
+/// `data.batch`, found from the manifest's directory ([`RunManifest::data_file`]), under the
 /// multiome layout it recorded — a multiome run's files are modalities of one
 /// cell set, glued by barcode and namespaced as training did. No cell QC:
 /// annotation maps onto the run's existing cells.
 fn raw_counts_load(manifest: &RunManifest, manifest_dir: &Path) -> Result<ReadSharedRowsArgs> {
-    let to_box = |s: &String| resolve(manifest_dir, s).into_boxed_str();
-    let data_files: Vec<Box<str>> = manifest.data.input.iter().map(to_box).collect();
+    let boxed =
+        |v: Vec<String>| -> Vec<Box<str>> { v.into_iter().map(String::into_boxed_str).collect() };
+    let data_files = boxed(manifest.data_inputs(manifest_dir));
     let batch_files =
-        (!manifest.data.batch.is_empty()).then(|| manifest.data.batch.iter().map(to_box).collect());
+        (!manifest.data.batch.is_empty()).then(|| boxed(manifest.data_batches(manifest_dir)));
     let mut args = ReadSharedRowsArgs {
         data_files,
         batch_files,
