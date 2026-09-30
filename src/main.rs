@@ -35,6 +35,12 @@ use plot::topic::{fit_plot_topic, PlotTopicArgs};
 struct Cli {
     #[arg(short, long, global = true, help = "Verbose logging")]
     verbose: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "Replace existing manifests (.json) without asking; otherwise lupin asks, or refuses when it cannot ask"
+    )]
+    overwrite: bool,
     #[command(subcommand)]
     cmd: Commands,
 }
@@ -176,6 +182,9 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.overwrite {
+        manifest::run::allow_overwrite();
+    }
     if matches!(&cli.cmd, Commands::Annotate(c) if c.tui) {
         tui::init_logger(cli.verbose);
     } else {

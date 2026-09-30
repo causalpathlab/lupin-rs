@@ -59,7 +59,8 @@ pub struct AnnotateCliArgs {
     #[arg(
         long,
         short = 'o',
-        help = "Output prefix for every file this command writes"
+        default_value = "",
+        help = "Output prefix for every file this command writes (with --tui, defaults to the run's prefix + `.L1`)"
     )]
     pub out: Box<str>,
 
@@ -85,6 +86,12 @@ pub struct AnnotateCliArgs {
     // ── enrichment-only ──
     #[arg(long = "clusters")]
     pub clusters: Option<Box<str>>,
+    #[arg(
+        long,
+        conflicts_with = "clusters",
+        help = "A pinto run's cascade level to annotate (a `levels[].tag`, e.g. L2); default: its final level"
+    )]
+    pub level: Option<Box<str>>,
     #[arg(long = "num-clusters")]
     pub num_clusters: Option<usize>,
     #[arg(long = "min-cluster-size", default_value_t = 2)]
@@ -157,7 +164,7 @@ impl AnnotateCliArgs {
         val("min-cluster-size", self.min_cluster_size.to_string());
         val("assign-mad", self.assign_mad.to_string());
         val("ontology-fdr-q", self.ontology_fdr_q.to_string());
-        let opts: [(&str, Option<String>); 11] = [
+        let opts: [(&str, Option<String>); 12] = [
             ("from", self.from.as_deref().map(String::from)),
             (
                 "feature-embedding",
@@ -168,7 +175,15 @@ impl AnnotateCliArgs {
                 self.cell_embedding.as_deref().map(String::from),
             ),
             ("knn", self.knn.map(|x| x.to_string())),
-            ("clusters", self.clusters.as_deref().map(String::from)),
+            // `--level` resolves to its clusters again in the child.
+            (
+                "clusters",
+                self.clusters
+                    .as_deref()
+                    .filter(|_| self.level.is_none())
+                    .map(String::from),
+            ),
+            ("level", self.level.as_deref().map(String::from)),
             ("num-clusters", self.num_clusters.map(|x| x.to_string())),
             ("cluster-seed", self.cluster_seed.map(|x| x.to_string())),
             ("gaf", self.gaf.as_deref().map(String::from)),
@@ -203,6 +218,7 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     if args.tui {
         return crate::tui::run(args);
     }
+    anyhow::ensure!(!args.out.is_empty(), "annotate needs an output prefix (-o)");
     // One manifest load per invocation; every route below reuses it.
     let loaded = args
         .from
@@ -216,6 +232,16 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     if let Some(markers) = loaded.as_ref().and_then(|l| round_markers(&args, l)) {
         log::info!("No -m given: using the round's marker panel {markers}");
         args.markers = markers.into_boxed_str();
+    }
+
+    if let Some(l) = &loaded {
+        apply_level(&mut args, &l.file)?;
+    }
+    // Ask before anything under -o is erased, not when the manifest is saved.
+    if let Some(l) = &loaded {
+        crate::manifest::run::may_replace(&crate::manifest::run::annotated_path(
+            &l.file, &args.out,
+        ))?;
     }
 
     if is_ontology_followup(&args) {
@@ -280,6 +306,24 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         let manifest = crate::manifest::run::annotated_path(&l.file, &args.out);
         crate::manifest::first_round::finish(&manifest, &p.tree, coarse)?;
     }
+    Ok(())
+}
+
+/// `--level`: annotate that level of a pinto run by taking its propensity as
+/// `--clusters`; the tag stays in `args` for the round's settings. A no-op
+/// without `--level`.
+pub fn apply_level(args: &mut AnnotateCliArgs, manifest: &std::path::Path) -> Result<()> {
+    let Some(tag) = args.level.clone() else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        crate::manifest::pinto::is_pinto(manifest),
+        "--level is for a pinto run (.pinto.json); {} is not one",
+        manifest.display()
+    );
+    let path = crate::manifest::pinto::level_propensity(manifest, &tag)?;
+    log::info!("level {tag}: clusters from {path}");
+    args.clusters = Some(path.into_boxed_str());
     Ok(())
 }
 
@@ -402,6 +446,7 @@ pub(crate) fn default_enrichment_args(out: &str) -> AnnotateArgs {
 pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
     AnnotateArgs {
         clusters: args.clusters.clone(),
+        level: args.level.clone(),
         knn: args.knn.unwrap_or(15),
         resolution: args.resolution,
         num_clusters: args.num_clusters,

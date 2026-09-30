@@ -59,6 +59,7 @@ const PROMPT: &str = ".ask_prompt.md";
 pub fn run_ask(args: &AskArgs) -> Result<()> {
     let loaded = run::load(&args.from)?;
     let out = args.out.to_string();
+    run::may_replace(&annotated_path(&loaded.file, &out))?;
     mkdir_parent(&out)?;
     let mut eargs = crate::annotate_cmd::default_enrichment_args(&out);
     eargs.clusters.clone_from(&args.clusters);
