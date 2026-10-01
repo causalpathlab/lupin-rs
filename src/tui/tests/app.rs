@@ -94,6 +94,8 @@ fn tab_reaches_the_go_pane_only_when_the_round_scored_terms() {
 fn the_go_pane_scrolls_its_terms_and_m_keeps_to_genes() {
     let mut app = app_with_terms(true);
     app.focus = Focus::Go;
+    app.pane_key(KeyCode::Right);
+    assert_eq!(app.go_shift, 0, "a one-word name does not slide");
     app.pane_key(KeyCode::End);
     assert_eq!(app.go_sel, 1);
     app.pane_key(KeyCode::Esc);
@@ -104,6 +106,23 @@ fn the_go_pane_scrolls_its_terms_and_m_keeps_to_genes() {
     assert!(app.gene_view == GeneView::Markers);
     app.pane_key(KeyCode::Char('m'));
     assert!(app.gene_view == GeneView::Specific);
+}
+
+#[test]
+fn left_and_right_slide_a_long_go_name_and_a_new_term_starts_over() {
+    let mut app = app_with_terms(true);
+    if let Some(r) = app.round.as_mut() {
+        r.clusters[0].terms[0].term = "w1 w2 w3".into();
+    }
+    app.focus = Focus::Go;
+    for _ in 0..5 {
+        app.pane_key(KeyCode::Right);
+    }
+    assert_eq!(app.go_shift, 2, "stops at the last word");
+    app.pane_key(KeyCode::Left);
+    assert_eq!(app.go_shift, 1);
+    app.pane_key(KeyCode::Down);
+    assert_eq!(app.go_shift, 0);
 }
 
 #[test]
