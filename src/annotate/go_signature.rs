@@ -12,6 +12,11 @@ use std::io::Write;
 /// than emit an empty signature.
 const MIN_COVERAGE_FRAC: f32 = 0.1;
 const MIN_COVERAGE_TERMS: usize = 5;
+/// The fewest of a term's genes among the data's features for it to be
+/// tested: the scorer's own floor. Every such term is a hypothesis, so the
+/// q-values are over all of them; the report window only picks which are
+/// shown.
+pub const MIN_TESTABLE: usize = 2;
 /// Top terms reported per group in the signature TSV.
 const TOP_N: usize = 10;
 
@@ -103,7 +108,7 @@ pub fn load_go_gene_sets(
     gmt: Option<&str>,
     no_iea: bool,
     min_gene_set: usize,
-    max_gene_set: usize,
+    max_gene_set: Option<usize>,
     gene_names: &[Box<str>],
 ) -> anyhow::Result<GeneSetInputs> {
     let onto = Ontology::load_obo(obo)?;
@@ -125,7 +130,7 @@ pub fn load_go_gene_sets(
     );
 
     let idx = GeneIndex::build(gene_names);
-    let rec = gene_sets.reconcile(&idx, min_gene_set, Some(max_gene_set));
+    let rec = gene_sets.reconcile(&idx, min_gene_set, max_gene_set);
     rec.log_coverage();
     rec.ensure_coverage(MIN_COVERAGE_FRAC, MIN_COVERAGE_TERMS)?;
     let universe = rec.universe;
@@ -149,8 +154,9 @@ pub struct TermStats<'a> {
 
 /// Write a per-group top-`N` GO signature TSV from a `group × term` effect
 /// matrix, each group's terms ranked by descending positive effect, with
-/// their `stats`. `term_ids` indexes the matrix columns and aligns 1:1 with
-/// `terms` (for the gene count).
+/// their `stats`; only terms whose gene count is in `report` are listed.
+/// `term_ids` indexes the matrix columns and aligns 1:1 with `terms` (for the
+/// gene count).
 #[allow(clippy::too_many_arguments)]
 pub fn write_go_signature(
     path: &str,
@@ -159,6 +165,7 @@ pub fn write_go_signature(
     stats: &TermStats,
     term_ids: &[Box<str>],
     terms: &[(Box<str>, Vec<usize>)],
+    report: std::ops::RangeInclusive<usize>,
     group_axis: &str,
     group_names: &[Box<str>],
 ) -> anyhow::Result<()> {
@@ -171,7 +178,7 @@ pub fn write_go_signature(
     for (k, gname) in group_names.iter().enumerate() {
         let mut ranked: Vec<(usize, f32)> = (0..n_terms)
             .map(|t| (t, effect_kt[(k, t)]))
-            .filter(|&(_, e)| e > 0.0)
+            .filter(|&(t, e)| e > 0.0 && report.contains(&terms[t].1.len()))
             .collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         for (rank, &(t, e)) in ranked.iter().take(TOP_N).enumerate() {
@@ -214,5 +221,51 @@ mod species_tests {
     fn each_species_has_its_annotation_file() {
         assert!(Species::Human.gaf_url().ends_with("/goa_human.gaf.gz"));
         assert!(Species::Mouse.gaf_url().ends_with("/mgi.gaf.gz"));
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    #[test]
+    fn the_report_window_picks_what_is_listed_not_what_is_tested() {
+        let dir = tempfile::tempdir().unwrap();
+        let obo = dir.path().join("t.obo");
+        std::fs::write(
+            &obo,
+            "[Term]\nid: GO:1\nname: small term\n\n[Term]\nid: GO:2\nname: listed term\n",
+        )
+        .unwrap();
+        let onto = Ontology::load_obo(obo.to_str().unwrap()).unwrap();
+        let ids: Vec<Box<str>> = vec!["GO:1".into(), "GO:2".into()];
+        let terms: Vec<(Box<str>, Vec<usize>)> = vec![
+            ("GO:1".into(), vec![0, 1]),
+            ("GO:2".into(), vec![0, 1, 2, 3]),
+        ];
+        let effect = enrichment::Mat::from_row_slice(1, 2, &[0.9, 0.5]);
+        let stat = enrichment::Mat::from_row_slice(1, 2, &[0.01, 0.02]);
+        let stats = TermStats {
+            nes_kt: &stat,
+            p_kt: &stat,
+            q_kt: &stat,
+        };
+        let tsv = dir.path().join("sig.tsv");
+        let groups: Vec<Box<str>> = vec!["K0".into()];
+        write_go_signature(
+            tsv.to_str().unwrap(),
+            &onto,
+            &effect,
+            &stats,
+            &ids,
+            &terms,
+            3..=10,
+            "cluster",
+            &groups,
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&tsv).unwrap();
+        assert!(!text.contains("small term"), "{text}");
+        assert!(text.contains("K0\t1\tGO:2\tlisted term"), "{text}");
     }
 }

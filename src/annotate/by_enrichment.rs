@@ -468,8 +468,8 @@ fn gene_set_signature(
         gaf.as_deref(),
         args.gmt.as_deref(),
         !KEEP_IEA,
-        args.go_min_overlap,
-        args.go_max_overlap,
+        super::go_signature::MIN_TESTABLE,
+        None,
         gene_names,
     )?;
 
@@ -526,6 +526,7 @@ fn gene_set_signature(
         &stats,
         &ms.term_ids,
         &gs.terms,
+        args.go_min_overlap..=args.go_max_overlap,
         "cluster",
         cluster_names,
     )?;

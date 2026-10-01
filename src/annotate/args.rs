@@ -70,11 +70,12 @@ pub struct AnnotateArgs {
     /// Gene Ontology .obo naming the terms of `go`/`gaf`/`gmt`
     pub go_obo: Option<Box<str>>,
 
-    /// GO/GMT terms sharing fewer genes with the data's features are dropped
-    /// (the overlap, not the term's own size)
+    /// GO/GMT terms sharing fewer genes with the data's features are not
+    /// reported (the overlap, not the term's own size); every term is tested
     pub go_min_overlap: usize,
 
-    /// GO/GMT terms sharing more genes with the data's features are dropped
+    /// GO/GMT terms sharing more genes with the data's features are not
+    /// reported
     pub go_max_overlap: usize,
 
     /// Output prefix for annotation artifacts
