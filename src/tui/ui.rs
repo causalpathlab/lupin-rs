@@ -25,10 +25,22 @@ pub fn draw(f: &mut Frame, app: &App) {
         Constraint::Length(1),
     ])
     .areas(f.area());
-    // Left: the clusters and their genes; right: the ontology and the cell
-    // types competing for the selected cluster.
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(body);
+    // Left: the clusters and their genes; middle: the ontology and the cell
+    // types competing for the selected cluster; right, when the round scored
+    // them: the cluster's GO terms.
+    let (left, right, go) = if app.has_go() {
+        let [l, m, g] = Layout::horizontal([
+            Constraint::Percentage(30),
+            Constraint::Percentage(42),
+            Constraint::Percentage(28),
+        ])
+        .areas(body);
+        (l, m, Some(g))
+    } else {
+        let [l, r] = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .areas(body);
+        (l, r, None)
+    };
     let [clusters, genes] =
         Layout::vertical([Constraint::Min(8), Constraint::Length(16)]).areas(left);
     let [tree, candidates] =
@@ -39,6 +51,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_candidates(f, candidates, app);
     draw_genes(f, genes, app);
     draw_tree(f, tree, app);
+    if let Some(go) = go {
+        draw_go(f, go, app);
+    }
     draw_summary(f, summary, app);
     draw_log(f, log, app);
     f.render_widget(Paragraph::new(help(app)).dim(), keys);
@@ -65,6 +80,7 @@ fn help(app: &App) -> &'static str {
         Focus::Tree => {
             " ? keys · ↑↓ node · enter label · space mark · + mixed label · o ontology · / search"
         }
+        Focus::Go => " ? keys · ↑↓ term · pgup/dn home/end · tab pane · esc clusters",
     }
 }
 
@@ -76,7 +92,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("?", "this guide (any key closes it)"),
             (
                 "tab / shift-tab",
-                "next / previous pane: clusters → genes → tree",
+                "next / previous pane: clusters → genes → tree → GO terms (when scored)",
             ),
             ("pgup/dn home/end", "a page / to either end of the pane's list"),
             ("r", "cluster & run: Leiden and pass settings, enter runs"),
@@ -122,10 +138,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         "genes",
         &[
             ("↑↓ / space", "select / mark genes"),
-            (
-                "m",
-                "specific genes → the label's markers → the cluster's GO terms (when scored)",
-            ),
+            ("m", "specific genes ↔ the label's markers"),
             ("a", "add as markers of the cluster's label"),
             (
                 "A",
@@ -135,6 +148,13 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("⌫", "undo the last marker edit"),
             ("x / X", "hide the genes / hide by pattern (MT-*)"),
             ("H", "show hidden genes"),
+        ],
+    ),
+    (
+        "GO terms",
+        &[
+            ("↑↓", "the selected cluster's top terms, by effect"),
+            ("r", "GO terms in the settings: score them in the next pass"),
         ],
     ),
     (
@@ -559,51 +579,76 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
                 ),
             )
         }
-        GeneView::Terms => {
-            let rows = c.terms[window.start.min(c.terms.len())..window.end.min(c.terms.len())]
-                .iter()
-                .map(|t| {
-                    Row::new([
-                        " ".to_string(),
-                        t.term.clone(),
-                        format!("{:+.2}", t.effect),
-                        t.source.clone(),
-                    ])
-                })
-                .collect();
-            let title = if c.terms.is_empty() {
-                format!(" no GO terms for K{} ", c.id)
-            } else {
-                format!(
-                    " top {} terms of K{} · effect (mean in − mean out) ",
-                    c.terms.len(),
-                    c.id
-                )
-            };
-            (rows, title)
-        }
     };
     let mut state = TableState::default().with_selected(focused.then_some(app.gene_sel - start));
-    // A term name is a phrase, not a symbol: it takes the room.
-    let widths = if app.gene_view == GeneView::Terms {
-        [
-            Constraint::Length(1),
-            Constraint::Min(20),
-            Constraint::Length(7),
-            Constraint::Length(4),
-        ]
-    } else {
-        [
-            Constraint::Length(1),
-            Constraint::Length(14),
-            Constraint::Length(7),
-            Constraint::Min(8),
-        ]
-    };
+    let widths = [
+        Constraint::Length(1),
+        Constraint::Length(14),
+        Constraint::Length(7),
+        Constraint::Min(8),
+    ];
     let t = Table::new(rows, widths)
         .block(pane(title, focused))
         .row_highlight_style(highlight(focused));
     f.render_stateful_widget(t, area, &mut state);
+}
+
+/// The selected cluster's top GO terms: each term's effect (its genes' mean
+/// in the cluster against the other clusters) and where it came from.
+fn draw_go(f: &mut Frame, area: Rect, app: &App) {
+    let focused = app.focus == Focus::Go;
+    let Some(c) = app.selected() else {
+        f.render_widget(pane(" GO terms ".into(), focused), area);
+        return;
+    };
+    // A term name is a phrase: wrapped, up to three lines, to stay readable
+    // in a narrow column. The list is short (each cluster's top terms), so
+    // the table scrolls it whole.
+    let width = area.width.saturating_sub(2 + 6 + 1).max(8) as usize;
+    let rows: Vec<Row> = c
+        .terms
+        .iter()
+        .map(|t| {
+            let lines = wrap(&t.term, width, 3);
+            let height = lines.len() as u16;
+            Row::new([format!("{:+.2}", t.effect), lines.join("\n")]).height(height)
+        })
+        .collect();
+    let title = if c.terms.is_empty() {
+        format!(" GO terms · none for K{} ", c.id)
+    } else {
+        format!(" GO terms of K{} · effect ", c.id)
+    };
+    let mut state = TableState::default().with_selected(focused.then_some(app.go_sel));
+    let t = Table::new(rows, [Constraint::Length(6), Constraint::Min(8)])
+        .block(pane(title, focused))
+        .row_highlight_style(highlight(focused));
+    f.render_stateful_widget(t, area, &mut state);
+}
+
+/// `text` in lines of at most `width` characters, broken between words, at
+/// most `max` lines (the last ends in `…` when cut).
+fn wrap(text: &str, width: usize, max: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(l) if l.chars().count() + 1 + word.chars().count() <= width => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.chars().take(width).collect()),
+        }
+    }
+    if lines.len() > max {
+        lines.truncate(max);
+        let last = &mut lines[max - 1];
+        let keep: String = last.chars().take(width.saturating_sub(1)).collect();
+        *last = format!("{keep}…");
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
@@ -857,4 +902,17 @@ fn draw_prompt(f: &mut Frame, app: &App) {
             .block(popup(String::new(), " enter: ok · esc: cancel ")),
         area,
     );
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::wrap;
+
+    #[test]
+    fn a_long_name_wraps_between_words_and_is_cut_at_the_last_line() {
+        assert_eq!(wrap("one two three", 7, 3), ["one two", "three"]);
+        assert_eq!(wrap("aa bb cc dd", 5, 2), ["aa bb", "cc d…"]);
+        assert_eq!(wrap("abcdefgh", 4, 3), ["abcd"]);
+        assert_eq!(wrap("", 4, 3), [""]);
+    }
 }

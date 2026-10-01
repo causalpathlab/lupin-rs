@@ -1,4 +1,4 @@
-//! Remembering an alias picked in the TUI; the GO terms view and setting;
+//! Remembering an alias picked in the TUI; the GO pane and setting;
 //! the keys.
 
 use super::*;
@@ -74,31 +74,36 @@ fn app_with_terms(terms: bool) -> App {
 }
 
 #[test]
-fn m_reaches_the_go_terms_only_when_the_round_scored_them() {
-    let mut app = app_with_terms(true);
-    let views: Vec<GeneView> = (0..3)
-        .map(|_| {
-            app.pane_key(KeyCode::Char('m'));
-            app.gene_view
-        })
-        .collect();
-    assert!(views == [GeneView::Markers, GeneView::Terms, GeneView::Specific]);
-
-    let mut app = app_with_terms(false);
-    app.pane_key(KeyCode::Char('m'));
-    app.pane_key(KeyCode::Char('m'));
-    assert!(app.gene_view == GeneView::Specific);
+fn tab_reaches_the_go_pane_only_when_the_round_scored_terms() {
+    let tabs = |app: &mut App| -> Vec<Focus> {
+        app.focus = Focus::Clusters;
+        (0..4)
+            .map(|_| {
+                app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+                app.focus
+            })
+            .collect()
+    };
+    let mut with = app_with_terms(true);
+    assert!(tabs(&mut with) == [Focus::Genes, Focus::Tree, Focus::Go, Focus::Clusters]);
+    let mut without = app_with_terms(false);
+    assert!(tabs(&mut without) == [Focus::Genes, Focus::Tree, Focus::Clusters, Focus::Genes]);
 }
 
 #[test]
-fn go_terms_are_read_not_edited() {
+fn the_go_pane_scrolls_its_terms_and_m_keeps_to_genes() {
     let mut app = app_with_terms(true);
-    app.gene_view = GeneView::Terms;
-    assert_eq!(app.listed_genes(), ["TERM1", "TERM2"]);
-    app.pane_key(KeyCode::Char(' '));
-    app.pane_key(KeyCode::Char('x'));
-    assert!(app.marked.is_empty());
-    assert!(!app.hidden.hides("TERM1"));
+    app.focus = Focus::Go;
+    app.pane_key(KeyCode::End);
+    assert_eq!(app.go_sel, 1);
+    app.pane_key(KeyCode::Esc);
+    assert!(app.focus == Focus::Clusters);
+
+    app.focus = Focus::Genes;
+    app.pane_key(KeyCode::Char('m'));
+    assert!(app.gene_view == GeneView::Markers);
+    app.pane_key(KeyCode::Char('m'));
+    assert!(app.gene_view == GeneView::Specific);
 }
 
 #[test]
