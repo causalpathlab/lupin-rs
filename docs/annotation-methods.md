@@ -112,10 +112,9 @@ least `--min-support` of the replicates, and near-ties were reported as a set (`
 `--set-coverage`, `--max-set-size`). On the negative control of §7 it cut the absent-type share
 by an order of magnitude, at the cost of abstaining on a substantial fraction of cells.
 
-It was removed for both costs. **Too stringent:** on sorted human bone-marrow progenitors
-(GSE117498) with a mature-cell panel, enrichment's bootstrap abstained on 99.7% of cells, where the
-single-pass FDR call labelled all but 5. **Too slow:** it was over 90% of an enrichment pass
-(5.5 min against 25 s without it).
+It was removed for both costs. **Too stringent:** on sorted progenitor cells annotated with a
+mature-cell panel, enrichment's bootstrap abstained on nearly every cell, where the single-pass
+FDR call labelled almost all of them. **Too slow:** it took most of the time of an enrichment pass.
 
 What replaces it: each call is the single-pass call (FDR-gated, with Q as the cluster's evidence
 split over the types). A contested cluster shows up as a low top share, and is settled by hand in
