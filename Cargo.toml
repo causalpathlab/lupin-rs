@@ -61,7 +61,7 @@ data-beans = { version = "0.6.12", features = ["aux", "alg"] }
 enrichment = { version = "0.4.1", package = "legume-enrichment" }
 genomic-data = { version = "0.4.1", package = "legume-genomic-types" }
 graph-embedding-util = { version = "0.8.4", package = "legume-graph-embedding" }
-legume-numeric = { version = "0.8.10", features = ["matrix", "param", "candle", "mcmc"] }
+legume-numeric = { version = "0.8.12", features = ["matrix", "param", "candle", "mcmc"] }
 legume-plot = { version = "0.3.2" }
 
 # gene-text encoder stack
