@@ -12,18 +12,6 @@ use rayon::prelude::*;
 /// full set of accumulators, so parallelism is bounded by memory, not cores.
 const ACCUMULATOR_BUDGET_BYTES: usize = 1 << 30;
 
-/// Per-group gene sums for one grouping.
-pub fn accumulate_gene_sum(
-    data_vec: &SparseIoVec,
-    labels: &[usize],
-    k: usize,
-    m: usize,
-    block_size: usize,
-) -> anyhow::Result<Vec<f64>> {
-    let mut out = accumulate_gene_sum_multi(data_vec, &[(labels, k)], m, block_size)?;
-    Ok(out.pop().expect("one grouping in, one out"))
-}
-
 /// Two groupings (e.g. cluster and batch) in a single sweep over the columns.
 pub fn accumulate_gene_sum_pair(
     data_vec: &SparseIoVec,

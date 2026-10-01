@@ -10,7 +10,7 @@
 use crate::annotate::args::{
     fixed_settings, AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, BLOCK_SIZE,
 };
-use crate::annotate::by_enrichment::{self, EnrichmentPlan};
+use crate::annotate::by_enrichment;
 use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
 use crate::annotate::ontology;
@@ -19,9 +19,7 @@ use crate::manifest::rounds;
 use crate::manifest::run::{annotated_path, resolve, Loaded};
 use legume_numeric::matrix::parquet::read_table_columns;
 
-use crate::annotate::aggregate::{
-    accumulate_gene_sum, accumulate_gene_sum_pair, weighted_mean_profile,
-};
+use crate::annotate::aggregate::{accumulate_gene_sum_pair, weighted_mean_profile};
 use crate::annotate::markers::build_annotation_matrix;
 use crate::manifest::run::{CellSpace, RunManifest};
 use crate::marker_embedding::load_marker_feature_embedding;
@@ -71,7 +69,7 @@ pub fn annotate_by_enrichment(
     data: Option<&super::data_files::ClData>,
 ) -> Result<()> {
     let plan = by_enrichment::plan(args)?;
-    let inputs = load_enrichment_inputs(args, &plan, loaded, data)?;
+    let inputs = load_enrichment_inputs(args, loaded, data)?;
     let mut outputs = by_enrichment::run(args, &plan, &inputs)?;
     // The ids the cluster tables' `K{id}` rows refer to, so later rounds and
     // viewers key on the same clusters.
@@ -371,11 +369,10 @@ fn drop_small_clusters(labels: &mut [usize], min_size: usize) -> usize {
 }
 
 /// Re-open the raw counts, resolve the clustering, parse the marker TSV, and
-/// aggregate the NB-Fisher-weighted cluster (and, for the marker path,
-/// per-batch) expression the enrichment pass scores.
+/// aggregate the NB-Fisher-weighted cluster and per-batch expression the
+/// enrichment pass scores.
 pub(super) fn load_enrichment_inputs(
     args: &AnnotateArgs,
-    plan: &EnrichmentPlan,
     loaded: &Loaded,
     data: Option<&super::data_files::ClData>,
 ) -> Result<EnrichmentInputs> {
@@ -446,7 +443,6 @@ pub(super) fn load_enrichment_inputs(
 
     let nb_fisher = nb_fisher_weights(&loaded.run_prefix(), data_vec, &gene_names)?;
     let (profile_gk, pb_gene_gp, gene_sum_kg) = aggregate_expression(
-        plan,
         data_vec,
         &cluster_labels,
         n_clusters,
@@ -563,12 +559,9 @@ fn nb_fisher_weights(
 }
 
 /// One fused sweep over the counts for the per-cluster gene sums, plus the
-/// per-batch axis the marker path's sample-permutation null needs. The GO/GMT
-/// ontology path scores the per-cluster profile directly, so it asks for only
-/// the cluster sums.
-#[allow(clippy::too_many_arguments)]
+/// per-batch axis the sample-permutation null needs (cell types and GO terms
+/// alike).
 fn aggregate_expression(
-    plan: &EnrichmentPlan,
     data_vec: &data_beans::sparse_io_vector::SparseIoVec,
     cluster_labels: &[usize],
     n_clusters: usize,
@@ -577,18 +570,6 @@ fn aggregate_expression(
     g: usize,
     nb_fisher: &[f32],
 ) -> Result<(Mat, Option<Mat>, Vec<f64>)> {
-    if plan.ontology_mode {
-        let gene_sum_kg = accumulate_gene_sum(data_vec, cluster_labels, n_clusters, g, BLOCK_SIZE)?;
-        // μ[g, c] = w_NBF[g] · (Σ counts[g, n ∈ c]) / size_sum[c]; Simplex
-        // specificity downstream supplies the cross-cluster housekeeping
-        // suppression.
-        return Ok((
-            weighted_mean_profile(&gene_sum_kg, n_clusters, g, nb_fisher),
-            None,
-            gene_sum_kg,
-        ));
-    }
-
     let (gene_sum_kg, gene_sum_pg) = accumulate_gene_sum_pair(
         data_vec,
         cluster_labels,

@@ -2,7 +2,7 @@
 //! expression matrix (NB-Fisher adjusted, re-aggregated from raw counts by the
 //! caller — see [`crate::manifest::annotate`]).
 
-use super::args::{AnnotateArgs, KEEP_IEA, MAX_GENE_SET, MIN_CONFIDENCE, MIN_GENE_SET, NUM_DRAWS};
+use super::args::{AnnotateArgs, KEEP_IEA, MIN_CONFIDENCE, NUM_DRAWS};
 use super::inputs::EnrichmentInputs;
 use super::outputs::{clean_outputs, AnnotationOutputs, ENRICHMENT_OUTPUT_SUFFIXES};
 use super::outputs::{
@@ -147,6 +147,18 @@ pub fn prepare(
     args: &AnnotateArgs,
     inputs: &EnrichmentInputs,
 ) -> anyhow::Result<(GroupInputs, Mat, AnnotateConfig)> {
+    prepare_with(args, inputs, &inputs.markers_gc, inputs.type_tree.clone())
+}
+
+/// [`prepare`] for any gene × set membership `sets_gc` (a marker panel, or
+/// GO terms), its q-values TreeBH-adjusted over `type_tree` when given and
+/// flat BH within the cluster otherwise.
+fn prepare_with(
+    args: &AnnotateArgs,
+    inputs: &EnrichmentInputs,
+    sets_gc: &Mat,
+    type_tree: Option<enrichment::treebh::TypeTree>,
+) -> anyhow::Result<(GroupInputs, Mat, AnnotateConfig)> {
     let n_clusters = inputs.n_clusters;
     let n_batches = inputs.n_batches;
     let profile_gk = &inputs.profile_gk;
@@ -172,7 +184,7 @@ pub fn prepare(
     // Markers that light up broadly (shared by several types) get
     // attenuated; cluster-exclusive markers keep full weight. This
     // complements the IDF that already runs on the marker TSV.
-    let mut markers_gc = inputs.markers_gc.clone();
+    let mut markers_gc = sets_gc.clone();
     apply_empirical_specificity_weights(&mut markers_gc, profile_gk);
 
     // The per-batch β̃ profile backs the sample-permutation null, so only the
@@ -216,7 +228,7 @@ pub fn prepare(
         // The plain permutation p of the gene-set null's draws (floor 1 / (NUM_DRAWS + 1)).
         multilevel: None,
         // TreeBH over the panel's cell-type tree; flat BH within the cluster without one.
-        type_tree: inputs.type_tree.clone(),
+        type_tree,
     };
 
     Ok((group, markers_gc, config))
@@ -248,7 +260,7 @@ pub fn run(
     // Descriptive module-score signature on the cluster profile (no cell-level
     // labels, no permutation, no tree). Diverges from the marker path entirely.
     if plan.ontology_mode {
-        return run_ontology_gene_sets(args, out, profile_gk, &inputs.gene_names, &cluster_names);
+        return run_ontology_gene_sets(args, out, inputs, &cluster_names);
     }
 
     let AnnotateOutputs {
@@ -364,7 +376,7 @@ pub fn run(
     // walk: the cell-type outputs above are already written.
     let mut gene_set_outputs = None;
     if plan.gene_sets_too {
-        match gene_set_signature(args, out, profile_gk, &inputs.gene_names, &cluster_names) {
+        match gene_set_signature(args, out, inputs, &cluster_names) {
             Ok(paths) => gene_set_outputs = Some(paths),
             Err(e) => log::error!("GO term scoring failed ({e:#}); cell-type outputs are intact"),
         }
@@ -396,10 +408,10 @@ pub fn run(
 fn run_ontology_gene_sets(
     args: &AnnotateArgs,
     out: &str,
-    profile_gk: &Mat,
-    gene_names: &[Box<str>],
+    inputs: &EnrichmentInputs,
     cluster_names: &[Box<str>],
 ) -> anyhow::Result<AnnotationOutputs> {
+    let (profile_gk, gene_names) = (&inputs.profile_gk, &inputs.gene_names);
     let cell_expr_path = format!("{out}.cluster_expression.parquet");
     profile_gk.to_parquet_with_names(
         &cell_expr_path,
@@ -408,8 +420,7 @@ fn run_ontology_gene_sets(
     )?;
     info!("wrote {cell_expr_path}");
 
-    let (sig_path, effect_path) =
-        gene_set_signature(args, out, profile_gk, gene_names, cluster_names)?;
+    let (sig_path, effect_path) = gene_set_signature(args, out, inputs, cluster_names)?;
 
     info!("annotate --method enrichment (ontology gene-set mode) complete");
     Ok(AnnotationOutputs {
@@ -422,14 +433,16 @@ fn run_ontology_gene_sets(
 
 /// Score the `--gaf`/`--gmt` terms on the cluster profile and write the
 /// per-cluster signature and its `K × T` effect matrix; returns their paths.
+/// Each term is also tested as the cell types are (fgsea NES, p, and q by BH
+/// over the terms within each cluster), written as `K × T` tables beside it.
 fn gene_set_signature(
     args: &AnnotateArgs,
     out: &str,
-    profile_gk: &Mat,
-    gene_names: &[Box<str>],
+    inputs: &EnrichmentInputs,
     cluster_names: &[Box<str>],
 ) -> anyhow::Result<(String, String)> {
     use enrichment::ontology_module_score;
+    let (profile_gk, gene_names) = (&inputs.profile_gk, &inputs.gene_names);
 
     let obo = args
         .go_obo
@@ -456,8 +469,8 @@ fn gene_set_signature(
         gaf.as_deref(),
         args.gmt.as_deref(),
         !KEEP_IEA,
-        MIN_GENE_SET,
-        MAX_GENE_SET,
+        args.go_min_genes,
+        args.go_max_genes,
         gene_names,
     )?;
 
@@ -472,11 +485,48 @@ fn gene_set_signature(
     // stable-null terms and whose depth preference descends to narrow processes.
     let ms = ontology_module_score(profile_gk, &gs.terms, &gs.universe)?;
 
+    // The cell types' test on the same terms: their NES, p and q stand beside
+    // the effect the signature ranks by.
+    let mut sets_gt = Mat::zeros(gene_names.len(), gs.terms.len());
+    for (t, (_, rows)) in gs.terms.iter().enumerate() {
+        for &g in rows {
+            sets_gt[(g, t)] = 1.0;
+        }
+    }
+    let (group, weighted_gt, config) = prepare_with(args, inputs, &sets_gt, None)?;
+    info!(
+        "Testing {} GO terms over {} clusters as the cell types are tested",
+        gs.terms.len(),
+        inputs.n_clusters
+    );
+    let all: Vec<usize> = (0..gs.terms.len()).collect();
+    let tested = enrichment::annotate_types(&group, &weighted_gt, &ms.term_ids, &config, &all)?;
+    let adjusted = enrichment::adjust(&tested.pvalue_kc, &weighted_gt, &config)?;
+    let stats = super::go_signature::TermStats {
+        nes_kt: &tested.nes_kc,
+        p_kt: &adjusted.pvalue_kc,
+        q_kt: &adjusted.qvalue_kc,
+    };
+    for (m, suffix) in [
+        (stats.nes_kt, ".cluster_term_nes.parquet"),
+        (stats.p_kt, ".cluster_term_p.parquet"),
+        (stats.q_kt, ".cluster_term_q_values.parquet"),
+    ] {
+        let path = format!("{out}{suffix}");
+        m.to_parquet_with_names(
+            &path,
+            (Some(cluster_names), Some("cluster")),
+            Some(&ms.term_ids),
+        )?;
+        info!("wrote {path}");
+    }
+
     let sig_path = format!("{out}.ontology_signature.tsv");
     super::go_signature::write_go_signature(
         &sig_path,
         &gs.onto,
         &ms.effect_kt,
+        &stats,
         &ms.term_ids,
         &gs.terms,
         "cluster",

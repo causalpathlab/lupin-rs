@@ -44,7 +44,9 @@ fn app_with_terms(terms: bool) -> App {
         source: "go".into(),
         term: t.into(),
         effect: 0.5,
-        q: None,
+        q: Some(0.01),
+        p: Some(0.001),
+        nes: Some(1.5),
     };
     app.round = Some(RoundView {
         manifest: PathBuf::new(),
