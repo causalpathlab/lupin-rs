@@ -15,6 +15,75 @@ const MIN_COVERAGE_TERMS: usize = 5;
 /// Top terms reported per group in the signature TSV.
 const TOP_N: usize = 10;
 
+/// A species whose GO annotations lupin can download.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Species {
+    Human,
+    Mouse,
+}
+
+impl Species {
+    /// The species of a run's genes, by vote over its rows: an Ensembl id
+    /// prefix (`ENSG`, `ENSMUSG`) when the name has one, else the symbol's
+    /// case (human symbols are upper case, mouse symbols capitalized).
+    /// `None` when neither side wins.
+    #[must_use]
+    pub fn detect(row_names: &[Box<str>]) -> Option<Self> {
+        let (mut human, mut mouse) = (0usize, 0usize);
+        for name in row_names {
+            let Some(gene) = super::gene_rows::gene_of(name) else {
+                continue;
+            };
+            let upper = gene.to_ascii_uppercase();
+            if upper.starts_with("ENSMUSG") {
+                mouse += 1;
+                continue;
+            }
+            if upper.starts_with("ENSG") && upper[4..].starts_with(|c: char| c.is_ascii_digit()) {
+                human += 1;
+                continue;
+            }
+            let symbol = gene.rsplit('_').next().unwrap_or(gene);
+            let mut letters = symbol.chars().filter(char::is_ascii_alphabetic);
+            let Some(first) = letters.next() else {
+                continue;
+            };
+            let rest: Vec<char> = letters.collect();
+            if rest.is_empty() {
+                continue;
+            }
+            if first.is_ascii_uppercase() && rest.iter().all(char::is_ascii_uppercase) {
+                human += 1;
+            } else if first.is_ascii_uppercase() && rest.iter().all(char::is_ascii_lowercase) {
+                mouse += 1;
+            }
+        }
+        match human.cmp(&mouse) {
+            std::cmp::Ordering::Greater => Some(Self::Human),
+            std::cmp::Ordering::Less => Some(Self::Mouse),
+            std::cmp::Ordering::Equal => None,
+        }
+    }
+
+    /// The GO Consortium's annotation file for this species.
+    #[must_use]
+    pub fn gaf_file(self) -> &'static str {
+        match self {
+            Self::Human => "goa_human.gaf.gz",
+            Self::Mouse => "mgi.gaf.gz",
+        }
+    }
+
+    /// Where [`Self::gaf_file`] is published.
+    #[must_use]
+    pub fn gaf_url(self) -> String {
+        format!(
+            "https://current.geneontology.org/annotations/{}",
+            self.gaf_file()
+        )
+    }
+}
+
 /// Reconciled GO/GMT gene-sets ready for scoring.
 pub struct GeneSetInputs {
     pub onto: Ontology,
@@ -105,4 +174,29 @@ pub fn write_go_signature(
     }
     info!("wrote {path}");
     Ok(())
+}
+
+#[cfg(test)]
+mod species_tests {
+    use super::Species;
+
+    fn names(v: &[&str]) -> Vec<Box<str>> {
+        v.iter().map(|s| Box::from(*s)).collect()
+    }
+
+    #[test]
+    fn the_species_comes_from_ensembl_ids_else_symbol_case() {
+        let human = names(&["ENSG00000000001_GENE1", "GENE2", "chr1:5/baf/alt"]);
+        assert_eq!(Species::detect(&human), Some(Species::Human));
+        let mouse = names(&["ENSMUSG00000000001_Gene1", "Gene2/count/spliced", "Gene3"]);
+        assert_eq!(Species::detect(&mouse), Some(Species::Mouse));
+        assert_eq!(Species::detect(&names(&["GENE1", "Gene2"])), None);
+        assert_eq!(Species::detect(&names(&["1", "chr1:5/baf/alt"])), None);
+    }
+
+    #[test]
+    fn each_species_has_its_annotation_file() {
+        assert!(Species::Human.gaf_url().ends_with("/goa_human.gaf.gz"));
+        assert!(Species::Mouse.gaf_url().ends_with("/mgi.gaf.gz"));
+    }
 }

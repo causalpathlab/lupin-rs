@@ -247,6 +247,8 @@ fn record(
             a.cluster_celltype_nes = rel(&out.cluster_celltype_nes);
             a.cluster_term_q = rel(&out.cluster_term_q);
             a.marker_embedding = rel(&out.marker_embedding);
+            a.ontology_signature = rel(&out.ontology_signature);
+            a.ontology_term_effect = rel(&out.ontology_term_effect);
             loaded.manifest.defaults.colour_by = Some("annotation".into());
         }
         Pass::GeneSets => {

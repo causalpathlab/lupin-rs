@@ -66,6 +66,7 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
     let plan = EnrichmentPlan {
         out: out.clone().into_boxed_str(),
         ontology_mode: false,
+        gene_sets_too: false,
     };
     let inputs = load_enrichment_inputs(&eargs, &plan, &loaded, None)?;
 
