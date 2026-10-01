@@ -7,7 +7,6 @@
 //! `lupin relabel -f <round> -d - --next` applies it, with every decision's
 //! rationale kept in the round's history. Nothing is sent anywhere by lupin.
 
-use crate::annotate::by_enrichment::EnrichmentPlan;
 use crate::manifest::annotate::load_enrichment_inputs;
 use crate::manifest::recalibrate::write_cache;
 use crate::manifest::rounds::{write_argmax, write_clusters, write_summary, CLUSTERS};
@@ -63,12 +62,7 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
     mkdir_parent(&out)?;
     let mut eargs = crate::annotate_cmd::default_enrichment_args(&out);
     eargs.clusters.clone_from(&args.clusters);
-    let plan = EnrichmentPlan {
-        out: out.clone().into_boxed_str(),
-        ontology_mode: false,
-        gene_sets_too: false,
-    };
-    let inputs = load_enrichment_inputs(&eargs, &plan, &loaded, None)?;
+    let inputs = load_enrichment_inputs(&eargs, &loaded, None)?;
 
     // The round: clusters, no labels, the profile, and the cache.
     let clusters_path = format!("{out}{CLUSTERS}");
@@ -104,11 +98,11 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
     a.argmax = Some(rel(&argmax_path));
     a.cluster_expression = Some(rel(&profile_path));
     a.expression_clusters = Some(rel(&clusters_path));
-    a.stats_cache = cache.map(|c| StatsCache {
-        gene_sum: rel(&c.gene_sum),
-        batch_profile: rel(&c.batch_profile),
-        gene_weight: rel(&c.gene_weight),
-        cell_batch: rel(&c.cell_batch),
+    a.stats_cache = Some(StatsCache {
+        gene_sum: rel(&cache.gene_sum),
+        batch_profile: rel(&cache.batch_profile),
+        gene_weight: rel(&cache.gene_weight),
+        cell_batch: rel(&cache.cell_batch),
     });
     a.settings = Some(serde_json::json!({ "enrichment": eargs }));
     for p in [

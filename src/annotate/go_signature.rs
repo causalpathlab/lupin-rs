@@ -140,13 +140,23 @@ pub fn load_go_gene_sets(
     })
 }
 
+/// Each cluster × term's test, as the cell types are tested.
+pub struct TermStats<'a> {
+    pub nes_kt: &'a enrichment::Mat,
+    pub p_kt: &'a enrichment::Mat,
+    pub q_kt: &'a enrichment::Mat,
+}
+
 /// Write a per-group top-`N` GO signature TSV from a `group × term` effect
-/// matrix, each group's terms ranked by descending positive effect. `term_ids`
-/// indexes the matrix columns and aligns 1:1 with `terms` (for the gene count).
+/// matrix, each group's terms ranked by descending positive effect, with
+/// their `stats`. `term_ids` indexes the matrix columns and aligns 1:1 with
+/// `terms` (for the gene count).
+#[allow(clippy::too_many_arguments)]
 pub fn write_go_signature(
     path: &str,
     onto: &Ontology,
     effect_kt: &enrichment::Mat,
+    stats: &TermStats,
     term_ids: &[Box<str>],
     terms: &[(Box<str>, Vec<usize>)],
     group_axis: &str,
@@ -154,7 +164,10 @@ pub fn write_go_signature(
 ) -> anyhow::Result<()> {
     let n_terms = term_ids.len();
     let mut f = std::fs::File::create(path)?;
-    writeln!(f, "{group_axis}\trank\tterm_id\tterm_name\teffect\tn_genes")?;
+    writeln!(
+        f,
+        "{group_axis}\trank\tterm_id\tterm_name\teffect\tn_genes\tnes\tp\tq"
+    )?;
     for (k, gname) in group_names.iter().enumerate() {
         let mut ranked: Vec<(usize, f32)> = (0..n_terms)
             .map(|t| (t, effect_kt[(k, t)]))
@@ -166,9 +179,12 @@ pub fn write_go_signature(
             let name = onto.name(id).unwrap_or(id.as_ref());
             writeln!(
                 f,
-                "{gname}\t{}\t{id}\t{name}\t{e:.4}\t{}",
+                "{gname}\t{}\t{id}\t{name}\t{e:.4}\t{}\t{:.3}\t{:.3e}\t{:.3e}",
                 rank + 1,
-                terms[t].1.len()
+                terms[t].1.len(),
+                stats.nes_kt[(k, t)],
+                stats.p_kt[(k, t)],
+                stats.q_kt[(k, t)],
             )?;
         }
     }

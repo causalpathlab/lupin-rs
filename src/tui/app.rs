@@ -29,6 +29,8 @@ pub enum Focus {
     Clusters,
     Genes,
     Tree,
+    /// The selected cluster's GO terms, when the round scored them.
+    Go,
 }
 
 /// The settings the screen edits, in the order it lists them.
@@ -137,8 +139,6 @@ pub enum GeneView {
     Specific,
     /// The markers of the cluster's label.
     Markers,
-    /// The cluster's top GO terms.
-    Terms,
 }
 
 /// What an open prompt will do with its reason.
@@ -207,6 +207,7 @@ impl Rescoring {
 enum Armed {
     Quit,
     Run,
+    Stop,
 }
 
 pub struct App {
@@ -232,6 +233,10 @@ pub struct App {
     pub focus: Focus,
     pub cluster_sel: usize,
     pub gene_sel: usize,
+    /// The selected row of the GO pane.
+    pub go_sel: usize,
+    /// Words of the selected GO term's name slid out of view (← →).
+    pub go_shift: usize,
     pub gene_view: GeneView,
     /// Genes kept out of the specific-genes view.
     pub hidden: super::genes::GeneFilter,
@@ -286,6 +291,8 @@ impl App {
             focus: Focus::Clusters,
             cluster_sel: 0,
             gene_sel: 0,
+            go_sel: 0,
+            go_shift: 0,
             gene_view: GeneView::Specific,
             hidden: super::genes::GeneFilter::default(),
             show_hidden: false,
@@ -549,8 +556,18 @@ impl App {
     fn select_cluster(&mut self, i: usize) {
         self.cluster_sel = i;
         self.gene_sel = 0;
+        self.go_sel = 0;
+        self.go_shift = 0;
         self.marked.clear();
         self.tree_marked.clear();
+    }
+
+    /// Whether the round scored GO terms, so the GO pane is shown.
+    #[must_use]
+    pub fn has_go(&self) -> bool {
+        self.round
+            .as_ref()
+            .is_some_and(|r| r.clusters.iter().any(|c| !c.terms.is_empty()))
     }
 
     /// The label of the tree pane's selected node: a panel node's, or a CL
@@ -917,7 +934,12 @@ impl App {
         let Some(id) = self.selected().map(|c| c.id) else {
             return;
         };
+        let before = self.edits.len();
         self.edits.retain(|e| e.cluster() != Some(id));
+        self.status = match before - self.edits.len() {
+            0 => format!("no edit of K{id} to undo"),
+            _ => format!("undid K{id}'s edit"),
+        };
     }
 
     /// The genes the genes pane lists: the cluster's specific genes, or
@@ -939,10 +961,6 @@ impl App {
                 .into_iter()
                 .map(|(g, _, _)| g)
                 .collect(),
-            GeneView::Terms => self
-                .selected()
-                .map(|c| c.terms.iter().map(|t| t.term.clone()).collect())
-                .unwrap_or_default(),
         }
     }
 
@@ -1187,13 +1205,8 @@ impl App {
 
     pub fn key(&mut self, k: KeyEvent) {
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
-            // A running save is left to finish; a pass is stopped.
-            if self.pass_running() {
-                self.stop();
-            }
-            self.stop_rescoring();
-            self.quit = true;
-            return;
+            let armed = self.armed.take();
+            return self.request_quit(armed, "ctrl-c");
         }
         if self.prompt.is_some() {
             return self.prompt_key(k);
@@ -1230,33 +1243,22 @@ impl App {
         if self.settings_open {
             return self.settings_key(k.code, armed);
         }
+        // The focused pane's keys come first (in the genes pane, x hides).
+        if self.pane_key(k.code) {
+            return;
+        }
         match k.code {
-            KeyCode::Char('q') => {
-                let busy = self.child.as_ref().map(|c| c.2);
-                let unsaved = match self.edits.len() {
-                    0 => String::new(),
-                    n => format!(" and {n} unsaved edit(s)"),
-                };
-                if matches!(busy, Some(Job::Save(_))) {
-                    self.status = "saving… q once it is done".into();
-                } else if armed != Some(Armed::Quit) && busy.is_some() {
-                    self.armed = Some(Armed::Quit);
-                    self.status = format!("a pass is running{unsaved}: q again stops it and quits");
-                } else if armed == Some(Armed::Quit) || self.edits.is_empty() {
+            KeyCode::Char('q') => self.request_quit(armed, "q"),
+            KeyCode::Char('r') => self.settings_open = true,
+            // Stops a running pass or save, asked twice.
+            KeyCode::Char('x') if self.child.is_some() => {
+                if armed == Some(Armed::Stop) {
                     self.stop();
-                    self.stop_rescoring();
-                    self.quit = true;
                 } else {
-                    self.armed = Some(Armed::Quit);
-                    self.status = format!(
-                        "{} unsaved edit(s): q again to quit, s to save",
-                        self.edits.len()
-                    );
+                    self.armed = Some(Armed::Stop);
+                    self.status = "x again stops it".into();
                 }
             }
-            KeyCode::Char('r') => self.settings_open = true,
-            // Stops a running pass or save; otherwise it is the pane's (hide, in genes).
-            KeyCode::Char('x') if self.child.is_some() => self.stop(),
             KeyCode::Char('s') => self.save(),
             KeyCode::Char('e') => {
                 self.status = if self.edits.is_empty() {
@@ -1267,7 +1269,33 @@ impl App {
             }
             KeyCode::Tab => self.focus = self.cycle(true),
             KeyCode::BackTab => self.focus = self.cycle(false),
-            code => self.pane_key(code),
+            _ => {}
+        }
+    }
+
+    /// Quit on `key` (`q` or `ctrl-c`), asking again first while a pass runs
+    /// or edits are unsaved; never during a save.
+    fn request_quit(&mut self, armed: Option<Armed>, key: &str) {
+        let busy = self.child.as_ref().map(|c| c.2);
+        let unsaved = match self.edits.len() {
+            0 => String::new(),
+            n => format!(" and {n} unsaved edit(s)"),
+        };
+        if matches!(busy, Some(Job::Save(_))) {
+            self.status = format!("saving… {key} once it is done");
+        } else if armed != Some(Armed::Quit) && busy.is_some() {
+            self.armed = Some(Armed::Quit);
+            self.status = format!("a pass is running{unsaved}: {key} again stops it and quits");
+        } else if armed == Some(Armed::Quit) || self.edits.is_empty() {
+            self.stop();
+            self.stop_rescoring();
+            self.quit = true;
+        } else {
+            self.armed = Some(Armed::Quit);
+            self.status = format!(
+                "{} unsaved edit(s): {key} again to quit, s to save",
+                self.edits.len()
+            );
         }
     }
 
@@ -1275,8 +1303,7 @@ impl App {
     fn settings_key(&mut self, code: KeyCode, armed: Option<Armed>) {
         match code {
             KeyCode::Esc | KeyCode::Char('r' | 'q') => self.settings_open = false,
-            KeyCode::Up => self.setting = self.setting.saturating_sub(1),
-            KeyCode::Down if self.setting + 1 < SETTINGS.len() => self.setting += 1,
+            KeyCode::Up | KeyCode::Down => step(&mut self.setting, SETTINGS.len(), code),
             KeyCode::Left | KeyCode::Right => {
                 SETTINGS[self.setting].adjust(&mut self.args, code == KeyCode::Right);
                 self.stale = self.round.is_some();
@@ -1292,8 +1319,12 @@ impl App {
     }
 
     fn cycle(&self, forward: bool) -> Focus {
-        use Focus::{Clusters, Genes, Tree};
-        let order = [Clusters, Tree, Genes];
+        use Focus::{Clusters, Genes, Go, Tree};
+        let order: &[Focus] = if self.has_go() {
+            &[Clusters, Genes, Tree, Go]
+        } else {
+            &[Clusters, Genes, Tree]
+        };
         let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
         let n = order.len();
         order[if forward {
@@ -1303,16 +1334,10 @@ impl App {
         }]
     }
 
-    fn pane_key(&mut self, code: KeyCode) {
-        let up = code == KeyCode::Up;
-        let down = code == KeyCode::Down;
-        let move_in = |sel: &mut usize, n: usize| {
-            if up {
-                *sel = sel.saturating_sub(1);
-            } else if down && *sel + 1 < n {
-                *sel += 1;
-            }
-        };
+    /// The focused pane's binding for `code`, if it has one: `false` leaves
+    /// the key to the global bindings. Moving in the pane's list never claims it.
+    fn pane_key(&mut self, code: KeyCode) -> bool {
+        let move_in = |sel: &mut usize, n: usize| step(sel, n, code);
         match self.focus {
             Focus::Clusters => {
                 let (before, mut sel) = (self.cluster_sel, self.cluster_sel);
@@ -1321,22 +1346,26 @@ impl App {
                     self.select_cluster(sel);
                 }
                 match code {
-                    KeyCode::Char(c @ '1'..='9') => self.pick_candidate(c as usize - '1' as usize),
+                    KeyCode::Char(c @ '1'..='9') => {
+                        let k = c as usize - '1' as usize;
+                        let n = self.selected().map_or(0, |c| c.candidates.len());
+                        if k < n {
+                            self.pick_candidate(k);
+                        } else {
+                            self.status = format!("this cluster has {n} candidate(s)");
+                        }
+                    }
                     KeyCode::Char('u') => self.unassign(),
                     KeyCode::Char('k') => self.keep(),
                     KeyCode::Backspace | KeyCode::Delete => self.undo(),
                     KeyCode::Char(']') => self.next_flagged(),
                     KeyCode::Enter => self.jump_to_tree(),
-                    _ => {}
+                    _ => return false,
                 }
             }
             Focus::Genes => {
                 let listed = self.listed_genes();
                 move_in(&mut self.gene_sel, listed.len());
-                // Terms are read here, not edited: only the view keys apply.
-                let reading = self.gene_view == GeneView::Terms
-                    && !matches!(code, KeyCode::Char('m') | KeyCode::Esc);
-                let code = if reading { KeyCode::Null } else { code };
                 match code {
                     KeyCode::Char(' ') => {
                         if let Some(g) = listed.get(self.gene_sel).cloned() {
@@ -1373,27 +1402,49 @@ impl App {
                     KeyCode::Char('d') => self.ask_markers(false),
                     KeyCode::Backspace | KeyCode::Delete => self.undo_marker(),
                     KeyCode::Char('m') => {
-                        let has_terms = self
-                            .round
-                            .as_ref()
-                            .is_some_and(|r| r.clusters.iter().any(|c| !c.terms.is_empty()));
                         self.gene_view = match self.gene_view {
                             GeneView::Specific => GeneView::Markers,
-                            GeneView::Markers if has_terms => GeneView::Terms,
-                            GeneView::Markers | GeneView::Terms => GeneView::Specific,
+                            GeneView::Markers => GeneView::Specific,
                         };
                         self.gene_sel = 0;
                         self.marked.clear();
                     }
                     KeyCode::Esc => self.focus = Focus::Clusters,
-                    _ => {}
+                    _ => return false,
+                }
+            }
+            Focus::Go => {
+                let before = self.go_sel;
+                let n = self.selected().map_or(0, |c| c.terms.len());
+                step(&mut self.go_sel, n, code);
+                if self.go_sel != before {
+                    self.go_shift = 0;
+                }
+                let words = self
+                    .selected()
+                    .and_then(|c| c.terms.get(self.go_sel))
+                    .map_or(0, |t| t.term.split_whitespace().count());
+                match code {
+                    KeyCode::Right if self.go_shift + 1 < words => self.go_shift += 1,
+                    KeyCode::Left => self.go_shift = self.go_shift.saturating_sub(1),
+                    KeyCode::Esc => self.focus = Focus::Clusters,
+                    _ => return false,
                 }
             }
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
+            // A search is of the ontology: open it there.
+            Focus::Tree
+                if code == KeyCode::Char('/') && matches!(self.tree_mode, TreeMode::Panel) =>
+            {
+                self.toggle_ontology();
+                if let TreeMode::Ontology(v) = &mut self.tree_mode {
+                    v.typing = Some(String::new());
+                }
+            }
             Focus::Tree if code == KeyCode::Char(' ') => self.toggle_tree_mark(),
             Focus::Tree if code == KeyCode::Char('+') => self.mix_marked(),
             Focus::Tree if matches!(self.tree_mode, TreeMode::Ontology(_)) => {
-                self.ontology_key(code);
+                return self.ontology_key(code);
             }
             Focus::Tree => {
                 let visible = self.tree.visible();
@@ -1413,10 +1464,11 @@ impl App {
                     }
                     (KeyCode::Right, Some(i)) => self.tree.fold(i, false),
                     (KeyCode::Esc, _) => self.focus = Focus::Clusters,
-                    _ => {}
+                    _ => return false,
                 }
             }
         }
+        true
     }
 
     /// Switch the tree pane between the panel's tree and the Cell Ontology,
@@ -1443,13 +1495,12 @@ impl App {
         self.tree_mode = TreeMode::Ontology(super::ontology::OntologyView::at(cl, &focus));
     }
 
-    fn ontology_key(&mut self, code: KeyCode) {
+    fn ontology_key(&mut self, code: KeyCode) -> bool {
         let (TreeMode::Ontology(v), Some(cl)) = (&mut self.tree_mode, &self.cl) else {
-            return;
+            return false;
         };
+        step(&mut v.sel, v.rows.len(), code);
         match code {
-            KeyCode::Up => v.sel = v.sel.saturating_sub(1),
-            KeyCode::Down if v.sel + 1 < v.rows.len() => v.sel += 1,
             KeyCode::Right => v.enter(cl),
             KeyCode::Left => v.up(cl),
             KeyCode::Char('/') => v.typing = Some(String::new()),
@@ -1459,8 +1510,9 @@ impl App {
                 }
             }
             KeyCode::Esc => self.focus = Focus::Clusters,
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     /// Label the selected cluster by CL term `id`.
@@ -1552,6 +1604,24 @@ fn file_name(p: &Path) -> String {
         || p.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     )
+}
+
+/// Rows a page key moves.
+const PAGE: usize = 10;
+
+/// Move selection `sel` in a list of `n` rows by `code`: a row (↑↓), a page
+/// (PgUp/PgDn) or to an end (Home/End). Other keys leave it.
+pub(super) fn step(sel: &mut usize, n: usize, code: KeyCode) {
+    let last = n.saturating_sub(1);
+    *sel = match code {
+        KeyCode::Up => sel.saturating_sub(1),
+        KeyCode::Down => (*sel + 1).min(last),
+        KeyCode::PageUp => sel.saturating_sub(PAGE),
+        KeyCode::PageDown => (*sel + PAGE).min(last),
+        KeyCode::Home => 0,
+        KeyCode::End => last,
+        _ => return,
+    };
 }
 
 #[cfg(test)]

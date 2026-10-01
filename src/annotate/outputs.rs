@@ -27,6 +27,13 @@ pub const CLUSTER_CELLTYPE_NES: &str = ".cluster_celltype_nes.parquet";
 pub const CLUSTER_CELLTYPE_Z: &str = ".cluster_celltype_z.parquet";
 /// Enrichment: cluster × cell type ES restandardized by the gene-set null.
 pub const CLUSTER_CELLTYPE_ES_STD: &str = ".cluster_celltype_es_std.parquet";
+/// Enrichment: cluster × GO/GMT term NES, tested as the cell types are.
+pub const CLUSTER_TERM_NES: &str = ".cluster_term_nes.parquet";
+/// Enrichment: cluster × GO/GMT term p-values.
+pub const CLUSTER_TERM_P: &str = ".cluster_term_p.parquet";
+/// Enrichment: cluster × GO/GMT term FDR q (BH over the terms within each
+/// cluster), named as [`CLUSTER_CELLTYPE_Q_VALUES`] is.
+pub const CLUSTER_TERM_Q_VALUES: &str = ".cluster_term_q_values.parquet";
 
 /// `{prefix}{suffix}` files written by `annotate --method enrichment` (relative to its
 /// bare `{out}` prefix). NOTE: this prefix is shared with the training run's
@@ -45,6 +52,11 @@ pub const ENRICHMENT_OUTPUT_SUFFIXES: &[&str] = &[
     CLUSTER_CELLTYPE_Q_VALUES,
     ".cluster_celltype_perm_z.parquet",
     ".cluster_expression.parquet",
+    CLUSTER_TERM_NES,
+    CLUSTER_TERM_P,
+    CLUSTER_TERM_Q_VALUES,
+    ".ontology_signature.tsv",
+    ".ontology_term_effect.parquet",
     ".ontology_assignment.tsv",
     ".ontology_node_mass.parquet",
     // written by the marker bootstrap of older builds; erased so none outlive it

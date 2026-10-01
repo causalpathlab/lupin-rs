@@ -1,4 +1,5 @@
-//! Remembering an alias picked in the TUI; the GO terms view and setting.
+//! Remembering an alias picked in the TUI; the GO pane and setting;
+//! the keys.
 
 use super::*;
 use crate::annotate::cl_rules::Aliases;
@@ -43,7 +44,9 @@ fn app_with_terms(terms: bool) -> App {
         source: "go".into(),
         term: t.into(),
         effect: 0.5,
-        q: None,
+        q: Some(0.01),
+        p: Some(0.001),
+        nes: Some(1.5),
     };
     app.round = Some(RoundView {
         manifest: PathBuf::new(),
@@ -73,31 +76,55 @@ fn app_with_terms(terms: bool) -> App {
 }
 
 #[test]
-fn m_reaches_the_go_terms_only_when_the_round_scored_them() {
-    let mut app = app_with_terms(true);
-    let views: Vec<GeneView> = (0..3)
-        .map(|_| {
-            app.pane_key(KeyCode::Char('m'));
-            app.gene_view
-        })
-        .collect();
-    assert!(views == [GeneView::Markers, GeneView::Terms, GeneView::Specific]);
+fn tab_reaches_the_go_pane_only_when_the_round_scored_terms() {
+    let tabs = |app: &mut App| -> Vec<Focus> {
+        app.focus = Focus::Clusters;
+        (0..4)
+            .map(|_| {
+                press(app, KeyCode::Tab);
+                app.focus
+            })
+            .collect()
+    };
+    let mut with = app_with_terms(true);
+    assert!(tabs(&mut with) == [Focus::Genes, Focus::Tree, Focus::Go, Focus::Clusters]);
+    let mut without = app_with_terms(false);
+    assert!(tabs(&mut without) == [Focus::Genes, Focus::Tree, Focus::Clusters, Focus::Genes]);
+}
 
-    let mut app = app_with_terms(false);
+#[test]
+fn the_go_pane_scrolls_its_terms_and_m_keeps_to_genes() {
+    let mut app = app_with_terms(true);
+    app.focus = Focus::Go;
+    app.pane_key(KeyCode::Right);
+    assert_eq!(app.go_shift, 0, "a one-word name does not slide");
+    app.pane_key(KeyCode::End);
+    assert_eq!(app.go_sel, 1);
+    app.pane_key(KeyCode::Esc);
+    assert!(app.focus == Focus::Clusters);
+
+    app.focus = Focus::Genes;
     app.pane_key(KeyCode::Char('m'));
+    assert!(app.gene_view == GeneView::Markers);
     app.pane_key(KeyCode::Char('m'));
     assert!(app.gene_view == GeneView::Specific);
 }
 
 #[test]
-fn go_terms_are_read_not_edited() {
+fn left_and_right_slide_a_long_go_name_and_a_new_term_starts_over() {
     let mut app = app_with_terms(true);
-    app.gene_view = GeneView::Terms;
-    assert_eq!(app.listed_genes(), ["TERM1", "TERM2"]);
-    app.pane_key(KeyCode::Char(' '));
-    app.pane_key(KeyCode::Char('x'));
-    assert!(app.marked.is_empty());
-    assert!(!app.hidden.hides("TERM1"));
+    if let Some(r) = app.round.as_mut() {
+        r.clusters[0].terms[0].term = "w1 w2 w3".into();
+    }
+    app.focus = Focus::Go;
+    for _ in 0..5 {
+        app.pane_key(KeyCode::Right);
+    }
+    assert_eq!(app.go_shift, 2, "stops at the last word");
+    app.pane_key(KeyCode::Left);
+    assert_eq!(app.go_shift, 1);
+    app.pane_key(KeyCode::Down);
+    assert_eq!(app.go_shift, 0);
 }
 
 #[test]
@@ -111,4 +138,85 @@ fn the_go_setting_toggles_go_unless_gene_sets_are_named() {
     Setting::Go.adjust(&mut b, true);
     assert!(!b.go);
     assert_eq!(Setting::Go.value(&b), "--gaf");
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    app.key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+fn ctrl_c(app: &mut App) {
+    app.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+}
+
+/// A stand-in for a running pass.
+fn running(app: &mut App) {
+    let child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    app.child = Some((child, Instant::now(), Job::Pass));
+}
+
+#[test]
+fn page_keys_move_by_a_page_or_to_an_end() {
+    let mut sel = 3;
+    step(&mut sel, 25, KeyCode::PageDown);
+    assert_eq!(sel, 13);
+    step(&mut sel, 25, KeyCode::PageDown);
+    step(&mut sel, 25, KeyCode::PageDown);
+    assert_eq!(sel, 24);
+    step(&mut sel, 25, KeyCode::Home);
+    assert_eq!(sel, 0);
+    step(&mut sel, 25, KeyCode::Up);
+    assert_eq!(sel, 0);
+    step(&mut sel, 25, KeyCode::End);
+    assert_eq!(sel, 24);
+    step(&mut sel, 25, KeyCode::Char('z'));
+    assert_eq!(sel, 24);
+    step(&mut sel, 0, KeyCode::End);
+    assert_eq!(sel, 0);
+}
+
+#[test]
+fn ctrl_c_asks_before_dropping_unsaved_edits() {
+    let mut app = app_with_terms(false);
+    ctrl_c(&mut app);
+    assert!(app.quit, "nothing unsaved: quits at once");
+
+    let mut app = app_with_terms(false);
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    ctrl_c(&mut app);
+    assert!(!app.quit);
+    assert!(app.status.contains("unsaved"), "{}", app.status);
+    ctrl_c(&mut app);
+    assert!(app.quit);
+}
+
+#[test]
+fn x_stops_a_pass_only_when_asked_twice_and_never_from_the_genes_pane() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    app.focus = Focus::Genes;
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.child.is_some(), "x hides genes there");
+
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.child.is_some());
+    assert_eq!(app.status, "x again stops it");
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.child.is_none());
+}
+
+#[test]
+fn a_candidate_number_past_the_list_says_so() {
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('7'));
+    assert!(app.edits.is_empty());
+    assert!(app.status.contains("0 candidate"), "{}", app.status);
 }
