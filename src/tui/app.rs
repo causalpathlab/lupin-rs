@@ -29,6 +29,8 @@ pub enum Focus {
     Clusters,
     Genes,
     Tree,
+    /// The selected cluster's GO terms, when the round scored them.
+    Go,
 }
 
 /// The settings the screen edits, in the order it lists them.
@@ -137,8 +139,6 @@ pub enum GeneView {
     Specific,
     /// The markers of the cluster's label.
     Markers,
-    /// The cluster's top GO terms.
-    Terms,
 }
 
 /// What an open prompt will do with its reason.
@@ -233,6 +233,8 @@ pub struct App {
     pub focus: Focus,
     pub cluster_sel: usize,
     pub gene_sel: usize,
+    /// The selected row of the GO pane.
+    pub go_sel: usize,
     pub gene_view: GeneView,
     /// Genes kept out of the specific-genes view.
     pub hidden: super::genes::GeneFilter,
@@ -287,6 +289,7 @@ impl App {
             focus: Focus::Clusters,
             cluster_sel: 0,
             gene_sel: 0,
+            go_sel: 0,
             gene_view: GeneView::Specific,
             hidden: super::genes::GeneFilter::default(),
             show_hidden: false,
@@ -550,8 +553,17 @@ impl App {
     fn select_cluster(&mut self, i: usize) {
         self.cluster_sel = i;
         self.gene_sel = 0;
+        self.go_sel = 0;
         self.marked.clear();
         self.tree_marked.clear();
+    }
+
+    /// Whether the round scored GO terms, so the GO pane is shown.
+    #[must_use]
+    pub fn has_go(&self) -> bool {
+        self.round
+            .as_ref()
+            .is_some_and(|r| r.clusters.iter().any(|c| !c.terms.is_empty()))
     }
 
     /// The label of the tree pane's selected node: a panel node's, or a CL
@@ -945,10 +957,6 @@ impl App {
                 .into_iter()
                 .map(|(g, _, _)| g)
                 .collect(),
-            GeneView::Terms => self
-                .selected()
-                .map(|c| c.terms.iter().map(|t| t.term.clone()).collect())
-                .unwrap_or_default(),
         }
     }
 
@@ -1314,8 +1322,12 @@ impl App {
     }
 
     fn cycle(&self, forward: bool) -> Focus {
-        use Focus::{Clusters, Genes, Tree};
-        let order = [Clusters, Genes, Tree];
+        use Focus::{Clusters, Genes, Go, Tree};
+        let order: &[Focus] = if self.has_go() {
+            &[Clusters, Genes, Tree, Go]
+        } else {
+            &[Clusters, Genes, Tree]
+        };
         let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
         let n = order.len();
         order[if forward {
@@ -1355,18 +1367,6 @@ impl App {
             Focus::Genes => {
                 let listed = self.listed_genes();
                 move_in(&mut self.gene_sel, listed.len());
-                // Terms are read here, not edited: only the view keys apply.
-                let reading = self.gene_view == GeneView::Terms
-                    && !matches!(code, KeyCode::Char('m') | KeyCode::Esc);
-                if reading
-                    && matches!(
-                        code,
-                        KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete
-                    )
-                {
-                    self.status = "GO terms are for reading; m switches to genes".into();
-                }
-                let code = if reading { KeyCode::Null } else { code };
                 match code {
                     KeyCode::Char(' ') => {
                         if let Some(g) = listed.get(self.gene_sel).cloned() {
@@ -1403,20 +1403,22 @@ impl App {
                     KeyCode::Char('d') => self.ask_markers(false),
                     KeyCode::Backspace | KeyCode::Delete => self.undo_marker(),
                     KeyCode::Char('m') => {
-                        let has_terms = self
-                            .round
-                            .as_ref()
-                            .is_some_and(|r| r.clusters.iter().any(|c| !c.terms.is_empty()));
                         self.gene_view = match self.gene_view {
                             GeneView::Specific => GeneView::Markers,
-                            GeneView::Markers if has_terms => GeneView::Terms,
-                            GeneView::Markers | GeneView::Terms => GeneView::Specific,
+                            GeneView::Markers => GeneView::Specific,
                         };
                         self.gene_sel = 0;
                         self.marked.clear();
                     }
                     KeyCode::Esc => self.focus = Focus::Clusters,
                     _ => {}
+                }
+            }
+            Focus::Go => {
+                let n = self.selected().map_or(0, |c| c.terms.len());
+                step(&mut self.go_sel, n, code);
+                if code == KeyCode::Esc {
+                    self.focus = Focus::Clusters;
                 }
             }
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),

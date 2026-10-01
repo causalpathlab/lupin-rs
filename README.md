@@ -171,8 +171,8 @@ Cell Ontology data. `--gaf` or `--gmt` names other gene sets, `--go-obo`
 another ontology. Each cluster's top terms are in `{out}.ontology_signature.tsv`
 and in its round summary entry. GO terms need `--method enrichment`.
 In `lupin annotate --tui`, `GO terms` in the settings (`r`) turns `--go` on
-for the next pass, and `m` in the genes pane cycles on to the selected
-cluster's terms.
+for the next pass; once a round has terms, a third column lists the selected
+cluster's top terms beside its cell types (`tab` reaches it).
 
 ## Cell Ontology data
 
