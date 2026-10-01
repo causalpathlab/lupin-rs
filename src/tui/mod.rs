@@ -15,11 +15,11 @@ mod round;
 mod runner;
 mod ui;
 
+use crate::annotate::gene_rows::GeneRows;
 use crate::annotate_cmd::AnnotateCliArgs;
 use crate::manifest::run::{self, annotated_path, resolve};
 use anyhow::Result;
 use app::App;
-use data_beans::utilities::name_matching::GeneIndex;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -84,9 +84,8 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
         args.markers = match loaded.manifest.annotate.markers.as_deref() {
             Some(rel) => resolve(&loaded.dir, rel).into_boxed_str(),
             None => {
-                let genes = run_genes(&loaded);
-                let n = genes.as_ref().map_or(0, Vec::len);
-                let index = genes.map(|g| GeneIndex::build(&g));
+                let index = run_genes(&loaded).map(|g| GeneRows::build(&g));
+                let n = index.as_ref().map_or(0, GeneRows::n_genes);
                 let want = picker::Want::Markers(index, n);
                 match picker::pick("Pick a marker panel", &loaded.dir, want)? {
                     Some(p) => p.to_string_lossy().into(),
