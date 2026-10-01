@@ -235,6 +235,8 @@ pub struct App {
     pub gene_sel: usize,
     /// The selected row of the GO pane.
     pub go_sel: usize,
+    /// Words of the selected GO term's name slid out of view (← →).
+    pub go_shift: usize,
     pub gene_view: GeneView,
     /// Genes kept out of the specific-genes view.
     pub hidden: super::genes::GeneFilter,
@@ -290,6 +292,7 @@ impl App {
             cluster_sel: 0,
             gene_sel: 0,
             go_sel: 0,
+            go_shift: 0,
             gene_view: GeneView::Specific,
             hidden: super::genes::GeneFilter::default(),
             show_hidden: false,
@@ -554,6 +557,7 @@ impl App {
         self.cluster_sel = i;
         self.gene_sel = 0;
         self.go_sel = 0;
+        self.go_shift = 0;
         self.marked.clear();
         self.tree_marked.clear();
     }
@@ -1415,10 +1419,20 @@ impl App {
                 }
             }
             Focus::Go => {
-                let n = self.selected().map_or(0, |c| c.terms.len());
-                step(&mut self.go_sel, n, code);
-                if code == KeyCode::Esc {
-                    self.focus = Focus::Clusters;
+                let terms = self.selected().map(|c| c.terms.clone()).unwrap_or_default();
+                let before = self.go_sel;
+                step(&mut self.go_sel, terms.len(), code);
+                if self.go_sel != before {
+                    self.go_shift = 0;
+                }
+                let words = terms
+                    .get(self.go_sel)
+                    .map_or(0, |t| t.term.split_whitespace().count());
+                match code {
+                    KeyCode::Right if self.go_shift + 1 < words => self.go_shift += 1,
+                    KeyCode::Left => self.go_shift = self.go_shift.saturating_sub(1),
+                    KeyCode::Esc => self.focus = Focus::Clusters,
+                    _ => {}
                 }
             }
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),

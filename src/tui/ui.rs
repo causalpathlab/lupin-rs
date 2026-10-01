@@ -80,7 +80,7 @@ fn help(app: &App) -> &'static str {
         Focus::Tree => {
             " ? keys · ↑↓ node · enter label · space mark · + mixed label · o ontology · / search"
         }
-        Focus::Go => " ? keys · ↑↓ term · pgup/dn home/end · tab pane · esc clusters",
+        Focus::Go => " ? keys · ↑↓ term · ← → read a long name · tab pane · esc clusters",
     }
 }
 
@@ -154,6 +154,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         "GO terms",
         &[
             ("↑↓", "the selected cluster's top terms, by effect"),
+            ("← →", "slide a long name back / on, a word at a time"),
             ("r", "GO terms in the settings: score them in the next pass"),
         ],
     ),
@@ -608,8 +609,17 @@ fn draw_go(f: &mut Frame, area: Rect, app: &App) {
     let rows: Vec<Row> = c
         .terms
         .iter()
-        .map(|t| {
-            let lines = wrap(&t.term, width, 3);
+        .enumerate()
+        .map(|(i, t)| {
+            // The selected name starts `go_shift` words in (← →).
+            let text = match app.go_shift {
+                n if n > 0 && i == app.go_sel => {
+                    let rest: Vec<&str> = t.term.split_whitespace().skip(n).collect();
+                    format!("… {}", rest.join(" "))
+                }
+                _ => t.term.clone(),
+            };
+            let lines = wrap(&text, width, 3);
             let height = lines.len() as u16;
             Row::new([format!("{:+.2}", t.effect), lines.join("\n")]).height(height)
         })
@@ -911,7 +921,8 @@ mod wrap_tests {
     #[test]
     fn a_long_name_wraps_between_words_and_is_cut_at_the_last_line() {
         assert_eq!(wrap("one two three", 7, 3), ["one two", "three"]);
-        assert_eq!(wrap("aa bb cc dd", 5, 2), ["aa bb", "cc d…"]);
+        assert_eq!(wrap("aa bb cc dd", 5, 2), ["aa bb", "cc dd"]);
+        assert_eq!(wrap("aa bb cc dd ee", 5, 2), ["aa bb", "cc d…"]);
         assert_eq!(wrap("abcdefgh", 4, 3), ["abcd"]);
         assert_eq!(wrap("", 4, 3), [""]);
     }
