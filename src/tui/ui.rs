@@ -31,8 +31,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     let (left, right, go) = if app.has_go() {
         let [l, m, g] = Layout::horizontal([
             Constraint::Percentage(30),
-            Constraint::Percentage(42),
-            Constraint::Percentage(28),
+            Constraint::Percentage(35),
+            Constraint::Percentage(35),
         ])
         .areas(body);
         (l, m, Some(g))
