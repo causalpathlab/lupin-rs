@@ -168,8 +168,9 @@ case; human and mouse), and its GO annotations (`goa_human.gaf.gz`,
 `mgi.gaf.gz`) and the Gene Ontology (`go-basic.obo`) are downloaded once from
 the GO Consortium into the cache below, looked up in the same layers as the
 Cell Ontology data. `--gaf` or `--gmt` names other gene sets, `--go-obo`
-another ontology. Terms with 20 to 500 of their genes among the data's
-features are scored (`--go-min-genes`, `--go-max-genes`). Each cluster's top
+another ontology. A term is scored when 20 to 500 of its genes are features
+of the data (`--go-min-overlap`, `--go-max-overlap`); the overlap counts, not
+the term's own size. Each cluster's top
 terms, ranked by their effect (the genes' mean in the cluster against the
 other clusters), are in `{out}.ontology_signature.tsv` and in its round
 summary entry. Every term is also tested as the cell types are: fgsea's NES,

@@ -469,8 +469,8 @@ fn gene_set_signature(
         gaf.as_deref(),
         args.gmt.as_deref(),
         !KEEP_IEA,
-        args.go_min_genes,
-        args.go_max_genes,
+        args.go_min_overlap,
+        args.go_max_overlap,
         gene_names,
     )?;
 
