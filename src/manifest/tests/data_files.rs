@@ -163,3 +163,45 @@ fn appended_lines_come_after_a_comment_header() {
         "# what\n# columns\none\ntwo\n"
     );
 }
+
+#[test]
+fn the_gene_ontology_is_found_beside_the_run_and_never_fetched_offline() {
+    offline();
+    let root = tempfile::tempdir().unwrap();
+    let run = root.path().join("run");
+    let err = go_ontology(Some(&run)).unwrap_err().to_string();
+    assert!(err.contains("--go-obo"), "{err}");
+    let obo = run.join("lupin").join(GO_ONTOLOGY);
+    write(obo.clone(), "[Term]\nid: GO:0000001\n");
+    assert_eq!(go_ontology(Some(&run)).unwrap(), obo);
+}
+
+#[test]
+fn every_ontology_is_cached_across_releases() {
+    let root = tempfile::tempdir().unwrap();
+    let s = search(root.path());
+    let cache = root.path().join("cache");
+    assert_eq!(s.cached(GO_ONTOLOGY).unwrap(), cache.join(GO_ONTOLOGY));
+    assert_eq!(s.cached(ONTOLOGY).unwrap(), cache.join(ONTOLOGY));
+    assert!(s.cached(RULES).unwrap().starts_with(cache.join("data")));
+}
+
+#[test]
+fn go_annotations_are_found_beside_the_run_and_cached_across_releases() {
+    use crate::annotate::go_signature::Species;
+    offline();
+    let root = tempfile::tempdir().unwrap();
+    let run = root.path().join("run");
+    let err = go_annotations(Species::Human, Some(&run))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("--gaf"), "{err}");
+    let gaf = run.join("lupin").join(Species::Human.gaf_file());
+    write(gaf.clone(), "!gaf-version: 2.2\n");
+    assert_eq!(go_annotations(Species::Human, Some(&run)).unwrap(), gaf);
+    let s = search(root.path());
+    assert_eq!(
+        s.cached(Species::Mouse.gaf_file()).unwrap(),
+        root.path().join("cache").join(Species::Mouse.gaf_file())
+    );
+}

@@ -38,6 +38,7 @@ fn cluster(id: ClusterId, label: &str, shares: &[(&str, f32)]) -> ClusterView {
             .collect(),
         shares,
         genes: Vec::new(),
+        terms: Vec::new(),
     }
 }
 

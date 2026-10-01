@@ -39,14 +39,16 @@ pub enum Setting {
     Resolution,
     NumClusters,
     NumPerm,
+    Go,
 }
 
-pub const SETTINGS: [Setting; 5] = [
+pub const SETTINGS: [Setting; 6] = [
     Setting::Method,
     Setting::Knn,
     Setting::Resolution,
     Setting::NumClusters,
     Setting::NumPerm,
+    Setting::Go,
 ];
 
 impl Setting {
@@ -57,6 +59,7 @@ impl Setting {
             Self::Resolution => "resolution",
             Self::NumClusters => "clusters (k)",
             Self::NumPerm => "permutations",
+            Self::Go => "GO terms",
         }
     }
 
@@ -71,6 +74,12 @@ impl Setting {
             Self::Resolution => format!("{:.2}", a.resolution),
             Self::NumClusters => a.num_clusters.map_or("auto".into(), |k| k.to_string()),
             Self::NumPerm => a.num_perm.to_string(),
+            Self::Go => match (&a.gaf, &a.gmt) {
+                (Some(_), _) => "--gaf".into(),
+                (_, Some(_)) => "--gmt".into(),
+                _ if a.go => "on".into(),
+                _ => "off".into(),
+            },
         }
     }
 
@@ -106,6 +115,9 @@ impl Setting {
                 };
             }
             Self::NumPerm => a.num_perm = step(a.num_perm, 100, 0),
+            // Named gene sets are the command line's; only `--go` toggles.
+            Self::Go if a.gaf.is_none() && a.gmt.is_none() => a.go = !a.go,
+            Self::Go => {}
         }
     }
 }
@@ -125,6 +137,8 @@ pub enum GeneView {
     Specific,
     /// The markers of the cluster's label.
     Markers,
+    /// The cluster's top GO terms.
+    Terms,
 }
 
 /// What an open prompt will do with its reason.
@@ -925,6 +939,10 @@ impl App {
                 .into_iter()
                 .map(|(g, _, _)| g)
                 .collect(),
+            GeneView::Terms => self
+                .selected()
+                .map(|c| c.terms.iter().map(|t| t.term.clone()).collect())
+                .unwrap_or_default(),
         }
     }
 
@@ -1315,6 +1333,10 @@ impl App {
             Focus::Genes => {
                 let listed = self.listed_genes();
                 move_in(&mut self.gene_sel, listed.len());
+                // Terms are read here, not edited: only the view keys apply.
+                let reading = self.gene_view == GeneView::Terms
+                    && !matches!(code, KeyCode::Char('m') | KeyCode::Esc);
+                let code = if reading { KeyCode::Null } else { code };
                 match code {
                     KeyCode::Char(' ') => {
                         if let Some(g) = listed.get(self.gene_sel).cloned() {
@@ -1351,9 +1373,14 @@ impl App {
                     KeyCode::Char('d') => self.ask_markers(false),
                     KeyCode::Backspace | KeyCode::Delete => self.undo_marker(),
                     KeyCode::Char('m') => {
+                        let has_terms = self
+                            .round
+                            .as_ref()
+                            .is_some_and(|r| r.clusters.iter().any(|c| !c.terms.is_empty()));
                         self.gene_view = match self.gene_view {
                             GeneView::Specific => GeneView::Markers,
-                            GeneView::Markers => GeneView::Specific,
+                            GeneView::Markers if has_terms => GeneView::Terms,
+                            GeneView::Markers | GeneView::Terms => GeneView::Specific,
                         };
                         self.gene_sel = 0;
                         self.marked.clear();

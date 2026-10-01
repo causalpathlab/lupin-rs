@@ -102,6 +102,17 @@ pub struct AnnotateCliArgs {
     pub gaf: Option<Box<str>>,
     #[arg(long = "gmt")]
     pub gmt: Option<Box<str>>,
+    #[arg(
+        long,
+        conflicts_with_all = ["gaf", "gmt"],
+        help = "Also score GO terms per cluster, with the GO annotations of the run's species (human or mouse, from its gene names), downloaded once into the cache"
+    )]
+    pub go: bool,
+    #[arg(
+        long = "go-obo",
+        help = "Gene Ontology .obo for --go/--gaf/--gmt; default: found or downloaded like the Cell Ontology"
+    )]
+    pub go_obo: Option<Box<str>>,
 
     // ── projection / ORA ──
     #[arg(long = "no-idf")]
@@ -164,7 +175,7 @@ impl AnnotateCliArgs {
         val("min-cluster-size", self.min_cluster_size.to_string());
         val("assign-mad", self.assign_mad.to_string());
         val("ontology-fdr-q", self.ontology_fdr_q.to_string());
-        let opts: [(&str, Option<String>); 12] = [
+        let opts: [(&str, Option<String>); 13] = [
             ("from", self.from.as_deref().map(String::from)),
             (
                 "feature-embedding",
@@ -189,6 +200,7 @@ impl AnnotateCliArgs {
             ("gaf", self.gaf.as_deref().map(String::from)),
             ("gmt", self.gmt.as_deref().map(String::from)),
             ("obo", self.obo.as_deref().map(String::from)),
+            ("go-obo", self.go_obo.as_deref().map(String::from)),
             ("label-cl", self.label_cl.as_deref().map(String::from)),
         ];
         for (flag, x) in opts {
@@ -203,6 +215,7 @@ impl AnnotateCliArgs {
             ("ontology-by", self.ontology_by),
             ("use-perm-p", self.use_perm_p),
             ("fine", self.fine),
+            ("go", self.go),
         ];
         v.extend(
             flags
@@ -279,14 +292,15 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         args.obo = Some(obo.into_boxed_str());
         args.label_cl = Some(label_cl.into_boxed_str());
     }
+    resolve_go(&mut args, loaded.as_ref())?;
     let args = &args;
 
     match route(args, loaded.as_ref()) {
         Route::EmbeddingFiles { feat, cell } => run_projection_from_files(args, feat, cell)?,
         Route::Enrichment => {
             anyhow::ensure!(
-                !args.markers.is_empty() || args.gaf.is_some() || args.gmt.is_some(),
-                "enrichment needs --markers, --gaf, or --gmt"
+                !args.markers.is_empty() || args.go || args.gaf.is_some() || args.gmt.is_some(),
+                "enrichment needs --markers, --go, --gaf, or --gmt"
             );
             let loaded = loaded
                 .as_ref()
@@ -295,6 +309,10 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         }
         Route::Projection => {
             anyhow::ensure!(!args.markers.is_empty(), "projection needs --markers");
+            anyhow::ensure!(
+                !args.go && args.gaf.is_none() && args.gmt.is_none(),
+                "GO terms are scored by the enrichment pass; add --method enrichment"
+            );
             let loaded = loaded
                 .as_ref()
                 .context("--from is required for projection annotation")?;
@@ -340,6 +358,31 @@ fn round_markers(args: &AnnotateCliArgs, loaded: &crate::manifest::run::Loaded) 
     let rel = loaded.manifest.annotate.markers.as_deref()?;
     let path = crate::manifest::run::resolve(&loaded.dir, rel);
     std::path::Path::new(&path).is_file().then_some(path)
+}
+
+/// Settle a GO pass's ontology: `--go-obo`, else (in a pass without markers,
+/// where `--obo` has no Cell Ontology to name) `--obo`, else the Gene
+/// Ontology found or downloaded like the Cell Ontology. `--go`'s annotations
+/// are settled by the pass, which reads the data's gene names.
+fn resolve_go(
+    args: &mut AnnotateCliArgs,
+    loaded: Option<&crate::manifest::run::Loaded>,
+) -> Result<()> {
+    let dir = loaded.map(|l| l.dir.as_path());
+    if (args.go || args.gaf.is_some() || args.gmt.is_some()) && args.go_obo.is_none() {
+        args.go_obo = match args.obo.take() {
+            Some(obo) if args.markers.is_empty() => Some(obo),
+            cl => {
+                args.obo = cl;
+                Some(
+                    crate::manifest::data_files::go_ontology(dir)?
+                        .to_string_lossy()
+                        .into(),
+                )
+            }
+        };
+    }
+    Ok(())
 }
 
 fn is_ontology_followup(args: &AnnotateCliArgs) -> bool {
@@ -455,6 +498,8 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
         markers: args.markers.clone(),
         gaf: args.gaf.clone(),
         gmt: args.gmt.clone(),
+        go: args.go,
+        go_obo: args.go_obo.clone(),
         out: args.out.clone(),
         num_perm: args.num_perm,
         min_markers: args.min_markers,

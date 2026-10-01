@@ -115,7 +115,10 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         "genes",
         &[
             ("↑↓ / space", "select / mark genes"),
-            ("m", "specific genes ↔ the label's markers"),
+            (
+                "m",
+                "specific genes → the label's markers → the cluster's GO terms (when scored)",
+            ),
             ("a", "add as markers of the cluster's label"),
             (
                 "A",
@@ -549,19 +552,50 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
                 ),
             )
         }
+        GeneView::Terms => {
+            let rows = c.terms[window.start.min(c.terms.len())..window.end.min(c.terms.len())]
+                .iter()
+                .map(|t| {
+                    Row::new([
+                        " ".to_string(),
+                        t.term.clone(),
+                        format!("{:+.2}", t.effect),
+                        t.source.clone(),
+                    ])
+                })
+                .collect();
+            let title = if c.terms.is_empty() {
+                format!(" no GO terms for K{} ", c.id)
+            } else {
+                format!(
+                    " top {} terms of K{} · effect (mean in − mean out) ",
+                    c.terms.len(),
+                    c.id
+                )
+            };
+            (rows, title)
+        }
     };
     let mut state = TableState::default().with_selected(focused.then_some(app.gene_sel - start));
-    let t = Table::new(
-        rows,
+    // A term name is a phrase, not a symbol: it takes the room.
+    let widths = if app.gene_view == GeneView::Terms {
+        [
+            Constraint::Length(1),
+            Constraint::Min(20),
+            Constraint::Length(7),
+            Constraint::Length(4),
+        ]
+    } else {
         [
             Constraint::Length(1),
             Constraint::Length(14),
             Constraint::Length(7),
             Constraint::Min(8),
-        ],
-    )
-    .block(pane(title, focused))
-    .row_highlight_style(highlight(focused));
+        ]
+    };
+    let t = Table::new(rows, widths)
+        .block(pane(title, focused))
+        .row_highlight_style(highlight(focused));
     f.render_stateful_widget(t, area, &mut state);
 }
 

@@ -25,36 +25,41 @@ use rayon::prelude::*;
 /// the caller can aggregate the right axes for [`run`].
 pub struct EnrichmentPlan {
     pub out: Box<str>,
-    /// `--gaf`/`--gmt`: descriptive GO/GMT module-score signature rather than
-    /// curated marker annotation. Needs only the per-cluster gene sums.
+    /// `--gaf`/`--gmt` without markers: descriptive GO/GMT module-score
+    /// signature rather than curated marker annotation. Needs only the
+    /// per-cluster gene sums.
     pub ontology_mode: bool,
+    /// `--gaf`/`--gmt` with markers: the GO/GMT signature is scored too, on
+    /// the marker pass's cluster profile.
+    pub gene_sets_too: bool,
 }
 
 /// Validate the gene-set source flags and erase a previous run's artifacts.
 pub fn plan(args: &AnnotateArgs) -> anyhow::Result<EnrichmentPlan> {
     let out = args.out.clone();
     mkdir_parent(&out)?;
-    // Exactly one gene-set source. --markers → curated cell-type annotation
-    // (+ optional inline CL ontology via --obo/--label-cl); --gaf/--gmt → ontology
-    // gene-set mode (cross-cluster-contrasted module-score signature per cluster).
-    let ontology_mode = args.gaf.is_some() || args.gmt.is_some();
-    let n_sources = [
-        !args.markers.is_empty(),
-        args.gaf.is_some(),
-        args.gmt.is_some(),
-    ]
-    .iter()
-    .filter(|&&x| x)
-    .count();
+    // --markers → curated cell-type annotation (+ optional inline CL ontology
+    // via --obo/--label-cl); --gaf/--gmt → ontology gene-set signature
+    // (cross-cluster-contrasted module score per cluster); both → both, on one
+    // cluster profile.
+    let markers = !args.markers.is_empty();
+    let gene_sets = args.go || args.gaf.is_some() || args.gmt.is_some();
     anyhow::ensure!(
-        n_sources == 1,
-        "exactly one gene-set source required: --markers, --gaf, or --gmt (got {n_sources})"
+        markers || gene_sets,
+        "a gene-set source is required: --markers, --go, --gaf, or --gmt"
     );
-    if ontology_mode {
+    anyhow::ensure!(
+        !(args.gaf.is_some() && args.gmt.is_some()),
+        "--gaf and --gmt are alternatives; pass one"
+    );
+    let ontology_mode = gene_sets && !markers;
+    if gene_sets {
         anyhow::ensure!(
-            args.obo.is_some(),
-            "--gaf/--gmt require --obo (resolves GO term ids to names in the signature)"
+            args.go_obo.is_some(),
+            "--go/--gaf/--gmt need the Gene Ontology (--go-obo, or the cached download) to name GO terms"
         );
+    }
+    if ontology_mode {
         anyhow::ensure!(
             args.label_cl.is_none(),
             "--label-cl is for --markers (curated CL); GO/GMT term ids are ontology ids already"
@@ -69,7 +74,11 @@ pub fn plan(args: &AnnotateArgs) -> anyhow::Result<EnrichmentPlan> {
     if !args.no_clean {
         clean_outputs(&out, ENRICHMENT_OUTPUT_SUFFIXES);
     }
-    Ok(EnrichmentPlan { out, ontology_mode })
+    Ok(EnrichmentPlan {
+        out,
+        ontology_mode,
+        gene_sets_too: gene_sets && markers,
+    })
 }
 
 /// Score the aggregated cluster expression against the marker panel (or, in
@@ -351,8 +360,21 @@ pub fn run(
         }
     }
 
+    // GO/GMT terms on the same cluster profile. NON-FATAL, like the ontology
+    // walk: the cell-type outputs above are already written.
+    let mut gene_set_outputs = None;
+    if plan.gene_sets_too {
+        match gene_set_signature(args, out, profile_gk, &inputs.gene_names, &cluster_names) {
+            Ok(paths) => gene_set_outputs = Some(paths),
+            Err(e) => log::error!("GO term scoring failed ({e:#}); cell-type outputs are intact"),
+        }
+    }
+    let (ontology_signature, ontology_term_effect) = gene_set_outputs.unzip();
+
     info!("annotate --method enrichment complete");
     Ok(AnnotationOutputs {
+        ontology_signature,
+        ontology_term_effect,
         cluster_celltype_q_values: Some(q_val_path),
         cluster_celltype_p: Some(p_path),
         cluster_celltype_nes: Some(nes_path),
@@ -378,15 +400,60 @@ fn run_ontology_gene_sets(
     gene_names: &[Box<str>],
     cluster_names: &[Box<str>],
 ) -> anyhow::Result<AnnotationOutputs> {
+    let cell_expr_path = format!("{out}.cluster_expression.parquet");
+    profile_gk.to_parquet_with_names(
+        &cell_expr_path,
+        (Some(gene_names), Some("gene")),
+        Some(cluster_names),
+    )?;
+    info!("wrote {cell_expr_path}");
+
+    let (sig_path, effect_path) =
+        gene_set_signature(args, out, profile_gk, gene_names, cluster_names)?;
+
+    info!("annotate --method enrichment (ontology gene-set mode) complete");
+    Ok(AnnotationOutputs {
+        cluster_expression: Some(cell_expr_path),
+        ontology_signature: Some(sig_path),
+        ontology_term_effect: Some(effect_path),
+        ..AnnotationOutputs::default()
+    })
+}
+
+/// Score the `--gaf`/`--gmt` terms on the cluster profile and write the
+/// per-cluster signature and its `K × T` effect matrix; returns their paths.
+fn gene_set_signature(
+    args: &AnnotateArgs,
+    out: &str,
+    profile_gk: &Mat,
+    gene_names: &[Box<str>],
+    cluster_names: &[Box<str>],
+) -> anyhow::Result<(String, String)> {
     use enrichment::ontology_module_score;
 
     let obo = args
-        .obo
+        .go_obo
         .as_deref()
-        .expect("ontology mode validated to require --obo");
+        .expect("gene-set scoring validated to have an ontology");
+    // `--go`: the GO Consortium's annotations for the species the gene names
+    // belong to.
+    let gaf = match (&args.gaf, args.go && args.gmt.is_none()) {
+        (Some(g), _) => Some(g.to_string()),
+        (None, true) => {
+            use super::go_signature::Species;
+            let species = anyhow::Context::context(
+                Species::detect(gene_names),
+                "--go: cannot tell the species from the gene names; pass --gaf instead",
+            )?;
+            let gaf = crate::manifest::data_files::go_annotations(species, None)?;
+            info!("GO annotations for {species:?} genes: {}", gaf.display());
+            Some(gaf.to_string_lossy().into_owned())
+        }
+        (None, false) => None,
+    };
     let gs = super::go_signature::load_go_gene_sets(
         obo,
-        args.gaf.as_deref(),
+        gaf.as_deref(),
         args.gmt.as_deref(),
         !KEEP_IEA,
         MIN_GENE_SET,
@@ -405,14 +472,6 @@ fn run_ontology_gene_sets(
     // stable-null terms and whose depth preference descends to narrow processes.
     let ms = ontology_module_score(profile_gk, &gs.terms, &gs.universe)?;
 
-    let cell_expr_path = format!("{out}.cluster_expression.parquet");
-    profile_gk.to_parquet_with_names(
-        &cell_expr_path,
-        (Some(gene_names), Some("gene")),
-        Some(cluster_names),
-    )?;
-    info!("wrote {cell_expr_path}");
-
     let sig_path = format!("{out}.ontology_signature.tsv");
     super::go_signature::write_go_signature(
         &sig_path,
@@ -430,14 +489,7 @@ fn run_ontology_gene_sets(
         Some(&ms.term_ids),
     )?;
     info!("wrote {effect_path}");
-
-    info!("annotate --method enrichment (ontology gene-set mode) complete");
-    Ok(AnnotationOutputs {
-        cluster_expression: Some(cell_expr_path),
-        ontology_signature: Some(sig_path),
-        ontology_term_effect: Some(effect_path),
-        ..AnnotationOutputs::default()
-    })
+    Ok((sig_path, effect_path))
 }
 
 /// Multiply each gene's marker entries by an empirical specificity score
