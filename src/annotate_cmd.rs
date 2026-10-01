@@ -116,13 +116,13 @@ pub struct AnnotateCliArgs {
     #[arg(
         long = "go-min-overlap",
         default_value_t = 20,
-        help = "Drop GO/GMT terms sharing fewer genes with the data's features (the overlap, not the term's own size)"
+        help = "Report GO/GMT terms sharing at least this many genes with the data's features (the overlap, not the term's own size); every term is tested"
     )]
     pub go_min_overlap: usize,
     #[arg(
         long = "go-max-overlap",
         default_value_t = 500,
-        help = "Drop GO/GMT terms sharing more genes with the data's features (the overlap, not the term's own size)"
+        help = "Report GO/GMT terms sharing at most this many genes with the data's features; every term is tested"
     )]
     pub go_max_overlap: usize,
 
