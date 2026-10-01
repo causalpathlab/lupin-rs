@@ -60,7 +60,7 @@ fn help(app: &App) -> &'static str {
             " ? keys · ↑↓ cluster · 1-6 take · k keep · ] next flagged · tab pane · s save · q quit"
         }
         Focus::Genes => {
-            " ? keys · ↑↓ gene · a add · A add to a type · d drop · x hide · m markers · tab pane"
+            " ? keys · ↑↓ gene · a add · A add to a type · d drop · x hide · m view · tab pane"
         }
         Focus::Tree => {
             " ? keys · ↑↓ node · enter label · space mark · + mixed label · o ontology · / search"
@@ -76,13 +76,17 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("?", "this guide (any key closes it)"),
             (
                 "tab / shift-tab",
-                "next / previous pane: clusters → tree → genes",
+                "next / previous pane: clusters → genes → tree",
             ),
+            ("pgup/dn home/end", "a page / to either end of the pane's list"),
             ("r", "cluster & run: Leiden and pass settings, enter runs"),
-            ("x", "while a pass or save runs: stop it"),
+            (
+                "x",
+                "while a pass or save runs: stop it (asks again; in genes, x hides)",
+            ),
             ("s", "save the edits as the next round, and export"),
             ("e", "export the open round"),
-            ("q", "quit (asks again with unsaved edits)"),
+            ("q / ctrl-c", "quit (asks again with unsaved edits)"),
         ],
     ),
     (
@@ -104,7 +108,10 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("enter", "label the cluster with it"),
             ("← →", "fold / unfold (ontology: up / into a term)"),
             ("o", "panel tree ↔ the full Cell Ontology"),
-            ("/", "search the ontology (names, synonyms, abbreviations)"),
+            (
+                "/",
+                "search the Cell Ontology (names, synonyms, abbreviations)",
+            ),
             (
                 "space / +",
                 "mark nodes / give the cluster their mixed label (A+B)",
