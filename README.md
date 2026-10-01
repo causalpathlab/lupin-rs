@@ -170,6 +170,9 @@ the GO Consortium into the cache below, looked up in the same layers as the
 Cell Ontology data. `--gaf` or `--gmt` names other gene sets, `--go-obo`
 another ontology. Each cluster's top terms are in `{out}.ontology_signature.tsv`
 and in its round summary entry. GO terms need `--method enrichment`.
+In `lupin annotate --tui`, `GO terms` in the settings (`r`) turns `--go` on
+for the next pass, and `m` in the genes pane cycles on to the selected
+cluster's terms.
 
 ## Cell Ontology data
 
