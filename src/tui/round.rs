@@ -6,7 +6,7 @@
 use crate::annotate::markers::label_key;
 use crate::annotate::markers::read_marker_pairs;
 use crate::annotate::rounds::{
-    digest, parse_cluster_id, Action, ClusterId, DecidedBy, Decision, Evidence, Table,
+    digest, parse_cluster_id, Action, ClusterId, DecidedBy, Decision, Evidence, Table, Term,
 };
 use crate::manifest::rounds::{read_cells, read_table};
 use crate::manifest::run::{self, resolve};
@@ -127,6 +127,8 @@ pub struct ClusterView {
     pub shares: Vec<(String, f32)>,
     /// Genes by [`specific_genes`], most specific first.
     pub genes: Vec<(String, f32)>,
+    /// The cluster's top GO (or GMT) terms, when the pass scored them.
+    pub terms: Vec<Term>,
 }
 
 impl ClusterView {
@@ -223,6 +225,7 @@ impl RoundView {
             None => BTreeSet::new(),
         };
         let genes = expression.as_ref().map(specific_genes).unwrap_or_default();
+        let mut terms = crate::manifest::rounds::read_gene_set_terms(&loaded)?;
         let clusters = digests
             .into_iter()
             .map(|(id, d)| {
@@ -254,6 +257,7 @@ impl RoundView {
                     candidates,
                     shares,
                     genes: genes.get(&id).cloned().unwrap_or_default(),
+                    terms: terms.remove(&id).unwrap_or_default(),
                 }
             })
             .collect();
