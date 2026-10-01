@@ -265,13 +265,13 @@ pub fn pick(title: &'static str, start: &Path, want: Want) -> Result<Option<Path
             };
             match k.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
-                KeyCode::Up | KeyCode::Char('k') => p.state.select(Some(at.saturating_sub(1))),
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Up => p.state.select(Some(at.saturating_sub(1))),
+                KeyCode::Down => {
                     p.state.select(Some((at + 1).min(n.saturating_sub(1))));
                 }
                 KeyCode::PageUp => p.state.select(Some(at.saturating_sub(20))),
                 KeyCode::PageDown => p.state.select(Some((at + 20).min(n.saturating_sub(1)))),
-                KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => {
+                KeyCode::Left | KeyCode::Backspace => {
                     if let Some(up) = p.dir.parent().map(Path::to_path_buf) {
                         p.open(up);
                     }
@@ -285,7 +285,7 @@ pub fn pick(title: &'static str, start: &Path, want: Want) -> Result<Option<Path
                     p.all = !p.all;
                     p.state.select(Some(0));
                 }
-                KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => match at_entry {
+                KeyCode::Enter | KeyCode::Right => match at_entry {
                     None => {}
                     Some((true, dir, _)) => p.open(dir),
                     Some((false, _, Some(types))) if types < 2 => {
