@@ -26,6 +26,17 @@ fn parse(name: &str) -> Option<FeatureRow<'_>> {
     })
 }
 
+/// The gene `name` measures: the unit of a feature row, else the name
+/// itself; `None` for an allele row, whose unit is a locus.
+#[must_use]
+pub fn gene_of(name: &str) -> Option<&str> {
+    match parse(name) {
+        Some(row) if row.modality == fr::BAF => None,
+        Some(row) => Some(row.gene),
+        None => Some(name),
+    }
+}
+
 /// Every row of each gene, behind a name index over the genes.
 pub struct GeneRows {
     index: GeneIndex,
@@ -42,15 +53,11 @@ impl GeneRows {
         let mut at: HashMap<Box<str>, usize> = HashMap::new();
         let mut modalities = BTreeMap::new();
         for (i, name) in row_names.iter().enumerate() {
-            let gene = match parse(name) {
-                Some(row) => {
-                    *modalities.entry(row.modality.into()).or_insert(0) += 1;
-                    if row.modality == fr::BAF {
-                        continue;
-                    }
-                    row.gene
-                }
-                None => name,
+            if let Some(row) = parse(name) {
+                *modalities.entry(row.modality.into()).or_insert(0) += 1;
+            }
+            let Some(gene) = gene_of(name) else {
+                continue;
             };
             let g = *at.entry(gene.into()).or_insert_with(|| {
                 genes.push(gene.into());

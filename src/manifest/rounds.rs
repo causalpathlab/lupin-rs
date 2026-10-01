@@ -244,6 +244,20 @@ fn read_cl(path: &str) -> Result<BTreeMap<ClusterId, ClPlacement>> {
         .collect())
 }
 
+/// Each cluster's top GO (or GMT) terms, when the round scored any.
+pub(crate) fn read_gene_set_terms(loaded: &Loaded) -> Result<BTreeMap<ClusterId, Vec<Term>>> {
+    let a = &loaded.manifest.annotate;
+    let Some(rel) = a.ontology_signature.as_deref() else {
+        return Ok(BTreeMap::new());
+    };
+    let gmt = a
+        .settings
+        .as_ref()
+        .and_then(|s| s.pointer("/enrichment/gmt"))
+        .is_some_and(|g| !g.is_null());
+    read_terms(&resolve(&loaded.dir, rel), if gmt { "gmt" } else { "go" })
+}
+
 /// Whatever evidence this round records; a missing table is skipped.
 fn read_evidence(loaded: &Loaded) -> Result<Evidence> {
     let a = &loaded.manifest.annotate;
@@ -252,14 +266,7 @@ fn read_evidence(loaded: &Loaded) -> Result<Evidence> {
     if let Some(p) = at(&a.cluster_celltype_q_values).or_else(|| at(&a.cluster_term_q)) {
         ev.q = Some(read_table(&p)?);
     }
-    if let Some(p) = at(&a.ontology_signature) {
-        let gmt = a
-            .settings
-            .as_ref()
-            .and_then(|s| s.pointer("/enrichment/gmt"))
-            .is_some_and(|g| !g.is_null());
-        ev.terms = read_terms(&p, if gmt { "gmt" } else { "go" })?;
-    }
+    ev.terms = read_gene_set_terms(loaded)?;
     if let Some(p) = at(&a.ontology_assignment) {
         ev.cl = read_cl(&p)?;
     }

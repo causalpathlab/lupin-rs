@@ -69,6 +69,13 @@ pub struct AnnotateArgs {
     /// MSigDB GMT gene-sets (`term<TAB>desc<TAB>genes…`); gene-set mode, like `gaf`
     pub gmt: Option<Box<str>>,
 
+    /// Score GO terms with the GO annotations of the data's species (told
+    /// from its gene names); `gaf` names the file instead
+    pub go: bool,
+
+    /// Gene Ontology .obo naming the terms of `go`/`gaf`/`gmt`
+    pub go_obo: Option<Box<str>>,
+
     /// Output prefix for annotation artifacts
     pub out: Box<str>,
 

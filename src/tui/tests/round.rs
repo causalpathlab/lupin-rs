@@ -20,6 +20,7 @@ fn cluster(id: ClusterId, cells: usize, label: Option<&str>) -> ClusterView {
         candidates: vec![candidate("T", 0.6), candidate("B", 0.3)],
         shares: vec![("T".into(), 0.6), ("B".into(), 0.3), ("mono".into(), 0.1)],
         genes: Vec::new(),
+        terms: Vec::new(),
     }
 }
 
