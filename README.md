@@ -153,6 +153,24 @@ and `{out}.marker_history.json` keeps each cell type's edits with their
 rationale. `lupin annotate -f <round>` without `-m` re-annotates from that
 panel.
 
+## GO terms
+
+`--go` scores GO terms per cluster on the same cluster
+expression profile, next to the cell-type calls:
+
+```sh
+lupin annotate -f run.senna.json -m markers.tsv --go -o r0   # cell types and GO terms
+lupin annotate -f r0.senna.json --go -o r1                   # the round's panel, plus GO
+```
+
+The species is told from the gene names (Ensembl id prefixes, else symbol
+case; human and mouse), and its GO annotations (`goa_human.gaf.gz`,
+`mgi.gaf.gz`) and the Gene Ontology (`go-basic.obo`) are downloaded once from
+the GO Consortium into the cache below, looked up in the same layers as the
+Cell Ontology data. `--gaf` or `--gmt` names other gene sets, `--go-obo`
+another ontology. Each cluster's top terms are in `{out}.ontology_signature.tsv`
+and in its round summary entry. GO terms need `--method enrichment`.
+
 ## Cell Ontology data
 
 lupin places panel labels on the Cell Ontology using three data files, kept out
@@ -174,7 +192,7 @@ used under `annotate.settings.enrichment.cell_ontology`.
 
 ```sh
 lupin data where -f run.senna.json   # which file each layer contributes
-lupin data fetch                     # cache everything, for offline machines
+lupin data fetch                     # cache everything (GO files too), for offline machines
 ```
 
 In `lupin annotate --tui`, `o` in the tree pane switches to the Cell Ontology

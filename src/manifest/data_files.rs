@@ -16,9 +16,15 @@
 //! Rules layer key by key, aliases row by row, later layers winning; the
 //! ontology is the most specific one found. [`ClData::sources`] says which
 //! files were read, for the run's record.
+//!
+//! The Gene Ontology (`go-basic.obo`), which names the terms of a GO pass, and
+//! a species' GO annotations (`goa_human.gaf.gz`, ...) are found the same way
+//! ([`go_ontology`], [`go_annotations`]): the most specific layer that has
+//! them, else downloaded into the cache.
 
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::cl_rules::{Aliases, MatchRules};
+use crate::annotate::go_signature::Species;
 use anyhow::{Context, Result};
 use log::{info, warn};
 use serde_json::{json, Value};
@@ -30,6 +36,8 @@ use std::time::Duration;
 pub const RULES: &str = "cl_matching.json";
 pub const ALIASES: &str = "cl_aliases.tsv";
 pub const ONTOLOGY: &str = "cl-basic.obo";
+pub const GO_ONTOLOGY: &str = "go-basic.obo";
+pub const GO_ONTOLOGY_URL: &str = "https://purl.obolibrary.org/obo/go/go-basic.obo";
 
 /// Set to skip every download.
 pub const OFFLINE_ENV: &str = "LUPIN_OFFLINE";
@@ -86,12 +94,12 @@ impl SearchPath {
         }
     }
 
-    /// Where the cache keeps `name`: the ontology whatever the release, the
+    /// Where the cache keeps `name`: an ontology whatever the release, the
     /// rules and aliases per release, as they are published per release.
     #[must_use]
     pub fn cached(&self, name: &str) -> Option<PathBuf> {
         let c = self.cache.as_ref()?;
-        Some(if name == ONTOLOGY {
+        Some(if is_external(name) {
             c.join(name)
         } else {
             c.join("data").join(env!("CARGO_PKG_VERSION")).join(name)
@@ -383,6 +391,45 @@ fn fetch_ontology(search: &SearchPath, rules: &MatchRules, online: bool) -> Opti
     }
 }
 
+/// Whether data file `name` is an ontology, checked to be OBO when
+/// downloaded.
+fn is_obo(name: &str) -> bool {
+    name.ends_with(".obo")
+}
+
+/// Whether data file `name` is published by its source rather than with a
+/// lupin release, so one cached copy serves every release.
+fn is_external(name: &str) -> bool {
+    is_obo(name) || name.contains(".gaf")
+}
+
+/// `name`: the most specific layer's copy, else the cache's, downloaded from
+/// `url` unless [`OFFLINE_ENV`] is set. `flag` is how to name a file instead.
+fn external_file(run_dir: Option<&Path>, name: &str, url: &str, flag: &str) -> Result<PathBuf> {
+    let search = SearchPath::new(run_dir);
+    if let Some(p) = search.layers(name, false).pop() {
+        return Ok(p);
+    }
+    anyhow::ensure!(
+        std::env::var_os(OFFLINE_ENV).is_none(),
+        "{OFFLINE_ENV} is set and no {name} is at hand; pass {flag} or run `lupin data fetch`"
+    );
+    let to = search.cached(name).context("no cache directory")?;
+    fetch_into(name, &to, Some(url))
+        .with_context(|| format!("downloading {name}; pass {flag} instead"))?;
+    Ok(to)
+}
+
+/// The Gene Ontology ([`external_file`] from [`GO_ONTOLOGY_URL`]).
+pub fn go_ontology(run_dir: Option<&Path>) -> Result<PathBuf> {
+    external_file(run_dir, GO_ONTOLOGY, GO_ONTOLOGY_URL, "--go-obo")
+}
+
+/// `species`' GO annotations ([`external_file`] from the GO Consortium).
+pub fn go_annotations(species: Species, run_dir: Option<&Path>) -> Result<PathBuf> {
+    external_file(run_dir, species.gaf_file(), &species.gaf_url(), "--gaf")
+}
+
 /// Where this release's copy of data file `name` is published: the
 /// repository (from the package metadata) at this version's tag.
 #[must_use]
@@ -411,7 +458,7 @@ pub fn fetch_into(name: &str, to: &Path, url: Option<&str>) -> Result<()> {
     let mut file = fs::File::create(&tmp)?;
     std::io::copy(&mut response.into_reader(), &mut file).context("reading the response")?;
     drop(file);
-    if name == ONTOLOGY {
+    if is_obo(name) {
         let head = fs::read_to_string(&tmp).unwrap_or_default();
         anyhow::ensure!(head.contains("[Term]"), "the response is not an OBO file");
     }
@@ -435,8 +482,9 @@ pub enum DataCmd {
         #[arg(long, short = 'f')]
         from: Option<Box<str>>,
     },
-    /// Download this release's rules and aliases, and the Cell Ontology, into
-    /// the cache (for machines that will run offline)
+    /// Download this release's rules and aliases, the Cell Ontology, the Gene
+    /// Ontology and the human and mouse GO annotations into the cache (for
+    /// machines that will run offline)
     Fetch {
         /// Replace what the cache already holds
         #[arg(long)]
@@ -462,16 +510,21 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
             show("user", search.user.clone());
             show("project", search.project.clone());
             println!();
-            for name in [RULES, ALIASES, ONTOLOGY] {
+            let gafs = [Species::Human, Species::Mouse].map(Species::gaf_file);
+            for name in [RULES, ALIASES, ONTOLOGY, GO_ONTOLOGY]
+                .into_iter()
+                .chain(gafs)
+            {
                 let found = search.layers(name, false);
                 println!("{name}:");
                 if found.is_empty() {
                     println!(
-                        "  (none{})",
-                        if name == ONTOLOGY {
-                            "; `lupin data fetch` or --obo"
-                        } else {
-                            "; `lupin data fetch`"
+                        "  (none; `lupin data fetch`{})",
+                        match name {
+                            ONTOLOGY => " or --obo",
+                            GO_ONTOLOGY => " or --go-obo",
+                            _ if is_external(name) => " or --gaf",
+                            _ => "",
                         }
                     );
                 }
@@ -500,6 +553,16 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
                 fetch_into(ONTOLOGY, &to, Some(url))?;
             }
             println!("{}", to.display());
+            let go = [(GO_ONTOLOGY, GO_ONTOLOGY_URL.to_string())]
+                .into_iter()
+                .chain([Species::Human, Species::Mouse].map(|s| (s.gaf_file(), s.gaf_url())));
+            for (name, url) in go {
+                let to = search.cached(name).context("no cache directory")?;
+                if *force || !to.is_file() {
+                    fetch_into(name, &to, Some(&url))?;
+                }
+                println!("{}", to.display());
+            }
             Ok(())
         }
     }
