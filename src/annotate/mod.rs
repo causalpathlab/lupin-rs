@@ -10,6 +10,7 @@ pub mod by_projection;
 mod calibration_tests;
 pub mod celltype_tree;
 pub mod cl_rules;
+pub mod gene_rows;
 mod go_signature;
 pub mod inputs;
 pub mod markers;

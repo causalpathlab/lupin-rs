@@ -1,10 +1,10 @@
 //! Choosing the files `--tui` was not given on the command line: a run
 //! manifest, then a marker panel, from a browser over the file system.
 
+use crate::annotate::gene_rows::GeneRows;
 use crate::annotate::markers::read_marker_pairs;
 use crate::manifest::{pinto, run};
 use anyhow::Result;
-use data_beans::utilities::name_matching::GeneIndex;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -22,7 +22,7 @@ pub enum Want {
     /// A run manifest (`.senna.json`, `.lupin.json`, `.pinto.json`).
     Manifest,
     /// A marker panel, scored against the run's genes when they are known.
-    Markers(Option<GeneIndex>, usize),
+    Markers(Option<GeneRows>, usize),
 }
 
 /// A marker panel's size and how much of it the run has.
@@ -89,7 +89,7 @@ fn read_panel(path: &Path, want: &Want) -> Option<Panel> {
     let genes: BTreeSet<&str> = pairs.iter().map(|(g, _)| &**g).collect();
     let matched = index
         .as_ref()
-        .map(|ix| genes.iter().filter(|g| ix.match_gene(g).is_some()).count());
+        .map(|ix| genes.iter().filter(|g| ix.match_rows(g).is_some()).count());
     if matched == Some(0) {
         return None;
     }
