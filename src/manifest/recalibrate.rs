@@ -27,12 +27,9 @@ const CELL_BATCH: &str = ".cell_batch.parquet";
 
 /// Write an enrichment pass's sufficient statistics beside its outputs under
 /// `out`; the paths are as written, for [`crate::manifest::annotate`] to
-/// record. `None` for a pass with no per-batch profile (the GO/GMT pass),
-/// which later rounds cannot rescore.
-pub fn write_cache(out: &str, inputs: &EnrichmentInputs) -> Result<Option<StatsCache>> {
-    let Some(pb) = &inputs.pb_gene_gp else {
-        return Ok(None);
-    };
+/// record.
+pub fn write_cache(out: &str, inputs: &EnrichmentInputs) -> Result<StatsCache> {
+    let pb = &inputs.pb_gene_gp;
     let g = inputs.gene_names.len();
     let k = inputs.n_clusters;
     let mut sums = Mat::zeros(g, k);
@@ -62,12 +59,12 @@ pub fn write_cache(out: &str, inputs: &EnrichmentInputs) -> Result<Option<StatsC
     let cell_batch = format!("{out}{CELL_BATCH}");
     write_clusters(&cell_batch, &inputs.cell_names, &batches)?;
     info!("cached the pass's statistics for rescoring later rounds");
-    Ok(Some(StatsCache {
+    Ok(StatsCache {
         gene_sum,
         batch_profile,
         gene_weight,
         cell_batch,
-    }))
+    })
 }
 
 /// A round rescored: per cluster (rows, by `ids`) × cell type (`types`).
@@ -355,7 +352,7 @@ fn rescore_inputs(
         markers_gc: annot.membership_ga,
         celltype_names: annot.annot_names.clone(),
         profile_gk,
-        pb_gene_gp: Some(pb.mat),
+        pb_gene_gp: pb.mat,
         gene_sum_kg: Vec::new(),
         gene_weights: Vec::new(),
         type_tree: Some(
