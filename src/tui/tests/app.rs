@@ -81,7 +81,7 @@ fn tab_reaches_the_go_pane_only_when_the_round_scored_terms() {
         app.focus = Focus::Clusters;
         (0..4)
             .map(|_| {
-                app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+                press(app, KeyCode::Tab);
                 app.focus
             })
             .collect()
@@ -175,19 +175,6 @@ fn page_keys_move_by_a_page_or_to_an_end() {
     assert_eq!(sel, 24);
     step(&mut sel, 0, KeyCode::End);
     assert_eq!(sel, 0);
-}
-
-#[test]
-fn tab_follows_the_columns() {
-    let mut app = app_with_terms(false);
-    app.focus = Focus::Clusters;
-    let order: Vec<Focus> = (0..3)
-        .map(|_| {
-            press(&mut app, KeyCode::Tab);
-            app.focus
-        })
-        .collect();
-    assert!(order == [Focus::Genes, Focus::Tree, Focus::Clusters]);
 }
 
 #[test]

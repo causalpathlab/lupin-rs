@@ -98,11 +98,11 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
     a.argmax = Some(rel(&argmax_path));
     a.cluster_expression = Some(rel(&profile_path));
     a.expression_clusters = Some(rel(&clusters_path));
-    a.stats_cache = cache.map(|c| StatsCache {
-        gene_sum: rel(&c.gene_sum),
-        batch_profile: rel(&c.batch_profile),
-        gene_weight: rel(&c.gene_weight),
-        cell_batch: rel(&c.cell_batch),
+    a.stats_cache = Some(StatsCache {
+        gene_sum: rel(&cache.gene_sum),
+        batch_profile: rel(&cache.batch_profile),
+        gene_weight: rel(&cache.gene_weight),
+        cell_batch: rel(&cache.cell_batch),
     });
     a.settings = Some(serde_json::json!({ "enrichment": eargs }));
     for p in [

@@ -343,6 +343,22 @@ fn draw_settings(f: &mut Frame, app: &App) {
     f.render_stateful_widget(t, area, &mut state);
 }
 
+/// `v` to `digits` places, `—` when unknown.
+fn num(v: Option<f32>, digits: usize) -> String {
+    v.map_or_else(|| "—".into(), |v| format!("{v:.digits$}"))
+}
+
+/// A p- or q-value: three places, scientific below 1e-3.
+fn pval(v: Option<f32>) -> String {
+    match v {
+        Some(v) if v < 1e-3 => format!("{v:.0e}"),
+        v => num(v, 3),
+    }
+}
+
+/// The GO column's effect, p and q widths, before the term name.
+const GO_STAT_WIDTHS: [u16; 3] = [6, 6, 6];
+
 fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     let Some(c) = app.selected() else {
         f.render_widget(
@@ -352,12 +368,6 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let now = app.current_label();
-    let num =
-        |v: Option<f32>, digits: usize| v.map_or_else(|| "—".into(), |v| format!("{v:.digits$}"));
-    let pval = |v: Option<f32>| match v {
-        Some(v) if v < 1e-3 => format!("{v:.0e}"),
-        v => num(v, 3),
-    };
     let mut rows: Vec<Row> = c
         .candidates
         .iter()
@@ -605,8 +615,9 @@ fn draw_go(f: &mut Frame, area: Rect, app: &App) {
     // A term name is a phrase: wrapped, up to three lines, to stay readable
     // in a narrow column. The list is short (each cluster's top terms), so
     // the table scrolls it whole.
-    let width = area.width.saturating_sub(2 + 6 + 7 + 7 + 3).max(8) as usize;
-    let sci = |v: Option<f32>| v.map_or_else(|| "—".into(), |v| format!("{v:.0e}"));
+    // Borders, the stat columns and a space after each.
+    let fixed: u16 = 2 + GO_STAT_WIDTHS.iter().map(|w| w + 1).sum::<u16>();
+    let width = area.width.saturating_sub(fixed).max(8) as usize;
     let rows: Vec<Row> = c
         .terms
         .iter()
@@ -624,8 +635,8 @@ fn draw_go(f: &mut Frame, area: Rect, app: &App) {
             let height = lines.len() as u16;
             Row::new([
                 format!("{:+.2}", t.effect),
-                sci(t.p),
-                sci(t.q),
+                pval(t.p),
+                pval(t.q),
                 lines.join("\n"),
             ])
             .height(height)
@@ -637,17 +648,13 @@ fn draw_go(f: &mut Frame, area: Rect, app: &App) {
         format!(" GO terms of K{} · effect · p · q ", c.id)
     };
     let mut state = TableState::default().with_selected(focused.then_some(app.go_sel));
-    let t = Table::new(
-        rows,
-        [
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Min(8),
-        ],
-    )
-    .block(pane(title, focused))
-    .row_highlight_style(highlight(focused));
+    let widths = GO_STAT_WIDTHS
+        .map(Constraint::Length)
+        .into_iter()
+        .chain([Constraint::Min(8)]);
+    let t = Table::new(rows, widths)
+        .block(pane(title, focused))
+        .row_highlight_style(highlight(focused));
     f.render_stateful_widget(t, area, &mut state);
 }
 

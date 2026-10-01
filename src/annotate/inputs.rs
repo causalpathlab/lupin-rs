@@ -32,9 +32,9 @@ pub struct EnrichmentInputs {
     pub celltype_names: Vec<Box<str>>,
     /// G × K weighted mean cluster expression.
     pub profile_gk: Mat,
-    /// G × P weighted mean per-batch expression. `None` in GO/GMT gene-set
-    /// mode, which scores the cluster profile directly and runs no permutation.
-    pub pb_gene_gp: Option<Mat>,
+    /// G × P weighted mean per-batch expression, behind the sample-permutation
+    /// null.
+    pub pb_gene_gp: Mat,
     /// G × K raw per-cluster gene sums behind `profile_gk`, column-major
     /// (cluster `k` is `[k * G .. (k + 1) * G]`): merged clusters add them.
     pub gene_sum_kg: Vec<f64>,

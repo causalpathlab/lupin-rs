@@ -222,7 +222,7 @@ impl Picker {
         };
         f.render_widget(
             Paragraph::new(format!(
-                " ↑↓ move · enter open/choose · ← up · {all} · ~ home · q cancel"
+                " ↑↓ pgup/dn move · enter open/choose · ← up · {all} · ~ home · q cancel"
             ))
             .dim(),
             keys,
@@ -265,12 +265,16 @@ pub fn pick(title: &'static str, start: &Path, want: Want) -> Result<Option<Path
             };
             match k.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
-                KeyCode::Up => p.state.select(Some(at.saturating_sub(1))),
-                KeyCode::Down => {
-                    p.state.select(Some((at + 1).min(n.saturating_sub(1))));
+                KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Home
+                | KeyCode::End => {
+                    let mut sel = at;
+                    super::app::step(&mut sel, n, k.code);
+                    p.state.select(Some(sel));
                 }
-                KeyCode::PageUp => p.state.select(Some(at.saturating_sub(20))),
-                KeyCode::PageDown => p.state.select(Some((at + 20).min(n.saturating_sub(1)))),
                 KeyCode::Left | KeyCode::Backspace => {
                     if let Some(up) = p.dir.parent().map(Path::to_path_buf) {
                         p.open(up);

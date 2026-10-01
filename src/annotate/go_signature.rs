@@ -140,9 +140,6 @@ pub fn load_go_gene_sets(
     })
 }
 
-/// Write a per-group top-`N` GO signature TSV from a `group × term` effect
-/// matrix, each group's terms ranked by descending positive effect. `term_ids`
-/// indexes the matrix columns and aligns 1:1 with `terms` (for the gene count).
 /// Each cluster × term's test, as the cell types are tested.
 pub struct TermStats<'a> {
     pub nes_kt: &'a enrichment::Mat,
@@ -150,6 +147,10 @@ pub struct TermStats<'a> {
     pub q_kt: &'a enrichment::Mat,
 }
 
+/// Write a per-group top-`N` GO signature TSV from a `group × term` effect
+/// matrix, each group's terms ranked by descending positive effect, with
+/// their `stats`. `term_ids` indexes the matrix columns and aligns 1:1 with
+/// `terms` (for the gene count).
 #[allow(clippy::too_many_arguments)]
 pub fn write_go_signature(
     path: &str,

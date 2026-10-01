@@ -82,7 +82,9 @@ pub fn annotate_by_enrichment(
     rounds::write_clusters(&clusters_path, &inputs.cell_names, &ids)?;
     outputs.clusters = Some(clusters_path);
     if !plan.ontology_mode {
-        outputs.stats_cache = crate::manifest::recalibrate::write_cache(&args.out, &inputs)?;
+        outputs.stats_cache = Some(crate::manifest::recalibrate::write_cache(
+            &args.out, &inputs,
+        )?);
     }
     let pass = if plan.ontology_mode {
         Pass::GeneSets
@@ -569,7 +571,7 @@ fn aggregate_expression(
     n_batches: usize,
     g: usize,
     nb_fisher: &[f32],
-) -> Result<(Mat, Option<Mat>, Vec<f64>)> {
+) -> Result<(Mat, Mat, Vec<f64>)> {
     let (gene_sum_kg, gene_sum_pg) = accumulate_gene_sum_pair(
         data_vec,
         cluster_labels,
@@ -581,7 +583,7 @@ fn aggregate_expression(
     )?;
     Ok((
         weighted_mean_profile(&gene_sum_kg, n_clusters, g, nb_fisher),
-        Some(weighted_mean_profile(&gene_sum_pg, n_batches, g, nb_fisher)),
+        weighted_mean_profile(&gene_sum_pg, n_batches, g, nb_fisher),
         gene_sum_kg,
     ))
 }
