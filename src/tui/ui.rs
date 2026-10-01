@@ -605,7 +605,8 @@ fn draw_go(f: &mut Frame, area: Rect, app: &App) {
     // A term name is a phrase: wrapped, up to three lines, to stay readable
     // in a narrow column. The list is short (each cluster's top terms), so
     // the table scrolls it whole.
-    let width = area.width.saturating_sub(2 + 6 + 1).max(8) as usize;
+    let width = area.width.saturating_sub(2 + 6 + 7 + 7 + 3).max(8) as usize;
+    let sci = |v: Option<f32>| v.map_or_else(|| "—".into(), |v| format!("{v:.0e}"));
     let rows: Vec<Row> = c
         .terms
         .iter()
@@ -621,18 +622,32 @@ fn draw_go(f: &mut Frame, area: Rect, app: &App) {
             };
             let lines = wrap(&text, width, 3);
             let height = lines.len() as u16;
-            Row::new([format!("{:+.2}", t.effect), lines.join("\n")]).height(height)
+            Row::new([
+                format!("{:+.2}", t.effect),
+                sci(t.p),
+                sci(t.q),
+                lines.join("\n"),
+            ])
+            .height(height)
         })
         .collect();
     let title = if c.terms.is_empty() {
         format!(" GO terms · none for K{} ", c.id)
     } else {
-        format!(" GO terms of K{} · effect ", c.id)
+        format!(" GO terms of K{} · effect · p · q ", c.id)
     };
     let mut state = TableState::default().with_selected(focused.then_some(app.go_sel));
-    let t = Table::new(rows, [Constraint::Length(6), Constraint::Min(8)])
-        .block(pane(title, focused))
-        .row_highlight_style(highlight(focused));
+    let t = Table::new(
+        rows,
+        [
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Min(8),
+        ],
+    )
+    .block(pane(title, focused))
+    .row_highlight_style(highlight(focused));
     f.render_stateful_widget(t, area, &mut state);
 }
 

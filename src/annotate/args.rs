@@ -2,10 +2,6 @@
 //! flags. Values nobody tunes per run are the constants below; every pass
 //! records its settings (these included) in `manifest.annotate.settings`.
 
-/// Gene sets smaller than this are dropped (GO/GMT mode).
-pub const MIN_GENE_SET: usize = 15;
-/// Gene sets larger than this are dropped (GO/GMT mode).
-pub const MAX_GENE_SET: usize = 500;
 /// Keep IEA (electronic) GAF annotations.
 pub const KEEP_IEA: bool = true;
 /// Cells per block when streaming the raw counts.
@@ -19,8 +15,6 @@ pub const MIN_CONFIDENCE: f32 = 0.0;
 #[must_use]
 pub fn fixed_settings() -> serde_json::Value {
     serde_json::json!({
-        "min_gene_set": MIN_GENE_SET,
-        "max_gene_set": MAX_GENE_SET,
         "keep_iea": KEEP_IEA,
         "block_size": BLOCK_SIZE,
         "num_draws": NUM_DRAWS,
@@ -75,6 +69,14 @@ pub struct AnnotateArgs {
 
     /// Gene Ontology .obo naming the terms of `go`/`gaf`/`gmt`
     pub go_obo: Option<Box<str>>,
+
+    /// GO/GMT terms with fewer of their genes among the data's features are
+    /// dropped
+    pub go_min_genes: usize,
+
+    /// GO/GMT terms with more of their genes among the data's features are
+    /// dropped
+    pub go_max_genes: usize,
 
     /// Output prefix for annotation artifacts
     pub out: Box<str>,

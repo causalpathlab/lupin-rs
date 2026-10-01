@@ -113,6 +113,18 @@ pub struct AnnotateCliArgs {
         help = "Gene Ontology .obo for --go/--gaf/--gmt; default: found or downloaded like the Cell Ontology"
     )]
     pub go_obo: Option<Box<str>>,
+    #[arg(
+        long = "go-min-genes",
+        default_value_t = 20,
+        help = "Drop GO/GMT terms with fewer of their genes among the data's features"
+    )]
+    pub go_min_genes: usize,
+    #[arg(
+        long = "go-max-genes",
+        default_value_t = 500,
+        help = "Drop GO/GMT terms with more of their genes among the data's features"
+    )]
+    pub go_max_genes: usize,
 
     // ── projection / ORA ──
     #[arg(long = "no-idf")]
@@ -175,7 +187,7 @@ impl AnnotateCliArgs {
         val("min-cluster-size", self.min_cluster_size.to_string());
         val("assign-mad", self.assign_mad.to_string());
         val("ontology-fdr-q", self.ontology_fdr_q.to_string());
-        let opts: [(&str, Option<String>); 13] = [
+        let opts: [(&str, Option<String>); 15] = [
             ("from", self.from.as_deref().map(String::from)),
             (
                 "feature-embedding",
@@ -201,6 +213,8 @@ impl AnnotateCliArgs {
             ("gmt", self.gmt.as_deref().map(String::from)),
             ("obo", self.obo.as_deref().map(String::from)),
             ("go-obo", self.go_obo.as_deref().map(String::from)),
+            ("go-min-genes", Some(self.go_min_genes.to_string())),
+            ("go-max-genes", Some(self.go_max_genes.to_string())),
             ("label-cl", self.label_cl.as_deref().map(String::from)),
         ];
         for (flag, x) in opts {
@@ -500,6 +514,8 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
         gmt: args.gmt.clone(),
         go: args.go,
         go_obo: args.go_obo.clone(),
+        go_min_genes: args.go_min_genes,
+        go_max_genes: args.go_max_genes,
         out: args.out.clone(),
         num_perm: args.num_perm,
         min_markers: args.min_markers,

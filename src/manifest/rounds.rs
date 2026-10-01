@@ -213,15 +213,14 @@ fn read_terms(path: &str, source: &str) -> Result<BTreeMap<ClusterId, Vec<Term>>
             .or_else(|| row.get("term_id"))
             .cloned()
             .unwrap_or_default();
-        let effect = row
-            .get("effect")
-            .and_then(|e| e.parse().ok())
-            .unwrap_or(f32::NAN);
+        let num = |c: &str| row.get(c).and_then(|v| v.parse::<f32>().ok());
         out.entry(id).or_default().push(Term {
             source: source.to_string(),
             term,
-            effect,
-            q: None,
+            effect: num("effect").unwrap_or(f32::NAN),
+            q: num("q"),
+            p: num("p"),
+            nes: num("nes"),
         });
     }
     Ok(out)
