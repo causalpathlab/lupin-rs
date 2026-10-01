@@ -1189,9 +1189,9 @@ dependencies = [
 
 [[package]]
 name = "data-beans"
-version = "0.6.12"
+version = "0.6.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86192b771695d82deb2a0b6073eb3e3b1869062fa8e798a732fa43aefbd4e89f"
+checksum = "d708de962c36f3368b0165da3a0f9abe870c7d6b666d3a9c1e8672d026c30466"
 dependencies = [
  "anyhow",
  "approx",
@@ -1209,11 +1209,11 @@ dependencies = [
  "nalgebra",
  "nalgebra-sparse",
  "ndarray",
- "ndarray-rand",
  "num_cpus",
  "petgraph",
  "rand 0.10.3",
  "rand_distr 0.6.0",
+ "ratatui",
  "rayon",
  "regex",
  "rustc-hash",
@@ -3052,9 +3052,9 @@ dependencies = [
 
 [[package]]
 name = "legume-graph-embedding"
-version = "0.8.4"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77f206329a11d39d7473d609b14931f2d8e7721952ef4b7f43b70053026c374e"
+checksum = "14fb325194ea2b1d930052a662668f6dd8c8ae37e8db1b7f8062f8e02ce4563f"
 dependencies = [
  "anyhow",
  "clap",
@@ -3075,9 +3075,9 @@ dependencies = [
 
 [[package]]
 name = "legume-numeric"
-version = "0.8.12"
+version = "0.8.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80ece5ddba84db43f818b4e42a42343dc29db4106a356b11eb5beb9c40e0ae93"
+checksum = "0e95da6fa6c45c24c3248e87235127614bf7901876db0af8a3a788bf4b424a86"
 dependencies = [
  "anyhow",
  "approx",
@@ -3095,7 +3095,6 @@ dependencies = [
  "nalgebra",
  "nalgebra-sparse",
  "ndarray",
- "ndarray-rand",
  "num-traits",
  "num_cpus",
  "parquet",
@@ -3630,17 +3629,6 @@ dependencies = [
  "rawpointer",
  "rayon",
  "serde",
-]
-
-[[package]]
-name = "ndarray-rand"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "180f724d496e84764e8ecf28fbe1da74ef231ec4ba15be65a9100be8445d73e3"
-dependencies = [
- "ndarray",
- "rand 0.9.5",
- "rand_distr 0.5.1",
 ]
 
 [[package]]

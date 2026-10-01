@@ -1,7 +1,7 @@
 //! The `gene<TAB>celltype` marker panel as a gene × cell-type matrix aligned
 //! to the data's gene order.
 
-use data_beans::utilities::name_matching::GeneIndex;
+use crate::annotate::gene_rows::GeneRows;
 use legume_numeric::matrix::common_io::read_lines;
 use legume_numeric::matrix::dense_mat_io::Mat;
 
@@ -55,7 +55,8 @@ pub fn read_panel(path: &str) -> anyhow::Result<Vec<(String, String)>> {
 }
 
 /// Read a marker TSV and match its genes to `row_names` (exact → symbol →
-/// flexible); unmatched markers are logged and dropped. Cell-type names are
+/// flexible); a matched gene marks every row of that gene
+/// ([`GeneRows`]), and unmatched markers are logged and dropped. Cell-type names are
 /// in their [`label_key`] form.
 pub fn build_annotation_matrix(
     marker_gene_path: &str,
@@ -85,14 +86,24 @@ pub fn annotation_matrix_from_pairs(
 
     let mut membership = Mat::zeros(row_names.len(), annot_names.len());
     let mut matched = 0;
+    let mut marked = 0;
     let mut unmatched = Vec::new();
-    let gene_index = GeneIndex::build(row_names);
+    let gene_rows = GeneRows::build(row_names);
+    if let Some(m) = gene_rows.modality_summary() {
+        log::info!(
+            "Feature rows by modality ({m}); each marker marks every row of its gene ({} genes)",
+            gene_rows.n_genes()
+        );
+    }
     for ((gene, _), ty) in marker_pairs.iter().zip(&normalized) {
         let a = annot_names
             .binary_search(ty)
             .expect("every type is in annot_names");
-        if let Some(g) = gene_index.match_gene(gene) {
-            membership[(g, a)] = 1.0;
+        if let Some(rows) = gene_rows.match_rows(gene) {
+            for &g in rows {
+                membership[(g, a)] = 1.0;
+            }
+            marked += rows.len();
             matched += 1;
         } else {
             unmatched.push(gene.clone());
@@ -108,7 +119,7 @@ pub fn annotation_matrix_from_pairs(
     // w_g = ln(C / c_g): genes every type claims drop out of the score.
     let max_idf = enrichment::markers::apply_idf_weights(&mut membership);
     log::info!(
-        "Matched {matched}/{} marker genes to {} cell types (IDF max ln(C) = {max_idf:.3})",
+        "Matched {matched}/{} marker genes ({marked} rows) to {} cell types (IDF max ln(C) = {max_idf:.3})",
         marker_pairs.len(),
         annot_names.len(),
     );
