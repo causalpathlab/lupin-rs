@@ -22,7 +22,7 @@ pub enum Want {
     /// A run manifest (`.senna.json`, `.lupin.json`, `.pinto.json`).
     Manifest,
     /// A marker panel, scored against the run's genes when they are known.
-    Markers(Option<GeneRows>, usize),
+    Markers(Option<Box<GeneRows>>, usize),
 }
 
 /// A marker panel's size and how much of it the run has.
