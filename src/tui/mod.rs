@@ -84,8 +84,8 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
         args.markers = match loaded.manifest.annotate.markers.as_deref() {
             Some(rel) => resolve(&loaded.dir, rel).into_boxed_str(),
             None => {
-                let index = run_genes(&loaded).map(|g| GeneRows::build(&g));
-                let n = index.as_ref().map_or(0, GeneRows::n_genes);
+                let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
+                let n = index.as_deref().map_or(0, GeneRows::n_genes);
                 let want = picker::Want::Markers(index, n);
                 match picker::pick("Pick a marker panel", &loaded.dir, want)? {
                     Some(p) => p.to_string_lossy().into(),
