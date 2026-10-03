@@ -6,7 +6,6 @@ mod cell_labels;
 mod describe;
 mod docs;
 mod gene_text;
-mod lineage;
 mod manifest;
 mod marker_embedding;
 mod plot;
@@ -14,14 +13,9 @@ mod tui;
 
 use crate::annotate_cmd::{run_annotate, AnnotateCliArgs};
 use crate::gene_text::cli::{run_knn_graph, run_qc, KnnGraphCmd, QcCmd};
-use crate::lineage::args::LineageArgs;
-use crate::lineage::assoc::run::{run_assoc, AssocArgs};
-use crate::lineage::lineage_plot::{run_lineage_plot, LineagePlotArgs};
-use crate::lineage::pseudotime::PseudotimeArgs;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use describe::{run_describe, DescribeArgs};
-use manifest::lineage::{run_lineage_from_manifest, run_pseudotime_from_manifest};
 use plot::scatter::{fit_plot, PlotArgs};
 use plot::strand::{fit_plot_strand, PlotStrandArgs};
 use plot::topic::{fit_plot_topic, PlotTopicArgs};
@@ -30,7 +24,7 @@ use plot::topic::{fit_plot_topic, PlotTopicArgs};
 #[command(
     name = "lupin",
     version,
-    about = "Label, Unfold, Place, Interpret, Narrate — annotation, lineage, pseudotime, association, description."
+    about = "Label, Unfold, Place, Interpret, Narrate — text graphs, cell-type annotation, review, plotting and description."
 )]
 struct Cli {
     #[arg(short, long, global = true, help = "Verbose logging")]
@@ -91,30 +85,9 @@ enum Commands {
     )]
     Annotate(AnnotateCliArgs),
     #[command(
-        name = "lineage",
-        about = "Geometry-first lineage and principal curves over a senna gem run"
-    )]
-    Lineage(LineageArgs),
-    #[command(
-        name = "lineage-plot",
-        aliases = ["plot-lineage", "trajectory-plot"],
-        about = "Publication-style figure of a lupin lineage trajectory over its 2D embedding"
-    )]
-    LineagePlot(LineagePlotArgs),
-    #[command(
-        name = "dyn-assoc",
-        about = "Bayesian between-branch modality contrast along a lupin lineage"
-    )]
-    DynAssoc(AssocArgs),
-    #[command(
-        name = "pseudotime",
-        about = "Monocle-style principal-graph pseudotime from a senna latent embedding"
-    )]
-    Pseudotime(PseudotimeArgs),
-    #[command(
         name = "describe",
-        about = "Short citation-checked sentence from annotate / lineage_annot evidence",
-        long_about = "Builds structured evidence from `{from}.annot.parquet` (or argmax / lineage_annot).\n\
+        about = "Short citation-checked sentence from annotate evidence",
+        long_about = "Builds structured evidence from `{from}.annot.parquet` (or argmax).\n\
                       Optionally fishes per-cluster keywords from a `word-graph` prefix\n\
                       (`feature_word.edges` over each cluster's markers;\n\
                       `--feature-embedding` adds nearest-neighbour genes first).\n\
@@ -201,10 +174,6 @@ fn main() -> Result<()> {
         Commands::TextQc(c) => run_qc(&c),
         Commands::WordGraph(c) => run_knn_graph(&c),
         Commands::Annotate(c) => run_annotate(&c),
-        Commands::Lineage(c) => run_lineage_from_manifest(&c),
-        Commands::LineagePlot(c) => run_lineage_plot(&c),
-        Commands::DynAssoc(c) => run_assoc(&c),
-        Commands::Pseudotime(c) => run_pseudotime_from_manifest(&c),
         Commands::Describe(c) => run_describe(&c),
         Commands::Review(c) => manifest::rounds::run_review(&c),
         Commands::Relabel(c) => manifest::rounds::run_relabel(&c),

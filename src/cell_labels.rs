@@ -1,5 +1,5 @@
 //! Per-cell label files: `cell<TAB>cell_type[<TAB>…]`, as in the
-//! `{out}.argmax.tsv` / `membership.tsv` that annotate and lineage write, or a
+//! `{out}.argmax.tsv` / `membership.tsv` that annotate writes, or a
 //! user-supplied override. Every consumer reads them here so header handling
 //! and barcode matching agree.
 

@@ -7,8 +7,8 @@ pub use legume_plot::{hull, palette, rasterize, svg_emit};
 use rasterize::{DataBounds, Extent};
 
 /// Data → pixel with y pointing up (larger data-y → higher on screen), the
-/// convention every layout figure (`plot`, `lineage-plot`) shares. Hull
-/// vertices, label anchors and raster layers all go through here so they align.
+/// convention every layout figure shares. Hull vertices, label anchors and
+/// raster layers all go through here so they align.
 #[must_use]
 pub(crate) fn to_pixel(p: (f32, f32), bounds: &DataBounds, ext: Extent) -> (f32, f32) {
     let (x, y) = bounds.to_pixel(p, ext);

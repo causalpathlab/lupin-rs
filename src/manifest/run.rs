@@ -91,12 +91,6 @@ impl RunKind {
         }
     }
 
-    /// `{out}.latent.parquet` holds `log θ` on the probability simplex.
-    #[must_use]
-    pub fn latent_is_log_simplex(&self) -> bool {
-        self.cell_space() == CellSpace::LogSimplex
-    }
-
     /// The whole gene-side model is a frozen `gene × H` table in `feature_embedding`.
     #[must_use]
     pub fn has_frozen_gene_table(&self) -> bool {
@@ -164,8 +158,6 @@ pub struct RunManifest {
     pub cluster: RunCluster,
     #[serde(default)]
     pub annotate: RunAnnotate,
-    #[serde(default)]
-    pub pseudotime: RunPseudotime,
     #[serde(default)]
     pub defaults: RunDefaults,
     #[serde(flatten)]
@@ -235,7 +227,7 @@ impl RunOutputs {
             .or(self.dictionary.as_deref())
     }
 
-    /// The cell table for GEOMETRY (kNN, layout, clustering, trajectory):
+    /// The cell table for GEOMETRY (kNN, layout, clustering):
     /// `cell_embedding`, else `latent`.
     #[must_use]
     pub fn geometry_latent(&self) -> Option<&str> {
@@ -370,26 +362,6 @@ pub struct StatsCache {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RunPseudotime {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pseudotime: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nodes_latent: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nodes_2d: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub edges: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_node: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tree_cell_coords: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tree_nodes_2d: Option<String>,
-    #[serde(flatten)]
-    pub extra: Extra,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunDefaults {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colour_by: Option<String>,
@@ -412,7 +384,6 @@ impl RunManifest {
             layout: RunLayout::default(),
             cluster: RunCluster::default(),
             annotate: RunAnnotate::default(),
-            pseudotime: RunPseudotime::default(),
             defaults: RunDefaults::default(),
             extra: Extra::default(),
         }
@@ -776,8 +747,8 @@ pub struct Loaded {
 
 impl Loaded {
     /// `{dir}/{name}` for a manifest at `{dir}/{name}.senna.json`: where the
-    /// run's artifacts that the manifest does not record (NB-Fisher weights,
-    /// velocity) sit. Derived from where the manifest IS, never from its
+    /// run's artifacts that the manifest does not record (NB-Fisher weights)
+    /// sit. Derived from where the manifest IS, never from its
     /// `prefix` field, which holds the training machine's absolute path.
     #[must_use]
     pub fn run_prefix(&self) -> String {

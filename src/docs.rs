@@ -17,8 +17,6 @@ pub enum Topic {
     Grouping,
     /// Annotation on a gene-annotated Cell Ontology (partly implemented).
     OntologyPlan,
-    /// Expert knowledge for lineage rooting (not implemented).
-    RootingPlan,
 }
 
 /// Every write-up with its one-line blurb, so the listing can never advertise
@@ -38,11 +36,6 @@ const DOCS: &[(Topic, &str, &str)] = &[
         Topic::OntologyPlan,
         "PLAN    (partly implemented) annotation on a gene-annotated Cell Ontology",
         include_str!("../docs/annotation-ontology-plan.md"),
-    ),
-    (
-        Topic::RootingPlan,
-        "PLAN    (not implemented) expert knowledge for lineage rooting",
-        include_str!("../docs/lineage-rooting.md"),
     ),
 ];
 

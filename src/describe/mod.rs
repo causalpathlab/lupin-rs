@@ -1,4 +1,4 @@
-//! `lupin describe` — compose a short sentence from annotate / lineage_annot evidence.
+//! `lupin describe` — compose a short sentence from annotate evidence.
 //!
 //! The composer **never decides**: evidence comes from annotate artifacts (and optional
 //! keyword incidence from a `word-graph` vocab). Sentences are citation-checked against
@@ -26,7 +26,7 @@ pub struct DescribeArgs {
     #[arg(
         long,
         short = 'f',
-        help = "Run manifest or annotate / lineage output prefix (reads projection, enrichment, or argmax artifacts)"
+        help = "Run manifest or annotate output prefix (reads projection, enrichment, or argmax artifacts)"
     )]
     pub from: Box<str>,
 
@@ -159,7 +159,7 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
 /// Where each piece of annotate evidence lives.
 #[derive(Default)]
 struct EvidenceFiles {
-    /// Per-cell table with `community` / `coarse_label` (projection, or `lineage --markers`).
+    /// Per-cell table with `community` / `coarse_label` (projection).
     annot: Option<String>,
     /// Enrichment's cluster × cell-type FDR q-values.
     enrichment_q: Option<String>,
@@ -174,7 +174,7 @@ struct EvidenceFiles {
 impl EvidenceFiles {
     /// From the manifest's `annotate.*` slots when `--from` is a run
     /// manifest (or its prefix) — those point at the latest pass, whatever its
-    /// `-o` was. Otherwise `--from` is an annotate / lineage output prefix and
+    /// `-o` was. Otherwise `--from` is an annotate output prefix and
     /// the files are looked for by name.
     fn locate(from: &str) -> Self {
         match crate::manifest::run::load(from) {
@@ -210,8 +210,7 @@ impl EvidenceFiles {
                     Path::new(&p).exists().then_some(p)
                 };
                 Self {
-                    annot: found(ANNOT_PARQUET)
-                        .or_else(|| found(&format!(".lineage_annot{ANNOT_PARQUET}"))),
+                    annot: found(ANNOT_PARQUET),
                     enrichment_q: found(CLUSTER_CELLTYPE_Q_VALUES),
                     term_q: found(CLUSTER_TERM_Q),
                     argmax: found(ARGMAX_TSV),
