@@ -1,0 +1,991 @@
+a	b	connectivity
+ASDC	BFU-E	0.607142857
+ASDC	Basophilic Erythroblast	0
+ASDC	CD14 Mono	0
+ASDC	CD16 Mono	0
+ASDC	CD4 Central Memory	0
+ASDC	CD4 Effector Memory	0
+ASDC	CD4 Naive	0
+ASDC	CD8 Central Memory	0
+ASDC	CD8 Effector Memory 2	0
+ASDC	CD8 Naive	0
+ASDC	CFU-E	0
+ASDC	CLP	0
+ASDC	Cycling Progenitor	0.314039409
+ASDC	Early GMP	0
+ASDC	Early ProMono	0
+ASDC	EoBasoMast Precursor	0
+ASDC	GMP-Cycle	0
+ASDC	GMP-Mono	0
+ASDC	GMP-Neut	0
+ASDC	HSC	0
+ASDC	LMPP	0
+ASDC	Large Pre-B	0
+ASDC	Late ProMono	0
+ASDC	MEP	0
+ASDC	MLP	0
+ASDC	MLP-II	0
+ASDC	MPP-MkEry	0
+ASDC	MPP-MyLy	0
+ASDC	Mature B	0
+ASDC	Megakaryocyte	0
+ASDC	Megakaryocyte Precursor	1
+ASDC	NK	0
+ASDC	NK CD56high	0
+ASDC	Orthochromatic Erythroblast	0
+ASDC	Polychromatic Erythroblast	0
+ASDC	Pre-ProB	0
+ASDC	Pre-cDC	1
+ASDC	Pre-pDC	1
+ASDC	Pre-pDC Cycling	1
+ASDC	Pro-B Cycling	0
+ASDC	Pro-B VDJ	0
+ASDC	Pro-Erythroblast	0
+ASDC	cDC2	1
+ASDC	pDC	1
+BFU-E	Basophilic Erythroblast	1
+BFU-E	CD14 Mono	0
+BFU-E	CD16 Mono	0
+BFU-E	CD4 Central Memory	0
+BFU-E	CD4 Effector Memory	0
+BFU-E	CD4 Naive	0
+BFU-E	CD8 Central Memory	0
+BFU-E	CD8 Effector Memory 2	0
+BFU-E	CD8 Naive	0
+BFU-E	CFU-E	1
+BFU-E	CLP	0.151785714
+BFU-E	Cycling Progenitor	1
+BFU-E	Early GMP	0.576007326
+BFU-E	Early ProMono	0
+BFU-E	EoBasoMast Precursor	1
+BFU-E	GMP-Cycle	0
+BFU-E	GMP-Mono	0.101190476
+BFU-E	GMP-Neut	0
+BFU-E	HSC	0.0607142857
+BFU-E	LMPP	0.151785714
+BFU-E	Large Pre-B	1
+BFU-E	Late ProMono	0
+BFU-E	MEP	0.885416667
+BFU-E	MLP	0.364285714
+BFU-E	MLP-II	0
+BFU-E	MPP-MkEry	0.394642857
+BFU-E	MPP-MyLy	0.255639098
+BFU-E	Mature B	0
+BFU-E	Megakaryocyte	0
+BFU-E	Megakaryocyte Precursor	1
+BFU-E	NK	0
+BFU-E	NK CD56high	0
+BFU-E	Orthochromatic Erythroblast	0
+BFU-E	Polychromatic Erythroblast	0
+BFU-E	Pre-ProB	0
+BFU-E	Pre-cDC	0.202380952
+BFU-E	Pre-pDC	0.216836735
+BFU-E	Pre-pDC Cycling	0.485714286
+BFU-E	Pro-B Cycling	1
+BFU-E	Pro-B VDJ	0.303571429
+BFU-E	Pro-Erythroblast	1
+BFU-E	cDC2	0
+BFU-E	pDC	0
+Basophilic Erythroblast	CD14 Mono	0
+Basophilic Erythroblast	CD16 Mono	0
+Basophilic Erythroblast	CD4 Central Memory	0
+Basophilic Erythroblast	CD4 Effector Memory	0
+Basophilic Erythroblast	CD4 Naive	0
+Basophilic Erythroblast	CD8 Central Memory	0
+Basophilic Erythroblast	CD8 Effector Memory 2	0
+Basophilic Erythroblast	CD8 Naive	0
+Basophilic Erythroblast	CFU-E	1
+Basophilic Erythroblast	CLP	0
+Basophilic Erythroblast	Cycling Progenitor	0
+Basophilic Erythroblast	Early GMP	0
+Basophilic Erythroblast	Early ProMono	0
+Basophilic Erythroblast	EoBasoMast Precursor	0
+Basophilic Erythroblast	GMP-Cycle	0
+Basophilic Erythroblast	GMP-Mono	0
+Basophilic Erythroblast	GMP-Neut	0
+Basophilic Erythroblast	HSC	0
+Basophilic Erythroblast	LMPP	0
+Basophilic Erythroblast	Large Pre-B	0
+Basophilic Erythroblast	Late ProMono	0
+Basophilic Erythroblast	MEP	0
+Basophilic Erythroblast	MLP	0
+Basophilic Erythroblast	MLP-II	0
+Basophilic Erythroblast	MPP-MkEry	0
+Basophilic Erythroblast	MPP-MyLy	0
+Basophilic Erythroblast	Mature B	0
+Basophilic Erythroblast	Megakaryocyte	0
+Basophilic Erythroblast	Megakaryocyte Precursor	0
+Basophilic Erythroblast	NK	0
+Basophilic Erythroblast	NK CD56high	0
+Basophilic Erythroblast	Orthochromatic Erythroblast	0
+Basophilic Erythroblast	Polychromatic Erythroblast	0
+Basophilic Erythroblast	Pre-ProB	0
+Basophilic Erythroblast	Pre-cDC	0
+Basophilic Erythroblast	Pre-pDC	0
+Basophilic Erythroblast	Pre-pDC Cycling	0
+Basophilic Erythroblast	Pro-B Cycling	0
+Basophilic Erythroblast	Pro-B VDJ	0
+Basophilic Erythroblast	Pro-Erythroblast	1
+Basophilic Erythroblast	cDC2	0
+Basophilic Erythroblast	pDC	0
+CD14 Mono	CD16 Mono	1
+CD14 Mono	CD4 Central Memory	0
+CD14 Mono	CD4 Effector Memory	0
+CD14 Mono	CD4 Naive	0
+CD14 Mono	CD8 Central Memory	0
+CD14 Mono	CD8 Effector Memory 2	0
+CD14 Mono	CD8 Naive	0
+CD14 Mono	CFU-E	0
+CD14 Mono	CLP	0
+CD14 Mono	Cycling Progenitor	0
+CD14 Mono	Early GMP	0
+CD14 Mono	Early ProMono	1
+CD14 Mono	EoBasoMast Precursor	0
+CD14 Mono	GMP-Cycle	0
+CD14 Mono	GMP-Mono	0.758928571
+CD14 Mono	GMP-Neut	0
+CD14 Mono	HSC	1
+CD14 Mono	LMPP	0
+CD14 Mono	Large Pre-B	0
+CD14 Mono	Late ProMono	1
+CD14 Mono	MEP	0.758928571
+CD14 Mono	MLP	0
+CD14 Mono	MLP-II	0
+CD14 Mono	MPP-MkEry	1
+CD14 Mono	MPP-MyLy	1
+CD14 Mono	Mature B	1
+CD14 Mono	Megakaryocyte	0
+CD14 Mono	Megakaryocyte Precursor	0
+CD14 Mono	NK	0
+CD14 Mono	NK CD56high	0
+CD14 Mono	Orthochromatic Erythroblast	0
+CD14 Mono	Polychromatic Erythroblast	0
+CD14 Mono	Pre-ProB	0
+CD14 Mono	Pre-cDC	0
+CD14 Mono	Pre-pDC	0
+CD14 Mono	Pre-pDC Cycling	0
+CD14 Mono	Pro-B Cycling	0
+CD14 Mono	Pro-B VDJ	0
+CD14 Mono	Pro-Erythroblast	0
+CD14 Mono	cDC2	0
+CD14 Mono	pDC	1
+CD16 Mono	CD4 Central Memory	0
+CD16 Mono	CD4 Effector Memory	0
+CD16 Mono	CD4 Naive	0
+CD16 Mono	CD8 Central Memory	0
+CD16 Mono	CD8 Effector Memory 2	1
+CD16 Mono	CD8 Naive	0
+CD16 Mono	CFU-E	0
+CD16 Mono	CLP	0
+CD16 Mono	Cycling Progenitor	0
+CD16 Mono	Early GMP	0
+CD16 Mono	Early ProMono	1
+CD16 Mono	EoBasoMast Precursor	0
+CD16 Mono	GMP-Cycle	0
+CD16 Mono	GMP-Mono	0
+CD16 Mono	GMP-Neut	0
+CD16 Mono	HSC	1
+CD16 Mono	LMPP	0
+CD16 Mono	Large Pre-B	0
+CD16 Mono	Late ProMono	1
+CD16 Mono	MEP	0
+CD16 Mono	MLP	0
+CD16 Mono	MLP-II	0
+CD16 Mono	MPP-MkEry	0
+CD16 Mono	MPP-MyLy	0.958646617
+CD16 Mono	Mature B	1
+CD16 Mono	Megakaryocyte	0
+CD16 Mono	Megakaryocyte Precursor	0
+CD16 Mono	NK	0
+CD16 Mono	NK CD56high	1
+CD16 Mono	Orthochromatic Erythroblast	0
+CD16 Mono	Polychromatic Erythroblast	0
+CD16 Mono	Pre-ProB	0
+CD16 Mono	Pre-cDC	1
+CD16 Mono	Pre-pDC	0
+CD16 Mono	Pre-pDC Cycling	0
+CD16 Mono	Pro-B Cycling	0
+CD16 Mono	Pro-B VDJ	1
+CD16 Mono	Pro-Erythroblast	0
+CD16 Mono	cDC2	1
+CD16 Mono	pDC	1
+CD4 Central Memory	CD4 Effector Memory	1
+CD4 Central Memory	CD4 Naive	1
+CD4 Central Memory	CD8 Central Memory	0
+CD4 Central Memory	CD8 Effector Memory 2	0
+CD4 Central Memory	CD8 Naive	1
+CD4 Central Memory	CFU-E	0
+CD4 Central Memory	CLP	0
+CD4 Central Memory	Cycling Progenitor	0.314039409
+CD4 Central Memory	Early GMP	0.467032967
+CD4 Central Memory	Early ProMono	0
+CD4 Central Memory	EoBasoMast Precursor	0
+CD4 Central Memory	GMP-Cycle	0
+CD4 Central Memory	GMP-Mono	0.758928571
+CD4 Central Memory	GMP-Neut	0
+CD4 Central Memory	HSC	1
+CD4 Central Memory	LMPP	0
+CD4 Central Memory	Large Pre-B	0
+CD4 Central Memory	Late ProMono	0
+CD4 Central Memory	MEP	0.758928571
+CD4 Central Memory	MLP	0
+CD4 Central Memory	MLP-II	0
+CD4 Central Memory	MPP-MkEry	0
+CD4 Central Memory	MPP-MyLy	0
+CD4 Central Memory	Mature B	0
+CD4 Central Memory	Megakaryocyte	1
+CD4 Central Memory	Megakaryocyte Precursor	0
+CD4 Central Memory	NK	1
+CD4 Central Memory	NK CD56high	0
+CD4 Central Memory	Orthochromatic Erythroblast	0
+CD4 Central Memory	Polychromatic Erythroblast	0
+CD4 Central Memory	Pre-ProB	0
+CD4 Central Memory	Pre-cDC	0
+CD4 Central Memory	Pre-pDC	0
+CD4 Central Memory	Pre-pDC Cycling	1
+CD4 Central Memory	Pro-B Cycling	0
+CD4 Central Memory	Pro-B VDJ	1
+CD4 Central Memory	Pro-Erythroblast	0
+CD4 Central Memory	cDC2	0
+CD4 Central Memory	pDC	1
+CD4 Effector Memory	CD4 Naive	1
+CD4 Effector Memory	CD8 Central Memory	1
+CD4 Effector Memory	CD8 Effector Memory 2	1
+CD4 Effector Memory	CD8 Naive	1
+CD4 Effector Memory	CFU-E	0
+CD4 Effector Memory	CLP	0
+CD4 Effector Memory	Cycling Progenitor	0.314039409
+CD4 Effector Memory	Early GMP	0.467032967
+CD4 Effector Memory	Early ProMono	0
+CD4 Effector Memory	EoBasoMast Precursor	0
+CD4 Effector Memory	GMP-Cycle	0
+CD4 Effector Memory	GMP-Mono	0
+CD4 Effector Memory	GMP-Neut	0.551948052
+CD4 Effector Memory	HSC	1
+CD4 Effector Memory	LMPP	0
+CD4 Effector Memory	Large Pre-B	0
+CD4 Effector Memory	Late ProMono	0
+CD4 Effector Memory	MEP	0.758928571
+CD4 Effector Memory	MLP	0
+CD4 Effector Memory	MLP-II	0
+CD4 Effector Memory	MPP-MkEry	0
+CD4 Effector Memory	MPP-MyLy	0
+CD4 Effector Memory	Mature B	0
+CD4 Effector Memory	Megakaryocyte	1
+CD4 Effector Memory	Megakaryocyte Precursor	0
+CD4 Effector Memory	NK	1
+CD4 Effector Memory	NK CD56high	1
+CD4 Effector Memory	Orthochromatic Erythroblast	0
+CD4 Effector Memory	Polychromatic Erythroblast	0
+CD4 Effector Memory	Pre-ProB	0
+CD4 Effector Memory	Pre-cDC	0
+CD4 Effector Memory	Pre-pDC	0
+CD4 Effector Memory	Pre-pDC Cycling	1
+CD4 Effector Memory	Pro-B Cycling	0
+CD4 Effector Memory	Pro-B VDJ	0
+CD4 Effector Memory	Pro-Erythroblast	0
+CD4 Effector Memory	cDC2	0
+CD4 Effector Memory	pDC	0
+CD4 Naive	CD8 Central Memory	1
+CD4 Naive	CD8 Effector Memory 2	0
+CD4 Naive	CD8 Naive	1
+CD4 Naive	CFU-E	0
+CD4 Naive	CLP	0
+CD4 Naive	Cycling Progenitor	0.314039409
+CD4 Naive	Early GMP	0.467032967
+CD4 Naive	Early ProMono	0
+CD4 Naive	EoBasoMast Precursor	0
+CD4 Naive	GMP-Cycle	0
+CD4 Naive	GMP-Mono	0.758928571
+CD4 Naive	GMP-Neut	0
+CD4 Naive	HSC	1
+CD4 Naive	LMPP	0
+CD4 Naive	Large Pre-B	0
+CD4 Naive	Late ProMono	0
+CD4 Naive	MEP	0
+CD4 Naive	MLP	0
+CD4 Naive	MLP-II	0
+CD4 Naive	MPP-MkEry	0
+CD4 Naive	MPP-MyLy	0
+CD4 Naive	Mature B	0
+CD4 Naive	Megakaryocyte	1
+CD4 Naive	Megakaryocyte Precursor	0
+CD4 Naive	NK	1
+CD4 Naive	NK CD56high	0
+CD4 Naive	Orthochromatic Erythroblast	1
+CD4 Naive	Polychromatic Erythroblast	0
+CD4 Naive	Pre-ProB	0
+CD4 Naive	Pre-cDC	0
+CD4 Naive	Pre-pDC	0
+CD4 Naive	Pre-pDC Cycling	1
+CD4 Naive	Pro-B Cycling	0
+CD4 Naive	Pro-B VDJ	0
+CD4 Naive	Pro-Erythroblast	0
+CD4 Naive	cDC2	0
+CD4 Naive	pDC	1
+CD8 Central Memory	CD8 Effector Memory 2	0
+CD8 Central Memory	CD8 Naive	1
+CD8 Central Memory	CFU-E	0
+CD8 Central Memory	CLP	0
+CD8 Central Memory	Cycling Progenitor	0.314039409
+CD8 Central Memory	Early GMP	0.467032967
+CD8 Central Memory	Early ProMono	0
+CD8 Central Memory	EoBasoMast Precursor	0
+CD8 Central Memory	GMP-Cycle	0
+CD8 Central Memory	GMP-Mono	0.758928571
+CD8 Central Memory	GMP-Neut	1
+CD8 Central Memory	HSC	1
+CD8 Central Memory	LMPP	0
+CD8 Central Memory	Large Pre-B	0
+CD8 Central Memory	Late ProMono	0
+CD8 Central Memory	MEP	0
+CD8 Central Memory	MLP	0
+CD8 Central Memory	MLP-II	0
+CD8 Central Memory	MPP-MkEry	0
+CD8 Central Memory	MPP-MyLy	0
+CD8 Central Memory	Mature B	0
+CD8 Central Memory	Megakaryocyte	1
+CD8 Central Memory	Megakaryocyte Precursor	0
+CD8 Central Memory	NK	1
+CD8 Central Memory	NK CD56high	1
+CD8 Central Memory	Orthochromatic Erythroblast	0
+CD8 Central Memory	Polychromatic Erythroblast	0
+CD8 Central Memory	Pre-ProB	0
+CD8 Central Memory	Pre-cDC	0
+CD8 Central Memory	Pre-pDC	0
+CD8 Central Memory	Pre-pDC Cycling	1
+CD8 Central Memory	Pro-B Cycling	0
+CD8 Central Memory	Pro-B VDJ	0
+CD8 Central Memory	Pro-Erythroblast	0
+CD8 Central Memory	cDC2	0
+CD8 Central Memory	pDC	0
+CD8 Effector Memory 2	CD8 Naive	0
+CD8 Effector Memory 2	CFU-E	0
+CD8 Effector Memory 2	CLP	0
+CD8 Effector Memory 2	Cycling Progenitor	0.314039409
+CD8 Effector Memory 2	Early GMP	0.233516484
+CD8 Effector Memory 2	Early ProMono	0
+CD8 Effector Memory 2	EoBasoMast Precursor	0
+CD8 Effector Memory 2	GMP-Cycle	1
+CD8 Effector Memory 2	GMP-Mono	0
+CD8 Effector Memory 2	GMP-Neut	0.551948052
+CD8 Effector Memory 2	HSC	1
+CD8 Effector Memory 2	LMPP	0
+CD8 Effector Memory 2	Large Pre-B	0
+CD8 Effector Memory 2	Late ProMono	0
+CD8 Effector Memory 2	MEP	0.758928571
+CD8 Effector Memory 2	MLP	0
+CD8 Effector Memory 2	MLP-II	0
+CD8 Effector Memory 2	MPP-MkEry	0.910714286
+CD8 Effector Memory 2	MPP-MyLy	0
+CD8 Effector Memory 2	Mature B	0
+CD8 Effector Memory 2	Megakaryocyte	1
+CD8 Effector Memory 2	Megakaryocyte Precursor	0
+CD8 Effector Memory 2	NK	1
+CD8 Effector Memory 2	NK CD56high	0
+CD8 Effector Memory 2	Orthochromatic Erythroblast	0
+CD8 Effector Memory 2	Polychromatic Erythroblast	0
+CD8 Effector Memory 2	Pre-ProB	0
+CD8 Effector Memory 2	Pre-cDC	0
+CD8 Effector Memory 2	Pre-pDC	0
+CD8 Effector Memory 2	Pre-pDC Cycling	1
+CD8 Effector Memory 2	Pro-B Cycling	0
+CD8 Effector Memory 2	Pro-B VDJ	0
+CD8 Effector Memory 2	Pro-Erythroblast	0
+CD8 Effector Memory 2	cDC2	0
+CD8 Effector Memory 2	pDC	0
+CD8 Naive	CFU-E	0
+CD8 Naive	CLP	0
+CD8 Naive	Cycling Progenitor	0.314039409
+CD8 Naive	Early GMP	0.700549451
+CD8 Naive	Early ProMono	0
+CD8 Naive	EoBasoMast Precursor	0
+CD8 Naive	GMP-Cycle	0
+CD8 Naive	GMP-Mono	0.758928571
+CD8 Naive	GMP-Neut	0
+CD8 Naive	HSC	1
+CD8 Naive	LMPP	0
+CD8 Naive	Large Pre-B	0
+CD8 Naive	Late ProMono	0
+CD8 Naive	MEP	0
+CD8 Naive	MLP	0
+CD8 Naive	MLP-II	0
+CD8 Naive	MPP-MkEry	0
+CD8 Naive	MPP-MyLy	0
+CD8 Naive	Mature B	0
+CD8 Naive	Megakaryocyte	1
+CD8 Naive	Megakaryocyte Precursor	0
+CD8 Naive	NK	1
+CD8 Naive	NK CD56high	1
+CD8 Naive	Orthochromatic Erythroblast	1
+CD8 Naive	Polychromatic Erythroblast	0
+CD8 Naive	Pre-ProB	0
+CD8 Naive	Pre-cDC	0
+CD8 Naive	Pre-pDC	0
+CD8 Naive	Pre-pDC Cycling	1
+CD8 Naive	Pro-B Cycling	0
+CD8 Naive	Pro-B VDJ	0
+CD8 Naive	Pro-Erythroblast	0
+CD8 Naive	cDC2	0
+CD8 Naive	pDC	1
+CFU-E	CLP	0
+CFU-E	Cycling Progenitor	0.314039409
+CFU-E	Early GMP	0.392307692
+CFU-E	Early ProMono	0
+CFU-E	EoBasoMast Precursor	0.546428571
+CFU-E	GMP-Cycle	0.0428571429
+CFU-E	GMP-Mono	0
+CFU-E	GMP-Neut	0
+CFU-E	HSC	0.0485714286
+CFU-E	LMPP	0.121428571
+CFU-E	Large Pre-B	1
+CFU-E	Late ProMono	0
+CFU-E	MEP	0.516071429
+CFU-E	MLP	0
+CFU-E	MLP-II	0
+CFU-E	MPP-MkEry	0.255
+CFU-E	MPP-MyLy	0.191729323
+CFU-E	Mature B	0
+CFU-E	Megakaryocyte	0
+CFU-E	Megakaryocyte Precursor	0.728571429
+CFU-E	NK	0
+CFU-E	NK CD56high	0
+CFU-E	Orthochromatic Erythroblast	0
+CFU-E	Polychromatic Erythroblast	0
+CFU-E	Pre-ProB	0
+CFU-E	Pre-cDC	0
+CFU-E	Pre-pDC	0
+CFU-E	Pre-pDC Cycling	0
+CFU-E	Pro-B Cycling	0
+CFU-E	Pro-B VDJ	0
+CFU-E	Pro-Erythroblast	1
+CFU-E	cDC2	0
+CFU-E	pDC	0
+CLP	Cycling Progenitor	0.628078818
+CLP	Early GMP	0.291895604
+CLP	Early ProMono	0
+CLP	EoBasoMast Precursor	0
+CLP	GMP-Cycle	0
+CLP	GMP-Mono	0
+CLP	GMP-Neut	0
+CLP	HSC	0.758928571
+CLP	LMPP	1
+CLP	Large Pre-B	0
+CLP	Late ProMono	0
+CLP	MEP	0.379464286
+CLP	MLP	1
+CLP	MLP-II	1
+CLP	MPP-MkEry	0.227678571
+CLP	MPP-MyLy	1
+CLP	Mature B	0
+CLP	Megakaryocyte	0
+CLP	Megakaryocyte Precursor	1
+CLP	NK	0
+CLP	NK CD56high	0
+CLP	Orthochromatic Erythroblast	0
+CLP	Polychromatic Erythroblast	0
+CLP	Pre-ProB	1
+CLP	Pre-cDC	0
+CLP	Pre-pDC	0
+CLP	Pre-pDC Cycling	0
+CLP	Pro-B Cycling	0
+CLP	Pro-B VDJ	1
+CLP	Pro-Erythroblast	0
+CLP	cDC2	0
+CLP	pDC	0.758928571
+Cycling Progenitor	Early GMP	1
+Cycling Progenitor	Early ProMono	0
+Cycling Progenitor	EoBasoMast Precursor	0.235529557
+Cycling Progenitor	GMP-Cycle	0.517241379
+Cycling Progenitor	GMP-Mono	0.196274631
+Cycling Progenitor	GMP-Neut	0.0666144201
+Cycling Progenitor	HSC	0.272167488
+Cycling Progenitor	LMPP	0.811268473
+Cycling Progenitor	Large Pre-B	1
+Cycling Progenitor	Late ProMono	0
+Cycling Progenitor	MEP	0.17010468
+Cycling Progenitor	MLP	1
+Cycling Progenitor	MLP-II	1
+Cycling Progenitor	MPP-MkEry	0.251231527
+Cycling Progenitor	MPP-MyLy	0.380152969
+Cycling Progenitor	Mature B	0.628078818
+Cycling Progenitor	Megakaryocyte	0.314039409
+Cycling Progenitor	Megakaryocyte Precursor	0.558292282
+Cycling Progenitor	NK	0.314039409
+Cycling Progenitor	NK CD56high	0.314039409
+Cycling Progenitor	Orthochromatic Erythroblast	0.628078818
+Cycling Progenitor	Polychromatic Erythroblast	0.314039409
+Cycling Progenitor	Pre-ProB	0
+Cycling Progenitor	Pre-cDC	0.209359606
+Cycling Progenitor	Pre-pDC	1
+Cycling Progenitor	Pre-pDC Cycling	0.282635468
+Cycling Progenitor	Pro-B Cycling	1
+Cycling Progenitor	Pro-B VDJ	0.157019704
+Cycling Progenitor	Pro-Erythroblast	0.0196274631
+Cycling Progenitor	cDC2	0.314039409
+Cycling Progenitor	pDC	0.209359606
+Early GMP	Early ProMono	0.321085165
+Early GMP	EoBasoMast Precursor	0.564331502
+Early GMP	GMP-Cycle	1
+Early GMP	GMP-Mono	0.710279304
+Early GMP	GMP-Neut	0.601481851
+Early GMP	HSC	0.350274725
+Early GMP	LMPP	1
+Early GMP	Large Pre-B	0
+Early GMP	Late ProMono	0
+Early GMP	MEP	0.19459707
+Early GMP	MLP	1
+Early GMP	MLP-II	0.467032967
+Early GMP	MPP-MkEry	0.432005495
+Early GMP	MPP-MyLy	0.39329092
+Early GMP	Mature B	0
+Early GMP	Megakaryocyte	0
+Early GMP	Megakaryocyte Precursor	0.181623932
+Early GMP	NK	0.233516484
+Early GMP	NK CD56high	0.233516484
+Early GMP	Orthochromatic Erythroblast	0.700549451
+Early GMP	Polychromatic Erythroblast	0.467032967
+Early GMP	Pre-ProB	0
+Early GMP	Pre-cDC	0.233516484
+Early GMP	Pre-pDC	1
+Early GMP	Pre-pDC Cycling	0.256868132
+Early GMP	Pro-B Cycling	1
+Early GMP	Pro-B VDJ	0.233516484
+Early GMP	Pro-Erythroblast	0.0437843407
+Early GMP	cDC2	0.233516484
+Early GMP	pDC	0.0389194139
+Early ProMono	EoBasoMast Precursor	0
+Early ProMono	GMP-Cycle	0.803571429
+Early ProMono	GMP-Mono	1
+Early ProMono	GMP-Neut	1
+Early ProMono	HSC	0.379464286
+Early ProMono	LMPP	0.0632440476
+Early ProMono	Large Pre-B	0
+Early ProMono	Late ProMono	1
+Early ProMono	MEP	0.0948660714
+Early ProMono	MLP	0
+Early ProMono	MLP-II	0
+Early ProMono	MPP-MkEry	0.341517857
+Early ProMono	MPP-MyLy	0.239661654
+Early ProMono	Mature B	1
+Early ProMono	Megakaryocyte	0
+Early ProMono	Megakaryocyte Precursor	0.758928571
+Early ProMono	NK	0
+Early ProMono	NK CD56high	0
+Early ProMono	Orthochromatic Erythroblast	0
+Early ProMono	Polychromatic Erythroblast	0
+Early ProMono	Pre-ProB	0
+Early ProMono	Pre-cDC	1
+Early ProMono	Pre-pDC	0
+Early ProMono	Pre-pDC Cycling	0
+Early ProMono	Pro-B Cycling	0
+Early ProMono	Pro-B VDJ	1
+Early ProMono	Pro-Erythroblast	0
+Early ProMono	cDC2	1
+Early ProMono	pDC	0.758928571
+EoBasoMast Precursor	GMP-Cycle	0
+EoBasoMast Precursor	GMP-Mono	0.0632440476
+EoBasoMast Precursor	GMP-Neut	0
+EoBasoMast Precursor	HSC	0.505952381
+EoBasoMast Precursor	LMPP	0.168650794
+EoBasoMast Precursor	Large Pre-B	0
+EoBasoMast Precursor	Late ProMono	0
+EoBasoMast Precursor	MEP	1
+EoBasoMast Precursor	MLP	0
+EoBasoMast Precursor	MLP-II	0
+EoBasoMast Precursor	MPP-MkEry	1
+EoBasoMast Precursor	MPP-MyLy	0.319548872
+EoBasoMast Precursor	Mature B	0
+EoBasoMast Precursor	Megakaryocyte	0
+EoBasoMast Precursor	Megakaryocyte Precursor	0.843253968
+EoBasoMast Precursor	NK	0
+EoBasoMast Precursor	NK CD56high	1
+EoBasoMast Precursor	Orthochromatic Erythroblast	0
+EoBasoMast Precursor	Polychromatic Erythroblast	0
+EoBasoMast Precursor	Pre-ProB	0
+EoBasoMast Precursor	Pre-cDC	0
+EoBasoMast Precursor	Pre-pDC	0
+EoBasoMast Precursor	Pre-pDC Cycling	0
+EoBasoMast Precursor	Pro-B Cycling	0
+EoBasoMast Precursor	Pro-B VDJ	0.758928571
+EoBasoMast Precursor	Pro-Erythroblast	0
+EoBasoMast Precursor	cDC2	0
+EoBasoMast Precursor	pDC	0
+GMP-Cycle	GMP-Mono	1
+GMP-Cycle	GMP-Neut	1
+GMP-Cycle	HSC	0.0357142857
+GMP-Cycle	LMPP	0.0297619048
+GMP-Cycle	Large Pre-B	0
+GMP-Cycle	Late ProMono	0
+GMP-Cycle	MEP	0
+GMP-Cycle	MLP	0
+GMP-Cycle	MLP-II	0
+GMP-Cycle	MPP-MkEry	0
+GMP-Cycle	MPP-MyLy	0
+GMP-Cycle	Mature B	1
+GMP-Cycle	Megakaryocyte	0
+GMP-Cycle	Megakaryocyte Precursor	0
+GMP-Cycle	NK	0
+GMP-Cycle	NK CD56high	0
+GMP-Cycle	Orthochromatic Erythroblast	1
+GMP-Cycle	Polychromatic Erythroblast	1
+GMP-Cycle	Pre-ProB	0
+GMP-Cycle	Pre-cDC	0
+GMP-Cycle	Pre-pDC	0.306122449
+GMP-Cycle	Pre-pDC Cycling	0.107142857
+GMP-Cycle	Pro-B Cycling	1
+GMP-Cycle	Pro-B VDJ	0
+GMP-Cycle	Pro-Erythroblast	0
+GMP-Cycle	cDC2	0
+GMP-Cycle	pDC	0
+GMP-Mono	GMP-Neut	1
+GMP-Mono	HSC	0.455357143
+GMP-Mono	LMPP	0.231894841
+GMP-Mono	Large Pre-B	0
+GMP-Mono	Late ProMono	1
+GMP-Mono	MEP	0.158110119
+GMP-Mono	MLP	0
+GMP-Mono	MLP-II	0
+GMP-Mono	MPP-MkEry	0.379464286
+GMP-Mono	MPP-MyLy	0.039943609
+GMP-Mono	Mature B	1
+GMP-Mono	Megakaryocyte	0.758928571
+GMP-Mono	Megakaryocyte Precursor	0.25297619
+GMP-Mono	NK	0
+GMP-Mono	NK CD56high	0.758928571
+GMP-Mono	Orthochromatic Erythroblast	1
+GMP-Mono	Polychromatic Erythroblast	0.758928571
+GMP-Mono	Pre-ProB	0
+GMP-Mono	Pre-cDC	1
+GMP-Mono	Pre-pDC	0.487882653
+GMP-Mono	Pre-pDC Cycling	0.0758928571
+GMP-Mono	Pro-B Cycling	0
+GMP-Mono	Pro-B VDJ	0
+GMP-Mono	Pro-Erythroblast	0
+GMP-Mono	cDC2	0
+GMP-Mono	pDC	0
+GMP-Neut	HSC	0.239177489
+GMP-Neut	LMPP	0
+GMP-Neut	Large Pre-B	0
+GMP-Neut	Late ProMono	0
+GMP-Neut	MEP	0
+GMP-Neut	MLP	0
+GMP-Neut	MLP-II	0
+GMP-Neut	MPP-MkEry	0.0551948052
+GMP-Neut	MPP-MyLy	0
+GMP-Neut	Mature B	1
+GMP-Neut	Megakaryocyte	1
+GMP-Neut	Megakaryocyte Precursor	0
+GMP-Neut	NK	0.551948052
+GMP-Neut	NK CD56high	0
+GMP-Neut	Orthochromatic Erythroblast	1
+GMP-Neut	Polychromatic Erythroblast	1
+GMP-Neut	Pre-ProB	0
+GMP-Neut	Pre-cDC	0
+GMP-Neut	Pre-pDC	0
+GMP-Neut	Pre-pDC Cycling	0.11038961
+GMP-Neut	Pro-B Cycling	0
+GMP-Neut	Pro-B VDJ	0
+GMP-Neut	Pro-Erythroblast	0
+GMP-Neut	cDC2	0
+GMP-Neut	pDC	0
+HSC	LMPP	1
+HSC	Large Pre-B	0
+HSC	Late ProMono	0
+HSC	MEP	1
+HSC	MLP	0.364285714
+HSC	MLP-II	0.607142857
+HSC	MPP-MkEry	1
+HSC	MPP-MyLy	1
+HSC	Mature B	1
+HSC	Megakaryocyte	1
+HSC	Megakaryocyte Precursor	0.0674603175
+HSC	NK	1
+HSC	NK CD56high	1
+HSC	Orthochromatic Erythroblast	1
+HSC	Polychromatic Erythroblast	1
+HSC	Pre-ProB	1
+HSC	Pre-cDC	0
+HSC	Pre-pDC	0
+HSC	Pre-pDC Cycling	0.182142857
+HSC	Pro-B Cycling	0
+HSC	Pro-B VDJ	1
+HSC	Pro-Erythroblast	0.0758928571
+HSC	cDC2	0
+HSC	pDC	0.607142857
+LMPP	Large Pre-B	0
+LMPP	Late ProMono	0
+LMPP	MEP	1
+LMPP	MLP	1
+LMPP	MLP-II	1
+LMPP	MPP-MkEry	1
+LMPP	MPP-MyLy	1
+LMPP	Mature B	0
+LMPP	Megakaryocyte	0
+LMPP	Megakaryocyte Precursor	0
+LMPP	NK	0
+LMPP	NK CD56high	0
+LMPP	Orthochromatic Erythroblast	0
+LMPP	Polychromatic Erythroblast	0
+LMPP	Pre-ProB	0
+LMPP	Pre-cDC	0.0843253968
+LMPP	Pre-pDC	0.361394558
+LMPP	Pre-pDC Cycling	0.151785714
+LMPP	Pro-B Cycling	0.505952381
+LMPP	Pro-B VDJ	0.25297619
+LMPP	Pro-Erythroblast	0
+LMPP	cDC2	0
+LMPP	pDC	0
+Large Pre-B	Late ProMono	0
+Large Pre-B	MEP	0
+Large Pre-B	MLP	0
+Large Pre-B	MLP-II	0
+Large Pre-B	MPP-MkEry	0
+Large Pre-B	MPP-MyLy	0
+Large Pre-B	Mature B	0
+Large Pre-B	Megakaryocyte	0
+Large Pre-B	Megakaryocyte Precursor	0
+Large Pre-B	NK	0
+Large Pre-B	NK CD56high	0
+Large Pre-B	Orthochromatic Erythroblast	0
+Large Pre-B	Polychromatic Erythroblast	0
+Large Pre-B	Pre-ProB	0
+Large Pre-B	Pre-cDC	0
+Large Pre-B	Pre-pDC	0
+Large Pre-B	Pre-pDC Cycling	1
+Large Pre-B	Pro-B Cycling	0
+Large Pre-B	Pro-B VDJ	0
+Large Pre-B	Pro-Erythroblast	0
+Large Pre-B	cDC2	0
+Large Pre-B	pDC	0
+Late ProMono	MEP	0
+Late ProMono	MLP	0
+Late ProMono	MLP-II	0
+Late ProMono	MPP-MkEry	0
+Late ProMono	MPP-MyLy	0
+Late ProMono	Mature B	0
+Late ProMono	Megakaryocyte	0
+Late ProMono	Megakaryocyte Precursor	1
+Late ProMono	NK	0
+Late ProMono	NK CD56high	0
+Late ProMono	Orthochromatic Erythroblast	0
+Late ProMono	Polychromatic Erythroblast	0
+Late ProMono	Pre-ProB	0
+Late ProMono	Pre-cDC	1
+Late ProMono	Pre-pDC	0
+Late ProMono	Pre-pDC Cycling	0
+Late ProMono	Pro-B Cycling	0
+Late ProMono	Pro-B VDJ	0
+Late ProMono	Pro-Erythroblast	0
+Late ProMono	cDC2	0
+Late ProMono	pDC	1
+MEP	MLP	0
+MEP	MLP-II	0
+MEP	MPP-MkEry	1
+MEP	MPP-MyLy	1
+MEP	Mature B	0
+MEP	Megakaryocyte	0
+MEP	Megakaryocyte Precursor	1
+MEP	NK	0.758928571
+MEP	NK CD56high	0.758928571
+MEP	Orthochromatic Erythroblast	0
+MEP	Polychromatic Erythroblast	0
+MEP	Pre-ProB	0.758928571
+MEP	Pre-cDC	0
+MEP	Pre-pDC	0
+MEP	Pre-pDC Cycling	0
+MEP	Pro-B Cycling	0
+MEP	Pro-B VDJ	0
+MEP	Pro-Erythroblast	0.33203125
+MEP	cDC2	0
+MEP	pDC	0.25297619
+MLP	MLP-II	1
+MLP	MPP-MkEry	0.364285714
+MLP	MPP-MyLy	1
+MLP	Mature B	0
+MLP	Megakaryocyte	0
+MLP	Megakaryocyte Precursor	0
+MLP	NK	0
+MLP	NK CD56high	0
+MLP	Orthochromatic Erythroblast	0
+MLP	Polychromatic Erythroblast	0
+MLP	Pre-ProB	1
+MLP	Pre-cDC	0
+MLP	Pre-pDC	1
+MLP	Pre-pDC Cycling	0
+MLP	Pro-B Cycling	0
+MLP	Pro-B VDJ	1
+MLP	Pro-Erythroblast	0
+MLP	cDC2	0
+MLP	pDC	0
+MLP-II	MPP-MkEry	1
+MLP-II	MPP-MyLy	1
+MLP-II	Mature B	0
+MLP-II	Megakaryocyte	0
+MLP-II	Megakaryocyte Precursor	0
+MLP-II	NK	0
+MLP-II	NK CD56high	0
+MLP-II	Orthochromatic Erythroblast	0
+MLP-II	Polychromatic Erythroblast	0
+MLP-II	Pre-ProB	1
+MLP-II	Pre-cDC	0
+MLP-II	Pre-pDC	0
+MLP-II	Pre-pDC Cycling	1
+MLP-II	Pro-B Cycling	0
+MLP-II	Pro-B VDJ	1
+MLP-II	Pro-Erythroblast	0
+MLP-II	cDC2	0
+MLP-II	pDC	1
+MPP-MkEry	MPP-MyLy	1
+MPP-MkEry	Mature B	1
+MPP-MkEry	Megakaryocyte	0
+MPP-MkEry	Megakaryocyte Precursor	0.607142857
+MPP-MkEry	NK	0
+MPP-MkEry	NK CD56high	0
+MPP-MkEry	Orthochromatic Erythroblast	0.910714286
+MPP-MkEry	Polychromatic Erythroblast	0
+MPP-MkEry	Pre-ProB	1
+MPP-MkEry	Pre-cDC	0
+MPP-MkEry	Pre-pDC	0
+MPP-MkEry	Pre-pDC Cycling	0
+MPP-MkEry	Pro-B Cycling	0
+MPP-MkEry	Pro-B VDJ	1
+MPP-MkEry	Pro-Erythroblast	0.113839286
+MPP-MkEry	cDC2	0
+MPP-MkEry	pDC	0.151785714
+MPP-MyLy	Mature B	0.958646617
+MPP-MyLy	Megakaryocyte	0
+MPP-MyLy	Megakaryocyte Precursor	0.639097744
+MPP-MyLy	NK	0
+MPP-MyLy	NK CD56high	0
+MPP-MyLy	Orthochromatic Erythroblast	0
+MPP-MyLy	Polychromatic Erythroblast	0
+MPP-MyLy	Pre-ProB	1
+MPP-MyLy	Pre-cDC	0
+MPP-MyLy	Pre-pDC	0
+MPP-MyLy	Pre-pDC Cycling	0
+MPP-MyLy	Pro-B Cycling	0
+MPP-MyLy	Pro-B VDJ	1
+MPP-MyLy	Pro-Erythroblast	0.0599154135
+MPP-MyLy	cDC2	0
+MPP-MyLy	pDC	0.319548872
+Mature B	Megakaryocyte	0
+Mature B	Megakaryocyte Precursor	0
+Mature B	NK	0
+Mature B	NK CD56high	1
+Mature B	Orthochromatic Erythroblast	1
+Mature B	Polychromatic Erythroblast	1
+Mature B	Pre-ProB	0
+Mature B	Pre-cDC	0
+Mature B	Pre-pDC	0
+Mature B	Pre-pDC Cycling	0
+Mature B	Pro-B Cycling	0
+Mature B	Pro-B VDJ	0
+Mature B	Pro-Erythroblast	0
+Mature B	cDC2	0
+Mature B	pDC	1
+Megakaryocyte	Megakaryocyte Precursor	0
+Megakaryocyte	NK	1
+Megakaryocyte	NK CD56high	0
+Megakaryocyte	Orthochromatic Erythroblast	0
+Megakaryocyte	Polychromatic Erythroblast	0
+Megakaryocyte	Pre-ProB	0
+Megakaryocyte	Pre-cDC	0
+Megakaryocyte	Pre-pDC	0
+Megakaryocyte	Pre-pDC Cycling	1
+Megakaryocyte	Pro-B Cycling	0
+Megakaryocyte	Pro-B VDJ	0
+Megakaryocyte	Pro-Erythroblast	0
+Megakaryocyte	cDC2	0
+Megakaryocyte	pDC	0
+Megakaryocyte Precursor	NK	0
+Megakaryocyte Precursor	NK CD56high	0
+Megakaryocyte Precursor	Orthochromatic Erythroblast	0
+Megakaryocyte Precursor	Polychromatic Erythroblast	0
+Megakaryocyte Precursor	Pre-ProB	0
+Megakaryocyte Precursor	Pre-cDC	1
+Megakaryocyte Precursor	Pre-pDC	0
+Megakaryocyte Precursor	Pre-pDC Cycling	0.202380952
+Megakaryocyte Precursor	Pro-B Cycling	0
+Megakaryocyte Precursor	Pro-B VDJ	0
+Megakaryocyte Precursor	Pro-Erythroblast	0.379464286
+Megakaryocyte Precursor	cDC2	0
+Megakaryocyte Precursor	pDC	0
+NK	NK CD56high	0
+NK	Orthochromatic Erythroblast	0
+NK	Polychromatic Erythroblast	0
+NK	Pre-ProB	0
+NK	Pre-cDC	0
+NK	Pre-pDC	0
+NK	Pre-pDC Cycling	1
+NK	Pro-B Cycling	0
+NK	Pro-B VDJ	0
+NK	Pro-Erythroblast	0
+NK	cDC2	0
+NK	pDC	0
+NK CD56high	Orthochromatic Erythroblast	0
+NK CD56high	Polychromatic Erythroblast	0
+NK CD56high	Pre-ProB	0
+NK CD56high	Pre-cDC	0
+NK CD56high	Pre-pDC	0
+NK CD56high	Pre-pDC Cycling	1
+NK CD56high	Pro-B Cycling	0
+NK CD56high	Pro-B VDJ	0
+NK CD56high	Pro-Erythroblast	0
+NK CD56high	cDC2	0
+NK CD56high	pDC	0
+Orthochromatic Erythroblast	Polychromatic Erythroblast	1
+Orthochromatic Erythroblast	Pre-ProB	0
+Orthochromatic Erythroblast	Pre-cDC	0
+Orthochromatic Erythroblast	Pre-pDC	0
+Orthochromatic Erythroblast	Pre-pDC Cycling	0
+Orthochromatic Erythroblast	Pro-B Cycling	0
+Orthochromatic Erythroblast	Pro-B VDJ	0
+Orthochromatic Erythroblast	Pro-Erythroblast	0
+Orthochromatic Erythroblast	cDC2	0
+Orthochromatic Erythroblast	pDC	0
+Polychromatic Erythroblast	Pre-ProB	0
+Polychromatic Erythroblast	Pre-cDC	0
+Polychromatic Erythroblast	Pre-pDC	0
+Polychromatic Erythroblast	Pre-pDC Cycling	0
+Polychromatic Erythroblast	Pro-B Cycling	0
+Polychromatic Erythroblast	Pro-B VDJ	0
+Polychromatic Erythroblast	Pro-Erythroblast	0
+Polychromatic Erythroblast	cDC2	0
+Polychromatic Erythroblast	pDC	0
+Pre-ProB	Pre-cDC	0
+Pre-ProB	Pre-pDC	0
+Pre-ProB	Pre-pDC Cycling	0
+Pre-ProB	Pro-B Cycling	0
+Pre-ProB	Pro-B VDJ	1
+Pre-ProB	Pro-Erythroblast	0
+Pre-ProB	cDC2	0
+Pre-ProB	pDC	1
+Pre-cDC	Pre-pDC	1
+Pre-cDC	Pre-pDC Cycling	1
+Pre-cDC	Pro-B Cycling	0
+Pre-cDC	Pro-B VDJ	0
+Pre-cDC	Pro-Erythroblast	0
+Pre-cDC	cDC2	1
+Pre-cDC	pDC	1
+Pre-pDC	Pre-pDC Cycling	1
+Pre-pDC	Pro-B Cycling	1
+Pre-pDC	Pro-B VDJ	0
+Pre-pDC	Pro-Erythroblast	0
+Pre-pDC	cDC2	1
+Pre-pDC	pDC	0.650510204
+Pre-pDC Cycling	Pro-B Cycling	1
+Pre-pDC Cycling	Pro-B VDJ	0.910714286
+Pre-pDC Cycling	Pro-Erythroblast	0
+Pre-pDC Cycling	cDC2	1
+Pre-pDC Cycling	pDC	1
+Pro-B Cycling	Pro-B VDJ	0
+Pro-B Cycling	Pro-Erythroblast	0
+Pro-B Cycling	cDC2	0
+Pro-B Cycling	pDC	1
+Pro-B VDJ	Pro-Erythroblast	0
+Pro-B VDJ	cDC2	0
+Pro-B VDJ	pDC	1
+Pro-Erythroblast	cDC2	0
+Pro-Erythroblast	pDC	0
+cDC2	pDC	1
