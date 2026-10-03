@@ -2,10 +2,11 @@
 
 ## Status
 
-Not implemented. lupin 0.3.0 removed the previous trajectory stack (`lineage`,
-`pseudotime`, `dyn-assoc`, `lineage-plot`); `dev/trajectory-salvage.md` in the
-repository records what it did and why it went. This document is the design of
-its replacement, `lupin trajectory`.
+Not implemented; phase 0 (the scanpy reference, §8) is done. lupin 0.3.0
+removed the previous trajectory stack (`lineage`, `pseudotime`, `dyn-assoc`,
+`lineage-plot`); `dev/trajectory-salvage.md` in the repository records what it
+did and why it went. This document is the design of its replacement,
+`lupin trajectory`.
 
 ---
 
@@ -30,12 +31,20 @@ data supports it**:
   connections the prior lacks are reported as candidates.
 - **Cells are ordered by diffusion pseudotime** within the prior's paths.
 
+The numerical core is not new: lupin **replicates scanpy's unsupervised
+routines** — `neighbors(method='gauss')`, `diffmap`, `dpt` and `paga` —
+faithfully, and adds only the supervised, interactive layer on top: the groups
+are the user's types, the root and the edges come from the prior, and the user
+edits the prior where the data disagrees. Where scanpy's routine breaks on an
+input, lupin stops with a clear message instead of a home-grown fix.
+
 ## 2. Command
 
 ```
 lupin trajectory -f run.senna.json -o out [--prior FILE [--prior-only]] [--root TYPE]...
                  [--tui] [--label-cl FILE] [--obo FILE]
-                 [--knn 15] [--n-dcs 15] [--min-cells 20] [--check-only]
+                 [--knn 15] [--n-dcs 15] [--min-cells 20] [--min-connectivity X]
+                 [--graphics auto|kitty|sixel|iterm2|blocks] [--check-only]
 ```
 
 - **Labels** are the given round's `annotate.argmax`, so curation in later
@@ -93,21 +102,35 @@ their sources (`cl`, `cl-inherited`, `user`, `project`, `run`).
 The connectivity check does not depend on the root.
 
 - **One kNN graph** on the run's geometry table, prepared as annotation's
-  Leiden step does (log-simplex exponentiated; cosine for an embedding,
-  z-scored otherwise). It keeps each cell's own neighbour list and distances
-  (`k` neighbours counting the cell itself, as scanpy's `n_neighbors` does),
-  and its edge weights are the Gaussian kernel of §5. Both §4 and §5 use it.
-- **Connectivity of types a, b**: the kernel weight between their cells as a
-  fraction of the smaller type's total weight, so the value does not scale
-  with the number of types on the panel.
-- **Null**: random relabelling of cells with type sizes fixed. Its mean and
-  variance for a pair are computed in closed form from the graph, giving a
-  z-score and p-value without sampling; Benjamini–Hochberg over all pairs.
-- **Verdicts**: a direct prior edge is `supported` when q < α and the fraction
-  is at least `f_min`, `weak` when only one holds, `unsupported` otherwise; a
-  pair outside the prior meeting both is a `candidate`. The defaults for α and
-  `f_min` are set in phase 0 from the bone-marrow data and reported with every
-  run.
+  Leiden step does (log-simplex exponentiated; rows L2-normalised for an
+  embedding, so Euclidean distance is `√(2 − 2 cos)`: it ranks neighbours as
+  cosine does and is the distance scanpy's kernel uses; z-scored otherwise).
+  Each cell's neighbour list and distances come from legume-numeric's
+  `knn_rows_l2` (exact) or `knn_rows_ivf` (IVF), switched at
+  `knn_graph::ALL_PAIRS_THRESHOLD` (65,536 cells). Both leave the cell itself
+  out, so lupin asks for `k − 1` and counts the cell in, as scanpy's
+  `n_neighbors` does; the cell is not its own neighbour, and the kernel has no
+  diagonal. Exact duplicate cells make scanpy drop a true neighbour for a
+  self-loop, so lupin stops on them with a clear message (how many, and
+  which types), as §1 says. Edge weights are the Gaussian kernel of §5. The graph is built once over all cells, as scanpy
+  builds it on a whole dataset, and both §4 and §5 use it.
+- **Connectivity of types a, b**: scanpy's PAGA (`tl.paga`, connectivity
+  model v1.2), which counts the kNN edges between groups against a random
+  null. It counts each cell's own directed list of `k − 1` neighbours, so an
+  edge both cells list counts twice and a group's edge total is the sum of
+  its cells' list lengths. Every cell is in a group, as scanpy requires: the
+  node types, and the unassigned and small-type cells as groups of their own,
+  which take part in the statistic but get no verdict.
+- **Verdicts**: a direct prior edge is `supported` when its connectivity
+  reaches a threshold and `unsupported` below it; a pair outside the prior
+  that reaches it is a `candidate`. PAGA's spanning tree is not used: with
+  many pairs saturated at 1 its tied edges follow the order of the type names.
+- **What it can and cannot show**: on the bench data a good share of the
+  type pairs saturate at 1 and most are above 0, so connectivity tells
+  touching types from separated ones but cannot reject a false edge between
+  two types that touch. The threshold is an option, `--min-connectivity`,
+  whose default phase 1 sets (§10); order agreement (§5) carries the rest,
+  and the report says which check flagged an edge.
 
 ## 5. Ordering: diffusion pseudotime
 
@@ -116,29 +139,50 @@ Diffusion pseudotime (Haghverdi et al. 2016), reproducing scanpy 1.10's
 compared directly:
 
 - **Kernel**: `W(x, y) = sqrt(2σ_x σ_y / (σ_x² + σ_y²)) · exp(−d² / (σ_x² + σ_y²))`
-  with σ_x² the median squared distance to x's neighbours, symmetrised;
-  density-normalised `K = W / q qᵀ`; then `S = D^-1/2 K D^-1/2`. (destiny uses
-  a k-th-neighbour bandwidth, so a small gap to destiny is expected.)
-- **Diffusion components**: the `n_dcs` largest eigenpairs of the sparse,
-  symmetric `S` by a Lanczos-type solver, as scanpy's `eigsh`; `S` need not be
-  positive semi-definite, so a singular-value solver, which loses an
-  eigenvalue's sign, is not used. The eigenvectors are those of `S`, not
-  rescaled, as in scanpy.
+  with σ_x² the median squared distance to x's `k − 1` neighbours, symmetrised;
+  density-normalised `K = W / q qᵀ`; then `S = D^-1/2 K D^-1/2`.
+- **Diffusion components**: the `n_dcs` eigenpairs of the sparse, symmetric
+  `S` largest in magnitude, as scanpy's `eigsh(which='LM')` finds them, here
+  in float64 by legume-numeric's randomised SVD (`rsvd_with`, from its next
+  release; 20 power iterations, 10 oversample columns), each eigenvalue's
+  sign taken from its Rayleigh quotient `uᵀSu`, then sorted by signed value,
+  largest first, as scanpy orders them. At the default 5 iterations the
+  clustered leading eigenvalues come out wrong enough that pseudotime agrees
+  with scanpy's at only ρ 0.86; at 20 and 10 the bench matches `eigsh`
+  (eigenvalues to 5e-5, pseudotime ρ 1.000). Every pair is checked by its
+  residual `‖Su − λu‖`; if any is too large (a flatter spectrum, or a ± pair
+  of equal size that the SVD cannot separate), lupin doubles the iterations
+  up to a cap and otherwise stops, saying so. The eigenvectors are those of
+  `S`, not rescaled, and the eigenvalues are rounded to float32 before the
+  0.9994 test below, as in scanpy; one within 1e-4 of 0.9994, where the
+  solver's error could put it on the other side, is reported.
 - **Distance**, as scanpy computes it: over all components, eigenvalues below
   0.9994 contribute `(λ / (1 − λ))² (ψ(x) − ψ(y))²` and those at or above it
   `(ψ(x) − ψ(y))²` unweighted; the square root of the sum. Cells in another
   connected piece of the cell graph are at infinite distance.
-- **Where it runs**: per connected component of the prior, on that
-  component's typed and unassigned cells, then per connected piece of that
-  cell subgraph — a prior component whose types never touch in the data is
-  several pieces, and each gets its own pseudotime and a warning naming the
-  break. A thin bridge (eigenvalue near 1) is reported, not silently weighted.
-- **Root cell**: among the root type's cells, the one with the largest mean
-  diffusion distance to the cells of the component's terminal types —
-  farthest from every fate, and independent of eigenvector signs. With several
-  sources in a component, each has a root cell and a cell's pseudotime is its
-  distance to the nearest one. Pseudotime is divided by its largest finite
-  value, as in scanpy.
+- **Where it runs**: one diffusion map over the whole §4 graph, as scanpy runs
+  it. A cell of a prior type belongs to that type's prior component; an
+  unassigned cell belongs to the component whose root is nearest. A type with
+  no prior edge is in no component: its cells get no pseudotime. Each
+  component is measured from its own roots and divided by its own largest
+  finite distance, so every component spans 0 to 1. A cell no root can reach,
+  in another connected component of the graph, is at infinite distance, as in
+  scanpy, and is reported. A region joined by only a few edges gets an extra
+  eigenvalue at or above 0.9994, unweighted (above); lupin names such regions
+  in the report.
+- **Degenerate geometry**: a cell whose neighbours mostly coincide with it has
+  σ_x = 0, which turns scanpy's kernel NaN and fails its eigensolve (senna VAE
+  and topic latents with saturated cells did this on the bench data). lupin
+  checks for σ_x = 0 before the eigensolve and stops, naming how many cells
+  are affected and suggesting another embedding.
+- **Root cell**: the root type's medoid — among its cells in the graph
+  component holding most of them, the one with the smallest mean diffusion
+  distance to the others — independent of eigenvector signs. On the bench
+  data the first draft's rule, the root-type cell farthest from every
+  terminal type, picked an outlier and ordered the types far worse
+  (Spearman ρ 0.21 against 0.56 for the medoid on the same 10-d geometry).
+  With several sources in a component, a cell's pseudotime is its distance
+  to the nearest root.
 - **Lineages**: each root-to-leaf path of the direct-edge graph; a cell's
   lineage weights are uniform over the paths through its type. Cells of types
   outside the prior get no pseudotime (NaN), counted in the log.
@@ -156,13 +200,67 @@ verdict. Mark type A, mark type B, then `>` for "A precedes B" or `-` for
 reason is asked for, as for other edits. Saving appends to the project layer's
 `precedence.tsv`; annotation rounds (`decisions.jsonl`) are not touched.
 
+**Figures and what was exported.**
+
+The order view (above) sits beside figure panels drawn from the run's
+trajectory outputs, the same set the bench summary shows:
+
+- **Diffusion map**: cells on two diffusion components (`,`/`.` change the
+  pair), coloured by pseudotime, the root ringed; picking a type or a prior
+  component greys out the rest.
+- **Order by type**: median pseudotime and middle half per type, beside the
+  stage the prior implies.
+- **Connectivity**: PAGA connectivity between the node types, ordered by
+  pseudotime, saturated pairs outlined, the prior's direct edges marked.
+- **Edges**: each direct prior edge with its connectivity, order agreement and
+  verdict, so an edit in the order view shows its effect after the next run.
+
+Images are drawn as senna view draws them, so both viewers behave alike:
+`ratatui-image` (same major version, crossterm) with `--graphics
+{auto,kitty,sixel,iterm2,blocks}`, querying the terminal on `auto` and falling
+back to half-blocks.
+
+**Export.** `p` on a panel writes it as a figure through legume-plot's
+`write_figure` (SVG, then PDF and optionally PNG), the path lupin's `plot`
+commands already use; width and dpi are chosen in the save dialog. An export
+is a set of files sharing one base name, handled as a unit: the default name
+`{out}.trajectory.{panel}` moves to `-2`, `-3` … while any file of the set
+exists, and a typed name with any existing file needs a second Enter.
+
+**What was exported.** Each export is listed in `./.lupin-view/saved.json`
+in the directory lupin runs from, with a thumbnail in `./.lupin-view/thumbs/`,
+in senna view's gallery format (`path`, `what`, `when`, `thumb`; newest first;
+an existing path replaces its entry; reloaded from disk before every change).
+The list is written to a temporary file and renamed into place, and a list
+that cannot be read is set aside as `saved.json.bad` and reported, never
+treated as empty, so an interrupted write cannot wipe the history.
+lupin adds what senna's record leaves out, so a figure can be traced back: the
+panel, the manifest it came from, the root, the diffusion pair, a hash of
+`{out}.trajectory_prior.tsv`, and each exported file's size and content hash.
+A strip in the TUI (`f`) shows the list with thumbnails; an entry can be
+renamed or moved, removed from the list, or removed with its files, and moving
+or removing an entry moves or removes its whole set. A failed log write never
+fails the export.
+
+**Refresh.** `R` re-reads the list and checks every entry against the files
+on disk: `ok`, `changed since export` (content hash differs) or `missing`.
+A file whose size and modification time match the record is taken as
+unchanged without hashing; otherwise it is hashed, so a touched file with the
+same bytes stays `ok`. Missing
+entries stay listed, marked, until removed, instead of disappearing silently;
+a lost thumbnail is redrawn from the set's SVG. Figures in the output
+directory that follow the `{out}.trajectory.{panel}` names but are not on the
+list are shown as `not listed`; Enter on one adds it. The same check runs
+when the TUI opens. (`e` stays the annotation export it is today; `p`, `R`,
+`f` and `,`/`.` are free in lupin's TUI.)
+
 ## 7. Outputs and the manifest
 
 | output | contents |
 |---|---|
 | `{out}.trajectory_prior.tsv` | the combined statements and the direct edges, each with its source — a complete prior on its own |
-| `{out}.trajectory_edges.parquet` | type pairs: weight, fraction, z, p, q, in-prior, verdict, order agreement |
-| `{out}.cell_pseudotime.parquet` | per cell: `pseudotime`, `type`, `component`, `piece`, one weight column per lineage |
+| `{out}.trajectory_edges.parquet` | type pairs: PAGA connectivity, in-prior, verdict, order agreement |
+| `{out}.cell_pseudotime.parquet` | per cell: `pseudotime`, `type`, `component`, one weight column per lineage |
 | `{out}.diffusion.parquet` | cells × diffusion components |
 
 A `trajectory` section goes into the manifest annotation would write
@@ -186,31 +284,37 @@ from `defaults.colour_by` — pre-0.3.0 runs may still carry
 lupin's diffusion pseudotime must match established implementations before it
 is trusted.
 
-- **References**: scanpy 1.10 `tl.dpt` (primary) and R `destiny::DPT` (the
-  original authors'), run from scripts under `dev/trajectory-bench/` with their
-  own environments.
-- **Data**: 10x 10k bone-marrow mononuclear cells (`10k_BMMNC_5pv2`), with
-  existing senna topic / VAE / SVD runs, annotated with the BoneMarrowMap
-  marker panel. Haematopoiesis gives a known order.
-- **Like for like**: same cells, same transformed geometry, same `k`
-  (counting self), same number of diffusion components, same root cell.
-  scanpy runs on each component's cells with its kNN graph rebuilt on them;
-  lupin's subgraph keeps the full-data neighbours, so the comparison also
-  reports lupin with the graph rebuilt per component, to separate the two
-  effects.
-- **Metrics**: per-cell Spearman ρ between lupin and scanpy (target ≥ 0.98),
-  per-component correlation of the diffusion maps, per-type median-pseudotime
-  ranks, run time.
+- **Reference**: scanpy 1.10 (`dpt` and `paga`, exact neighbours), run
+  locally as a test-driven-development tool; only its reference fixtures and the
+  notes in the source repository's `dev/trajectory-bench/README.md` are
+  committed.
+- **Data**: a CD34+ bone-marrow sample with published cell-type labels
+  (haematopoiesis gives a known order), embedded by `senna svd`; the sample
+  itself, the bench outputs and the reference fixtures stay out of the
+  repository. Baseline: scanpy's pseudotime from the HSC medoid agrees well
+  with the expected stage order.
+- **Like for like**: same cells, same prepared geometry, same `k` (counting
+  self), same number of diffusion components, same root cell; no exact
+  duplicate cells.
+- **Metrics**: per-cell Spearman ρ between lupin's and scanpy's pseudotime on
+  the full bench data (target ≥ 0.98; defined while both searches are exact,
+  up to 65,536 cells — scanpy's default goes approximate from 8,192, so the
+  bench runs it exact), the diffusion subspaces compared by
+  principal angles (single components can rotate within a near-degenerate
+  pair, as λ₂ and λ₃ nearly do here), per-type median-pseudotime ranks, run
+  time.
 - **Biology**: HSC → MPP → committed progenitors → mature types recovered; a
   deliberately wrong prior (reversed root, a false edge) flagged as
   `unsupported` or by low order agreement.
-- **Golden test**: a ~500-cell subset with scanpy's pseudotime kept as a test
-  fixture, so CI checks the match without Python.
+- **Reference tests**: a stratified subset of the bench cells with its
+  prepared geometry, scanpy's pseudotime and scanpy's PAGA on it, kept as
+  local fixtures that the tests read at run time and skip when absent, so the
+  match can be checked without Python and no data enters the repository.
 
 Unit tests cover `develops_from` parsing, layer replacement and reversal,
 transitive reduction (including through dropped types), the cycle error,
-connectivity and its closed-form null on a synthetic two-branch set, and DPT
-on a synthetic Y shape and on a disconnected one.
+PAGA connectivity against the reference PAGA fixture, the degenerate-geometry
+error, and DPT on a synthetic Y shape and on a disconnected one.
 
 ## 9. Not in the first version
 
@@ -222,11 +326,12 @@ on a synthetic Y shape and on a disconnected one.
 
 ## 10. Phases
 
-0. Reference baseline: annotate the 10k BMMNC run, run scanpy (and destiny)
-   DPT through the bench harness, record the numbers, the golden fixture and
-   the default α and `f_min`.
+0. Reference baseline (done): scanpy DPT and PAGA on the bench sample, the
+   reference fixtures and the baseline, all kept locally.
 1. `develops_from` parsing, `precedence.tsv` along the search path, combining
-   and reduction, and `--check-only` with the connectivity check.
+   and reduction, and `--check-only` with the connectivity check; its
+   `--min-connectivity` default is set by planting false edges on the bench
+   data.
 2. Diffusion pseudotime, outputs, manifest section; validated against phase 0.
 3. TUI order view.
 4. `plot --colour-by pseudotime` and the edge overlay.
