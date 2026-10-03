@@ -223,7 +223,7 @@ to a cluster the evidence cannot split).
 ## Method write-ups
 
 `lupin docs` lists them; `lupin docs <topic>` prints one (compiled into the
-binary): `annotation`, `grouping`, `ontology-plan`.
+binary): `annotation`, `grouping`, `ontology-plan`, `trajectory-plan`.
 
 ## Related crates
 
