@@ -17,6 +17,8 @@ pub enum Topic {
     Grouping,
     /// Annotation on a gene-annotated Cell Ontology (partly implemented).
     OntologyPlan,
+    /// Supervised trajectory: an explicit prior, checked against the data (not implemented).
+    TrajectoryPlan,
 }
 
 /// Every write-up with its one-line blurb, so the listing can never advertise
@@ -37,6 +39,11 @@ const DOCS: &[(Topic, &str, &str)] = &[
         "PLAN    (partly implemented) annotation on a gene-annotated Cell Ontology",
         include_str!("../docs/annotation-ontology-plan.md"),
     ),
+    (
+        Topic::TrajectoryPlan,
+        "PLAN    (not implemented) supervised trajectory: prior, check, diffusion pseudotime",
+        include_str!("../docs/trajectory-plan.md"),
+    ),
 ];
 
 #[derive(Args, Debug)]
@@ -48,15 +55,21 @@ pub struct DocsArgs {
 pub fn run_docs(args: &DocsArgs) -> Result<()> {
     let Some(want) = args.topic else {
         println!("lupin method write-ups (`lupin docs <TOPIC>` to read one):\n");
-        for (topic, blurb, _) in DOCS {
-            // The name clap accepts, e.g. `ontology-plan`, not the Debug form.
-            let slug = topic
-                .to_possible_value()
-                .as_ref()
-                .map(PossibleValue::get_name)
-                .unwrap_or_default()
-                .to_string();
-            println!("  {slug:<14} {blurb}");
+        // The name clap accepts, e.g. `ontology-plan`, not the Debug form.
+        let slugs: Vec<String> = DOCS
+            .iter()
+            .map(|(topic, _, _)| {
+                topic
+                    .to_possible_value()
+                    .as_ref()
+                    .map(PossibleValue::get_name)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        let width = slugs.iter().map(String::len).max().unwrap_or(0);
+        for (slug, (_, blurb, _)) in slugs.iter().zip(DOCS) {
+            println!("  {slug:<width$} {blurb}");
         }
         return Ok(());
     };
