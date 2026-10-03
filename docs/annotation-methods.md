@@ -6,7 +6,7 @@ measurement was made on a marker panel that includes types absent from the tissu
 control of §7); results are stated qualitatively.
 
 Code: `type_annotation::{term_ora, panel_null}` in the `legume-graph-embedding`
-crate, driven by `lupin annotate` and `lupin lineage --markers`.
+crate, driven by `lupin annotate`.
 
 ---
 
@@ -233,8 +233,3 @@ the fraction of cells labelled. A low resolution (around 0.5) did best.
 | `{out}.panel_null.tsv` | per type: `n_live`, `occupancy`, `cost`, `null_cost`, `p` |
 | `{out}.null_calibration.tsv` | permutation-null diagnostics (λ, KS, analytic agreement) |
 | `{out}.cluster_term_{p,q,softq}.parquet` | group × type test matrices |
-
-`lupin lineage --markers` runs the same core over the trajectory's MST nodes instead of Leiden
-communities, writing `{out}.lineage_annot.*` and `{out}.trajectory_annotation.parquet` (node →
-role → cell type → confidence). `--root-type` selects the trajectory root as the
-highest-confidence node of a named type, so the entire trajectory hangs off that number.

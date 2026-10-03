@@ -5,16 +5,17 @@ edition = "2021"
 rust-version = "1.91"
 license = "MIT"
 authors = ["Yongjin Park <ypp@stat.ubc.ca> <yongjin.park@ubc.ca>"]
-description = "Label, Unfold, Place, Interpret, Narrate — annotation, lineage, pseudotime, association, description, and plots"
+description = "Label, Unfold, Place, Interpret, Narrate — text graphs, cell-type annotation, review, plotting and description"
 repository = "https://github.com/causalpathlab/lupin-rs"
 homepage = "https://github.com/causalpathlab/lupin-rs"
 readme = "README.md"
-keywords = ["genomics", "single-cell", "annotation", "lineage"]
+keywords = ["genomics", "single-cell", "annotation", "cell-type"]
 categories = ["science", "command-line-utilities"]
 exclude = [
     "**/.claude/**",
     "**/.DS_Store",
     "lupin-README.md.bak",
+    "dev/**",
 ]
 
 [[bin]]
@@ -52,16 +53,13 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tiny-skia = "0.12"
 nalgebra = "0.34"
-rand = "0.10.1"
-rand_distr = "0.6"
-statrs = { version = "0.18", default-features = false }
 
 # Published legume stack
 data-beans = { version = "0.7.5", features = ["aux", "alg"] }
 enrichment = { version = "0.4.1", package = "legume-enrichment" }
 genomic-data = { version = "0.4.1", package = "legume-genomic-types" }
 graph-embedding-util = { version = "0.8.4", package = "legume-graph-embedding" }
-legume-numeric = { version = "0.8.12", features = ["matrix", "param", "candle", "mcmc"] }
+legume-numeric = { version = "0.8.12", features = ["matrix", "candle"] }
 legume-plot = { version = "0.3.2" }
 
 # gene-text encoder stack

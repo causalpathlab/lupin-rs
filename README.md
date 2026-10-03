@@ -1,9 +1,9 @@
 # lupin-rs
 
 **L**abel, **U**nfold, **P**lace, **I**nterpret, **N**arrate — text graphs, cell-type
-annotation, lineage, pseudotime, association, plots, and short descriptions.
+annotation, plots, and short descriptions.
 
-Everything ships as one crate: `lupin-rs` (binary `lupin`). Annotation, lineage,
+Everything ships as one crate: `lupin-rs` (binary `lupin`). Annotation
 and gene-text logic live as internal modules — not separate crates.io packages.
 
 Lupin reads the runs senna writes (`run.senna.json` and the tables it lists) but
@@ -11,8 +11,7 @@ does not link against senna. `-f/--from` takes the manifest file or its output
 prefix. `lupin annotate` leaves that manifest untouched and writes a new one,
 `{out}.senna.json`: a copy of the run with its paths rebased onto the new
 location, every field lupin does not use preserved, and an `annotate` section
-added, so viewers open the annotated run directly. `lineage` and `pseudotime`
-record their outputs back in the manifest they read.
+added, so viewers open the annotated run directly.
 
 `lupin annotate` also reads a pinto run (`run.pinto.json`, or its prefix): its
 count files, the final level's `cluster` column in the propensity table, and,
@@ -38,8 +37,6 @@ Requires Rust 1.91+. Optional: `--features cuda` / `--features metal` / `--featu
 lupin text-qc --uniprot-tsv human.tsv --obo go-basic.obo -o run
 lupin word-graph --uniprot-tsv human.tsv --obo go-basic.obo -o run
 lupin annotate -f run.senna.json -m markers.tsv -o out   # writes out.senna.json
-lupin lineage -f out/gem -o out/lin
-lupin pseudotime -f run.senna.json -o out
 lupin plot --from run.senna.json -o out/plot
 lupin describe -f run.senna.json --text-prefix run -o out
 ```
@@ -226,7 +223,7 @@ to a cluster the evidence cannot split).
 ## Method write-ups
 
 `lupin docs` lists them; `lupin docs <topic>` prints one (compiled into the
-binary): `annotation`, `grouping`, `ontology-plan`, `rooting-plan`.
+binary): `annotation`, `grouping`, `ontology-plan`.
 
 ## Related crates
 
