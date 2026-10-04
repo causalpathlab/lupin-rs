@@ -366,3 +366,15 @@ fn the_legend_fits_the_figure_or_stays_out_of_a_thumbnail() {
     assert!(large.contains("+6 more"));
     assert_eq!(rows(&legend_svg(&entries[..3], 6.0, 2000)), 3);
 }
+
+#[test]
+fn a_label_near_the_edge_stays_inside_the_figure() {
+    let ext = Extent { w: 400, h: 300 };
+    let name = "CT1_with_a_long_name";
+    let half = 0.275 * 12.0 * name.len() as f32;
+    let (x, y) = keep_inside((0.0, 0.0), 12.0, name, ext);
+    assert!(x - half >= 0.0 && y >= 12.0, "{x} {y}");
+    let (x, _) = keep_inside((400.0, 150.0), 12.0, name, ext);
+    assert!(x + half <= 400.0, "{x}");
+    assert_eq!(keep_inside((200.0, 150.0), 12.0, name, ext), (200.0, 150.0));
+}

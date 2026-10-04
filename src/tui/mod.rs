@@ -190,6 +190,11 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         app.open(&latest);
     }
     if start_in_order {
+        // A run that is already annotated shows its round in the cluster
+        // panes; the trajectory then reads the same labels.
+        if loaded.manifest.annotate.argmax.is_some() {
+            app.open(&loaded.file);
+        }
         app.focus = app::Focus::Tree;
         app.toggle_order(true);
     }

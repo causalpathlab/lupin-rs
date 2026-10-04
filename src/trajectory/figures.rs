@@ -598,7 +598,8 @@ impl TrajectoryData {
             };
             for (t, &at) in medians {
                 if t.as_ref() != UNASSIGNED_LABEL {
-                    text += &svg_text(to_pixel(at, &bounds, ext), font, Some("middle"), true, t);
+                    let xy = keep_inside(to_pixel(at, &bounds, ext), font, t, ext);
+                    text += &svg_text(xy, font, Some("middle"), true, t);
                 }
             }
         }
@@ -1032,6 +1033,19 @@ fn codes(v: &[i32]) -> Vec<Option<i32>> {
 /// `text` at `xy` in [`INK`], centred vertically and anchored at `anchor`
 /// (the start when `None`), with a white halo as legume-plot draws a label
 /// when `halo`.
+/// `xy` moved so a centred label of `text` stays inside the figure, its
+/// width taken as about 0.55 font sizes per character.
+fn keep_inside(xy: (f32, f32), font: f32, text: &str, ext: Extent) -> (f32, f32) {
+    let half = 0.275 * font * text.chars().count() as f32 + 2.0;
+    let (w, h) = (ext.w as f32, ext.h as f32);
+    let x = if 2.0 * half >= w {
+        w / 2.0
+    } else {
+        xy.0.clamp(half, w - half)
+    };
+    (x, xy.1.clamp(font, (h - font).max(font)))
+}
+
 fn svg_text(xy: (f32, f32), font: f32, anchor: Option<&str>, halo: bool, text: &str) -> String {
     let (x, y) = xy;
     let (r, g, b) = INK;
