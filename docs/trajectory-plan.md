@@ -2,11 +2,14 @@
 
 ## Status
 
-Not implemented; phase 0 (the scanpy reference, §8) is done. lupin 0.3.0
-removed the previous trajectory stack (`lineage`, `pseudotime`, `dyn-assoc`,
-`lineage-plot`); `dev/trajectory-salvage.md` in the repository records what it
-did and why it went. This document is the design of its replacement,
-`lupin trajectory`.
+Partly implemented. `lupin trajectory` builds the prior (§3), checks it
+against the kNN graph (§4), orders cells by diffusion pseudotime from the
+prior's roots (§5) and writes its outputs and a `trajectory` manifest section
+(§7). The TUI order view and figures (§6) and `plot --colour-by pseudotime`
+(§7) remain plans. lupin 0.3.0 removed the previous trajectory stack
+(`lineage`, `pseudotime`, `dyn-assoc`, `lineage-plot`);
+`dev/trajectory-salvage.md` in the repository records what it did and why it
+went.
 
 ---
 
@@ -42,22 +45,30 @@ input, lupin stops with a clear message instead of a home-grown fix.
 
 ```
 lupin trajectory -f run.senna.json -o out [--prior FILE [--prior-only]] [--root TYPE]...
-                 [--tui] [--label-cl FILE] [--obo FILE]
-                 [--knn 15] [--n-dcs 15] [--min-cells 20] [--min-connectivity X]
-                 [--graphics auto|kitty|sixel|iterm2|blocks] [--check-only]
+                 [--labels FILE] [--label-cl FILE] [--obo FILE]
+                 [--knn 15] [--n-dcs 15] [--min-cells 20] [--min-connectivity 0.1]
+                 [--check-only]
+                 [--tui] [--graphics auto|kitty|sixel|iterm2|blocks]   (planned)
 ```
 
 - **Labels** are the given round's `annotate.argmax`, so curation in later
-  rounds (merges, relabels) is what the trajectory sees.
+  rounds (merges, relabels) is what the trajectory sees; `--labels` names
+  another `cell<TAB>type` file. A cell missing from the labels counts as
+  unassigned (reported); labels matching no cell at all are an error.
 - **Small types**: types with fewer than `--min-cells` cells are not nodes;
   their cells are treated like unassigned cells (below), and prior edges
   through them are joined across (§3).
 - **Unassigned cells** stay in the cell graph — they are often the cells
   between two types — but carry no type: they are not tested in §4 and get
   pseudotime only when connected to a component's typed cells.
-- `--root TYPE` names a source of the prior; naming a type that has an
-  incoming edge is an error.
-- `--prior-only` uses the `--prior` file alone: no ontology, no other layers.
+- `--root TYPE` (repeatable) names a source of the prior; a type with an
+  incoming statement cannot be one. A root gets a `cli` statement to every
+  node it cannot otherwise reach, so a run with no other prior still orders
+  every type from it (the check then says which of those edges the data
+  supports).
+- `--prior FILE` is a precedence file for this run, or a
+  `{out}.trajectory_prior.tsv` from an earlier run to replay; `--prior-only`
+  uses it alone: no ontology, no user or project layer.
 - `--check-only` stops after the connectivity check (§4) and writes no
   pseudotime.
 
@@ -122,15 +133,19 @@ The connectivity check does not depend on the root.
   node types, and the unassigned and small-type cells as groups of their own,
   which take part in the statistic but get no verdict.
 - **Verdicts**: a direct prior edge is `supported` when its connectivity
-  reaches a threshold and `unsupported` below it; a pair outside the prior
-  that reaches it is a `candidate`. PAGA's spanning tree is not used: with
-  many pairs saturated at 1 its tied edges follow the order of the type names.
-- **What it can and cannot show**: on the bench data a good share of the
-  type pairs saturate at 1 and most are above 0, so connectivity tells
-  touching types from separated ones but cannot reject a false edge between
-  two types that touch. The threshold is an option, `--min-connectivity`,
-  whose default phase 1 sets (§10); order agreement (§5) carries the rest,
-  and the report says which check flagged an edge.
+  reaches `--min-connectivity` and `unsupported` below it; a pair of nodes
+  joined by no path of the prior whose connectivity reaches it is a
+  `candidate`. PAGA's spanning tree is not used: with many pairs saturated at
+  1 its tied edges follow the order of the type names.
+- **What it can and cannot show**: on the bench data every edge of the known
+  haematopoietic hierarchy sits above the default threshold and every planted
+  edge between separated branches below it, which is how the default was
+  set; but a planted edge between two types that touch (siblings under one
+  progenitor, a stem cell and a small type beside it) saturates like a true
+  one. Connectivity tells touching types from separated ones and no more;
+  order agreement (§5) carries the rest, and the report says which check
+  flagged an edge. Candidates are many for the same reason, and the log
+  shows only the strongest.
 
 ## 5. Ordering: diffusion pseudotime
 
@@ -183,9 +198,11 @@ compared directly:
   (Spearman ρ 0.21 against 0.56 for the medoid on the same 10-d geometry).
   With several sources in a component, a cell's pseudotime is its distance
   to the nearest root.
-- **Lineages**: each root-to-leaf path of the direct-edge graph; a cell's
-  lineage weights are uniform over the paths through its type. Cells of types
-  outside the prior get no pseudotime (NaN), counted in the log.
+- **Lineages**: each root-to-leaf path of the direct-edge graph, listed in
+  `{out}.trajectory_lineages.tsv`; a cell's lineage weights (`L0`, `L1`, …)
+  are uniform over the paths through its type, zero for a cell of no node
+  type. Cells of types outside the prior, and cells no root reaches, get no
+  pseudotime (NaN), counted in the log.
 - **Order agreement**: for a prior edge A → B, the fraction of B's cells
   beyond A's median pseudotime. Unlike §4 this depends on the root, and is
   reported as such.
@@ -262,14 +279,15 @@ when the TUI opens. (`e` stays the annotation export it is today; `p`, `R`,
 | `{out}.trajectory_edges.parquet` | type pairs: PAGA connectivity, in-prior, verdict, order agreement |
 | `{out}.cell_pseudotime.parquet` | per cell: `pseudotime`, `type`, `component`, one weight column per lineage |
 | `{out}.diffusion.parquet` | cells × diffusion components |
+| `{out}.trajectory_lineages.tsv` | each lineage's component and root-to-leaf path |
 
 A `trajectory` section goes into the manifest annotation would write
 (`{out}.senna.json`, or `{out}.lupin.json` for a pinto or lupin input), asked
-about before any existing file is replaced: the outputs above, the settings,
-and each `precedence.tsv` read with its layer and a content hash. Because
-`precedence.tsv` files only grow, a rerun that should reproduce this prior
-reads `{out}.trajectory_prior.tsv` itself (`--prior … --prior-only`), not the
-recorded paths.
+about before any existing file is replaced: the outputs above and the
+settings (`knn`, `n_dcs`, `min_cells`, `min_connectivity`, `roots`, `prior`,
+`prior_only`). Because `precedence.tsv` files only grow, a rerun that should
+reproduce this prior reads `{out}.trajectory_prior.tsv` itself
+(`--prior … --prior-only`), which holds every statement that was used.
 
 `lupin plot --colour-by pseudotime` colours cells from `trajectory.pseudotime`
 through a continuous-colour path (the categorical one cannot), with an
@@ -328,11 +346,12 @@ error, and DPT on a synthetic Y shape and on a disconnected one.
 
 0. Reference baseline (done): scanpy DPT and PAGA on the bench sample, the
    reference fixtures and the baseline, all kept locally.
-1. `develops_from` parsing, `precedence.tsv` along the search path, combining
-   and reduction, and `--check-only` with the connectivity check; its
-   `--min-connectivity` default is set by planting false edges on the bench
-   data.
-2. Diffusion pseudotime, outputs, manifest section; validated against phase 0.
+1. (done) `develops_from` parsing, `precedence.tsv` along the search path,
+   combining and reduction, and `--check-only` with the connectivity check;
+   its `--min-connectivity` default was set by planting false edges on the
+   bench data.
+2. (done) Diffusion pseudotime, lineages, outputs, manifest section; validated
+   against phase 0.
 3. TUI order view.
 4. `plot --colour-by pseudotime` and the edge overlay.
 5. Later: association.
