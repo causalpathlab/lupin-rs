@@ -115,17 +115,17 @@ impl Style {
     }
 }
 
-/// How far `+` / `-` zoom a scatter, how far in it can go, and how far an
-/// arrow pans, as a share of the part on screen.
-const ZOOM_STEP: f32 = 1.4;
-const MAX_ZOOM: f32 = 64.0;
+/// How far in `+` can zoom a scatter, in steps of ×√2 (level 2 is ×2, 12
+/// is ×64), and how far an arrow pans, as a share of the part on screen.
+const MAX_ZOOM_LEVEL: u8 = 12;
 const PAN_STEP: f32 = 0.2;
 
-/// The part of a scatter on screen: the whole extent zoomed `zoom` times
+/// The part of a scatter on screen: the whole extent zoomed `level` steps
 /// about the centre `(cx, cy)`, both in shares of the whole extent (y up).
+/// The level is a count, so zooming in and back out lands on whole exactly.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct View {
-    pub(crate) zoom: f32,
+    pub(crate) level: u8,
     pub(crate) cx: f32,
     pub(crate) cy: f32,
 }
@@ -133,7 +133,7 @@ pub(crate) struct View {
 impl Default for View {
     fn default() -> Self {
         Self {
-            zoom: 1.0,
+            level: 0,
             cx: 0.5,
             cy: 0.5,
         }
@@ -142,19 +142,27 @@ impl Default for View {
 
 impl View {
     pub(crate) fn is_whole(&self) -> bool {
-        self.zoom <= 1.0
+        self.level == 0
+    }
+
+    /// How many times the whole extent is magnified.
+    pub(crate) fn factor(&self) -> f32 {
+        2f32.powf(f32::from(self.level) / 2.0)
     }
 
     /// Zoom in (`inward`) or out by one step about the centre.
     pub(crate) fn zoom(&mut self, inward: bool) {
-        let f = if inward { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
-        self.zoom = (self.zoom * f).clamp(1.0, MAX_ZOOM);
+        self.level = if inward {
+            (self.level + 1).min(MAX_ZOOM_LEVEL)
+        } else {
+            self.level.saturating_sub(1)
+        };
         self.clamp();
     }
 
     /// Move the part on screen by `(dx, dy)` steps (right and up positive).
     pub(crate) fn pan(&mut self, dx: f32, dy: f32) {
-        let span = 1.0 / self.zoom;
+        let span = 1.0 / self.factor();
         self.cx += dx * PAN_STEP * span;
         self.cy += dy * PAN_STEP * span;
         self.clamp();
@@ -162,14 +170,14 @@ impl View {
 
     /// Keep the part on screen inside the whole extent.
     fn clamp(&mut self) {
-        let half = 0.5 / self.zoom;
+        let half = 0.5 / self.factor();
         self.cx = self.cx.clamp(half, 1.0 - half);
         self.cy = self.cy.clamp(half, 1.0 - half);
     }
 
     /// The part of `whole` on screen.
     pub(crate) fn of(&self, whole: &DataBounds) -> DataBounds {
-        let half = 0.5 / self.zoom;
+        let half = 0.5 / self.factor();
         let (w, h) = (whole.xmax - whole.xmin, whole.ymax - whole.ymin);
         DataBounds {
             xmin: whole.xmin + (self.cx - half) * w,
@@ -496,7 +504,7 @@ impl TrajectoryData {
             PathBuf::from(format!("{b}.pdf")),
         ];
         let zoomed = if panel.is_scatter() && !view.is_whole() {
-            format!(" · zoomed ×{:.1}", view.zoom)
+            format!(" · zoomed ×{:.1}", view.factor())
         } else {
             String::new()
         };
@@ -557,9 +565,12 @@ impl TrajectoryData {
             0.85,
             PointShape::Circle,
         )?)];
-        let all = self.medians(panel, x, y, &finite);
-        if arrows {
-            layers.extend(self.arrow_layers(&all, &bounds, ext, radius)?);
+        // The medians over all cells anchor the arrows, and the labels of
+        // the whole scatter; only made when one of them is drawn.
+        let whole_labels = style.labels.is_some() && view.is_whole();
+        let all = (arrows || whole_labels).then(|| self.medians(panel, x, y, &finite));
+        if let (true, Some(all)) = (arrows, &all) {
+            layers.extend(self.arrow_layers(all, &bounds, ext, radius)?);
         }
         let mut svg = emit_svg(
             &layers,
@@ -574,15 +585,16 @@ impl TrajectoryData {
         // Text over the layers, as legume-plot draws its labels. Spliced in:
         // legume-plot's labels come with an image per layer.
         let base_font = (w.min(h) as f32 / 48.0).max(6.0);
-        let mut text = legend_svg(legend, base_font);
+        let mut text = legend_svg(legend, base_font, h);
         if let Some(k) = style.labels {
             let font = base_font * TEXT_SCALES[k];
             let on_screen;
-            let medians = if view.is_whole() {
-                &*all
-            } else {
-                on_screen = self.type_medians(x, y, &shown);
-                &on_screen
+            let medians = match &all {
+                Some(all) if view.is_whole() => &**all,
+                _ => {
+                    on_screen = self.type_medians(x, y, &shown);
+                    &on_screen
+                }
             };
             for (t, &at) in medians {
                 if t.as_ref() != UNASSIGNED_LABEL {
@@ -621,15 +633,22 @@ impl TrajectoryData {
     }
 
     /// The type medians over all of `cells` on the scatter `panel`, kept for
-    /// the next figure of it.
+    /// the next figure of it. They are made outside the lock, so figures
+    /// drawn in parallel do not wait on each other.
     fn medians(&self, panel: Panel, x: &[f32], y: &[f32], cells: &[usize]) -> Arc<Medians> {
-        let mut kept = self.medians.lock().expect("not poisoned");
-        if let Some((_, m)) = kept.iter().find(|(p, _)| *p == panel) {
-            return m.clone();
+        let kept = |m: &Vec<(Panel, Arc<Medians>)>| {
+            m.iter().find(|(p, _)| *p == panel).map(|(_, m)| m.clone())
+        };
+        if let Some(m) = kept(&self.medians.lock().expect("not poisoned")) {
+            return m;
         }
-        let m = Arc::new(self.type_medians(x, y, cells));
-        kept.push((panel, m.clone()));
-        m
+        let made = Arc::new(self.type_medians(x, y, cells));
+        let mut all = self.medians.lock().expect("not poisoned");
+        if let Some(m) = kept(&all) {
+            return m;
+        }
+        all.push((panel, made.clone()));
+        made
     }
 
     /// The prior's direct edges as arrows between the type `medians`:
@@ -950,20 +969,59 @@ fn categorical<K: Ord + Copy>(keys: &[Option<K>], name: impl Fn(K) -> String) ->
     let mut used: Vec<K> = keys.iter().flatten().copied().collect();
     used.sort_unstable();
     used.dedup();
-    let pal = palette::resolve(&Palette::Auto, used.len());
+    let colour = distinct_colours(used.len());
     let colours = keys
         .iter()
         .map(|k| {
             k.and_then(|k| used.binary_search(&k).ok())
-                .map(|j| palette::color(&pal, j))
+                .map(|j| colour[j])
         })
         .collect();
     let legend = used
         .iter()
-        .enumerate()
-        .map(|(j, &k)| (name(k), palette::color(&pal, j)))
+        .zip(&colour)
+        .map(|(&k, &c)| (name(k), c))
         .collect();
     (colours, legend)
+}
+
+/// `n` different colours: legume-plot's palette for `n` while it has that
+/// many, then hues a golden angle apart in two lightnesses, so no two
+/// groups share a colour however many there are.
+fn distinct_colours(n: usize) -> Vec<Rgb> {
+    let pal = palette::resolve(&Palette::Auto, n);
+    // The palette cycles; its own colours are those before the first repeat.
+    let own = (1..n)
+        .find(|&j| palette::color(&pal, j) == palette::color(&pal, 0))
+        .unwrap_or(n);
+    (0..n)
+        .map(|j| {
+            if j < own {
+                return palette::color(&pal, j);
+            }
+            let k = j - own;
+            let hue = (k as f32 * 137.508) % 360.0;
+            let light = if k % 2 == 0 { 0.42 } else { 0.62 };
+            hsl(hue, 0.65, light)
+        })
+        .collect()
+}
+
+/// An HSL colour (hue in degrees, saturation and lightness in 0..=1).
+fn hsl(h: f32, s: f32, l: f32) -> Rgb {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let byte = |v: f32| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (byte(r), byte(g), byte(b))
 }
 
 /// Lineage or component codes as keys, -1 (none) as `None`.
@@ -993,12 +1051,23 @@ fn svg_text(xy: (f32, f32), font: f32, anchor: Option<&str>, halo: bool, text: &
     )
 }
 
-/// A categorical colouring's legend in the top-left corner: a swatch and a
-/// name per entry, at most [`LEGEND_MAX`] of them.
-fn legend_svg(entries: &[(String, Rgb)], font: f32) -> String {
+/// A categorical colouring's legend in the top-left corner of a figure
+/// `height` pixels high: a swatch and a name per entry, at most
+/// [`LEGEND_MAX`] of them and no more than fill half the figure.
+fn legend_svg(entries: &[(String, Rgb)], font: f32, height: u32) -> String {
     let mut s = String::new();
     let row = font * 1.4;
-    let shown = entries.len().min(LEGEND_MAX);
+    // At most half the figure's height, counting the "+k more" line; none
+    // in a figure too small for two rows (a grid thumbnail).
+    let fits = ((height as f32 * 0.5 - font) / row).floor().max(0.0) as usize;
+    if fits < 2 {
+        return s;
+    }
+    let shown = if entries.len() <= fits.min(LEGEND_MAX) {
+        entries.len()
+    } else {
+        fits.min(LEGEND_MAX) - 1
+    };
     for (k, (name, (r, g, b))) in entries.iter().take(shown).enumerate() {
         let y = font + row * k as f32;
         s += &format!(
@@ -1041,16 +1110,38 @@ fn free_base(base: &str) -> PathBuf {
 /// `fig` rendered to pixels, through legume-plot's renderer (which writes a
 /// file, here a private temporary one) and the `image` crate.
 pub(crate) fn render(fig: &Figure) -> Result<image::RgbaImage> {
-    let tmp = tempfile::Builder::new()
-        .prefix("lupin-figure-")
-        .suffix(".png")
-        .tempfile()
-        .context("creating a temporary file for the figure")?;
-    legume_plot::render_png(&fig.svg, fig.w, fig.h, tmp.path())?;
-    let img = image::open(tmp.path())
-        .with_context(|| format!("reading {}", tmp.path().display()))?
-        .to_rgba8();
-    Ok(img)
+    use resvg::{tiny_skia, usvg};
+    // The system fonts are loaded once, not for every figure drawn.
+    static FONTS: std::sync::OnceLock<std::sync::Arc<usvg::fontdb::Database>> =
+        std::sync::OnceLock::new();
+    let fontdb = FONTS
+        .get_or_init(|| {
+            let mut db = usvg::fontdb::Database::new();
+            db.load_system_fonts();
+            std::sync::Arc::new(db)
+        })
+        .clone();
+    let options = usvg::Options {
+        fontdb,
+        ..usvg::Options::default()
+    };
+    let tree = usvg::Tree::from_str(&fig.svg, &options).context("parsing the figure")?;
+    let mut pixmap = tiny_skia::Pixmap::new(fig.w, fig.h)
+        .with_context(|| format!("a {} × {} figure", fig.w, fig.h))?;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::identity(),
+        &mut pixmap.as_mut(),
+    );
+    let rgba = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|p| {
+            let c = p.demultiply();
+            [c.red(), c.green(), c.blue(), c.alpha()]
+        })
+        .collect();
+    image::RgbaImage::from_raw(fig.w, fig.h, rgba).context("the figure's pixels")
 }
 
 #[cfg(test)]

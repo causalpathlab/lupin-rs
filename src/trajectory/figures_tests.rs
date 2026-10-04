@@ -250,11 +250,11 @@ fn the_view_zooms_pans_and_stays_inside_the_scatter() {
     v.pan(1.0, 0.0);
     assert_eq!(v, View::default(), "the whole scatter does not pan");
     v.zoom(false);
-    assert_eq!(v.zoom, 1.0, "no further out than the whole");
+    assert_eq!(v.level, 0, "no further out than the whole");
     v.zoom(true);
     v.zoom(true);
-    assert!((v.zoom - ZOOM_STEP * ZOOM_STEP).abs() < 1e-5);
-    let half = 0.5 / v.zoom;
+    assert_eq!(v.factor(), 2.0);
+    let half = 0.5 / v.factor();
     for _ in 0..50 {
         v.pan(1.0, -1.0);
     }
@@ -266,7 +266,8 @@ fn the_view_zooms_pans_and_stays_inside_the_scatter() {
     for _ in 0..50 {
         v.zoom(true);
     }
-    assert_eq!(v.zoom, MAX_ZOOM);
+    assert_eq!(v.level, MAX_ZOOM_LEVEL);
+    assert_eq!(v.factor(), 64.0);
     let whole = DataBounds {
         xmin: 0.0,
         xmax: 10.0,
@@ -274,7 +275,7 @@ fn the_view_zooms_pans_and_stays_inside_the_scatter() {
         ymax: 5.0,
     };
     let part = View {
-        zoom: 2.0,
+        level: 2,
         cx: 0.25,
         cy: 0.75,
     }
@@ -285,6 +286,21 @@ fn the_view_zooms_pans_and_stays_inside_the_scatter() {
     );
     let all = View::default().of(&whole);
     assert_eq!((all.xmin, all.xmax), (0.0, 10.0));
+}
+
+#[test]
+fn zooming_in_and_back_out_shows_the_whole_scatter() {
+    let mut v = View::default();
+    for _ in 0..3 {
+        v.zoom(true);
+    }
+    v.pan(1.0, 1.0);
+    for _ in 0..3 {
+        v.zoom(false);
+    }
+    assert!(v.is_whole());
+    assert_eq!(v.factor(), 1.0);
+    assert_eq!(v, View::default(), "and centred again");
 }
 
 #[test]
@@ -300,7 +316,7 @@ fn a_zoomed_scatter_labels_only_the_types_on_screen() {
     assert!(whole.contains(">A</text>") && whole.contains(">B</text>"));
     // The left half holds only type A's cells.
     let left = svg(View {
-        zoom: 2.0,
+        level: 2,
         cx: 0.25,
         cy: 0.5,
     });
@@ -314,7 +330,7 @@ fn a_zoomed_scatter_labels_only_the_types_on_screen() {
     );
     // The order panel ignores the view.
     let zoomed = View {
-        zoom: 2.0,
+        level: 2,
         ..View::default()
     };
     assert_eq!(
@@ -323,4 +339,30 @@ fn a_zoomed_scatter_labels_only_the_types_on_screen() {
             .svg,
         draw(&t, Panel::Order, &style).svg
     );
+}
+
+#[test]
+fn every_type_gets_its_own_colour_however_many_there_are() {
+    let names: Vec<String> = (1..=25).map(|k| format!("CT{k}")).collect();
+    let keys: Vec<Option<&str>> = names.iter().map(|n| Some(n.as_str())).collect();
+    let (colours, legend) = categorical(&keys, str::to_string);
+    assert_eq!(legend.len(), 25);
+    let mut seen: Vec<Rgb> = colours.iter().flatten().copied().collect();
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen.len(), 25, "no two types share a colour");
+}
+
+#[test]
+fn the_legend_fits_the_figure_or_stays_out_of_a_thumbnail() {
+    let entries: Vec<(String, Rgb)> = (1..=25).map(|k| (format!("CT{k}"), INK)).collect();
+    assert_eq!(legend_svg(&entries, 6.0, 20), "", "no room for two rows");
+    let rows = |svg: &str| svg.matches("<rect").count();
+    let small = legend_svg(&entries, 6.0, 100);
+    assert!(rows(&small) <= 5, "half of 100 px holds few rows");
+    assert!(small.contains("more"), "and says how many are left out");
+    let large = legend_svg(&entries, 6.0, 2000);
+    assert_eq!(rows(&large), LEGEND_MAX - 1);
+    assert!(large.contains("+6 more"));
+    assert_eq!(rows(&legend_svg(&entries[..3], 6.0, 2000)), 3);
 }

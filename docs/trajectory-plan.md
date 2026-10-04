@@ -267,14 +267,18 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
   off, and `c` colours the cells by pseudotime, cell type, lineage (a
   type on one lineage only) or component, the last two only when there are
   several; cells without a value are grey, and a categorical colouring has
-  a legend. Unassigned cells get no label.
-  `+`/`=` and `-`/`_` zoom the scatter in and out about its centre, the
+  a legend (no more than half the figure high, none in a thumbnail). Every
+  group gets its own colour: legume-plot's palette while it lasts, then
+  hues a golden angle apart. Unassigned cells get no label.
+  `+`/`=` and `-`/`_` zoom the scatter in and out about its centre in
+  steps of ×√2 (up to ×64, and back out to whole exactly), the
   arrows pan it (with the exports strip open, ↑ and ↓ move in the strip
   and ← → still pan), and `0` shows it whole again, as in senna view. The figure is
   drawn again from the data at the part on screen, so points and labels stay
   sharp; a label sits at the median of its type's cells on screen, and a
   type with none there has no label. A new layout (`m`), diffusion pair or
-  figure (`v`) starts whole. The order and connectivity panels do not zoom.
+  figure (`v`, or opened from the grid) starts whole. The order and
+  connectivity panels do not zoom.
 - **Order by type**: median pseudotime and middle half per type, in order of
   the median.
 - **Connectivity**: PAGA connectivity between the node types as a Hinton
@@ -283,8 +287,10 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
 - **All figures** (`w`, as senna view's grid): each layout the run has, the
   diffusion map at the pair last shown, the order and the connectivity as
   thumbnails, drawn whole with the labels and colouring on screen. The
-  arrows choose one, Enter opens it in the pane, and esc or `w` closes the
-  grid on the figure it came from. `t` and `c` also work there.
+  arrows choose one, Enter opens it in the pane, `p` exports it as its tile
+  shows it, `f` opens the exports strip, `V` goes back to the order table,
+  and esc or `w` closes the grid on the figure it came from. `t` and `c`
+  also work there.
 - The direct prior edges with their connectivity, order agreement and verdict
   are in the order view's table, so an edit there shows its effect after the
   next run.

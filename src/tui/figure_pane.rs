@@ -306,7 +306,7 @@ impl FigurePane {
         match self.with_view(|v| v.zoom(inward)) {
             None => "only the scatter zooms (m and v choose it)".into(),
             Some((_, v)) if v.is_whole() => "the whole scatter".into(),
-            Some((_, v)) => format!("zoom ×{:.1} · arrows pan · 0 shows it whole", v.zoom),
+            Some((_, v)) => format!("zoom ×{:.1} · arrows pan · 0 shows it whole", v.factor()),
         }
     }
 
@@ -364,12 +364,17 @@ impl FigurePane {
             self.panels.iter().position(|&p| p == tile)
         };
         let Some(at) = at else { return };
-        if self.at_pair(self.panels[at]) != tile {
-            self.panels[at] = tile;
-            self.view = View::default();
-        }
+        self.panels[at] = tile;
+        // A figure opened from the grid starts whole, as its tile shows it.
+        self.view = View::default();
         self.sel = at;
         self.shown = true;
+    }
+
+    /// The grid's selected tile, while the grid is open.
+    pub fn selected_tile(&self) -> Option<Panel> {
+        let g = self.grid.as_ref()?;
+        g.tiles.get(g.sel).copied()
     }
 
     /// Draw the grid's tiles `wanted` (index, area) that are not drawn yet:
@@ -500,10 +505,14 @@ impl FigurePane {
         img
     }
 
-    /// Export the current panel as it is on screen and log it.
+    /// Export the current panel as it is on screen and log it; with the
+    /// grid open, its selected tile as the tile shows it (whole).
     pub fn export(&mut self) -> Result<String> {
-        let panel = self.current();
-        let e = self.data.export(panel, &self.style, self.view)?;
+        let (panel, view) = match self.selected_tile() {
+            Some(tile) => (tile, View::default()),
+            None => (self.current(), self.view),
+        };
+        let e = self.data.export(panel, &self.style, view)?;
         let logged = self
             .exports
             .gallery

@@ -79,7 +79,7 @@ fn help(app: &App) -> &'static str {
         }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
             if app.figures.as_ref().is_some_and(|v| v.shown) {
-                " ? keys · v next figure · w all · V table · t labels · c colour · m layout · + - 0 zoom · arrows pan · p export · f exports · r run"
+                " ? keys · v next · w all · V table · t c m labels colour layout · , . pair · +-0 zoom · ←↑→↓ pan · p export · f exports · R check · r run · esc clusters"
             } else {
                 " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · t tree"
             }
@@ -185,7 +185,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("c", "colour the cells by pseudotime, cell type, lineage or component"),
             ("m", "the scatter's layout: each layout the run has (PHATE first), then the diffusion map"),
             (", .", "another pair of diffusion components"),
-            ("w", "all figures as thumbnails: arrows choose, enter opens, esc or w closes"),
+            ("w", "all figures as thumbnails: arrows choose, enter opens, p exports the tile, V the table, esc or w closes"),
             ("+ - 0", "zoom the scatter in / out / show it whole (m and , . also show it whole)"),
             ("arrows", "pan a zoomed scatter (with the exports strip open, ↑↓ move in the strip)"),
             ("p", "export the figure as on screen (zoomed too) as {run}.trajectory.{figure}.svg + .pdf and log it"),
@@ -1138,7 +1138,7 @@ fn draw_grid(
 ) {
     let block = pane(
         format!(
-            " figures ({}) · arrows choose · enter opens · esc closes ",
+            " figures ({}) · arrows choose · enter opens · p exports · V table · esc closes ",
             g.tiles.len()
         ),
         focused,

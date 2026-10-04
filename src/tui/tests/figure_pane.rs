@@ -161,3 +161,36 @@ fn the_diffusion_map_keeps_its_pair_across_layouts() {
         .tiles
         .contains(&Panel::Diffusion { x: 2, y: 1 }));
 }
+
+#[test]
+fn a_scatter_opened_from_the_grid_shows_it_whole() {
+    let mut p = pane();
+    p.zoom(true);
+    assert!(!p.view.is_whole());
+    // To the order panel through the grid, then back to the same scatter.
+    p.open_grid();
+    let order = p
+        .grid
+        .as_ref()
+        .unwrap()
+        .tiles
+        .iter()
+        .position(|&t| t == Panel::Order);
+    p.grid.as_mut().unwrap().sel = order.unwrap();
+    p.open_tile();
+    assert_eq!(p.current(), Panel::Order);
+    p.open_grid();
+    p.grid.as_mut().unwrap().sel = 0;
+    p.open_tile();
+    assert_eq!(p.current(), Panel::Layout { k: 0 });
+    assert!(p.view.is_whole(), "as its tile shows it");
+}
+
+#[test]
+fn the_grid_names_the_tile_it_would_export() {
+    let mut p = pane();
+    assert_eq!(p.selected_tile(), None);
+    p.open_grid();
+    p.grid.as_mut().unwrap().sel = 1;
+    assert_eq!(p.selected_tile(), Some(Panel::Layout { k: 1 }));
+}

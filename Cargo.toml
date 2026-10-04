@@ -61,6 +61,8 @@ enrichment = { version = "0.4.1", package = "legume-enrichment" }
 graph-embedding-util = { version = "0.8.4", package = "legume-graph-embedding" }
 legume-numeric = { version = "0.8.18", features = ["matrix", "candle"] }
 legume-plot = { version = "0.3.2" }
+# Rasterises figures in memory for the TUI; the version legume-plot uses.
+resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts"] }
 
 # gene-text encoder stack
 candle-core = { version = "0.10" }

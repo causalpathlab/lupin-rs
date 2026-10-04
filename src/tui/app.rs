@@ -2039,8 +2039,9 @@ impl App {
         if code != KeyCode::Char('D') {
             v.exports.disarm();
         }
-        // The thumbnail grid is modal: arrows choose, Enter opens, and only
-        // the app's own keys (quit, run, stop, save, export, panes) go by.
+        // The thumbnail grid is modal: arrows choose, Enter opens, p exports
+        // the tile chosen, and only the app's own keys (quit, run, stop,
+        // save, export the round, panes) go by.
         if let Some(g) = &mut v.grid {
             if g.step(code) {
                 return true;
@@ -2051,10 +2052,20 @@ impl App {
                     self.status = v.title(v.current());
                 }
                 KeyCode::Esc | KeyCode::Char('w') => v.grid = None,
+                KeyCode::Char('V') => {
+                    v.grid = None;
+                    v.shown = false;
+                }
                 KeyCode::Char('t') => self.status = v.style.cycle_labels(),
                 KeyCode::Char('c') => self.status = v.style.cycle_colouring(&v.data.colourings()),
+                KeyCode::Char('p') => {
+                    self.status = v
+                        .export()
+                        .unwrap_or_else(|e| format!("export failed: {e:#}"));
+                }
+                KeyCode::Char('f') => v.exports.open = !v.exports.open,
                 KeyCode::Char(c) if !"qrxse".contains(c) => {
-                    self.status = "Enter opens the figure, esc or w closes the grid".into();
+                    self.status = GRID_KEYS.into();
                 }
                 _ => return false,
             }
@@ -2091,8 +2102,7 @@ impl App {
             // senna view's navigation: the grid, zoom and pan.
             KeyCode::Char('w') if v.shown => {
                 v.open_grid();
-                self.status =
-                    "arrows choose a figure · Enter opens it · esc or w closes the grid".into();
+                self.status = GRID_KEYS.into();
             }
             KeyCode::Char('+' | '=') if v.shown => self.status = v.zoom(true),
             KeyCode::Char('-' | '_') if v.shown => self.status = v.zoom(false),
@@ -2261,6 +2271,10 @@ impl Drop for App {
         self.stop_rescoring();
     }
 }
+
+/// What the thumbnail grid's keys do.
+const GRID_KEYS: &str =
+    "arrows choose · Enter opens · p exports it · t c restyle · V table · esc or w closes";
 
 /// The labels file a trajectory run on `loaded` recorded in its settings,
 /// resolved against the manifest's directory, when it is still there.
