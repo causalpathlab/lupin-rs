@@ -79,7 +79,7 @@ fn help(app: &App) -> &'static str {
         }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
             if app.figures.as_ref().is_some_and(|v| v.shown) {
-                " ? keys · v next figure · V table · , . components · p export · f exports · R check · r run · esc clusters"
+                " ? keys · v next figure · V table · t labels · c colour · m layout · , . components · p export · f exports · r run"
             } else {
                 " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · t tree"
             }
@@ -180,10 +180,13 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
     (
         "figures (v in the order view, after a trajectory run)",
         &[
-            ("v / V", "next figure: layout, diffusion map, order, connectivity / back to the table"),
+            ("v / V", "next figure: scatter, order, connectivity / back to the table"),
+            ("t", "type labels on the scatter: small, medium, large, largest, off"),
+            ("c", "colour the cells by pseudotime, cell type, lineage or component"),
+            ("m", "the scatter's layout: each layout the run has (PHATE first), then the diffusion map"),
             (", .", "another pair of diffusion components"),
             ("p", "export the figure as {run}.trajectory.{figure}.svg + .pdf and log it"),
-            ("f", "the exports strip: ↑↓ select, enter list an unlisted file, m move, d unlist, D D delete"),
+            ("f", "the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete"),
             ("R", "re-read the log and check every export against its files"),
         ],
     ),
@@ -1161,7 +1164,7 @@ fn draw_exports(f: &mut Frame, area: Rect, x: &super::figure_pane::Exports, focu
     )
     .block(pane(
         format!(
-            " exports ({}){note} · enter list · m move · d unlist · D delete ",
+            " exports ({}){note} · enter list · M move · d unlist · D D delete ",
             x.gallery.entries.len()
         ),
         focused,

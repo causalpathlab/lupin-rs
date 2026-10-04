@@ -18,9 +18,10 @@ fn data() -> TrajectoryData {
         manifest: "run.senna.json".into(),
         pseudotime,
         types,
+        component: (0..n).map(|i| i32::from(i >= 30)).collect(),
+        lineage: (0..n).map(|i| if i < 20 { -1 } else { 0 }).collect(),
         diffusion: Some(d),
-        layout: Some((x, y)),
-        layout_method: None,
+        layouts: vec![Layout { method: None, x, y }],
         edges: vec![EdgeRow {
             a: "A".into(),
             b: "B".into(),
@@ -29,6 +30,7 @@ fn data() -> TrajectoryData {
             verdict: Some(Verdict::Supported),
             order_agreement: 0.9,
         }],
+        style: Style::default(),
     }
 }
 
@@ -36,8 +38,8 @@ fn data() -> TrajectoryData {
 fn every_panel_renders_to_svg_and_pixels() {
     let t = data();
     let panels = t.panels();
-    assert_eq!(panels.len(), 4);
-    for p in panels {
+    assert_eq!(panels.len(), 3, "one scatter, the order, the connectivity");
+    for p in panels.into_iter().chain(t.scatters()) {
         let fig = t.figure(p, 320, 240).unwrap();
         assert!(fig.svg.starts_with("<?xml"), "{}", p.slug());
         let img = render(&fig).unwrap();
@@ -76,8 +78,9 @@ fn phate_is_drawn_when_senna_made_one() {
         ]
     );
     let mut t = data();
-    t.layout_method = Some("phate".into());
-    assert_eq!(t.title(Panel::Layout), "PHATE · pseudotime");
+    t.layouts[0].method = Some("phate".into());
+    assert_eq!(t.title(Panel::Layout { k: 0 }), "PHATE · pseudotime");
+    assert_eq!(t.slug(Panel::Layout { k: 0 }), "layout_phate");
 }
 
 #[test]
@@ -106,4 +109,110 @@ fn export_writes_svg_and_pdf_past_existing_files() {
     assert!(first.files.iter().all(|f| f.is_file()), "{:?}", first.files);
     let second = t.export(Panel::Order).unwrap();
     assert_eq!(second.base, dir.join("x.trajectory.order-2"));
+}
+
+#[test]
+fn every_recorded_layout_is_offered_after_phate_and_the_current_one() {
+    let m: RunManifest = serde_json::from_str(
+        r#"{"version": 2, "kind": "topic", "prefix": "r", "layout": {"cell_coords": "r.umap.parquet", "current": "umap",
+            "methods": {"umap": {"cell_coords": "r.umap.parquet"}, "tsne": {"cell_coords": "r.tsne.parquet"},
+                        "phate": {"cell_coords": "r.phate.parquet"}}}}"#,
+    )
+    .unwrap();
+    let names: Vec<Option<String>> = layouts(&m).into_iter().map(|(m, _)| m).collect();
+    assert_eq!(
+        names,
+        vec![
+            Some("phate".into()),
+            Some("umap".into()),
+            Some("tsne".into())
+        ]
+    );
+}
+
+#[test]
+fn m_steps_through_the_layouts_then_the_diffusion_map() {
+    let mut t = data();
+    let second = Layout {
+        method: Some("umap".into()),
+        x: t.layouts[0].y.clone(),
+        y: t.layouts[0].x.clone(),
+    };
+    t.layouts.push(second);
+    let a = Panel::Layout { k: 0 };
+    let b = t.next_scatter(a).unwrap();
+    assert_eq!(b, Panel::Layout { k: 1 });
+    let c = t.next_scatter(b).unwrap();
+    assert!(matches!(c, Panel::Diffusion { .. }));
+    assert_eq!(t.next_scatter(c), Some(a));
+    assert_eq!(t.next_scatter(Panel::Order), None);
+    t.layouts.clear();
+    t.diffusion = None;
+    assert_eq!(t.next_scatter(a), None, "nothing to switch to");
+}
+
+#[test]
+fn type_labels_follow_the_text_size_and_turn_off() {
+    let mut t = data();
+    let labels = |t: &TrajectoryData| {
+        let svg = t.figure(Panel::Layout { k: 0 }, 320, 240).unwrap().svg;
+        let a = svg.matches(">A</text>").count();
+        let b = svg.matches(">B</text>").count();
+        (a, b, svg)
+    };
+    let (a, b, svg) = labels(&t);
+    assert_eq!((a, b), (1, 1), "one label per type, on at medium");
+    let medium = svg
+        .find("font-size='")
+        .map(|i| svg[i..].to_string())
+        .unwrap();
+    assert_eq!(t.cycle_labels(), "labels large · t for largest");
+    let (_, _, svg) = labels(&t);
+    let large = svg
+        .find("font-size='")
+        .map(|i| svg[i..].to_string())
+        .unwrap();
+    assert_ne!(medium[..20], large[..20], "the size changed");
+    t.cycle_labels();
+    assert_eq!(t.cycle_labels(), "labels off · t shows them small");
+    assert_eq!(labels(&t).0 + labels(&t).1, 0);
+    assert_eq!(t.cycle_labels(), "labels small · t for medium");
+}
+
+#[test]
+fn the_unassigned_type_gets_no_label() {
+    let mut t = data();
+    t.types[39] = enrichment::UNASSIGNED_LABEL.into();
+    let svg = t.figure(Panel::Layout { k: 0 }, 320, 240).unwrap().svg;
+    assert!(!svg.contains(&format!(">{}</text>", enrichment::UNASSIGNED_LABEL)));
+}
+
+#[test]
+fn colourings_cycle_over_what_the_outputs_support() {
+    let mut t = data();
+    assert_eq!(
+        t.colourings(),
+        vec![Colouring::Pseudotime, Colouring::Type, Colouring::Component],
+        "a single lineage is no colouring"
+    );
+    let by_time = t.figure(Panel::Layout { k: 0 }, 160, 120).unwrap().svg;
+    assert_eq!(
+        t.cycle_colouring(),
+        "coloured by cell type · c for component"
+    );
+    let by_type = t.figure(Panel::Layout { k: 0 }, 160, 120).unwrap().svg;
+    assert_ne!(by_time, by_type);
+    assert!(
+        by_type.contains(">A</text>") && by_type.contains("<rect"),
+        "a legend"
+    );
+    assert_eq!(t.title(Panel::Layout { k: 0 }), "layout · cell type");
+    assert_eq!(
+        t.cycle_colouring(),
+        "coloured by component · c for pseudotime"
+    );
+    assert_eq!(
+        t.cycle_colouring(),
+        "coloured by pseudotime · c for cell type"
+    );
 }

@@ -1613,7 +1613,13 @@ impl App {
                     _ => return false,
                 }
             }
-            Focus::Tree if code == KeyCode::Char('t') => self.toggle_order(false),
+            // On the figures, `t` sizes the labels (as in `senna view`).
+            Focus::Tree
+                if code == KeyCode::Char('t')
+                    && !(matches!(self.tree_mode, TreeMode::Order(_)) && self.figures_shown()) =>
+            {
+                self.toggle_order(false);
+            }
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
             // A search is of the ontology: open it there.
             Focus::Tree
@@ -2055,6 +2061,10 @@ impl App {
             KeyCode::Char('V') => v.shown = false,
             KeyCode::Char(',') if v.shown => v.step_pair(false),
             KeyCode::Char('.') if v.shown => v.step_pair(true),
+            // senna view's keys: labels, colouring, layout.
+            KeyCode::Char('t') if v.shown => self.status = v.cycle_labels(),
+            KeyCode::Char('c') if v.shown => self.status = v.cycle_colouring(),
+            KeyCode::Char('m') if v.shown => self.status = v.next_layout(),
             KeyCode::Char('p') if v.shown => {
                 self.status = v
                     .export()
@@ -2084,7 +2094,7 @@ impl App {
                 };
                 return true;
             }
-            KeyCode::Char('m') if strip => {
+            KeyCode::Char('M') if strip => {
                 if let Some(e) = x.gallery.entries.get(x.sel) {
                     self.prompt = Some(Prompt {
                         title: " move the export to (base name, no extension): ".into(),

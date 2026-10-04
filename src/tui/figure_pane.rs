@@ -157,6 +157,8 @@ pub struct FigurePane {
     rendered: RefCell<Option<(Shown, Result<Protocol, String>)>>,
     /// The current panel rasterised once; a new pane size only re-fits it.
     image: RefCell<Option<(Panel, Result<DynamicImage, String>)>>,
+    /// The diffusion pair `m` comes back to.
+    pair: (usize, usize),
     pub exports: Exports,
 }
 
@@ -178,6 +180,7 @@ impl FigurePane {
                     picker: picker.clone(),
                     image: RefCell::new(None),
                     rendered: RefCell::new(None),
+                    pair: (1, 2),
                     exports,
                 }));
             }
@@ -203,6 +206,51 @@ impl FigurePane {
             let (nx, ny) = self.data.next_pair(x, y, forward);
             self.panels[self.sel] = Panel::Diffusion { x: nx, y: ny };
         }
+    }
+
+    /// Labels on the scatters in turn (`t`), as `senna view` does.
+    pub fn cycle_labels(&mut self) -> String {
+        let note = self.data.cycle_labels();
+        self.redraw();
+        note
+    }
+
+    /// The next colouring of the scatters (`c`).
+    pub fn cycle_colouring(&mut self) -> String {
+        let note = self.data.cycle_colouring();
+        self.redraw();
+        note
+    }
+
+    /// The scatter's next coordinates (`m`): the run's layouts, then the
+    /// diffusion map, which comes back on the pair last shown.
+    pub fn next_layout(&mut self) -> String {
+        let cur = self.current();
+        let Some(next) = self.data.next_scatter(cur) else {
+            return match cur {
+                Panel::Layout { .. } | Panel::Diffusion { .. } => {
+                    "only one layout in this run".into()
+                }
+                _ => "m switches the layout of the scatter (v shows it)".into(),
+            };
+        };
+        if let Panel::Diffusion { x, y } = cur {
+            self.pair = (x, y);
+        }
+        self.panels[self.sel] = match next {
+            Panel::Diffusion { .. } => Panel::Diffusion {
+                x: self.pair.0,
+                y: self.pair.1,
+            },
+            p => p,
+        };
+        self.data.title(self.current())
+    }
+
+    /// Draw the current panel again, after its style changed.
+    fn redraw(&self) {
+        self.image.borrow_mut().take();
+        self.rendered.borrow_mut().take();
     }
 
     /// The current figure drawn for `area`, as senna view draws its
@@ -260,7 +308,12 @@ impl FigurePane {
         let logged = self
             .exports
             .gallery
-            .add(&e.files, &e.what, &panel.slug(), &self.data.manifest)
+            .add(
+                &e.files,
+                &e.what,
+                &self.data.slug(panel),
+                &self.data.manifest,
+            )
             .map(|()| String::new())
             .unwrap_or_else(|e| format!(" (not listed: {e:#})"));
         self.exports.refresh();

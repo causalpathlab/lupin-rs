@@ -254,14 +254,20 @@ are shown (`v` shows them and steps through them, `V` brings the table back);
 space, `>` and `-` do nothing then, since types are marked in the table. The
 panels are drawn from the run's trajectory outputs, the same set the bench summary shows:
 
-- **Layout**: the run's layout coloured by pseudotime, the prior's direct
-  edges as arrows between type medians (supported edges solid, the rest
-  faded). senna's PHATE (`senna layout phate`, Moon et al. 2019, in
-  legume-numeric's `matrix::layout`) is drawn when the run has one
-  (`layout.methods.phate`), being made to show trajectories; else the run's
-  current layout. lupin reads the layout and never writes one.
-- **Diffusion map**: cells on two diffusion components (`,`/`.` change the
-  pair), coloured by pseudotime.
+- **Scatter**: the cells on one of the run's layouts, with the prior's
+  direct edges as arrows between type medians (supported edges solid, the
+  rest faded), or on two diffusion components (`,`/`.` change the pair).
+  `m` steps through the coordinates: senna's PHATE first when the run has
+  one (`senna layout phate`, Moon et al. 2019, in legume-numeric's
+  `matrix::layout`; `layout.methods.phate`), being made to show
+  trajectories, then the current layout, then the other layouts the
+  manifest records, then the diffusion map. lupin reads layouts and never
+  writes one. As in senna view, `t` steps the cell-type labels at each
+  type's median through small, medium (the default), large, largest and
+  off, and `c` colours the cells by pseudotime, cell type, lineage (a
+  type on one lineage only) or component, the last two only when there are
+  several; cells without a value are grey, and a categorical colouring has
+  a legend. Unassigned cells get no label.
 - **Order by type**: median pseudotime and middle half per type, in order of
   the median.
 - **Connectivity**: PAGA connectivity between the node types as a Hinton
@@ -277,8 +283,10 @@ Images are drawn as senna view draws them, so both viewers behave alike:
 back to half-blocks.
 
 **Export.** `p` on a panel writes it through legume-plot's `write_figure` as
-SVG and PDF, 7 in wide at 200 dpi. An export is a set of files sharing one
-base name, handled as a unit: the name `{out}.trajectory.{panel}` moves to
+SVG and PDF, 7 in wide at 200 dpi, with the labels, colouring and layout on
+screen. An export is a set of files sharing one base name, handled as a
+unit: the name `{out}.trajectory.{panel}` (`layout_phate`, `layout_umap`, …
+for a layout) moves to
 `-2`, `-3` … while any file of the set exists.
 
 **What was exported.** Each export is listed in `./.lupin-view/saved.json` in
@@ -289,10 +297,10 @@ renamed into place, and a list that cannot be read is set aside as
 `saved.json.bad` and reported, never treated as empty. Each entry records the
 panel, the manifest it came from, and each file's absolute path, size,
 modification time and content hash. A strip in the TUI (`f`) shows the list;
-an entry can be moved (`m`; nothing is replaced, and a failed move is undone),
+an entry can be moved (`M`; nothing is replaced, and a failed move is undone),
 removed from the list (`d`), or removed with its files (`D`, which deletes
 only on a second `D` on the same export). Exporting (`p`), deleting (`D`) and
-moving (`m`) act on the log only when it and its directory are this user's
+moving (`M`) act on the log only when it and its directory are this user's
 alone: writable by no one else and not links (lupin creates them so); saving
 over a log others can write is refused. Files are moved or deleted only when
 they are still the export that was logged: beside the PDF, with the same base
