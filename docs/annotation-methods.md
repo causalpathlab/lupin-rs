@@ -118,7 +118,7 @@ FDR call labelled almost all of them. **Too slow:** it took most of the time of 
 
 What replaces it: each call is the single-pass call (FDR-gated, with Q as the cluster's evidence
 split over the types). A contested cluster shows up as a low top share, and is settled by hand in
-`lupin annotate --tui`, where every decision is kept with its rationale in the round's history.
+the annotate TUI (`lupin annotate` without `-o`), where every decision is kept with its rationale in the round's history.
 
 ---
 

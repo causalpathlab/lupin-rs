@@ -9,3 +9,11 @@
 
 # Not tracked; resolved fresh on each build
 Cargo.lock
+
+# Local trajectory bench (data, scripts, outputs, notes) and reference fixtures
+dev/trajectory-bench/
+src/tests/fixtures/
+__pycache__/
+
+# Local crates.io path patches (sibling checkouts)
+.cargo/

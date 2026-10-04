@@ -17,7 +17,7 @@ pub enum Topic {
     Grouping,
     /// Annotation on a gene-annotated Cell Ontology (partly implemented).
     OntologyPlan,
-    /// Supervised trajectory: an explicit prior, checked against the data (not implemented).
+    /// Supervised trajectory: an explicit prior, checked against the data (partly implemented).
     TrajectoryPlan,
 }
 
@@ -41,7 +41,7 @@ const DOCS: &[(Topic, &str, &str)] = &[
     ),
     (
         Topic::TrajectoryPlan,
-        "PLAN    (not implemented) supervised trajectory: prior, check, diffusion pseudotime",
+        "PLAN    (partly implemented) supervised trajectory: prior, check, diffusion pseudotime",
         include_str!("../docs/trajectory-plan.md"),
     ),
 ];

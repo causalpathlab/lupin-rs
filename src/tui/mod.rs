@@ -1,4 +1,5 @@
-//! `lupin annotate --tui`: run a pass, then go cluster by cluster, giving
+//! `lupin annotate` without `-o` (and `lupin trajectory` without `-f` and
+//! `-o`): run a pass, then go cluster by cluster, giving
 //! each a label (a candidate, or any node of the Cell Ontology over the
 //! panel), with the genes that set it apart at hand to add as markers.
 //!
@@ -8,8 +9,11 @@
 
 mod app;
 mod export;
+mod figure_pane;
+mod gallery;
 mod genes;
 mod ontology;
+mod order;
 mod picker;
 mod round;
 mod runner;
@@ -18,8 +22,9 @@ mod ui;
 use crate::annotate::gene_rows::GeneRows;
 use crate::annotate_cmd::AnnotateCliArgs;
 use crate::manifest::run::{self, annotated_path, resolve};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use app::App;
+pub use figure_pane::Graphics;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -62,7 +67,40 @@ fn drain_own_log() -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn run(args: &AnnotateCliArgs) -> Result<()> {
+/// `lupin trajectory` without both `--from` and `--out`: the TUI on the
+/// order view, which picks the manifest when none is given and asks for the
+/// output prefix when it runs.
+pub fn run_trajectory(t: &crate::trajectory::run::TrajectoryArgs) -> Result<()> {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Annotate {
+        #[command(flatten)]
+        args: AnnotateCliArgs,
+    }
+    let mut a = Annotate::try_parse_from(["lupin annotate"])
+        .context("building the TUI's arguments")?
+        .args;
+    a.from.clone_from(&t.from);
+    a.obo.clone_from(&t.obo);
+    a.label_cl.clone_from(&t.label_cl);
+    a.graphics = t.graphics;
+    let run_with = order::TrajectoryRun {
+        argv: t.child_argv(),
+        out: t.out.as_deref().map(str::to_string),
+        labels: None,
+    };
+    run(&a, Some(run_with))
+}
+
+/// Run the TUI on `args`; with `trajectory`, it opens on the order view and
+/// runs `lupin trajectory` with those options.
+pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> Result<()> {
+    use std::io::IsTerminal;
+    anyhow::ensure!(
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        "no terminal for the TUI: give the output prefix (-o, and -f for trajectory) to run without it"
+    );
+    let start_in_order = trajectory.is_some();
     let cwd = std::env::current_dir()?;
     let from = match args.from.as_deref() {
         Some(f) => f.to_string(),
@@ -83,6 +121,8 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
     if args.markers.is_empty() {
         args.markers = match loaded.manifest.annotate.markers.as_deref() {
             Some(rel) => resolve(&loaded.dir, rel).into_boxed_str(),
+            // The order view needs no marker panel: open on the run's types.
+            None if start_in_order => Default::default(),
             None => {
                 let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
                 let n = index.as_deref().map_or(0, GeneRows::n_genes);
@@ -94,16 +134,29 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
             }
         };
     }
-    if args.out.is_empty() {
-        // The run's prefix, next to its manifest, one level down: reopening
-        // the same run picks up this session's rounds.
+    // Without `-o`, the run's prefix one level down is offered when the
+    // first pass starts; reopening the same run picks up its rounds.
+    let out_chosen = !args.out.is_empty();
+    if !out_chosen {
         let stem = run::derive_out_prefix(&loaded.file.to_string_lossy());
         args.out = format!("{stem}.L1").into_boxed_str();
-        eprintln!("lupin: writing under -o {}", args.out);
     }
 
     eprintln!("lupin: placing the panel on the Cell Ontology…");
-    let panel = crate::annotate::markers::read_panel(&args.markers)?;
+    let panel = if args.markers.is_empty() {
+        Vec::new()
+    } else {
+        match crate::annotate::markers::read_panel(&args.markers) {
+            Ok(p) => p,
+            // The order view needs no panel.
+            Err(e) if start_in_order => {
+                eprintln!("lupin: no marker panel ({e:#})");
+                args.markers = Default::default();
+                Vec::new()
+            }
+            Err(e) => return Err(e),
+        }
+    };
     let data = crate::manifest::ontology::load(
         Some(&loaded.dir),
         args.obo.as_deref(),
@@ -117,7 +170,11 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
     let target = annotated_path(&loaded.file, &args.out);
     let mut app = App::new(args, loaded.file.clone(), target.clone(), tree);
     app.fixed_clusters = loaded.manifest.cluster.clusters.is_some();
-    app.original = round::panel_sets(&app.args.markers)?;
+    app.out_chosen = out_chosen;
+    app.trajectory = trajectory.unwrap_or_default();
+    if !app.args.markers.is_empty() {
+        app.original = round::panel_sets(&app.args.markers)?;
+    }
     if let Some(cl) = &terms {
         app.panel_ancestry = ontology::type_ancestry(cl, &app.tree);
     }
@@ -126,9 +183,15 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
     app.mixed = ontology::Mixed::load(&search)?;
     app.data_search = search;
     // Pick up where an earlier session left this prefix: its latest round.
-    if target.is_file() {
+    // The trajectory TUI starts from the manifest named instead, as the
+    // batch run would.
+    if target.is_file() && !start_in_order {
         let (latest, _) = crate::manifest::rounds::chain_rounds(&target);
         app.open(&latest);
+    }
+    if start_in_order {
+        app.focus = app::Focus::Tree;
+        app.toggle_order(true);
     }
 
     let mut terminal = ratatui::init();
@@ -146,6 +209,29 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
             if dirty {
                 terminal.draw(|f| ui::draw(f, &app))?;
                 dirty = false;
+            }
+            if let Some(want) = app.want_file.take() {
+                // The file browser takes the screen, then gives it back.
+                let picked = match want {
+                    app::FileWant::Markers => {
+                        let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
+                        let n = index.as_deref().map_or(0, GeneRows::n_genes);
+                        let want = picker::Want::Markers(index, n);
+                        picker::pick("Pick a marker panel", &loaded.dir, want)?
+                    }
+                    app::FileWant::Labels => picker::pick(
+                        "Pick a cell<TAB>type labels file",
+                        &loaded.dir,
+                        picker::Want::Labels,
+                    )?,
+                };
+                // A fresh terminal redraws every cell on its first draw.
+                terminal = ratatui::init();
+                match want {
+                    app::FileWant::Markers => app.set_markers(picked.as_deref()),
+                    app::FileWant::Labels => app.set_labels(picked.as_deref()),
+                }
+                dirty = true;
             }
             if event::poll(Duration::from_millis(150))? {
                 match event::read()? {

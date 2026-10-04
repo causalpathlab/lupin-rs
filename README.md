@@ -1,7 +1,8 @@
 # lupin-rs
 
 **L**abel, **U**nfold, **P**lace, **I**nterpret, **N**arrate — text graphs, cell-type
-annotation, plots, and short descriptions.
+annotation, trajectories, and short descriptions. Figures are drawn in each
+tool's own viewer (`senna view`, `pinto view`, lupin's TUI).
 
 Everything ships as one crate: `lupin-rs` (binary `lupin`). Annotation
 and gene-text logic live as internal modules — not separate crates.io packages.
@@ -37,7 +38,8 @@ Requires Rust 1.91+. Optional: `--features cuda` / `--features metal` / `--featu
 lupin text-qc --uniprot-tsv human.tsv --obo go-basic.obo -o run
 lupin word-graph --uniprot-tsv human.tsv --obo go-basic.obo -o run
 lupin annotate -f run.senna.json -m markers.tsv -o out   # writes out.senna.json
-lupin plot --from run.senna.json -o out/plot
+lupin trajectory -f out.senna.json -o out.T1           # prior, check, pseudotime
+lupin trajectory                                       # the TUI: pick a run, state the order, run
 lupin describe -f run.senna.json --text-prefix run -o out
 ```
 
@@ -178,7 +180,7 @@ over the terms within each cluster (`{out}.cluster_term_{nes,p,q_values}.parquet
 Testing every term (some thousands of genes large) takes minutes where the
 cell types take seconds.
 GO terms need `--method enrichment`.
-In `lupin annotate --tui`, `GO terms` in the settings (`r`) turns `--go` on
+In the annotate TUI (`lupin annotate` without `-o`), `GO terms` in the settings (`r`) turns `--go` on
 for the next pass; once a round has terms, a third column lists the selected
 cluster's top terms with their effect, p and q beside its cell types (`tab`
 reaches it).
@@ -191,7 +193,7 @@ of the binary so they can be updated and amended without rebuilding:
 | file | what |
 |---|---|
 | `cl-basic.obo` | the Cell Ontology (downloaded once, then cached) |
-| `cl_matching.json` | matching rules: which synonyms count (abbreviations such as HSC, GMP), plurals, word order, which ontology subsets are classes |
+| `cl_matching.json` | matching rules: which synonyms count (abbreviations such as CT1 for its full name), plurals, word order, which ontology subsets are classes |
 | `cl_aliases.tsv` | curated `label<TAB>CL:id<TAB>note` mappings for names matching cannot settle (Azimuth's `CD14 Mono`, `Prog Mk`, …) |
 
 Each is looked up in layers, later ones winning (rules key by key, aliases row
@@ -207,7 +209,7 @@ lupin data where -f run.senna.json   # which file each layer contributes
 lupin data fetch                     # cache everything (GO files too), for offline machines
 ```
 
-In `lupin annotate --tui`, `o` in the tree pane switches to the Cell Ontology
+In the annotate TUI, `o` in the tree pane switches to the Cell Ontology
 itself: browse a term's parents and children, `/` to search names, synonyms and
 abbreviations, `Enter` to label a cluster with any term. When the cluster's top
 candidate has no term, lupin offers to remember the pick in the project's
@@ -217,7 +219,7 @@ What you curate in the TUI is kept as plain files in `lupin/` beside the run
 manifest (read after `~/.config/lupin/`, which holds the same names for every
 project): `cl_aliases.tsv` (label → CL term), `hidden_genes.txt` (genes or `*`
 patterns such as `MT-*` kept out of the specific-genes view) and
-`mixed_labels.tsv` (a name for a mixed label, e.g. `HSPC mix<TAB>EMP<TAB>HSC`, given
+`mixed_labels.tsv` (a name for a mixed label, e.g. `CT1 mix<TAB>CT2<TAB>CT3`, given
 to a cluster the evidence cannot split).
 
 ## Method write-ups

@@ -23,7 +23,7 @@ Restored files need dependencies the removal dropped from `Cargo.toml`:
   `dyn-assoc` hits on the same embedding, so the output mostly restated the
   annotation it was rooted on.
 - **Redundancy.** Two trajectory fits (`lineage`, `pseudotime`) and two
-  figure paths (`lineage-plot`, `plot --colour-by pseudotime`).
+  figure paths (`lineage-plot`; lupin's plot commands are gone too).
 
 ## Worth a second look
 

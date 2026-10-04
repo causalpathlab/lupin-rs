@@ -43,7 +43,6 @@ metal = [
 [dependencies]
 # Foundations
 anyhow = "1.0"
-base64 = "0.22"
 clap = { version = "4.5.20", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
@@ -51,15 +50,16 @@ rayon = "1.10.0"
 rustc-hash = "2.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tiny-skia = "0.12"
+sha2 = "0.11"
+tempfile = "3"
 nalgebra = "0.34"
+nalgebra-sparse = "0.11"
 
 # Published legume stack
 data-beans = { version = "0.7.5", features = ["aux", "alg"] }
 enrichment = { version = "0.4.1", package = "legume-enrichment" }
-genomic-data = { version = "0.4.1", package = "legume-genomic-types" }
 graph-embedding-util = { version = "0.8.4", package = "legume-graph-embedding" }
-legume-numeric = { version = "0.8.12", features = ["matrix", "candle"] }
+legume-numeric = { version = "0.8.18", features = ["matrix", "candle"] }
 legume-plot = { version = "0.3.2" }
 
 # gene-text encoder stack
@@ -75,6 +75,7 @@ stop-words = "0.10"
 rust-stemmers = "1.2"
 unicode-segmentation = "1.13"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
-tempfile = "3.2"

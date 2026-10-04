@@ -1,4 +1,4 @@
-//! Choosing the files `--tui` was not given on the command line: a run
+//! Choosing the files the TUI was not given on the command line: a run
 //! manifest, then a marker panel, from a browser over the file system.
 
 use crate::annotate::gene_rows::GeneRows;
@@ -23,6 +23,8 @@ pub enum Want {
     Manifest,
     /// A marker panel, scored against the run's genes when they are known.
     Markers(Option<Box<GeneRows>>, usize),
+    /// A `cell<TAB>type` labels table (`.tsv`, `.txt`, `.csv`, or gzipped).
+    Labels,
 }
 
 /// A marker panel's size and how much of it the run has.
@@ -44,8 +46,15 @@ impl Entry {
         match want {
             Want::Manifest => is_manifest(&self.path),
             Want::Markers(..) => self.panel.is_some(),
+            Want::Labels => is_table(&self.path),
         }
     }
+}
+
+fn is_table(p: &Path) -> bool {
+    let n = p.to_string_lossy();
+    let n = n.strip_suffix(".gz").unwrap_or(&n);
+    [".tsv", ".txt", ".csv"].iter().any(|ext| n.ends_with(ext))
 }
 
 struct Picker {
@@ -265,16 +274,13 @@ pub fn pick(title: &'static str, start: &Path, want: Want) -> Result<Option<Path
             };
             match k.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
-                KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::PageUp
-                | KeyCode::PageDown
-                | KeyCode::Home
-                | KeyCode::End => {
+                code if {
                     let mut sel = at;
-                    super::app::step(&mut sel, n, k.code);
-                    p.state.select(Some(sel));
-                }
+                    super::app::step(&mut sel, n, code) && {
+                        p.state.select(Some(sel));
+                        true
+                    }
+                } => {}
                 KeyCode::Left | KeyCode::Backspace => {
                     if let Some(up) = p.dir.parent().map(Path::to_path_buf) {
                         p.open(up);

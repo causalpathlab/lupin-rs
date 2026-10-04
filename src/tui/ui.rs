@@ -77,8 +77,15 @@ fn help(app: &App) -> &'static str {
         Focus::Genes => {
             " ? keys · ↑↓ gene · a add · A add to a type · d drop · x hide · m view · tab pane"
         }
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
+            if app.figures.as_ref().is_some_and(|v| v.shown) {
+                " ? keys · v next figure · V table · , . components · p export · f exports · R check · r run · esc clusters"
+            } else {
+                " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · t tree"
+            }
+        }
         Focus::Tree => {
-            " ? keys · ↑↓ node · enter label · space mark · + mixed label · o ontology · / search"
+            " ? keys · ↑↓ node · enter label · space mark · + mixed label · o ontology · / search · t order"
         }
         Focus::Go => " ? keys · ↑↓ term · ← → read a long name · tab pane · esc clusters",
     }
@@ -156,6 +163,28 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("↑↓", "the selected cluster's top terms, by effect"),
             ("← →", "slide a long name back / on, a word at a time"),
             ("r", "GO terms in the settings: score them in the next pass"),
+        ],
+    ),
+    (
+        "order view (t in the tree pane)",
+        &[
+            ("↑↓", "a cell type on screen, with its cells"),
+            ("space", "mark a type; mark two, first the earlier one (in the table, not the figures)"),
+            (">", "the first marked type precedes the second (asks why)"),
+            ("-", "the two marked types are unrelated (asks why)"),
+            ("r", "run lupin trajectory on the labels on screen (asks for the output prefix)"),
+            ("t / esc", "back to the tree / to the clusters"),
+            ("", "statements go to the project's precedence.tsv; edges show source and, after a trajectory run, verdict"),
+        ],
+    ),
+    (
+        "figures (v in the order view, after a trajectory run)",
+        &[
+            ("v / V", "next figure: layout, diffusion map, order, connectivity / back to the table"),
+            (", .", "another pair of diffusion components"),
+            ("p", "export the figure as {run}.trajectory.{figure}.svg + .pdf and log it"),
+            ("f", "the exports strip: ↑↓ select, enter list an unlisted file, m move, d unlist, D D delete"),
+            ("R", "re-read the log and check every export against its files"),
         ],
     ),
     (
@@ -336,7 +365,7 @@ fn draw_settings(f: &mut Frame, app: &App) {
         .style(POPUP)
         .block(popup(
             format!(" cluster & run · {note} "),
-            " ↑↓ setting · ←→ change · enter run · esc close ",
+            " ↑↓ setting · ←→ change · enter run (on output: edit) · esc close ",
         ))
         .row_highlight_style(highlight(true));
     f.render_widget(Clear, area);
@@ -684,6 +713,12 @@ fn wrap(text: &str, width: usize, max: usize) -> Vec<String> {
 }
 
 fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
+    if let TreeMode::Order(v) = &app.tree_mode {
+        if let Some(fig) = app.figures.as_ref().filter(|fig| fig.shown) {
+            return draw_figures(f, area, app, fig);
+        }
+        return draw_order(f, area, app, v);
+    }
     if let (TreeMode::Ontology(v), Some(cl)) = (&app.tree_mode, &app.cl) {
         return draw_ontology(f, area, app, v, cl);
     }
@@ -903,7 +938,13 @@ fn draw_prompt(f: &mut Frame, app: &App) {
     // question and the answer need once wrapped.
     let screen = f.area();
     let question = p.title.trim();
-    let answer = format!("{}▏", p.text);
+    // A choice takes keys, not text: no answer line.
+    let choice = matches!(p.pending, super::app::Pending::TrajectoryLabels);
+    let answer = if choice {
+        String::new()
+    } else {
+        format!("{}▏", p.text)
+    };
     let want = question.chars().count().max(answer.chars().count()) as u16 + 4;
     // At least 60 columns (or the screen), at most 90% of the screen.
     let lo = screen.width.min(60);
@@ -931,9 +972,203 @@ fn draw_prompt(f: &mut Frame, app: &App) {
         Paragraph::new(lines)
             .style(POPUP)
             .wrap(Wrap { trim: false })
-            .block(popup(String::new(), " enter: ok · esc: cancel ")),
+            .block(popup(
+                String::new(),
+                if choice {
+                    " enter/l: pick a file · a: annotate · esc: cancel "
+                } else {
+                    " enter: ok · esc: cancel "
+                },
+            )),
         area,
     );
+}
+
+/// The order view: the types on screen, then the prior's direct edges with
+/// their source and, when a trajectory run recorded them, their verdicts.
+fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView) {
+    let focused = app.focus == Focus::Tree;
+    let mark = |t: &str| {
+        app.tree_marked
+            .iter()
+            .position(|m| m == t)
+            .map_or("  ".to_string(), |i| format!("{} ", i + 1))
+    };
+    let mut rows: Vec<Row> = v
+        .types
+        .iter()
+        .map(|(t, n)| {
+            Row::new(vec![
+                Cell::from(format!("{}{}", mark(t), t)),
+                Cell::from(format!("{n}")),
+                Cell::from(""),
+                Cell::from(""),
+            ])
+        })
+        .collect();
+    rows.push(Row::new(vec![Cell::from("")]));
+    let edges = v.edges();
+    rows.push(
+        Row::new(vec![
+            Cell::from(format!("{} direct edge(s)", edges.len())),
+            Cell::from(""),
+            Cell::from("source"),
+            Cell::from("data"),
+        ])
+        .style(Style::default().add_modifier(Modifier::DIM)),
+    );
+    for e in &edges {
+        rows.push(Row::new(vec![
+            Cell::from(format!("  {} → {}", e.from, e.to)),
+            Cell::from(""),
+            Cell::from(e.source.clone()),
+            Cell::from(e.data.map_or(String::new(), |d| d.summary())),
+        ]));
+    }
+    for s in v.unrelated() {
+        rows.push(Row::new(vec![
+            Cell::from(format!("  {} ∥ {}", s.from, s.to)),
+            Cell::from(""),
+            Cell::from(s.source.as_str()),
+            Cell::from("unrelated"),
+        ]));
+    }
+    let candidates = v.candidates();
+    if !candidates.is_empty() {
+        rows.push(
+            Row::new(vec![
+                Cell::from(format!(
+                    "{} pair(s) the data connects but the prior does not order",
+                    candidates.len()
+                )),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from("data"),
+            ])
+            .style(Style::default().add_modifier(Modifier::DIM)),
+        );
+        for d in candidates.iter().take(8) {
+            rows.push(Row::new(vec![
+                Cell::from(format!("  {} — {}", d.a, d.b)),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(d.summary()),
+            ]));
+        }
+    }
+    let red = Style::default().fg(Color::Red);
+    if let Some(e) = &v.error {
+        rows.push(Row::new(vec![
+            Cell::from(format!("  not a DAG: {e}")).style(red)
+        ]));
+    }
+    for p in &v.problems {
+        rows.push(Row::new(vec![
+            Cell::from(format!("  unreadable: {p}")).style(red)
+        ]));
+    }
+    let file = v
+        .file
+        .as_ref()
+        .map_or("nowhere to write".to_string(), |p| p.display().to_string());
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(24),
+            Constraint::Length(7),
+            Constraint::Length(14),
+            Constraint::Min(16),
+        ],
+    )
+    .header(
+        Row::new(vec!["type", "cells", "", ""]).style(Style::default().add_modifier(Modifier::DIM)),
+    )
+    .block(pane(format!(" order · {file} "), focused))
+    .row_highlight_style(highlight(focused));
+    let mut state = TableState::default().with_selected(if focused { Some(v.sel) } else { None });
+    f.render_stateful_widget(table, area, &mut state);
+}
+
+/// The figure pane: the current figure, and the exports strip when open.
+fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::FigurePane) {
+    let focused = app.focus == Focus::Tree;
+    let (figure, strip) = if v.exports.open {
+        let [a, b] = Layout::vertical([Constraint::Min(6), Constraint::Length(8)]).areas(area);
+        (a, Some(b))
+    } else {
+        (area, None)
+    };
+    let title = format!(
+        " {} ({}/{}) ",
+        v.data.title(v.current()),
+        v.sel + 1,
+        v.panels.len()
+    );
+    let block = pane(title, focused);
+    let inner = block.inner(figure);
+    f.render_widget(block, figure);
+    match &*v.protocol(inner) {
+        Ok(p) => f.render_widget(ratatui_image::Image::new(p), inner),
+        Err(e) => f.render_widget(
+            Paragraph::new(e.as_str()).wrap(Wrap { trim: true }).dim(),
+            inner,
+        ),
+    }
+    if let Some(strip) = strip {
+        draw_exports(f, strip, &v.exports, focused);
+    }
+}
+
+/// The exports strip: the gallery's entries with their check, then the
+/// figure files beside the run that it does not list.
+fn draw_exports(f: &mut Frame, area: Rect, x: &super::figure_pane::Exports, focused: bool) {
+    let now = super::gallery::now();
+    let mut rows: Vec<Row> = x
+        .gallery
+        .entries
+        .iter()
+        .zip(&x.statuses)
+        .map(|(e, s)| {
+            let row = Row::new(vec![
+                Cell::from(super::app::file_name(&e.path)),
+                Cell::from(super::gallery::ago(e.when, now)),
+                Cell::from(s.as_str()),
+            ]);
+            match s.color() {
+                Some(c) => row.style(Style::default().fg(c)),
+                None => row,
+            }
+        })
+        .collect();
+    rows.extend(x.not_listed.iter().map(|p| {
+        Row::new(vec![
+            Cell::from(super::app::file_name(p)),
+            Cell::from(""),
+            Cell::from("not listed"),
+        ])
+        .style(Style::default().add_modifier(Modifier::DIM))
+    }));
+    let note = x.gallery.set_aside.as_ref().map_or(String::new(), |p| {
+        format!(" · unreadable log set aside as {}", p.display())
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(24),
+            Constraint::Length(12),
+            Constraint::Length(20),
+        ],
+    )
+    .block(pane(
+        format!(
+            " exports ({}){note} · enter list · m move · d unlist · D delete ",
+            x.gallery.entries.len()
+        ),
+        focused,
+    ))
+    .row_highlight_style(highlight(focused));
+    let mut state = TableState::default().with_selected(Some(x.sel));
+    f.render_stateful_widget(table, area, &mut state);
 }
 
 #[cfg(test)]

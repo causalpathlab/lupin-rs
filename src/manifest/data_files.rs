@@ -35,6 +35,8 @@ use std::time::Duration;
 
 pub const RULES: &str = "cl_matching.json";
 pub const ALIASES: &str = "cl_aliases.tsv";
+/// Which cell types precede which, for `lupin trajectory` and the TUI's order view.
+pub const PRECEDENCE: &str = "precedence.tsv";
 pub const ONTOLOGY: &str = "cl-basic.obo";
 pub const GO_ONTOLOGY: &str = "go-basic.obo";
 pub const GO_ONTOLOGY_URL: &str = "https://purl.obolibrary.org/obo/go/go-basic.obo";
@@ -166,15 +168,25 @@ impl SearchPath {
             .map(|d| d.join(name))
     }
 
+    /// `name` in the user's and then the project's layer, the files that
+    /// exist, each with its layer's name.
+    #[must_use]
+    pub fn user_and_project_files(&self, name: &str) -> Vec<(&'static str, PathBuf)> {
+        [("user", &self.user), ("project", &self.project)]
+            .into_iter()
+            .filter_map(|(layer, d)| d.as_ref().map(|d| (layer, d.join(name))))
+            .filter(|(_, p)| p.is_file())
+            .collect()
+    }
+
     /// `name`'s text from the user's and then the project's layer, the files
     /// that exist.
     pub fn user_and_project(&self, name: &str) -> Result<Vec<String>> {
-        [&self.user, &self.project]
+        self.user_and_project_files(name)
             .into_iter()
-            .flatten()
-            .map(|d| d.join(name))
-            .filter(|p| p.is_file())
-            .map(|p| fs::read_to_string(&p).with_context(|| format!("reading {}", p.display())))
+            .map(|(_, p)| {
+                fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))
+            })
             .collect()
     }
 }
@@ -365,8 +377,18 @@ pub fn append_line(file: &Path, header: &str, line: &str) -> Result<()> {
     Ok(())
 }
 
+/// Append a TSV row of `fields` to `file` as [`append_line`] does; a tab or a
+/// newline inside a field becomes a space.
+pub fn append_row(file: &Path, header: &str, fields: &[&str]) -> Result<()> {
+    let row: Vec<String> = fields
+        .iter()
+        .map(|f| f.replace(['\t', '\n'], " "))
+        .collect();
+    append_line(file, header, &row.join("\t"))
+}
+
 /// `p` made absolute (and canonical when it exists).
-fn absolute(p: &Path) -> PathBuf {
+pub(crate) fn absolute(p: &Path) -> PathBuf {
     p.canonicalize().unwrap_or_else(|_| {
         std::env::current_dir()
             .map(|d| d.join(p))

@@ -13,6 +13,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use legume_numeric::matrix::dense_mat_io::{l2_normalize_rows_inplace, Mat, MatWithNames};
+use legume_numeric::matrix::traits::{IoOps, MatOps};
 use log::info;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -160,6 +162,8 @@ pub struct RunManifest {
     pub annotate: RunAnnotate,
     #[serde(default)]
     pub defaults: RunDefaults,
+    #[serde(default)]
+    pub trajectory: RunTrajectory,
     #[serde(flatten)]
     pub extra: Extra,
 }
@@ -219,35 +223,11 @@ pub struct RunOutputs {
 }
 
 impl RunOutputs {
-    /// The topic dictionary or, failing that, the SVD loadings.
-    #[must_use]
-    pub fn gene_dictionary(&self) -> Option<&str> {
-        self.softmax_dictionary
-            .as_deref()
-            .or(self.dictionary.as_deref())
-    }
-
     /// The cell table for GEOMETRY (kNN, layout, clustering):
     /// `cell_embedding`, else `latent`.
     #[must_use]
     pub fn geometry_latent(&self) -> Option<&str> {
         self.cell_embedding.as_deref().or(self.latent.as_deref())
-    }
-
-    /// The cell table for a COMPOSITION view (structure bars, topic colour):
-    /// `latent`, else `cell_embedding`.
-    #[must_use]
-    pub fn structure_latent(&self) -> Option<&str> {
-        self.latent.as_deref().or(self.cell_embedding.as_deref())
-    }
-
-    /// The gene table paired with [`Self::structure_latent`].
-    #[must_use]
-    pub fn structure_dictionary(&self) -> Option<&str> {
-        self.dictionary_empirical
-            .as_deref()
-            .or_else(|| self.gene_dictionary())
-            .or(self.feature_embedding.as_deref())
     }
 }
 
@@ -361,6 +341,31 @@ pub struct StatsCache {
     pub cell_batch: String,
 }
 
+/// What `lupin trajectory` wrote, manifest-relative.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RunTrajectory {
+    /// The combined prior statements and direct edges (TSV).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior: Option<String>,
+    /// Type pairs: connectivity, in-prior, verdict, order agreement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges: Option<String>,
+    /// Per cell: pseudotime, type, component, lineage weights.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pseudotime: Option<String>,
+    /// Cells × diffusion components.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diffusion: Option<String>,
+    /// The root-to-leaf paths (TSV).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineages: Option<String>,
+    /// The settings and inputs the run used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Value>,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunDefaults {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -384,6 +389,7 @@ impl RunManifest {
             layout: RunLayout::default(),
             cluster: RunCluster::default(),
             annotate: RunAnnotate::default(),
+            trajectory: RunTrajectory::default(),
             defaults: RunDefaults::default(),
             extra: Extra::default(),
         }
@@ -745,6 +751,34 @@ pub struct Loaded {
     pub file: PathBuf,
 }
 
+/// The geometry table of the run `manifest` describes, read and prepared for
+/// kNN distances by the run's cell space: rows L2-normalised for an embedding
+/// (Euclidean distance then ranks as cosine), `exp` then column z-scores for
+/// `log θ`, column z-scores otherwise. Annotation's Leiden step and
+/// `lupin trajectory` both feed their kNN graphs this.
+pub fn prepare_geometry(manifest: &RunManifest, dir: &Path) -> anyhow::Result<MatWithNames<Mat>> {
+    let rel = manifest.outputs.geometry_latent().ok_or_else(|| {
+        anyhow::anyhow!("the manifest has neither `outputs.cell_embedding` nor `outputs.latent`")
+    })?;
+    let path = resolve(dir, rel);
+    let mut x = Mat::from_parquet_with_row_names(&path, Some(0))
+        .map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?;
+    match manifest.kind.cell_space() {
+        CellSpace::Embedding => l2_normalize_rows_inplace(&mut x.mat),
+        CellSpace::LogSimplex => {
+            x.mat.apply(|v| *v = v.exp());
+            x.mat.scale_columns_inplace();
+        }
+        CellSpace::Signed => x.mat.scale_columns_inplace(),
+    }
+    info!(
+        "{} cells × {} dims from {path}",
+        x.rows.len(),
+        x.mat.ncols()
+    );
+    Ok(x)
+}
+
 impl Loaded {
     /// `{dir}/{name}` for a manifest at `{dir}/{name}.senna.json`: where the
     /// run's artifacts that the manifest does not record (NB-Fisher weights)
@@ -765,6 +799,12 @@ impl Loaded {
         })?;
         Ok(resolve(&self.dir, rel))
     }
+
+    /// The run's geometry table, read and prepared for kNN distances
+    /// ([`prepare_geometry`]).
+    pub fn prepared_geometry(&self) -> anyhow::Result<MatWithNames<Mat>> {
+        prepare_geometry(&self.manifest, &self.dir)
+    }
 }
 
 impl Loaded {
@@ -775,7 +815,7 @@ impl Loaded {
     pub fn copy_to(&self, file: PathBuf) -> anyhow::Result<Loaded> {
         anyhow::ensure!(
             !same_file(&self.file, &file),
-            "{} is the manifest annotate reads from; choose a different --out",
+            "{} is the manifest this command reads from; choose a different --out",
             file.display()
         );
         let dir = parent_dir(&file);
@@ -823,15 +863,6 @@ pub fn load(from: &str) -> anyhow::Result<Loaded> {
         dir,
         file,
     })
-}
-
-/// Load `--from` when given; otherwise no manifest and paths resolve against `.`.
-pub fn load_optional(from: Option<&str>) -> anyhow::Result<(Option<RunManifest>, PathBuf)> {
-    let Some(from) = from else {
-        return Ok((None, PathBuf::from(".")));
-    };
-    let Loaded { manifest, dir, .. } = load(from)?;
-    Ok((Some(manifest), dir))
 }
 
 #[cfg(test)]
@@ -882,10 +913,10 @@ mod tests {
         let here = proj.join("run").canonicalize().unwrap();
         let root = proj.canonicalize().unwrap();
         // Rebased from the training prefix's directory.
-        let a = m.data_file(&proj.join("run"), "/elsewhere/proj/data/a.zarr");
+        let a = m.data_file(&here, "/elsewhere/proj/data/a.zarr");
         assert_eq!(Path::new(&a), root.join("data/a.zarr"));
         // Found by its tail (file and folder) under an ancestor.
-        let b = m.data_file(&proj.join("run"), "/other/place/b.tsv");
+        let b = m.data_file(&here, "/other/place/b.tsv");
         assert_eq!(Path::new(&b), root.join("place/b.tsv"));
         // A same-named file alone is not the data.
         assert_eq!(
