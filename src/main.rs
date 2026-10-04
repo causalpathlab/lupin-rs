@@ -123,7 +123,7 @@ enum Commands {
     Docs(docs::DocsArgs),
     #[command(
         name = "trajectory",
-        about = "Diffusion pseudotime from a root cell type, and PAGA between types (first cut)"
+        about = "Order cells along a supervised prior over their cell types: Cell Ontology and precedence statements, checked against the kNN graph, then diffusion pseudotime"
     )]
     Trajectory(TrajectoryArgs),
     #[command(

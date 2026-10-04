@@ -27,9 +27,10 @@
 
 use anyhow::{bail, ensure, Result};
 use legume_numeric::matrix::graph::{connected_components, AdjListGraph};
-use legume_numeric::matrix::knn::knn_rows;
+use legume_numeric::matrix::knn::{knn_rows, ALL_PAIRS_THRESHOLD};
 use legume_numeric::matrix::traits::{MatTriplets, RandomizedAlgs, RsvdArgs};
 use legume_numeric::matrix::utils::median;
+use log::warn;
 use nalgebra::DMatrix;
 use nalgebra_sparse::CscMatrix;
 use rustc_hash::FxHashMap;
@@ -67,6 +68,19 @@ impl Neighbours {
         let n = geometry.nrows();
         ensure!(k >= 2, "k counts the cell itself, so it must be at least 2");
         ensure!(n > k, "{n} cells are too few for {k} neighbours");
+        let bad = (0..n)
+            .filter(|&i| geometry.row(i).iter().any(|v| !v.is_finite()))
+            .count();
+        ensure!(
+            bad == 0,
+            "{bad} cells have a non-finite coordinate in the geometry"
+        );
+        if n > ALL_PAIRS_THRESHOLD {
+            warn!(
+                "{n} cells: neighbours come from the approximate inverted-file search \
+                 (exact up to {ALL_PAIRS_THRESHOLD}), so the result no longer replicates scanpy"
+            );
+        }
         let (idx, dist) = knn_rows(geometry, k - 1);
         let duplicated = dist.iter().filter(|d| d.contains(&0.0)).count();
         ensure!(
@@ -111,9 +125,18 @@ impl DiffusionMap {
     /// The diffusion map on `nb` with `n_dcs` components.
     pub(crate) fn new(nb: &Neighbours, n_dcs: usize) -> Result<Self> {
         let n = nb.n_cells();
+        ensure!(n_dcs >= 1, "at least one diffusion component is needed");
         let kernel = gauss_kernel(&nb.idx, &nb.dist)?;
         let s = symmetric_transitions(n, kernel)?;
         let (evals, evecs) = transition_eigenpairs(&s, n_dcs.min(n - 1))?;
+        for &l in &evals {
+            if (l - UNWEIGHTED_FROM).abs() < 1e-4 {
+                warn!(
+                    "eigenvalue {l} sits within 1e-4 of {UNWEIGHTED_FROM}, where scanpy switches \
+                     it between weighted and unweighted; pseudotime may differ from scanpy's"
+                );
+            }
+        }
         let mut coords = evecs.clone();
         for (mut col, &l) in coords.column_iter_mut().zip(&evals) {
             if l < UNWEIGHTED_FROM {
@@ -129,11 +152,24 @@ impl DiffusionMap {
     }
 
     /// DPT distance between cells `i` and `c`; infinite across components.
-    fn distance(&self, i: usize, c: usize) -> f64 {
+    pub(crate) fn distance(&self, i: usize, c: usize) -> f64 {
         if self.component[i] != self.component[c] {
             return f64::INFINITY;
         }
-        (self.coords.row(i) - self.coords.row(c)).norm()
+        self.coords
+            .row(i)
+            .iter()
+            .zip(self.coords.row(c).iter())
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f64>()
+            .sqrt()
+    }
+
+    /// DPT distance from `root` to every cell; infinite across components.
+    pub(crate) fn distances_from(&self, root: usize) -> Vec<f64> {
+        (0..self.coords.nrows())
+            .map(|c| self.distance(root, c))
+            .collect()
     }
 
     /// The medoid of `cells` in DPT distance, among those in the graph
@@ -159,10 +195,9 @@ impl DiffusionMap {
 
     /// Pseudotime from `root`: DPT distance divided by its largest finite
     /// value, as scanpy scales it.
+    #[cfg(test)]
     pub(crate) fn pseudotime(&self, root: usize) -> Vec<f32> {
-        let d: Vec<f64> = (0..self.coords.nrows())
-            .map(|c| self.distance(root, c))
-            .collect();
+        let d = self.distances_from(root);
         let top = d
             .iter()
             .copied()
@@ -244,7 +279,13 @@ fn transition_eigenpairs(s: &CscMatrix<f64>, n_dcs: usize) -> Result<(Vec<f32>, 
             worst = worst.max((su.column(c) - u.column(c) * lambda).norm());
             pairs.push((lambda, c));
         }
-        if worst <= RESIDUAL_TOL {
+        // A NaN residual must fail, not pass.
+        if worst.is_nan() || worst > RESIDUAL_TOL {
+            ensure!(
+                worst.is_finite(),
+                "the transition matrix has non-finite entries (residual {worst})"
+            );
+        } else {
             pairs.sort_by(|a, b| b.0.total_cmp(&a.0));
             let evals = pairs.iter().map(|&(l, _)| l as f32).collect();
             let evecs =
@@ -258,6 +299,7 @@ fn transition_eigenpairs(s: &CscMatrix<f64>, n_dcs: usize) -> Result<(Vec<f32>, 
             args.power_iters
         );
         args.power_iters *= 2;
+        args.oversample += EIGEN_ARGS.oversample;
     }
 }
 

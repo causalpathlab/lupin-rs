@@ -160,6 +160,8 @@ pub struct RunManifest {
     pub annotate: RunAnnotate,
     #[serde(default)]
     pub defaults: RunDefaults,
+    #[serde(default)]
+    pub trajectory: RunTrajectory,
     #[serde(flatten)]
     pub extra: Extra,
 }
@@ -361,6 +363,31 @@ pub struct StatsCache {
     pub cell_batch: String,
 }
 
+/// What `lupin trajectory` wrote, manifest-relative.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RunTrajectory {
+    /// The combined prior statements and direct edges (TSV).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior: Option<String>,
+    /// Type pairs: connectivity, in-prior, verdict, order agreement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges: Option<String>,
+    /// Per cell: pseudotime, type, component, lineage weights.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pseudotime: Option<String>,
+    /// Cells × diffusion components.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diffusion: Option<String>,
+    /// The root-to-leaf paths (TSV).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineages: Option<String>,
+    /// The settings and inputs the run used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Value>,
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunDefaults {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -384,6 +411,7 @@ impl RunManifest {
             layout: RunLayout::default(),
             cluster: RunCluster::default(),
             annotate: RunAnnotate::default(),
+            trajectory: RunTrajectory::default(),
             defaults: RunDefaults::default(),
             extra: Extra::default(),
         }

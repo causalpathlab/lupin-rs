@@ -5,6 +5,7 @@
 //! prior, the manifest section and the TUI build on these.
 
 pub(crate) mod diffusion;
+pub(crate) mod prior;
 pub(crate) mod run;
 pub(crate) mod type_connectivity;
 

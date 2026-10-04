@@ -35,6 +35,8 @@ pub struct ClTerms {
     parents: HashMap<String, Vec<String>>,
     /// `is_a` children, the reverse of `parents`.
     children: HashMap<String, Vec<String>>,
+    /// `develops_from` (RO:0002202): the terms a term's cells develop from.
+    develops_from: HashMap<String, Vec<String>>,
     /// Terms in the analysis subsets the rules name (`ClassRules`).
     classes: BTreeSet<String>,
     /// The file's `data-version`, when it states one.
@@ -48,6 +50,7 @@ struct Stanza {
     /// The name first, then the synonyms the rules count.
     names: Vec<String>,
     parents: Vec<String>,
+    develops_from: Vec<String>,
     subsets: Vec<String>,
     obsolete: bool,
 }
@@ -73,6 +76,11 @@ impl Stanza {
         }
         if terms.rules.classes.is_class(&self.subsets) {
             terms.classes.insert(self.id.clone());
+        }
+        if !self.develops_from.is_empty() {
+            terms
+                .develops_from
+                .insert(self.id.clone(), self.develops_from);
         }
         terms.parents.insert(self.id, self.parents);
     }
@@ -135,6 +143,14 @@ impl ClTerms {
             } else if let Some(v) = line.strip_prefix("is_a:") {
                 if let Some(p) = v.split_whitespace().next() {
                     t.parents.push(p.to_string());
+                }
+            } else if let Some(v) = line.strip_prefix("relationship:") {
+                // `develops_from` is written by its RO id in cl-basic.
+                let mut words = v.split_whitespace();
+                if let (Some("RO:0002202" | "develops_from"), Some(origin)) =
+                    (words.next(), words.next())
+                {
+                    t.develops_from.push(origin.to_string());
                 }
             } else if let Some(v) = line.strip_prefix("subset:") {
                 t.subsets.push(v.trim().to_string());
@@ -224,6 +240,12 @@ impl ClTerms {
         self.name_of.contains_key(id)
     }
 
+    /// The terms `id` develops from (`develops_from`, RO:0002202).
+    #[must_use]
+    pub fn develops_from(&self, id: &str) -> &[String] {
+        self.develops_from.get(id).map_or(&[], Vec::as_slice)
+    }
+
     /// `id`'s `is_a` parents.
     #[must_use]
     pub fn parents(&self, id: &str) -> &[String] {
@@ -287,7 +309,7 @@ impl ClTerms {
     }
 
     /// `id` and every term above it by `is_a`.
-    pub(crate) fn ancestors_or_self(&self, id: &str) -> BTreeSet<String> {
+    pub fn ancestors_or_self(&self, id: &str) -> BTreeSet<String> {
         let mut seen = BTreeSet::new();
         let mut stack = vec![id.to_string()];
         while let Some(t) = stack.pop() {

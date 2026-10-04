@@ -166,6 +166,17 @@ impl SearchPath {
             .map(|d| d.join(name))
     }
 
+    /// `name` in the user's and then the project's layer, the files that
+    /// exist, each with its layer's name.
+    #[must_use]
+    pub fn user_and_project_files(&self, name: &str) -> Vec<(&'static str, PathBuf)> {
+        [("user", &self.user), ("project", &self.project)]
+            .into_iter()
+            .filter_map(|(layer, d)| d.as_ref().map(|d| (layer, d.join(name))))
+            .filter(|(_, p)| p.is_file())
+            .collect()
+    }
+
     /// `name`'s text from the user's and then the project's layer, the files
     /// that exist.
     pub fn user_and_project(&self, name: &str) -> Result<Vec<String>> {
