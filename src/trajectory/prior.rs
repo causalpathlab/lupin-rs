@@ -8,6 +8,7 @@
 
 use crate::annotate::celltype_tree::ClTerms;
 use anyhow::{bail, ensure, Result};
+use legume_numeric::matrix::graph::{connected_components, AdjListGraph};
 use log::info;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -139,7 +140,7 @@ pub(crate) fn from_ontology(
                     } else {
                         Source::Cl
                     },
-                    note: format!("{} develops from {}", b, a),
+                    note: format!("{b} develops from {a}"),
                 });
             }
         }
@@ -147,8 +148,11 @@ pub(crate) fn from_ontology(
     out
 }
 
-/// Statements from a `precedence.tsv` text: `from<TAB>to<TAB>relation[<TAB>note]`,
-/// `#` comments and a `from…` header skipped. `origin` names the file in errors.
+/// Statements from a `precedence.tsv` text, `from<TAB>to<TAB>relation[<TAB>note]`,
+/// or from a `{out}.trajectory_prior.tsv` (whose rows carry a leading `kind`
+/// and a source: its `statement` rows are read, its `edge` rows skipped). `#`
+/// comments and a `from…` header are skipped; `origin` names the file in
+/// errors.
 pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Result<Vec<Statement>> {
     let mut out = Vec::new();
     for (n, line) in text.lines().enumerate() {
@@ -156,9 +160,19 @@ pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Resu
         if line.trim().is_empty() || line.starts_with('#') {
             continue;
         }
-        let fields: Vec<&str> = line.split('\t').map(str::trim).collect();
+        let mut fields: Vec<&str> = line.split('\t').map(str::trim).collect();
         if n == 0 && fields.first() == Some(&"from") {
             continue;
+        }
+        let mut note_from = 3;
+        match fields.first() {
+            Some(&"edge") => continue,
+            Some(&"statement") => {
+                fields.remove(0);
+                // `from to relation source note`: the source column is dropped.
+                note_from = 4;
+            }
+            _ => {}
         }
         ensure!(
             fields.len() >= 3,
@@ -183,7 +197,7 @@ pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Resu
             to: fields[1].to_string(),
             relation,
             source,
-            note: fields[3..].join(" "),
+            note: fields.get(note_from..).unwrap_or(&[]).join(" "),
         });
     }
     Ok(out)
@@ -200,6 +214,57 @@ pub(crate) fn combine(layers: &[Vec<Statement>]) -> Vec<Statement> {
         }
     }
     by_pair.into_values().collect()
+}
+
+/// `--root`: each named type must be a node with no incoming statement, and
+/// gets a `cli` statement to every node no statement lets it reach (other
+/// forced roots aside), so a run with no other prior still orders every type
+/// from it. Returns the layer to combine last.
+pub(crate) fn root_layer(
+    types: &[Box<str>],
+    is_node: &[bool],
+    statements: &[Statement],
+    roots: &[&str],
+) -> Result<Vec<Statement>> {
+    let index = index_of(types);
+    let adj = adjacency(types.len(), &index, statements);
+    let reach = reachability(&adj);
+    let mut root_idx = Vec::new();
+    for &r in roots {
+        let &ri = index.get(r).ok_or_else(|| {
+            anyhow::anyhow!(
+                "--root {r:?} is not a type of this run; the types are: {}",
+                types.join(", ")
+            )
+        })?;
+        ensure!(is_node[ri], "--root {r:?} has too few cells to be a node");
+        if let Some(s) = statements
+            .iter()
+            .find(|s| s.relation == Relation::Precedes && s.to == r)
+        {
+            bail!(
+                "--root {r:?} cannot be a root: {} precedes it ({})",
+                s.from,
+                s.source.as_str()
+            );
+        }
+        root_idx.push(ri);
+    }
+    let mut out = Vec::new();
+    for &ri in &root_idx {
+        for t in 0..types.len() {
+            if t != ri && is_node[t] && !reach[ri][t] && !root_idx.contains(&t) {
+                out.push(Statement {
+                    from: types[ri].to_string(),
+                    to: types[t].to_string(),
+                    relation: Relation::Precedes,
+                    source: Source::Cli,
+                    note: "--root".into(),
+                });
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// A direct edge of the reduced prior, over node indices.
@@ -219,28 +284,66 @@ pub(crate) struct Edge {
 pub(crate) struct Prior {
     pub(crate) statements: Vec<Statement>,
     pub(crate) edges: Vec<Edge>,
+    /// `reach[a][b]`: a path of `precedes` statements leads from `a` to `b`.
+    reach: Vec<Vec<bool>>,
     /// Each node's prior component, `None` for a node with no edge.
     pub(crate) component: Vec<Option<usize>>,
     /// Nodes with an edge but no incoming one, per component.
     pub(crate) roots: Vec<Vec<usize>>,
 }
 
+impl Prior {
+    /// Whether the prior orders `a` and `b`, either way.
+    pub(crate) fn related(&self, a: usize, b: usize) -> bool {
+        self.reach[a][b] || self.reach[b][a]
+    }
+
+    /// Every root-to-leaf path of the direct edges, with its component,
+    /// sorted.
+    pub(crate) fn lineages(&self) -> Vec<(usize, Vec<usize>)> {
+        let mut out = Vec::new();
+        for (c, roots) in self.roots.iter().enumerate() {
+            for &r in roots {
+                let mut stack = vec![vec![r]];
+                while let Some(path) = stack.pop() {
+                    let last = *path.last().expect("a path has a start");
+                    let next: Vec<usize> = self
+                        .edges
+                        .iter()
+                        .filter(|e| e.from == last)
+                        .map(|e| e.to)
+                        .collect();
+                    if next.is_empty() {
+                        out.push((c, path));
+                    } else {
+                        for to in next {
+                            let mut p = path.clone();
+                            p.push(to);
+                            stack.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+}
+
 /// Build the prior over `types` (every label in the run), of which `is_node`
-/// marks the node types. `forced_roots` (`--root`) must be nodes with no
-/// incoming statement; a forced root with no path to a node gets a `cli`
-/// statement to it, so a run with no other prior still orders from it.
+/// marks the node types. Statements about types not in the run are set aside
+/// with a note.
 pub(crate) fn build(
     types: &[Box<str>],
     is_node: &[bool],
     statements: Vec<Statement>,
-    forced_roots: &[&str],
 ) -> Result<Prior> {
-    let index = |name: &str| types.iter().position(|t| t.as_ref() == name);
+    let index = index_of(types);
     let n = types.len();
-    let mut statements: Vec<Statement> = statements
+    let statements: Vec<Statement> = statements
         .into_iter()
         .filter(|s| {
-            let known = index(&s.from).is_some() && index(&s.to).is_some();
+            let known = index.contains_key(s.from.as_str()) && index.contains_key(s.to.as_str());
             if !known {
                 info!(
                     "prior statement about a type not in this run is set aside: {} {} {}",
@@ -252,99 +355,51 @@ pub(crate) fn build(
             known
         })
         .collect();
+    let adj = adjacency(n, &index, &statements);
+    let reach = reachability(&adj);
+    let stated: BTreeMap<(usize, usize), Source> = statements
+        .iter()
+        .filter(|s| s.relation == Relation::Precedes)
+        .map(|s| ((index[s.from.as_str()], index[s.to.as_str()]), s.source))
+        .collect();
 
-    let adjacency = |statements: &[Statement]| -> Vec<Vec<usize>> {
-        let mut adj = vec![Vec::new(); n];
-        for s in statements
+    let mutual = (0..n)
+        .flat_map(|a| (0..n).map(move |b| (a, b)))
+        .find(|&(a, b)| a != b && reach[a][b] && reach[b][a]);
+    if let Some((a, b)) = mutual {
+        let cycle: Vec<&str> = path(&adj, a, b)
+            .into_iter()
+            .chain(path(&adj, b, a).into_iter().skip(1))
+            .map(|i| types[i].as_ref())
+            .collect();
+        let involved: Vec<String> = statements
             .iter()
-            .filter(|s| s.relation == Relation::Precedes)
-        {
-            adj[index(&s.from).unwrap()].push(index(&s.to).unwrap());
-        }
-        adj
-    };
-    let mut adj = adjacency(&statements);
-    let mut reach = reachability(&adj);
-
-    for &r in forced_roots {
-        let ri = index(r).ok_or_else(|| {
-            anyhow::anyhow!(
-                "--root {r:?} is not a type of this run; the types are: {}",
-                types.join(", ")
-            )
-        })?;
-        ensure!(is_node[ri], "--root {r:?} has too few cells to be a node");
-        if let Some(s) = statements
-            .iter()
-            .find(|s| s.relation == Relation::Precedes && s.to == r)
-        {
-            bail!(
-                "--root {r:?} cannot be a root: {} precedes it ({})",
-                s.from,
-                s.source.as_str()
-            );
-        }
-        for t in (0..n).filter(|&t| t != ri && is_node[t] && !reach[ri].contains(&t)) {
-            statements.push(Statement {
-                from: r.to_string(),
-                to: types[t].to_string(),
-                relation: Relation::Precedes,
-                source: Source::Cli,
-                note: "--root".into(),
-            });
-        }
-        adj = adjacency(&statements);
-        reach = reachability(&adj);
-    }
-
-    for a in 0..n {
-        for &b in &reach[a] {
-            if b != a && reach[b].contains(&a) {
-                let cycle = path(&adj, a, b)
-                    .into_iter()
-                    .chain(path(&adj, b, a).into_iter().skip(1))
-                    .map(|i| types[i].to_string())
-                    .collect::<Vec<_>>();
-                let involved: Vec<String> = statements
-                    .iter()
-                    .filter(|s| {
-                        s.relation == Relation::Precedes
-                            && cycle.contains(&s.from)
-                            && cycle.contains(&s.to)
-                    })
-                    .map(|s| format!("{} precedes {} ({})", s.from, s.to, s.source.as_str()))
-                    .collect();
-                bail!(
-                    "the prior has a cycle: {}; from {}",
-                    cycle.join(" → "),
-                    involved.join("; ")
-                );
-            }
-        }
+            .filter(|s| {
+                s.relation == Relation::Precedes
+                    && cycle.contains(&s.from.as_str())
+                    && cycle.contains(&s.to.as_str())
+            })
+            .map(|s| format!("{} precedes {} ({})", s.from, s.to, s.source.as_str()))
+            .collect();
+        bail!(
+            "the prior has a cycle: {}; from {}",
+            cycle.join(" → "),
+            involved.join("; ")
+        );
     }
 
     let nodes: Vec<usize> = (0..n).filter(|&i| is_node[i]).collect();
     let mut edges = Vec::new();
     for &a in &nodes {
-        for &b in &nodes {
-            if a == b || !reach[a].contains(&b) {
-                continue;
-            }
+        for &b in nodes.iter().filter(|&&b| b != a && reach[a][b]) {
             let implied = nodes
                 .iter()
-                .any(|&c| c != a && c != b && reach[a].contains(&c) && reach[c].contains(&b));
+                .any(|&c| c != a && c != b && reach[a][c] && reach[c][b]);
             if implied {
                 continue;
             }
-            let stated = statements
-                .iter()
-                .find(|s| {
-                    s.relation == Relation::Precedes
-                        && index(&s.from) == Some(a)
-                        && index(&s.to) == Some(b)
-                })
-                .map(|s| s.source);
-            let via = if stated.is_some() {
+            let source = stated.get(&(a, b)).copied();
+            let via = if source.is_some() {
                 Vec::new()
             } else {
                 let p = path(&adj, a, b);
@@ -353,36 +408,26 @@ pub(crate) fn build(
             edges.push(Edge {
                 from: a,
                 to: b,
-                source: stated,
+                source,
                 via,
             });
         }
     }
 
-    // Components over the direct edges, numbered in order of their lowest node.
+    // Components over the direct edges, numbered densely in order of their
+    // lowest node; a node with no edge is in none.
+    let pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.from, e.to)).collect();
+    let labels = connected_components(&AdjListGraph::from_unweighted_edges(n, &pairs));
+    let mut dense: BTreeMap<usize, usize> = BTreeMap::new();
     let mut component = vec![None; n];
-    let mut next = 0;
-    for &start in &nodes {
-        if component[start].is_some() || !edges.iter().any(|e| e.from == start || e.to == start) {
-            continue;
+    for i in 0..n {
+        if pairs.iter().any(|&(a, b)| a == i || b == i) {
+            let next = dense.len();
+            component[i] = Some(*dense.entry(labels[i]).or_insert(next));
         }
-        let mut queue = VecDeque::from([start]);
-        while let Some(x) = queue.pop_front() {
-            if component[x].is_some() {
-                continue;
-            }
-            component[x] = Some(next);
-            for e in &edges {
-                if e.from == x {
-                    queue.push_back(e.to);
-                } else if e.to == x {
-                    queue.push_back(e.from);
-                }
-            }
-        }
-        next += 1;
     }
-    let mut roots = vec![Vec::new(); next];
+    let n_components = dense.len();
+    let mut roots = vec![Vec::new(); n_components];
     for &i in &nodes {
         if let Some(c) = component[i] {
             if !edges.iter().any(|e| e.to == i) {
@@ -393,19 +438,41 @@ pub(crate) fn build(
     Ok(Prior {
         statements,
         edges,
+        reach,
         component,
         roots,
     })
 }
 
-/// Every node's set of nodes reachable by one or more steps.
-fn reachability(adj: &[Vec<usize>]) -> Vec<BTreeSet<usize>> {
+fn index_of(types: &[Box<str>]) -> BTreeMap<&str, usize> {
+    types
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.as_ref(), i))
+        .collect()
+}
+
+/// Successors of each type by the `precedes` statements.
+fn adjacency(n: usize, index: &BTreeMap<&str, usize>, statements: &[Statement]) -> Vec<Vec<usize>> {
+    let mut adj = vec![Vec::new(); n];
+    for s in statements
+        .iter()
+        .filter(|s| s.relation == Relation::Precedes)
+    {
+        adj[index[s.from.as_str()]].push(index[s.to.as_str()]);
+    }
+    adj
+}
+
+/// `reach[a][b]`: `b` is reachable from `a` by one or more steps.
+fn reachability(adj: &[Vec<usize>]) -> Vec<Vec<bool>> {
     (0..adj.len())
         .map(|start| {
-            let mut seen = BTreeSet::new();
+            let mut seen = vec![false; adj.len()];
             let mut queue: VecDeque<usize> = adj[start].iter().copied().collect();
             while let Some(x) = queue.pop_front() {
-                if seen.insert(x) {
+                if !seen[x] {
+                    seen[x] = true;
                     queue.extend(adj[x].iter().copied());
                 }
             }
@@ -418,14 +485,16 @@ fn reachability(adj: &[Vec<usize>]) -> Vec<BTreeSet<usize>> {
 fn path(adj: &[Vec<usize>], a: usize, b: usize) -> Vec<usize> {
     let mut parent = vec![None; adj.len()];
     let mut queue = VecDeque::from([a]);
-    let mut seen = BTreeSet::from([a]);
+    let mut seen = vec![false; adj.len()];
+    seen[a] = true;
     while let Some(x) = queue.pop_front() {
         for &y in &adj[x] {
-            if seen.insert(y) {
+            if !seen[y] {
+                seen[y] = true;
                 parent[y] = Some(x);
                 if y == b {
                     let mut p = vec![b];
-                    while let Some(q) = parent[*p.last().unwrap()] {
+                    while let Some(q) = parent[*p.last().expect("non-empty")] {
                         p.push(q);
                     }
                     p.reverse();
@@ -440,7 +509,7 @@ fn path(adj: &[Vec<usize>], a: usize, b: usize) -> Vec<usize> {
 
 /// `{out}.trajectory_prior.tsv`: the combined statements and the direct edges,
 /// each with its source, a complete prior on its own (`--prior … --prior-only`
-/// reads it back).
+/// reads its statements back).
 pub(crate) fn write_tsv(path: &str, types: &[Box<str>], prior: &Prior) -> Result<()> {
     let mut text = String::from("# kind\tfrom\tto\trelation\tsource\tnote\n");
     for s in &prior.statements {
@@ -474,32 +543,6 @@ pub(crate) fn write_tsv(path: &str, types: &[Box<str>], prior: &Prior) -> Result
         );
     }
     std::fs::write(path, text).map_err(|e| anyhow::anyhow!("writing {path}: {e}"))
-}
-
-/// The statements of a `{out}.trajectory_prior.tsv` (its `statement` rows),
-/// so a prior can be read back exactly as it was used.
-pub(crate) fn parse_prior_tsv(text: &str, origin: &str) -> Result<Vec<Statement>> {
-    let mut out = Vec::new();
-    for (n, line) in text.lines().enumerate() {
-        if line.starts_with('#') || line.trim().is_empty() {
-            continue;
-        }
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.first() != Some(&"statement") {
-            continue;
-        }
-        ensure!(f.len() >= 5, "{origin}:{}: malformed prior row", n + 1);
-        let relation = Relation::parse(f[3])
-            .ok_or_else(|| anyhow::anyhow!("{origin}:{}: bad relation {:?}", n + 1, f[3]))?;
-        out.push(Statement {
-            from: f[1].to_string(),
-            to: f[2].to_string(),
-            relation,
-            source: Source::Run,
-            note: f.get(5).unwrap_or(&"").to_string(),
-        });
-    }
-    Ok(out)
 }
 
 #[cfg(test)]

@@ -180,12 +180,11 @@ impl SearchPath {
     /// `name`'s text from the user's and then the project's layer, the files
     /// that exist.
     pub fn user_and_project(&self, name: &str) -> Result<Vec<String>> {
-        [&self.user, &self.project]
+        self.user_and_project_files(name)
             .into_iter()
-            .flatten()
-            .map(|d| d.join(name))
-            .filter(|p| p.is_file())
-            .map(|p| fs::read_to_string(&p).with_context(|| format!("reading {}", p.display())))
+            .map(|(_, p)| {
+                fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))
+            })
             .collect()
     }
 }

@@ -597,33 +597,9 @@ pub fn compute_clusters_from_latent(
     cell_names: &[Box<str>],
     args: &LeidenArgs,
 ) -> Result<(Vec<usize>, usize)> {
-    let latent_rel = manifest
-        .outputs
-        .geometry_latent()
-        .ok_or_else(|| anyhow!("manifest missing outputs.cell_embedding and outputs.latent"))?;
-    let latent_path = resolve(manifest_dir, latent_rel);
-    let mut latent = Mat::from_parquet_with_row_names(&latent_path, Some(0))
-        .with_context(|| format!("failed to load latent {latent_path}"))?;
-    info!(
-        "Loaded latent {latent_path}: {}×{}",
-        latent.mat.nrows(),
-        latent.mat.ncols()
-    );
-
-    // Gate on the space of the table just READ, not on what `latent.parquet`
-    // would hold: keying it on the latent risks exponentiating a Euclidean
-    // embedding that `geometry_latent` handed back instead of the simplex.
-    //
-    // This used to sniff `max <= 0.0` instead, which mis-handles masked-vae (raw
-    // Gaussian `z`, usually max > 0 so it skipped by luck) and is undefined on an
-    // all-NaN latent, where `max()`'s partial ordering decides the branch.
-    if manifest.kind.cell_space() == CellSpace::LogSimplex {
-        info!(
-            "Log-simplex latent ({}); exponentiating to probabilities",
-            manifest.kind
-        );
-        latent.mat.apply(|x| *x = x.exp());
-    }
+    // Prepared as every kNN graph of a run is; Leiden's own normalisation
+    // below then changes nothing (unit rows stay unit, z-scores stay z-scores).
+    let latent = crate::manifest::run::prepare_geometry(manifest, manifest_dir)?;
 
     // An embedding is trained with a dot-product / cosine-style objective, so the
     // kNN graph fed to Leiden should reflect ANGULAR distance. Plain Euclidean on

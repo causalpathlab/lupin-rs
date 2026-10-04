@@ -53,6 +53,10 @@ const MAX_POWER_ITERS: usize = 160;
 /// Largest residual `‖Su − λu‖` accepted for a unit eigenvector.
 const RESIDUAL_TOL: f64 = 1e-3;
 
+/// A root type with more cells than this has its medoid searched among the
+/// cells nearest its centroid, so the search stays quadratic in this many.
+const MEDOID_POOL: usize = 2000;
+
 /// Each cell's `k − 1` nearest other cells and their distances: the one kNN
 /// graph the diffusion map and PAGA share. `k` counts the cell itself, as
 /// scanpy's `n_neighbors` does.
@@ -97,13 +101,13 @@ impl Neighbours {
 
     /// Connected component of each cell in the (symmetrised) kNN graph.
     fn components(&self) -> Vec<usize> {
-        let edges: Vec<(usize, usize, f32)> = self
+        let edges: Vec<(usize, usize)> = self
             .idx
             .iter()
             .enumerate()
-            .flat_map(|(i, row)| row.iter().map(move |&j| (i, j, 1.0)))
+            .flat_map(|(i, row)| row.iter().map(move |&j| (i, j)))
             .collect();
-        connected_components(&AdjListGraph::from_edges(self.n_cells(), &edges))
+        connected_components(&AdjListGraph::from_unweighted_edges(self.n_cells(), &edges))
     }
 }
 
@@ -165,15 +169,9 @@ impl DiffusionMap {
             .sqrt()
     }
 
-    /// DPT distance from `root` to every cell; infinite across components.
-    pub(crate) fn distances_from(&self, root: usize) -> Vec<f64> {
-        (0..self.coords.nrows())
-            .map(|c| self.distance(root, c))
-            .collect()
-    }
-
     /// The medoid of `cells` in DPT distance, among those in the graph
-    /// component holding most of them.
+    /// component holding most of them. Beyond [`MEDOID_POOL`] cells the exact
+    /// search runs over that many cells nearest the type's centroid.
     pub(crate) fn medoid(&self, cells: &[usize]) -> Option<usize> {
         let mut count: FxHashMap<usize, usize> = FxHashMap::default();
         for &c in cells {
@@ -182,11 +180,31 @@ impl DiffusionMap {
         let (&main, _) = count
             .iter()
             .max_by_key(|(comp, n)| (**n, std::cmp::Reverse(**comp)))?;
-        let pool: Vec<usize> = cells
+        let mut pool: Vec<usize> = cells
             .iter()
             .copied()
             .filter(|&c| self.component[c] == main)
             .collect();
+        if pool.len() > MEDOID_POOL {
+            let d = self.coords.ncols();
+            let mut centroid = vec![0.0; d];
+            for &c in &pool {
+                for (s, v) in centroid.iter_mut().zip(self.coords.row(c).iter()) {
+                    *s += v;
+                }
+            }
+            centroid.iter_mut().for_each(|s| *s /= pool.len() as f64);
+            let to_centroid = |c: usize| -> f64 {
+                self.coords
+                    .row(c)
+                    .iter()
+                    .zip(&centroid)
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum()
+            };
+            pool.sort_by(|&a, &b| to_centroid(a).total_cmp(&to_centroid(b)));
+            pool.truncate(MEDOID_POOL);
+        }
         pool.iter()
             .map(|&c| (c, pool.iter().map(|&o| self.distance(c, o)).sum::<f64>()))
             .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -197,7 +215,9 @@ impl DiffusionMap {
     /// value, as scanpy scales it.
     #[cfg(test)]
     pub(crate) fn pseudotime(&self, root: usize) -> Vec<f32> {
-        let d = self.distances_from(root);
+        let d: Vec<f64> = (0..self.coords.nrows())
+            .map(|c| self.distance(root, c))
+            .collect();
         let top = d
             .iter()
             .copied()

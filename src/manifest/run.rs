@@ -13,6 +13,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use legume_numeric::matrix::dense_mat_io::{l2_normalize_rows_inplace, Mat, MatWithNames};
+use legume_numeric::matrix::traits::{IoOps, MatOps};
 use log::info;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -773,6 +775,34 @@ pub struct Loaded {
     pub file: PathBuf,
 }
 
+/// The geometry table of the run `manifest` describes, read and prepared for
+/// kNN distances by the run's cell space: rows L2-normalised for an embedding
+/// (Euclidean distance then ranks as cosine), `exp` then column z-scores for
+/// `log θ`, column z-scores otherwise. Annotation's Leiden step and
+/// `lupin trajectory` both feed their kNN graphs this.
+pub fn prepare_geometry(manifest: &RunManifest, dir: &Path) -> anyhow::Result<MatWithNames<Mat>> {
+    let rel = manifest.outputs.geometry_latent().ok_or_else(|| {
+        anyhow::anyhow!("the manifest has neither `outputs.cell_embedding` nor `outputs.latent`")
+    })?;
+    let path = resolve(dir, rel);
+    let mut x = Mat::from_parquet_with_row_names(&path, Some(0))
+        .map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?;
+    match manifest.kind.cell_space() {
+        CellSpace::Embedding => l2_normalize_rows_inplace(&mut x.mat),
+        CellSpace::LogSimplex => {
+            x.mat.apply(|v| *v = v.exp());
+            x.mat.scale_columns_inplace();
+        }
+        CellSpace::Signed => x.mat.scale_columns_inplace(),
+    }
+    info!(
+        "{} cells × {} dims from {path}",
+        x.rows.len(),
+        x.mat.ncols()
+    );
+    Ok(x)
+}
+
 impl Loaded {
     /// `{dir}/{name}` for a manifest at `{dir}/{name}.senna.json`: where the
     /// run's artifacts that the manifest does not record (NB-Fisher weights)
@@ -794,38 +824,10 @@ impl Loaded {
         Ok(resolve(&self.dir, rel))
     }
 
-    /// The geometry table, read and prepared for kNN distances by the run's
-    /// cell space: rows L2-normalised for an embedding (Euclidean distance
-    /// then ranks as cosine), `exp` then column z-scores for `log θ`, column
-    /// z-scores otherwise. This is what annotation's Leiden step feeds its
-    /// kNN graph (legume-numeric `leiden_clustering` applies the same
-    /// normalisation after annotation's `exp`).
-    pub fn prepared_geometry(
-        &self,
-    ) -> anyhow::Result<
-        legume_numeric::matrix::dense_mat_io::MatWithNames<
-            legume_numeric::matrix::dense_mat_io::Mat,
-        >,
-    > {
-        use legume_numeric::matrix::dense_mat_io::{l2_normalize_rows_inplace, Mat};
-        use legume_numeric::matrix::traits::{IoOps, MatOps};
-        let path = self.geometry_latent_path()?;
-        let mut x = Mat::from_parquet_with_row_names(&path, Some(0))
-            .map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?;
-        match self.manifest.kind.cell_space() {
-            CellSpace::Embedding => l2_normalize_rows_inplace(&mut x.mat),
-            CellSpace::LogSimplex => {
-                x.mat.apply(|v| *v = v.exp());
-                x.mat.scale_columns_inplace();
-            }
-            CellSpace::Signed => x.mat.scale_columns_inplace(),
-        }
-        info!(
-            "{} cells × {} dims from {path}",
-            x.rows.len(),
-            x.mat.ncols()
-        );
-        Ok(x)
+    /// The run's geometry table, read and prepared for kNN distances
+    /// ([`prepare_geometry`]).
+    pub fn prepared_geometry(&self) -> anyhow::Result<MatWithNames<Mat>> {
+        prepare_geometry(&self.manifest, &self.dir)
     }
 }
 
@@ -837,7 +839,7 @@ impl Loaded {
     pub fn copy_to(&self, file: PathBuf) -> anyhow::Result<Loaded> {
         anyhow::ensure!(
             !same_file(&self.file, &file),
-            "{} is the manifest annotate reads from; choose a different --out",
+            "{} is the manifest this command reads from; choose a different --out",
             file.display()
         );
         let dir = parent_dir(&file);

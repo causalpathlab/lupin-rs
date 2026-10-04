@@ -28,6 +28,10 @@ id: CL:0005
 name: mature cell
 is_a: CL:0010 ! broad class
 relationship: RO:0002202 CL:0004 ! develops from precursor
+[Term]
+id: CL:0006
+name: other mature cell
+is_a: CL:0010 ! broad class
 ";
 
 fn terms() -> ClTerms {
@@ -45,6 +49,7 @@ fn label_cl() -> BTreeMap<String, String> {
         ("Committed", "CL:0003"),
         ("Pre", "CL:0004"),
         ("Mature", "CL:0005"),
+        ("Other", "CL:0006"),
     ]
     .into_iter()
     .map(|(l, id)| (l.to_string(), id.to_string()))
@@ -65,6 +70,10 @@ fn edges_named(types: &[Box<str>], p: &Prior) -> Vec<(String, String, String)> {
         .collect()
 }
 
+fn statements(text: &str) -> Vec<Statement> {
+    parse_statements(text, Source::Run, "test").unwrap()
+}
+
 #[test]
 fn ontology_statements_follow_develops_from_and_inherit_through_is_a() {
     let st = from_ontology(&terms(), &label_cl());
@@ -83,46 +92,53 @@ fn ontology_statements_follow_develops_from_and_inherit_through_is_a() {
     assert_eq!(
         find("Stem", "Mature"),
         Some(Source::Cl),
-        "the chain reaches the stem cell directly, so the broad class's shortcut does not make it inherited"
+        "its own chain reaches the stem cell, so the broad class's shortcut does not make it inherited"
+    );
+    assert_eq!(
+        find("Stem", "Other"),
+        Some(Source::ClInherited),
+        "only the broad class develops from the stem cell"
     );
     assert_eq!(find("Prog", "Stem"), None, "never backwards");
 }
 
 #[test]
-fn inherited_statements_are_tagged() {
-    let mut map = label_cl();
-    map.remove("Pre");
-    map.remove("Committed");
-    map.remove("Prog");
-    // With only the broad class's develops_from reaching the stem cell.
-    let st = from_ontology(&terms(), &map);
-    let stem_mature = st
-        .iter()
-        .find(|s| s.from == "Stem" && s.to == "Mature")
-        .unwrap();
-    // Mature's own chain still reaches Stem through dropped terms (Cl wins over inherited).
-    assert_eq!(stem_mature.source, Source::Cl);
-}
-
-#[test]
 fn reduction_keeps_only_direct_edges_and_passes_through_dropped_types() {
     let types = labels(&["Stem", "Prog", "Committed", "Pre", "Mature"]);
-    let st = from_ontology(&terms(), &label_cl());
+    let mut map = label_cl();
+    map.remove("Other");
+    let st = from_ontology(&terms(), &map);
     // "Committed" has too few cells: it is not a node.
     let is_node = [true, true, false, true, true];
-    let p = build(&types, &is_node, st, &[]).unwrap();
-    let e = edges_named(&types, &p);
+    let p = build(&types, &is_node, st).unwrap();
     assert_eq!(
-        e,
+        edges_named(&types, &p),
         vec![
             ("Stem".into(), "Prog".into(), "cl".into()),
             ("Prog".into(), "Pre".into(), "cl".into()),
             ("Pre".into(), "Mature".into(), "cl".into()),
-        ],
-        "{e:?}"
+        ]
+    );
+    assert!(
+        p.edges[1].via.is_empty(),
+        "the ontology states Prog → Pre outright through the chain"
     );
     assert_eq!(p.roots, vec![vec![0]]);
     assert_eq!(p.component, vec![Some(0), Some(0), None, Some(0), Some(0)]);
+    assert!(p.related(0, 4) && p.related(4, 0) && !p.related(2, 2));
+    assert_eq!(p.lineages(), vec![(0, vec![0, 1, 3, 4])]);
+}
+
+#[test]
+fn an_edge_through_a_dropped_type_records_the_way() {
+    let types = labels(&["A", "M", "B"]);
+    let st = statements("A\tM\tprecedes\nM\tB\tprecedes\n");
+    let p = build(&types, &[true, false, true], st).unwrap();
+    assert_eq!(
+        edges_named(&types, &p),
+        vec![("A".into(), "B".into(), "implied".into())]
+    );
+    assert_eq!(p.edges[0].via, vec![1]);
 }
 
 #[test]
@@ -157,21 +173,18 @@ fn a_later_layer_replaces_a_pair_whatever_its_direction() {
     let combined = combine(&[combined, user]);
     assert_eq!(combined[0].relation, Relation::Unrelated);
     let types = labels(&["A", "B"]);
-    let p = build(&types, &[true, true], combined, &[]).unwrap();
+    let p = build(&types, &[true, true], combined).unwrap();
     assert!(p.edges.is_empty());
     assert_eq!(p.component, vec![None, None]);
+    assert!(p.roots.is_empty());
 }
 
 #[test]
 fn a_cycle_is_an_error_naming_its_statements() {
-    let st = parse_statements(
-        "A\tB\tprecedes\nB\tC\tprecedes\nC\tA\tprecedes\n",
-        Source::Run,
-        "r",
-    )
-    .unwrap();
-    let types = labels(&["A", "B", "C"]);
-    let err = build(&types, &[true; 3], st, &[]).unwrap_err().to_string();
+    let st = statements("A\tB\tprecedes\nB\tC\tprecedes\nC\tA\tprecedes\n");
+    let err = build(&labels(&["A", "B", "C"]), &[true; 3], st)
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("cycle") && err.contains("C precedes A (run)"),
         "{err}"
@@ -179,21 +192,30 @@ fn a_cycle_is_an_error_naming_its_statements() {
 }
 
 #[test]
-fn a_forced_root_fans_out_to_unreached_nodes_and_cannot_have_a_parent() {
-    let types = labels(&["Stem", "X", "Y"]);
-    let p = build(&types, &[true; 3], Vec::new(), &["Stem"]).unwrap();
+fn forced_roots_fan_out_to_unreached_nodes_but_not_to_each_other() {
+    let types = labels(&["Stem", "X", "Y", "Stem2"]);
+    let layer = root_layer(&types, &[true; 4], &[], &["Stem", "Stem2"]).unwrap();
+    let pairs: Vec<(&str, &str)> = layer
+        .iter()
+        .map(|s| (s.from.as_str(), s.to.as_str()))
+        .collect();
     assert_eq!(
-        edges_named(&types, &p),
-        vec![
-            ("Stem".into(), "X".into(), "cli".into()),
-            ("Stem".into(), "Y".into(), "cli".into())
-        ]
+        pairs,
+        vec![("Stem", "X"), ("Stem", "Y"), ("Stem2", "X"), ("Stem2", "Y")]
     );
-    let st = parse_statements("X\tStem\tprecedes\n", Source::Run, "r").unwrap();
-    let err = build(&types, &[true; 3], st, &["Stem"])
+    assert!(layer.iter().all(|s| s.source == Source::Cli));
+    let p = build(&types, &[true; 4], combine(&[layer])).unwrap();
+    assert_eq!(p.roots, vec![vec![0, 3]]);
+
+    let st = statements("X\tStem\tprecedes\n");
+    let err = root_layer(&types, &[true; 4], &st, &["Stem"])
         .unwrap_err()
         .to_string();
     assert!(err.contains("cannot be a root"), "{err}");
+    let err = root_layer(&types, &[true; 4], &[], &["Nope"])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not a type of this run"), "{err}");
 }
 
 #[test]
@@ -203,16 +225,28 @@ fn bad_relation_and_self_statements_are_errors() {
 }
 
 #[test]
-fn the_prior_tsv_round_trips_its_statements() {
+fn the_prior_tsv_reads_back_as_statements() {
     let types = labels(&["A", "B", "C"]);
-    let st = parse_statements("A\tB\tprecedes\nB\tC\tprecedes\n", Source::Project, "p").unwrap();
-    let p = build(&types, &[true; 3], st, &[]).unwrap();
+    let p = build(
+        &types,
+        &[true; 3],
+        statements("A\tB\tprecedes\tfirst\nB\tC\tprecedes\n"),
+    )
+    .unwrap();
     let dir = std::env::temp_dir().join(format!("lupin-prior-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("x.trajectory_prior.tsv");
     write_tsv(path.to_str().unwrap(), &types, &p).unwrap();
-    let back = parse_prior_tsv(&std::fs::read_to_string(&path).unwrap(), "x").unwrap();
-    assert_eq!(back.len(), 2);
-    assert_eq!((back[1].from.as_str(), back[1].to.as_str()), ("B", "C"));
+    let back =
+        parse_statements(&std::fs::read_to_string(&path).unwrap(), Source::Run, "x").unwrap();
+    assert_eq!(back.len(), 2, "edge rows are skipped");
+    assert_eq!(
+        (
+            back[0].from.as_str(),
+            back[0].to.as_str(),
+            back[0].note.as_str()
+        ),
+        ("A", "B", "first")
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }

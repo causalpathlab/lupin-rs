@@ -1,8 +1,8 @@
 //! `lupin trajectory`: an explicit, supervised prior over the run's cell
 //! types, checked against the data and used to order cells by diffusion
-//! pseudotime (`docs/trajectory-plan.md`). Today: the scanpy-matched
-//! diffusion map, pseudotime and PAGA, and a first command over them; the
-//! prior, the manifest section and the TUI build on these.
+//! pseudotime (`docs/trajectory-plan.md`): the scanpy-matched diffusion map,
+//! pseudotime and PAGA connectivity, the prior, and the command over them.
+//! The TUI order view and the plot build on these.
 
 pub(crate) mod diffusion;
 pub(crate) mod prior;

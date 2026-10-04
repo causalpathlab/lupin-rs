@@ -309,7 +309,7 @@ impl ClTerms {
     }
 
     /// `id` and every term above it by `is_a`.
-    pub fn ancestors_or_self(&self, id: &str) -> BTreeSet<String> {
+    pub(crate) fn ancestors_or_self(&self, id: &str) -> BTreeSet<String> {
         let mut seen = BTreeSet::new();
         let mut stack = vec![id.to_string()];
         while let Some(t) = stack.pop() {
