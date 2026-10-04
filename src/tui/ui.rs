@@ -77,8 +77,11 @@ fn help(app: &App) -> &'static str {
         Focus::Genes => {
             " ? keys · ↑↓ gene · a add · A add to a type · d drop · x hide · m view · tab pane"
         }
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
+            " ? keys · ↑↓ type · space mark · > precedes · - unrelated · t back to the tree"
+        }
         Focus::Tree => {
-            " ? keys · ↑↓ node · enter label · space mark · + mixed label · o ontology · / search"
+            " ? keys · ↑↓ node · enter label · space mark · + mixed label · o ontology · / search · t order"
         }
         Focus::Go => " ? keys · ↑↓ term · ← → read a long name · tab pane · esc clusters",
     }
@@ -156,6 +159,17 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("↑↓", "the selected cluster's top terms, by effect"),
             ("← →", "slide a long name back / on, a word at a time"),
             ("r", "GO terms in the settings: score them in the next pass"),
+        ],
+    ),
+    (
+        "order view (t in the tree pane)",
+        &[
+            ("↑↓", "a cell type on screen, with its cells"),
+            ("space", "mark a type; mark two, first the earlier one"),
+            (">", "the first marked type precedes the second (asks why)"),
+            ("-", "the two marked types are unrelated (asks why)"),
+            ("t / esc", "back to the tree / to the clusters"),
+            ("", "statements go to the project's precedence.tsv; edges show source and, after a trajectory run, verdict"),
         ],
     ),
     (
@@ -684,6 +698,9 @@ fn wrap(text: &str, width: usize, max: usize) -> Vec<String> {
 }
 
 fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
+    if let TreeMode::Order(v) = &app.tree_mode {
+        return draw_order(f, area, app, v);
+    }
     if let (TreeMode::Ontology(v), Some(cl)) = (&app.tree_mode, &app.cl) {
         return draw_ontology(f, area, app, v, cl);
     }
@@ -934,6 +951,97 @@ fn draw_prompt(f: &mut Frame, app: &App) {
             .block(popup(String::new(), " enter: ok · esc: cancel ")),
         area,
     );
+}
+
+/// The order view: the types on screen, then the prior's direct edges with
+/// their source and, when a trajectory run recorded them, their verdicts.
+fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView) {
+    let focused = app.focus == Focus::Tree;
+    let mark = |t: &str| {
+        app.tree_marked
+            .iter()
+            .position(|m| m == t)
+            .map_or("  ".to_string(), |i| format!("{} ", i + 1))
+    };
+    let mut rows: Vec<Row> = v
+        .types
+        .iter()
+        .enumerate()
+        .map(|(i, (t, n))| {
+            let row = Row::new(vec![
+                Cell::from(format!("{}{}", mark(t), t)),
+                Cell::from(format!("{n}")),
+                Cell::from(""),
+                Cell::from(""),
+            ]);
+            if focused && i == v.sel {
+                row.style(highlight(true))
+            } else {
+                row
+            }
+        })
+        .collect();
+    rows.push(Row::new(vec![Cell::from("")]));
+    let edges = v.edges();
+    rows.push(
+        Row::new(vec![
+            Cell::from(format!("{} direct edge(s)", edges.len())),
+            Cell::from(""),
+            Cell::from("source"),
+            Cell::from("data"),
+        ])
+        .style(Style::default().add_modifier(Modifier::DIM)),
+    );
+    for (from, to, source, verdict) in &edges {
+        let data = verdict.map_or(String::new(), |d| {
+            if d.order_agreement.is_finite() {
+                format!(
+                    "{} {:.2} · order {:.2}",
+                    d.verdict, d.connectivity, d.order_agreement
+                )
+            } else {
+                format!("{} {:.2}", d.verdict, d.connectivity)
+            }
+        });
+        rows.push(Row::new(vec![
+            Cell::from(format!("  {from} → {to}")),
+            Cell::from(""),
+            Cell::from(source.clone()),
+            Cell::from(data),
+        ]));
+    }
+    for s in v.unrelated() {
+        rows.push(Row::new(vec![
+            Cell::from(format!("  {} ∥ {}", s.from, s.to)),
+            Cell::from(""),
+            Cell::from(s.source.as_str()),
+            Cell::from("unrelated"),
+        ]));
+    }
+    if let Some(e) = &v.error {
+        rows.push(Row::new(vec![
+            Cell::from(format!("  not a DAG: {e}")).style(Style::default().fg(Color::Red))
+        ]));
+    }
+    let where_ = v
+        .file
+        .as_ref()
+        .map_or("nowhere to write".to_string(), |p| p.display().to_string());
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(24),
+            Constraint::Length(7),
+            Constraint::Length(14),
+            Constraint::Min(16),
+        ],
+    )
+    .header(
+        Row::new(vec!["type", "cells", "", ""]).style(Style::default().add_modifier(Modifier::DIM)),
+    )
+    .block(pane(format!(" order · {where_} "), focused));
+    let mut state = TableState::default().with_selected(if focused { Some(v.sel) } else { None });
+    f.render_stateful_widget(table, area, &mut state);
 }
 
 #[cfg(test)]

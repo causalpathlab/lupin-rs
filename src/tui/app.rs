@@ -12,6 +12,7 @@ use crate::annotate::panel_tree::PanelTree;
 use crate::annotate::rounds::ClusterId;
 use crate::annotate_cmd::{AnnotateCliArgs, AnnotateMethod};
 use crate::manifest::rounds::chain_rounds;
+use crate::trajectory::prior::Relation;
 use enrichment::UNASSIGNED_LABEL;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::{Path, PathBuf};
@@ -130,6 +131,8 @@ pub enum TreeMode {
     Panel,
     /// The Cell Ontology around a term.
     Ontology(super::ontology::OntologyView),
+    /// Which cell types precede which: the prior `lupin trajectory` builds.
+    Order(super::order::OrderView),
 }
 
 /// What the genes pane lists.
@@ -168,6 +171,13 @@ pub enum Pending {
         label: String,
         genes: Vec<String>,
         add: bool,
+    },
+    /// State that `from` precedes `to` (or that they are unrelated) in the
+    /// project's precedence file; the text is why.
+    Precedence {
+        from: String,
+        to: String,
+        relation: Relation,
     },
 }
 
@@ -574,6 +584,7 @@ impl App {
     /// term's in the ontology view.
     fn tree_selected_label(&self) -> Option<String> {
         match (&self.tree_mode, &self.cl) {
+            (TreeMode::Order(v), _) => v.selected().map(str::to_string),
             (TreeMode::Ontology(v), Some(cl)) => v
                 .selected()
                 .map(|r| super::ontology::term_label(cl, &self.tree, &r.id)),
@@ -1155,6 +1166,20 @@ impl App {
                         self.marked = genes;
                         self.ask_markers_of(reason, add);
                     }
+                    Pending::Precedence { from, to, relation } => {
+                        let TreeMode::Order(v) = &self.tree_mode else {
+                            return;
+                        };
+                        self.status = match v.record(&from, &to, relation, &reason) {
+                            Ok(file) => format!(
+                                "recorded {from} {} {to} in {}",
+                                relation.as_str(),
+                                file.display()
+                            ),
+                            Err(e) => format!("could not record the statement: {e:#}"),
+                        };
+                        self.reload_order();
+                    }
                     Pending::Remember { label, id, file } => {
                         self.status = match remember_alias(&file, &label, &id, &reason) {
                             Ok(()) => format!("remembered {label} → {id} in {}", file.display()),
@@ -1431,6 +1456,7 @@ impl App {
                     _ => return false,
                 }
             }
+            Focus::Tree if code == KeyCode::Char('t') => self.toggle_order(),
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
             // A search is of the ontology: open it there.
             Focus::Tree
@@ -1442,6 +1468,9 @@ impl App {
                 }
             }
             Focus::Tree if code == KeyCode::Char(' ') => self.toggle_tree_mark(),
+            Focus::Tree if matches!(self.tree_mode, TreeMode::Order(_)) => {
+                return self.order_key(code);
+            }
             Focus::Tree if code == KeyCode::Char('+') => self.mix_marked(),
             Focus::Tree if matches!(self.tree_mode, TreeMode::Ontology(_)) => {
                 return self.ontology_key(code);
@@ -1468,6 +1497,100 @@ impl App {
                 }
             }
         }
+        true
+    }
+
+    /// Switch the tree pane to the order view (which types precede which) and
+    /// back.
+    fn toggle_order(&mut self) {
+        if matches!(self.tree_mode, TreeMode::Order(_)) {
+            self.tree_mode = TreeMode::Panel;
+            return;
+        }
+        self.tree_marked.clear();
+        self.reload_order();
+        self.status = "order view: space marks a type, then > states the first precedes the second, - that they are unrelated".into();
+    }
+
+    /// The labels on screen with their cell counts: the round's labels, else
+    /// the panel's types.
+    fn order_types(&self) -> Vec<(String, usize)> {
+        let mut counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        match &self.round {
+            Some(r) => {
+                for c in &r.clusters {
+                    if let Some(l) = r.label_of(c.id, &self.edits) {
+                        *counts.entry(l).or_default() += c.cells;
+                    }
+                }
+            }
+            None => {
+                for key in self.original.keys() {
+                    counts.entry(key.clone()).or_default();
+                }
+            }
+        }
+        counts.into_iter().collect()
+    }
+
+    /// (Re)build the order view from the labels on screen and the data files.
+    fn reload_order(&mut self) {
+        let sel = match &self.tree_mode {
+            TreeMode::Order(v) => v.sel,
+            _ => 0,
+        };
+        let mut v = super::order::OrderView::load(
+            self.order_types(),
+            self.cl.as_ref(),
+            &self.data_search,
+            &[self.target.as_path(), self.source.as_path()],
+        );
+        v.sel = sel.min(v.types.len().saturating_sub(1));
+        if let Some(e) = &v.error {
+            self.status = format!("the prior is not a DAG: {e}");
+        }
+        self.tree_mode = TreeMode::Order(v);
+    }
+
+    /// Keys of the order view: move, and `>` / `-` on two marked types.
+    fn order_key(&mut self, code: KeyCode) -> bool {
+        let TreeMode::Order(v) = &mut self.tree_mode else {
+            return false;
+        };
+        step(&mut v.sel, v.types.len(), code);
+        let relation = match code {
+            KeyCode::Char('>') => Relation::Precedes,
+            KeyCode::Char('-') => Relation::Unrelated,
+            KeyCode::Esc => {
+                self.focus = Focus::Clusters;
+                return true;
+            }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End => {
+                return true;
+            }
+            _ => return false,
+        };
+        if self.tree_marked.len() != 2 {
+            self.status = "mark exactly two types with space, in order, then > or -".into();
+            return true;
+        }
+        let (from, to) = (self.tree_marked[0].clone(), self.tree_marked[1].clone());
+        self.tree_marked.clear();
+        let title = match relation {
+            Relation::Precedes => format!(" why does {from} precede {to}? "),
+            Relation::Unrelated => format!(" why are {from} and {to} unrelated? "),
+        };
+        self.prompt = Some(Prompt {
+            title,
+            text: String::new(),
+            pending: Pending::Precedence { from, to, relation },
+        });
         true
     }
 

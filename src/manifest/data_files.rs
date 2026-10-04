@@ -35,6 +35,8 @@ use std::time::Duration;
 
 pub const RULES: &str = "cl_matching.json";
 pub const ALIASES: &str = "cl_aliases.tsv";
+/// Which cell types precede which, for `lupin trajectory` and the TUI's order view.
+pub const PRECEDENCE: &str = "precedence.tsv";
 pub const ONTOLOGY: &str = "cl-basic.obo";
 pub const GO_ONTOLOGY: &str = "go-basic.obo";
 pub const GO_ONTOLOGY_URL: &str = "https://purl.obolibrary.org/obo/go/go-basic.obo";

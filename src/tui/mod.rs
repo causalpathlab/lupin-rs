@@ -10,6 +10,7 @@ mod app;
 mod export;
 mod genes;
 mod ontology;
+mod order;
 mod picker;
 mod round;
 mod runner;

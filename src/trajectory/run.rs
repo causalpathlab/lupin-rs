@@ -7,7 +7,7 @@ use super::encode_groups;
 use super::prior::{self, Prior, Source, Statement};
 use super::type_connectivity::connectivity;
 use crate::cell_labels::read_cell_labels;
-use crate::manifest::data_files::Fetch;
+use crate::manifest::data_files::{Fetch, PRECEDENCE};
 use crate::manifest::run::{annotated_path, load, may_replace, rel_to_manifest, resolve, Loaded};
 use anyhow::{bail, Context, Result};
 use clap::Args;
@@ -19,9 +19,6 @@ use legume_numeric::matrix::utils::{median, partition_by_membership};
 use log::{info, warn};
 use nalgebra::DMatrix;
 use std::collections::{BTreeMap, BTreeSet};
-
-/// The layered statements file.
-const PRECEDENCE: &str = "precedence.tsv";
 
 #[derive(Args, Debug)]
 pub struct TrajectoryArgs {
