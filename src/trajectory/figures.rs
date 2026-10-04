@@ -302,6 +302,7 @@ impl TrajectoryData {
                 width_px: w,
                 height_px: h,
                 frame_stroke_px: 1.0,
+                background: Some((255, 255, 255)),
                 ..SvgOpts::default()
             },
         ))
