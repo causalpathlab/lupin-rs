@@ -151,15 +151,19 @@ pub(crate) fn from_ontology(
 }
 
 /// Statements from a `precedence.tsv` text, `from<TAB>to<TAB>relation[<TAB>note]`,
-/// or from a `{out}.trajectory_prior.tsv` (whose rows carry a leading `kind`
-/// and a source: its `statement` rows are read, its `edge` rows skipped). `#`
-/// comments and a `from…` header are skipped; `origin` names the file in
-/// errors.
+/// or from a `{out}.trajectory_prior.tsv` (known by its `# kind` header; its
+/// rows carry a leading `kind` and a source: its `statement` rows are read,
+/// its `edge` rows skipped). `#` comments and a `from…` header are skipped;
+/// `origin` names the file in errors.
 pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Result<Vec<Statement>> {
+    let kinds = text
+        .lines()
+        .next()
+        .is_some_and(|l| l.trim_start().starts_with("# kind"));
     let mut out = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let line = line.trim_end();
-        if line.trim().is_empty() || line.starts_with('#') {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
         let mut fields: Vec<&str> = line.split('\t').map(str::trim).collect();
@@ -171,14 +175,19 @@ pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Resu
             continue;
         }
         let mut note_from = 3;
-        match fields.first() {
-            Some(&"edge") => continue,
-            Some(&"statement") => {
-                fields.remove(0);
-                // `from to relation source note`: the source column is dropped.
-                note_from = 4;
+        if kinds {
+            match fields.first() {
+                Some(&"edge") => continue,
+                Some(&"statement") => {
+                    fields.remove(0);
+                    // `from to relation source note`: the source column is dropped.
+                    note_from = 4;
+                }
+                _ => bail!(
+                    "{origin}:{}: expected an `edge` or `statement` row, got {line:?}",
+                    n + 1
+                ),
             }
-            _ => {}
         }
         ensure!(
             fields.len() >= 3,
@@ -267,15 +276,29 @@ pub(crate) fn read_layer(path: &Path, layer: &str) -> Result<Vec<Statement>> {
 
 /// One statement per pair of types: within a layer the last wins, and a later
 /// layer's statement about a pair replaces an earlier layer's whatever its
-/// direction. Sorted by the pair.
+/// direction. The Cell Ontology's statements have no order, so both
+/// directions of a pair from it are kept, for [`build`] to report as a cycle.
+/// Sorted by the pair.
 pub(crate) fn combine(layers: &[Vec<Statement>]) -> Vec<Statement> {
-    let mut by_pair: BTreeMap<(String, String), Statement> = BTreeMap::new();
-    for layer in layers {
+    let from_cl = |s: &Statement| matches!(s.source, Source::Cl | Source::ClInherited);
+    let mut by_pair: BTreeMap<(String, String), (usize, Vec<Statement>)> = BTreeMap::new();
+    for (k, layer) in layers.iter().enumerate() {
         for s in layer {
-            by_pair.insert(s.pair(), s.clone());
+            let slot = by_pair.entry(s.pair()).or_insert((k, Vec::new()));
+            let opposite = slot.0 == k
+                && from_cl(s)
+                && slot
+                    .1
+                    .iter()
+                    .all(|t| from_cl(t) && t.relation == Relation::Precedes && t.from == s.to);
+            if !(opposite && s.relation == Relation::Precedes && !slot.1.is_empty()) {
+                slot.1.clear();
+            }
+            slot.0 = k;
+            slot.1.push(s.clone());
         }
     }
-    by_pair.into_values().collect()
+    by_pair.into_values().flat_map(|(_, s)| s).collect()
 }
 
 /// `--root`: each named type must be a node with no incoming statement, and
@@ -306,14 +329,12 @@ pub(crate) fn root_layer(
             )
         })?;
         ensure!(is_node[ri], "--root {r:?} has too few cells to be a node");
-        if let Some(s) = statements
-            .iter()
-            .find(|s| s.relation == Relation::Precedes && s.to == r)
-        {
+        // Only a node before it matters: a type too small to be a node is
+        // joined across, and the root keeps no incoming edge.
+        if let Some(t) = (0..types.len()).find(|&t| t != ri && is_node[t] && reach[t][ri]) {
             bail!(
-                "--root {r:?} cannot be a root: {} precedes it ({})",
-                s.from,
-                s.source.as_str()
+                "--root {r:?} cannot be a root: {}",
+                stated_path(types, &adj, statements, t, ri)
             );
         }
         root_idx.push(ri);
@@ -470,6 +491,24 @@ pub(crate) fn build(
         );
     }
 
+    // An `unrelated` statement stands only if nothing else orders the pair.
+    for s in statements
+        .iter()
+        .filter(|s| s.relation == Relation::Unrelated)
+    {
+        let (a, b) = (index[s.from.as_str()], index[s.to.as_str()]);
+        let (a, b) = if reach[b][a] { (b, a) } else { (a, b) };
+        if reach[a][b] {
+            bail!(
+                "{} and {} are stated unrelated ({}) but the prior orders them: {}",
+                s.from,
+                s.to,
+                s.source.as_str(),
+                stated_path(types, &adj, &statements, a, b)
+            );
+        }
+    }
+
     let nodes: Vec<usize> = (0..n).filter(|&i| is_node[i]).collect();
     let mut edges = Vec::new();
     for &a in &nodes {
@@ -592,6 +631,30 @@ fn path(adj: &[Vec<usize>], a: usize, b: usize) -> Vec<usize> {
         }
     }
     Vec::new()
+}
+
+/// A shortest path from `a` to `b` in words, with the statement behind each
+/// step: `A → M → B, from A precedes M (cl); M precedes B (user)`.
+fn stated_path(
+    types: &[Box<str>],
+    adj: &[Vec<usize>],
+    statements: &[Statement],
+    a: usize,
+    b: usize,
+) -> String {
+    let p = path(adj, a, b);
+    let steps: Vec<String> = p
+        .windows(2)
+        .filter_map(|w| {
+            let (x, y) = (types[w[0]].as_ref(), types[w[1]].as_ref());
+            statements
+                .iter()
+                .find(|s| s.relation == Relation::Precedes && s.from == x && s.to == y)
+                .map(|s| format!("{x} precedes {y} ({})", s.source.as_str()))
+        })
+        .collect();
+    let names: Vec<&str> = p.iter().map(|&i| types[i].as_ref()).collect();
+    format!("{}, from {}", names.join(" → "), steps.join("; "))
 }
 
 /// `{out}.trajectory_prior.tsv`: the combined statements and the direct edges,

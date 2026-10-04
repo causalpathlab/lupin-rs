@@ -40,6 +40,8 @@ pub struct Exports {
     pub sel: usize,
     pub statuses: Vec<Status>,
     pub not_listed: Vec<PathBuf>,
+    /// The export a first `D` asked to delete.
+    delete_armed: Option<PathBuf>,
 }
 
 impl Exports {
@@ -51,6 +53,7 @@ impl Exports {
             sel: 0,
             statuses: Vec::new(),
             not_listed: Vec::new(),
+            delete_armed: None,
         };
         e.refresh();
         e
@@ -103,6 +106,22 @@ impl Exports {
     }
 
     /// Take the selected entry off the list, deleting its files when `delete`.
+    /// A first `D` on the selected export: its name, to confirm with a
+    /// second `D` on the same one; `None` when this is that second `D`.
+    pub fn arm_delete(&mut self) -> Option<String> {
+        let pdf = self.selected_pdf().ok()?;
+        if self.delete_armed.take().as_ref() == Some(&pdf) {
+            return None;
+        }
+        let name = pdf.with_extension("").display().to_string();
+        self.delete_armed = Some(pdf);
+        Some(name)
+    }
+
+    pub fn disarm(&mut self) {
+        self.delete_armed = None;
+    }
+
     pub fn remove(&mut self, delete: bool) -> Result<String> {
         let pdf = self.selected_pdf()?;
         self.gallery.remove(&pdf, delete)?;

@@ -18,9 +18,11 @@ use super::diffusion::Neighbours;
 use nalgebra::DMatrix;
 
 /// Symmetric `n_groups × n_groups` connectivity, zero on the diagonal and
-/// between groups no edge joins. `group[c]` is cell `c`'s group.
+/// between groups no edge joins. `group[c]` is cell `c`'s group; over the
+/// graph's representatives, each with its own group.
 pub(crate) fn connectivity(nb: &Neighbours, group: &[usize], n_groups: usize) -> DMatrix<f64> {
     let n = nb.n_cells();
+    let group: Vec<usize> = nb.reps.iter().map(|&c| group[c]).collect();
     let mut size = vec![0.0; n_groups];
     let mut out_edges = vec![0.0; n_groups];
     let mut between = DMatrix::<f64>::zeros(n_groups, n_groups);

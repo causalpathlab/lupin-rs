@@ -250,3 +250,74 @@ fn the_prior_tsv_reads_back_as_statements() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn an_unrelated_pair_the_prior_still_orders_is_an_error() {
+    let mut st = statements("A\tM\tprecedes\nM\tB\tprecedes\n");
+    st.extend(parse_statements("A\tB\tunrelated\n", Source::Project, "p").unwrap());
+    let err = build(
+        &labels(&["A", "M", "B"]),
+        &[true, false, true],
+        combine(&[st]),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("A and B are stated unrelated (project)")
+            && err.contains("A → M → B")
+            && err.contains("M precedes B (run)"),
+        "{err}"
+    );
+}
+
+#[test]
+fn only_a_node_before_it_keeps_a_type_from_being_a_root() {
+    let types = labels(&["Small", "R", "X"]);
+    let st = statements("Small\tR\tprecedes\n");
+    let layer = root_layer(&types, &[false, true, true], &st, &["R"]).unwrap();
+    assert_eq!(layer.len(), 1, "R → X");
+    let err = root_layer(&types, &[true, true, true], &st, &["R"])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Small → R"), "{err}");
+}
+
+#[test]
+fn opposite_ontology_statements_are_a_cycle_not_a_choice() {
+    let cl = |from: &str, to: &str| Statement {
+        from: from.into(),
+        to: to.into(),
+        relation: Relation::Precedes,
+        source: Source::Cl,
+        note: String::new(),
+    };
+    let combined = combine(&[vec![cl("A", "B"), cl("B", "A")]]);
+    assert_eq!(combined.len(), 2);
+    let err = build(&labels(&["A", "B"]), &[true; 2], combined)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("cycle"), "{err}");
+    // In a user's file the later line wins, as before.
+    let user = parse_statements("A\tB\tprecedes\nB\tA\tprecedes\n", Source::User, "u").unwrap();
+    assert_eq!(combine(&[user]).len(), 1);
+}
+
+#[test]
+fn kind_rows_are_read_only_under_the_kind_header_and_indented_comments_are_skipped() {
+    let st = parse_statements(
+        "  # an indented comment\nedge\tB\tprecedes\nstatement\tC\tprecedes\n",
+        Source::Run,
+        "r",
+    )
+    .unwrap();
+    assert_eq!(
+        st.iter()
+            .map(|s| (s.from.as_str(), s.to.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("edge", "B"), ("statement", "C")]
+    );
+    let err = parse_statements("# kind\tfrom\tto\nA\tB\tprecedes\n", Source::Run, "r")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("`edge` or `statement`"), "{err}");
+}

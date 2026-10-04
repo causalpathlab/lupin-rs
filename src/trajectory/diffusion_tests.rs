@@ -38,23 +38,45 @@ fn medoid_root_is_scanpys_root() {
     let Some(g) = ScanpyReference::read() else {
         return;
     };
-    let hsc: Vec<usize> = (0..g.labels.len())
-        .filter(|&i| g.labels[i].as_ref() == "HSC")
+    let root_type = &g.labels[g.root];
+    let cells: Vec<usize> = (0..g.labels.len())
+        .filter(|&i| &g.labels[i] == root_type)
         .collect();
-    assert_eq!(g.diffusion_map().medoid(&hsc), Some(g.root));
+    assert_eq!(g.diffusion_map().medoid(&cells), Some(g.root));
 }
 
 #[test]
-fn exact_duplicate_cells_are_refused() {
+fn exact_duplicate_cells_share_their_pseudotime() {
     let mut x = DMatrix::<f32>::from_fn(40, 3, |i, j| {
         (i * 7 + j * 3) as f32 % 11.0 + i as f32 * 0.01
     });
     let first = x.row(0).into_owned();
     x.set_row(1, &first);
-    let err = Neighbours::new(&x, 5)
-        .err()
-        .expect("duplicates must be refused");
-    assert!(err.to_string().contains("coincide"), "{err}");
+    x.set_row(2, &first);
+    let nb = Neighbours::new(&x, 5).unwrap();
+    assert_eq!(nb.n_cells(), 38);
+    assert_eq!(nb.rep_of[1], nb.rep_of[0]);
+    assert_eq!(nb.rep_of[2], nb.rep_of[0]);
+    let dm = DiffusionMap::new(&nb, 5, 5).unwrap();
+    assert_eq!(dm.evecs.nrows(), 40);
+    let pt = dm.pseudotime(10);
+    assert!(pt[0].is_finite());
+    assert_eq!(pt[0], pt[1]);
+    assert_eq!(pt[0], pt[2]);
+    assert_eq!(dm.evecs.row(0), dm.evecs.row(2));
+}
+
+#[test]
+fn dpt_uses_the_first_n_dcs_of_the_computed_components() {
+    let x = DMatrix::<f32>::from_fn(60, 3, |i, j| {
+        ((i * 13 + j * 5) % 17) as f32 + i as f32 * 0.03
+    });
+    let nb = Neighbours::new(&x, 6).unwrap();
+    let all = DiffusionMap::new(&nb, 8, 8).unwrap();
+    let first = DiffusionMap::new(&nb, 8, 3).unwrap();
+    assert_eq!(first.evals.len(), 8, "every computed component is kept");
+    assert_eq!(first.evals, all.evals);
+    assert_ne!(first.pseudotime(0), all.pseudotime(0));
 }
 
 /// The full bench run against scanpy's full-data pseudotime, on local data
@@ -93,7 +115,9 @@ fn full_bench_matches_scanpy() {
         .unwrap();
 
     let t0 = std::time::Instant::now();
-    let dm = DiffusionMap::new(&Neighbours::new(&x.mat, 15).unwrap(), 15).unwrap();
+    // All 15 components in the distance, as this bench has always run; it
+    // must match the n_dcs of the scanpy run it is compared with.
+    let dm = DiffusionMap::new(&Neighbours::new(&x.mat, 15).unwrap(), 15, 15).unwrap();
     let got = dm.pseudotime(root);
     let secs = t0.elapsed().as_secs_f64();
     let rho = spearman(&got, &want);

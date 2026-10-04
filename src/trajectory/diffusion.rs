@@ -35,6 +35,10 @@ use nalgebra::DMatrix;
 use nalgebra_sparse::CscMatrix;
 use rustc_hash::FxHashMap;
 
+/// Diffusion components computed, as `tl.diffmap(n_comps=15)`; DPT uses the
+/// first `n_dcs` of them, as `tl.dpt(n_dcs=10)` does by default.
+pub(crate) const DIFFMAP_COMPS: usize = 15;
+
 /// Eigenvalues at or above this enter the DPT distance unweighted (scanpy
 /// compares in float32).
 const UNWEIGHTED_FROM: f32 = 0.9994;
@@ -57,21 +61,26 @@ const RESIDUAL_TOL: f64 = 1e-3;
 /// cells nearest its centroid, so the search stays quadratic in this many.
 const MEDOID_POOL: usize = 2000;
 
-/// Each cell's `k − 1` nearest other cells and their distances: the one kNN
-/// graph the diffusion map and PAGA share. `k` counts the cell itself, as
-/// scanpy's `n_neighbors` does.
+/// Each representative cell's `k − 1` nearest other representatives and
+/// their distances: the one kNN graph the diffusion map and PAGA share. `k`
+/// counts the cell itself, as scanpy's `n_neighbors` does. Cells that
+/// coincide exactly are collapsed onto one representative, the first of them.
 pub(crate) struct Neighbours {
     pub(crate) idx: Vec<Vec<usize>>,
     dist: Vec<Vec<f32>>,
+    /// The cell each representative is.
+    pub(crate) reps: Vec<usize>,
+    /// Each cell's representative, as an index into `reps`.
+    pub(crate) rep_of: Vec<usize>,
 }
 
 impl Neighbours {
-    /// The kNN lists of `geometry` (cells × dims, already prepared). Exact
-    /// duplicate cells are refused: scanpy's kernel treats them differently.
+    /// The kNN lists of `geometry` (cells × dims, already prepared), over one
+    /// representative per set of exactly coinciding cells (with a warning):
+    /// scanpy's kernel is not defined at a zero distance.
     pub(crate) fn new(geometry: &DMatrix<f32>, k: usize) -> Result<Self> {
         let n = geometry.nrows();
         ensure!(k >= 2, "k counts the cell itself, so it must be at least 2");
-        ensure!(n > k, "{n} cells are too few for {k} neighbours");
         let bad = (0..n)
             .filter(|&i| geometry.row(i).iter().any(|v| !v.is_finite()))
             .count();
@@ -79,22 +88,38 @@ impl Neighbours {
             bad == 0,
             "{bad} cells have a non-finite coordinate in the geometry"
         );
-        if n > ALL_PAIRS_THRESHOLD {
+        let (reps, rep_of) = collapse_duplicates(geometry);
+        if reps.len() < n {
             warn!(
-                "{n} cells: neighbours come from the approximate inverted-file search \
+                "{} of {n} cells coincide exactly with another cell and share its \
+                 neighbours, pseudotime and diffusion coordinates ({} distinct cells)",
+                n - reps.len(),
+                reps.len()
+            );
+        }
+        let m = reps.len();
+        ensure!(m > k, "{m} distinct cells are too few for {k} neighbours");
+        if m > ALL_PAIRS_THRESHOLD {
+            warn!(
+                "{m} cells: neighbours come from the approximate inverted-file search \
                  (exact up to {ALL_PAIRS_THRESHOLD}), so the result no longer replicates scanpy"
             );
         }
-        let (idx, dist) = knn_rows(geometry, k - 1);
-        let duplicated = dist.iter().filter(|d| d.contains(&0.0)).count();
-        ensure!(
-            duplicated == 0,
-            "{duplicated} cells coincide exactly with another cell; scanpy's kernel \
-             treats such duplicates differently, so remove them or use another embedding"
-        );
-        Ok(Self { idx, dist })
+        let distinct = if m < n {
+            DMatrix::from_fn(m, geometry.ncols(), |i, j| geometry[(reps[i], j)])
+        } else {
+            geometry.clone()
+        };
+        let (idx, dist) = knn_rows(&distinct, k - 1);
+        Ok(Self {
+            idx,
+            dist,
+            reps,
+            rep_of,
+        })
     }
 
+    /// Representatives in the graph.
     pub(crate) fn n_cells(&self) -> usize {
         self.idx.len()
     }
@@ -111,7 +136,30 @@ impl Neighbours {
     }
 }
 
-/// The diffusion components of a cell kNN graph.
+/// The first cell of each set of cells with identical coordinates, and each
+/// cell's set as an index into that list.
+fn collapse_duplicates(geometry: &DMatrix<f32>) -> (Vec<usize>, Vec<usize>) {
+    let mut first: FxHashMap<Vec<u32>, usize> = FxHashMap::default();
+    let mut reps = Vec::new();
+    let rep_of = (0..geometry.nrows())
+        .map(|i| {
+            // `+ 0.0` makes −0 and +0 one key.
+            let key: Vec<u32> = geometry
+                .row(i)
+                .iter()
+                .map(|v| (v + 0.0).to_bits())
+                .collect();
+            *first.entry(key).or_insert_with(|| {
+                reps.push(i);
+                reps.len() - 1
+            })
+        })
+        .collect();
+    (reps, rep_of)
+}
+
+/// The diffusion components of a cell kNN graph, per cell (copies of a
+/// representative take its rows).
 pub(crate) struct DiffusionMap {
     /// Eigenvalues, largest first, rounded to float32 as scanpy keeps them.
     pub(crate) evals: Vec<f32>,
@@ -126,14 +174,20 @@ pub(crate) struct DiffusionMap {
 }
 
 impl DiffusionMap {
-    /// The diffusion map on `nb` with `n_dcs` components.
-    pub(crate) fn new(nb: &Neighbours, n_dcs: usize) -> Result<Self> {
+    /// The diffusion map on `nb` with `n_comps` components, of which the
+    /// DPT distance uses the first `n_dcs` (all of them if `n_dcs` is larger).
+    pub(crate) fn new(nb: &Neighbours, n_comps: usize, n_dcs: usize) -> Result<Self> {
         let n = nb.n_cells();
         ensure!(n_dcs >= 1, "at least one diffusion component is needed");
         let kernel = gauss_kernel(&nb.idx, &nb.dist)?;
         let s = symmetric_transitions(n, kernel)?;
-        let (evals, evecs) = transition_eigenpairs(&s, n_dcs.min(n - 1))?;
-        for &l in &evals {
+        let (evals, evecs) = transition_eigenpairs(&s, n_comps.max(n_dcs).min(n - 1))?;
+        // Every cell gets its representative's row.
+        let evecs = DMatrix::from_fn(nb.rep_of.len(), evecs.ncols(), |i, j| {
+            evecs[(nb.rep_of[i], j)]
+        });
+        let n_dcs = n_dcs.min(evals.len());
+        for &l in &evals[..n_dcs] {
             if (l - UNWEIGHTED_FROM).abs() < 1e-4 {
                 warn!(
                     "eigenvalue {l} sits within 1e-4 of {UNWEIGHTED_FROM}, where scanpy switches \
@@ -141,7 +195,7 @@ impl DiffusionMap {
                 );
             }
         }
-        let mut coords = evecs.clone();
+        let mut coords = evecs.columns(0, n_dcs).into_owned();
         for (mut col, &l) in coords.column_iter_mut().zip(&evals) {
             if l < UNWEIGHTED_FROM {
                 col *= f64::from(l / (1.0 - l));
@@ -151,7 +205,10 @@ impl DiffusionMap {
             evals,
             evecs,
             coords,
-            component: nb.components(),
+            component: {
+                let c = nb.components();
+                nb.rep_of.iter().map(|&r| c[r]).collect()
+            },
         })
     }
 

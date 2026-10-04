@@ -7,7 +7,7 @@ use crate::annotate::celltype_tree::ClTerms;
 use crate::manifest::data_files::{append_row, SearchPath, PRECEDENCE};
 use crate::manifest::run::{annotated_path, derive_out_prefix, load, resolve};
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
-use crate::trajectory::prior::{self, Prior, Relation, Statement};
+use crate::trajectory::prior::{self, Prior, Relation, Source, Statement};
 use std::path::{Path, PathBuf};
 
 /// How the order view runs `lupin trajectory`: the options it carries over
@@ -153,7 +153,47 @@ impl OrderView {
             .collect()
     }
 
-    /// Append a statement to the project's `precedence.tsv`.
+    /// Why `from relation to` should not be written: the file's last
+    /// statement about the pair already says it, or the prior it makes
+    /// would not build (a cycle, or `unrelated` on a pair the rest orders).
+    /// On a prior that is already broken any statement goes, so the one that
+    /// broke it can be replaced.
+    pub fn refuse(&self, from: &str, to: &str, relation: Relation) -> Option<String> {
+        let stated = self.file.as_deref().and_then(|f| {
+            let text = std::fs::read_to_string(f).ok()?;
+            let st = prior::parse_statements(&text, Source::Project, "").ok()?;
+            st.into_iter()
+                .rev()
+                .find(|s| (s.from == from && s.to == to) || (s.from == to && s.to == from))
+        });
+        if let Some(s) = stated {
+            let same_way = relation == Relation::Unrelated || s.from == from;
+            if s.relation == relation && same_way {
+                return Some(format!(
+                    "{} already says {from} {} {to}",
+                    self.file.as_deref().unwrap_or(Path::new("")).display(),
+                    relation.as_str()
+                ));
+            }
+        }
+        self.prior.as_ref()?;
+        let new = Statement {
+            from: from.into(),
+            to: to.into(),
+            relation,
+            source: Source::Project,
+            note: String::new(),
+        };
+        let statements = prior::combine(&[self.statements.clone(), vec![new]]);
+        let names: Vec<Box<str>> = self.types.iter().map(|(t, _)| t.as_str().into()).collect();
+        let is_node = vec![true; names.len()];
+        prior::build(&names, &is_node, statements)
+            .err()
+            .map(|e| format!("not recorded: {e}"))
+    }
+
+    /// Append a statement to the project's `precedence.tsv`, unless
+    /// [`Self::refuse`] gives a reason not to.
     pub fn record(
         &self,
         from: &str,
@@ -161,6 +201,9 @@ impl OrderView {
         relation: Relation,
         note: &str,
     ) -> anyhow::Result<PathBuf> {
+        if let Some(why) = self.refuse(from, to, relation) {
+            anyhow::bail!(why);
+        }
         let file = self.file.clone().ok_or_else(|| {
             anyhow::anyhow!("no project or user directory to write precedence.tsv in")
         })?;

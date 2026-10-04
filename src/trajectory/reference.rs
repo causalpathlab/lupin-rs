@@ -79,8 +79,10 @@ impl ScanpyReference {
         Neighbours::new(&self.geometry, 15).unwrap()
     }
 
-    /// The diffusion map with as many components as the fixture has.
+    /// The diffusion map with as many components as the fixture has, all of
+    /// them in the DPT distance, as the fixture's pseudotime was made.
     pub(crate) fn diffusion_map(&self) -> DiffusionMap {
-        DiffusionMap::new(&self.neighbours(), self.evals.len()).unwrap()
+        let n = self.evals.len();
+        DiffusionMap::new(&self.neighbours(), n, n).unwrap()
     }
 }

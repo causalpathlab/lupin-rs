@@ -35,8 +35,20 @@ fn the_view_shows_the_project_statements_as_edges_and_records_new_ones() {
     assert_eq!(v.edges().len(), 2);
     assert_eq!(v.edges()[1].to, "C");
 
-    // A statement that closes a cycle is kept in the file but the view says so.
-    v.record("C", "A", Relation::Precedes, "a mistake").unwrap();
+    // A statement that would close a cycle is refused, and a repeated one
+    // is not written twice.
+    let file = v.file.clone().unwrap();
+    let before = std::fs::read_to_string(&file).unwrap();
+    let err = v
+        .record("C", "A", Relation::Precedes, "a mistake")
+        .unwrap_err();
+    assert!(err.to_string().contains("cycle"), "{err}");
+    let err = v.record("B", "C", Relation::Precedes, "again").unwrap_err();
+    assert!(err.to_string().contains("already says"), "{err}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+
+    // A cycle written by hand is shown as one.
+    std::fs::write(&file, format!("{before}C\tA\tprecedes\ta mistake\n")).unwrap();
     let v = OrderView::load(types(), None, &search, Vec::new());
     assert!(v.prior.is_none());
     assert!(
@@ -45,11 +57,13 @@ fn the_view_shows_the_project_statements_as_edges_and_records_new_ones() {
         v.error
     );
 
-    // `unrelated` withdraws it again.
-    v.record("A", "C", Relation::Unrelated, "undone").unwrap();
+    // A statement about the same pair replaces it.
+    v.record("A", "C", Relation::Precedes, "undone").unwrap();
     let v = OrderView::load(types(), None, &search, Vec::new());
     assert_eq!(v.edges().len(), 2);
-    assert_eq!(v.unrelated().len(), 1);
+    // `unrelated` on a pair the rest of the prior orders is refused.
+    let err = v.record("A", "C", Relation::Unrelated, "x").unwrap_err();
+    assert!(err.to_string().contains("not recorded"), "{err}");
 }
 
 #[test]
@@ -83,9 +97,9 @@ fn the_tui_carries_the_run_options_over_to_its_child() {
     let a = Cli::parse_from([
         "lupin",
         "--root",
-        "HSC",
+        "CT1",
         "--root",
-        "MPP",
+        "CT2",
         "--labels",
         "l.tsv",
         "--prior",
@@ -126,4 +140,27 @@ fn the_tui_carries_the_run_options_over_to_its_child() {
         },
     );
     assert_eq!(format!("{a:?}"), format!("{b:?}"));
+}
+
+#[test]
+fn a_rerun_reuses_the_labels_file_the_last_trajectory_recorded() {
+    use crate::tui::app::recorded_labels;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let manifest = dir.join("run.T1.senna.json");
+    std::fs::write(
+        &manifest,
+        r#"{"version":2,"kind":"topic","prefix":"run.T1",
+            "trajectory":{"settings":{"labels":"labels.tsv"}}}"#,
+    )
+    .unwrap();
+    let loaded = || crate::manifest::run::load(&manifest.to_string_lossy()).unwrap();
+    assert_eq!(
+        recorded_labels(&loaded()),
+        None,
+        "a missing file is not offered"
+    );
+    std::fs::write(dir.join("labels.tsv"), "c1\tCT1\n").unwrap();
+    let got = recorded_labels(&loaded()).unwrap();
+    assert!(std::path::Path::new(&got).ends_with("labels.tsv"), "{got}");
 }

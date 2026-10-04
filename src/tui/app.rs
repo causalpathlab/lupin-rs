@@ -431,6 +431,9 @@ impl App {
                     _ => Vec::new(),
                 };
                 self.open(&latest);
+                if matches!(self.tree_mode, TreeMode::Order(_)) {
+                    self.reload_order();
+                }
                 let kept = later.len();
                 self.edits = later;
                 let done = match job {
@@ -603,6 +606,11 @@ impl App {
         if let Some(r) = self.rescoring.take() {
             r.stop();
         }
+    }
+
+    /// Whether the order view shows its figures in place of the table.
+    fn figures_shown(&self) -> bool {
+        self.figures.as_ref().is_some_and(|f| f.shown)
     }
 
     fn n_clusters(&self) -> usize {
@@ -1185,6 +1193,19 @@ impl App {
                 KeyCode::Char('a') => {
                     self.prompt = None;
                     self.annotate_then_trajectory();
+                    // A pass that replaces a round asks first: keep the
+                    // choice open so `a` again confirms (an `r` would go
+                    // through the order view and drop the arming).
+                    if self.armed == Some(Armed::Run) && self.child.is_none() {
+                        self.prompt = Some(Prompt {
+                            title: format!(
+                                " {} · a again to go on · esc cancel ",
+                                self.status.trim_end_matches(": r again to go on")
+                            ),
+                            text: String::new(),
+                            pending: Pending::TrajectoryLabels,
+                        });
+                    }
                 }
                 KeyCode::Esc => self.prompt = None,
                 _ => {}
@@ -1603,7 +1624,13 @@ impl App {
                     v.typing = Some(String::new());
                 }
             }
-            Focus::Tree if code == KeyCode::Char(' ') => self.toggle_tree_mark(),
+            Focus::Tree if code == KeyCode::Char(' ') => {
+                if matches!(self.tree_mode, TreeMode::Order(_)) && self.figures_shown() {
+                    self.status = "V shows the order table to mark types".into();
+                } else {
+                    self.toggle_tree_mark();
+                }
+            }
             Focus::Tree if matches!(self.tree_mode, TreeMode::Order(_)) => {
                 return self.order_key(code);
             }
@@ -1725,11 +1752,25 @@ impl App {
             );
             return;
         }
-        let has_labels = self.trajectory.argv.iter().any(|a| a == "--labels")
+        let loaded = crate::manifest::run::load(&self.source.to_string_lossy()).ok();
+        let mut has_labels = self
+            .trajectory
+            .argv
+            .iter()
+            .any(|a| a == "--labels" || a.starts_with("--labels="))
             || self.trajectory.labels.is_some()
             || self.round.is_some()
-            || crate::manifest::run::load(&self.source.to_string_lossy())
-                .is_ok_and(|l| l.manifest.annotate.argmax.is_some());
+            || loaded
+                .as_ref()
+                .is_some_and(|l| l.manifest.annotate.argmax.is_some());
+        // A trajectory run made from a labels file recorded it: reuse it.
+        if !has_labels {
+            if let Some(path) = loaded.as_ref().and_then(recorded_labels) {
+                self.push_log(format!("labels from the run's last trajectory: {path}"));
+                self.trajectory.labels = Some(path);
+                has_labels = true;
+            }
+        }
         if !has_labels {
             self.prompt = Some(Prompt {
                 title: " no annotation yet: enter/l pick a cell<TAB>type labels file · a annotate it here · esc cancel ".into(),
@@ -1941,10 +1982,12 @@ impl App {
         if self.figure_key(code) {
             return true;
         }
+        let shown = self.figures_shown();
         let TreeMode::Order(v) = &mut self.tree_mode else {
             return false;
         };
-        if step(&mut v.sel, v.types.len(), code) {
+        // The table is hidden behind the figures: its keys wait for `V`.
+        if !shown && step(&mut v.sel, v.types.len(), code) {
             return true;
         }
         let relation = match code {
@@ -1960,11 +2003,19 @@ impl App {
             }
             _ => return false,
         };
+        if shown {
+            self.status = "V shows the order table to mark types".into();
+            return true;
+        }
         if self.tree_marked.len() != 2 {
             self.status = "mark exactly two types with space, in order, then > or -".into();
             return true;
         }
         let (from, to) = (self.tree_marked[0].clone(), self.tree_marked[1].clone());
+        if let Some(why) = v.refuse(&from, &to, relation) {
+            self.status = why;
+            return true;
+        }
         let title = match relation {
             Relation::Precedes => format!(" why does {from} precede {to}? "),
             Relation::Unrelated => format!(" why are {from} and {to} unrelated? "),
@@ -1981,13 +2032,16 @@ impl App {
     /// not one of them (or no figures are loaded).
     fn figure_key(&mut self, code: KeyCode) -> bool {
         let Some(v) = &mut self.figures else {
-            if code == KeyCode::Char('v') {
+            if matches!(code, KeyCode::Char('v' | 'p')) {
                 self.status = "no trajectory outputs for the manifests on screen: run `lupin trajectory` first".into();
                 return true;
             }
             return false;
         };
         let x = &mut v.exports;
+        if code != KeyCode::Char('D') {
+            x.disarm();
+        }
         // The strip's keys act only while it is on screen.
         let strip = v.shown && x.open;
         if strip {
@@ -2024,7 +2078,11 @@ impl App {
                 self.status = x.remove(false).unwrap_or_else(|e| format!("{e:#}"));
             }
             KeyCode::Char('D') if strip => {
-                self.status = x.remove(true).unwrap_or_else(|e| format!("{e:#}"));
+                self.status = match x.arm_delete() {
+                    Some(name) => format!("D again deletes {name} (svg and pdf)"),
+                    None => x.remove(true).unwrap_or_else(|e| format!("{e:#}")),
+                };
+                return true;
             }
             KeyCode::Char('m') if strip => {
                 if let Some(e) = x.gallery.entries.get(x.sel) {
@@ -2133,6 +2191,30 @@ impl App {
         }
         self.focus = Focus::Tree;
     }
+}
+
+/// A TUI that ends on an error or a panic stops its children too, so no
+/// pass or trajectory goes on writing behind it. A save is let finish, as
+/// stopping it could leave a round half-written.
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some((mut c, _, job)) = self.child.take() {
+            if !matches!(job, Job::Save(_)) {
+                let _ = c.kill();
+            }
+            let _ = c.wait();
+        }
+        self.stop_rescoring();
+    }
+}
+
+/// The labels file a trajectory run on `loaded` recorded in its settings,
+/// resolved against the manifest's directory, when it is still there.
+pub(super) fn recorded_labels(loaded: &crate::manifest::run::Loaded) -> Option<String> {
+    let settings = loaded.manifest.trajectory.settings.as_ref()?;
+    let rel = settings.get("labels")?.as_str()?;
+    let path = crate::manifest::run::resolve(&loaded.dir, rel);
+    Path::new(&path).is_file().then_some(path)
 }
 
 /// `X.decisions.jsonl` for round `X.senna.json`: what a save hands relabel.

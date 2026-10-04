@@ -181,6 +181,11 @@ impl Gallery {
         manifest: &Path,
     ) -> Result<()> {
         self.reload();
+        // A log this user does not own alone is not taken over by saving
+        // over it: its entries would then be trusted for `D` and `m`.
+        if std::fs::symlink_metadata(self.dir.join(LOG)).is_ok() {
+            self.entries = read_private(&self.dir)?;
+        }
         let pdf = files
             .iter()
             .find(|f| f.extension().is_some_and(|e| e == "pdf"))

@@ -525,13 +525,17 @@ fn layouts(manifest: &RunManifest) -> Vec<(Option<String>, String)> {
 }
 
 /// The layout at `path` as `(x, y)` per cell of `index`, NaN for a cell the
-/// layout lacks.
+/// layout lacks; an error when it has none of them, so the next layout is
+/// tried.
 fn read_layout(path: &str, index: &FxHashMap<&str, usize>) -> Result<(Vec<f32>, Vec<f32>)> {
     let t = Mat::from_parquet(path)?;
     let col = |name: &str| t.cols.iter().position(|c| c.as_ref() == name);
     let (Some(x), Some(y)) = (col("x"), col("y")) else {
         anyhow::bail!("{path} has no x and y columns");
     };
+    if !t.rows.iter().any(|r| index.contains_key(r.as_ref())) {
+        anyhow::bail!("{path} shares no cell with the trajectory");
+    }
     let m = aligned(&t.rows, &t.mat, index, index.len());
     Ok((
         m.column(x).iter().copied().collect(),

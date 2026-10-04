@@ -106,8 +106,14 @@ fn a_log_others_can_write_moves_and_deletes_nothing() {
     assert!(g.remove(&files[1], true).is_err());
     assert!(g.relocate(&files[1], &dir.join("elsewhere")).is_err());
     assert!(files.iter().all(|f| f.is_file()));
-    // Nor is an entry taken off a log others can write.
+    // Nor is an entry taken off a log others can write, nor is the log
+    // taken over by saving a new export over it.
     assert!(g.remove(&files[1], false).is_err());
+    let more = figure_set(&dir, "run.trajectory.layout");
+    assert!(g
+        .add(&more, "layout", "layout", &dir.join("run.senna.json"))
+        .is_err());
+    assert_eq!(mode(&log_dir.join(LOG)), 0o666, "the log is left as it was");
 }
 
 #[cfg(unix)]

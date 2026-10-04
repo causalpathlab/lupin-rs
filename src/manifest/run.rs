@@ -913,10 +913,10 @@ mod tests {
         let here = proj.join("run").canonicalize().unwrap();
         let root = proj.canonicalize().unwrap();
         // Rebased from the training prefix's directory.
-        let a = m.data_file(&proj.join("run"), "/elsewhere/proj/data/a.zarr");
+        let a = m.data_file(&here, "/elsewhere/proj/data/a.zarr");
         assert_eq!(Path::new(&a), root.join("data/a.zarr"));
         // Found by its tail (file and folder) under an ancestor.
-        let b = m.data_file(&proj.join("run"), "/other/place/b.tsv");
+        let b = m.data_file(&here, "/other/place/b.tsv");
         assert_eq!(Path::new(&b), root.join("place/b.tsv"));
         // A same-named file alone is not the data.
         assert_eq!(

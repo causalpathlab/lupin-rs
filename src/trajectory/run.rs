@@ -2,14 +2,16 @@
 //! checked against the kNN graph, then diffusion pseudotime from the prior's
 //! roots, written with a `trajectory` section into a copy of the manifest.
 
-use super::diffusion::{DiffusionMap, Neighbours};
+use super::diffusion::{DiffusionMap, Neighbours, DIFFMAP_COMPS};
 use super::edges::{self, EdgeRow, Verdict};
 use super::encode_groups;
 use super::prior::{self, Prior, Source, Statement};
 use super::type_connectivity::connectivity;
 use crate::cell_labels::read_cell_labels;
 use crate::manifest::data_files::Fetch;
-use crate::manifest::run::{annotated_path, load, may_replace, rel_to_manifest, resolve, Loaded};
+use crate::manifest::run::{
+    annotated_path, load, may_replace, rel_to_manifest, resolve, same_file, Loaded,
+};
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -76,7 +78,12 @@ pub struct TrajectoryArgs {
     )]
     pub knn: usize,
 
-    #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u16).range(1..), help = "Diffusion components")]
+    #[arg(
+        long,
+        default_value_t = 10,
+        value_parser = clap::value_parser!(u16).range(1..),
+        help = "Diffusion components in the pseudotime distance, of the 15 computed (as scanpy's dpt)"
+    )]
     pub n_dcs: u16,
 
     #[arg(
@@ -237,6 +244,13 @@ pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
 fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     let loaded = load(from)?;
     let manifest_out = annotated_path(&loaded.file, out);
+    // Refused before anything is written: the outputs would replace the
+    // input's own tables and the manifest copy could not be made.
+    anyhow::ensure!(
+        !same_file(&loaded.file, &manifest_out),
+        "{} is the manifest this command reads from; choose a different --out",
+        manifest_out.display()
+    );
     may_replace(&manifest_out)?;
     mkdir_parent(out)?;
     let inputs = load_inputs(&loaded, args)?;
@@ -419,6 +433,15 @@ fn report_prior(inputs: &Inputs, prior: &Prior) {
 /// PAGA connectivity over all types, verdicts on the direct edges, and
 /// candidate pairs the prior does not order.
 fn check(inputs: &Inputs, nb: &Neighbours, prior: Prior, min_connectivity: f32) -> Trajectory {
+    let relabelled = (0..inputs.cells.len())
+        .filter(|&c| inputs.group[c] != inputs.group[nb.reps[nb.rep_of[c]]])
+        .count();
+    if relabelled > 0 {
+        warn!(
+            "{relabelled} cells coincide with a cell of another type; connectivity counts \
+             them under that cell's type"
+        );
+    }
     let conn = connectivity(nb, &inputs.group, inputs.names.len());
     let n = inputs.names.len();
     let edges = prior
@@ -486,7 +509,7 @@ fn report_check(inputs: &Inputs, t: &Trajectory) {
 /// Diffusion pseudotime from each component's roots (the root types'
 /// medoids), scaled to [0, 1] per component, and the lineages.
 fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, n_dcs: usize) -> Result<Ordering> {
-    let map = DiffusionMap::new(nb, n_dcs)?;
+    let map = DiffusionMap::new(nb, DIFFMAP_COMPS, n_dcs)?;
     let n = inputs.cells.len();
     // Distance to the nearest root of each component.
     let mut dist: Vec<Vec<f64>> = Vec::with_capacity(prior.roots.len());
@@ -636,8 +659,21 @@ fn write(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<BTreeMap<&'static
     prior::write_tsv(&prior_path, &inputs.names, &t.prior)?;
     written.insert("prior", prior_path);
     written.insert("edges", write_edges(inputs, t, out)?);
-    if let Some(o) = &t.ordering {
-        written.extend(write_ordering(inputs, o, out)?);
+    match &t.ordering {
+        Some(o) => written.extend(write_ordering(inputs, o, out)?),
+        // A check onto a prefix that held a full run: its ordering no longer
+        // goes with the prior written above.
+        None => {
+            for stale in [
+                format!("{out}.cell_pseudotime.parquet"),
+                format!("{out}.diffusion.parquet"),
+                format!("{out}.trajectory_lineages.tsv"),
+            ] {
+                if std::path::Path::new(&stale).is_file() {
+                    std::fs::remove_file(&stale).with_context(|| format!("removing {stale}"))?;
+                }
+            }
+        }
     }
     Ok(written)
 }

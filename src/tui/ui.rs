@@ -79,7 +79,7 @@ fn help(app: &App) -> &'static str {
         }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
             if app.figures.as_ref().is_some_and(|v| v.shown) {
-                " ? keys · v next figure · V table · , . components · p export · f exports · R check · t tree"
+                " ? keys · v next figure · V table · , . components · p export · f exports · R check · r run · esc clusters"
             } else {
                 " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · t tree"
             }
@@ -169,7 +169,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         "order view (t in the tree pane)",
         &[
             ("↑↓", "a cell type on screen, with its cells"),
-            ("space", "mark a type; mark two, first the earlier one"),
+            ("space", "mark a type; mark two, first the earlier one (in the table, not the figures)"),
             (">", "the first marked type precedes the second (asks why)"),
             ("-", "the two marked types are unrelated (asks why)"),
             ("r", "run lupin trajectory on the labels on screen (asks for the output prefix)"),
@@ -183,7 +183,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("v / V", "next figure: layout, diffusion map, order, connectivity / back to the table"),
             (", .", "another pair of diffusion components"),
             ("p", "export the figure as {run}.trajectory.{figure}.svg + .pdf and log it"),
-            ("f", "the exports strip: ↑↓ select, enter list an unlisted file, m move, d unlist, D delete"),
+            ("f", "the exports strip: ↑↓ select, enter list an unlisted file, m move, d unlist, D D delete"),
             ("R", "re-read the log and check every export against its files"),
         ],
     ),

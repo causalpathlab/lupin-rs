@@ -22,7 +22,7 @@ use trajectory::run::{run_trajectory, TrajectoryArgs};
 #[command(
     name = "lupin",
     version,
-    about = "Label, Unfold, Place, Interpret, Narrate — text graphs, cell-type annotation, review, trajectories and description."
+    about = "Label, Unfold, Place, Interpret, Narrate: text graphs, cell-type annotation, review, trajectories and description."
 )]
 struct Cli {
     #[arg(short, long, global = true, help = "Verbose logging")]

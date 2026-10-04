@@ -1,4 +1,4 @@
-# Plan: supervised trajectory — an explicit prior, checked against the data
+# Plan: supervised trajectory, an explicit prior checked against the data
 
 ## Status
 
@@ -37,7 +37,7 @@ data supports it**:
 - **Cells are ordered by diffusion pseudotime** within the prior's paths.
 
 The numerical core is not new: lupin **replicates scanpy's unsupervised
-routines** — `neighbors(method='gauss')`, `diffmap`, `dpt` and `paga` —
+routines** (`neighbors(method='gauss')`, `diffmap`, `dpt` and `paga`)
 faithfully, and adds only the supervised, interactive layer on top: the groups
 are the user's types, the root and the edges come from the prior, and the user
 edits the prior where the data disagrees. Where scanpy's routine breaks on an
@@ -48,7 +48,7 @@ input, lupin stops with a clear message instead of a home-grown fix.
 ```
 lupin trajectory -f run.senna.json -o out [--prior FILE [--prior-only]] [--root TYPE]...
                  [--labels FILE] [--label-cl FILE] [--obo FILE]
-                 [--knn 15] [--n-dcs 15] [--min-cells 20] [--min-connectivity 0.1]
+                 [--knn 15] [--n-dcs 10] [--min-cells 20] [--min-connectivity 0.1]
                  [--check-only] [--graphics auto|kitty|sixel|iterm2|blocks]
 lupin trajectory [-f run.senna.json] [-o out] [options]   # the TUI
 ```
@@ -72,11 +72,12 @@ offered) and lets it be changed in the settings (`r`).
 - **Small types**: types with fewer than `--min-cells` cells are not nodes;
   their cells are treated like unassigned cells (below), and prior edges
   through them are joined across (§3).
-- **Unassigned cells** stay in the cell graph — they are often the cells
-  between two types — but carry no type: they are not tested in §4 and get
+- **Unassigned cells** stay in the cell graph (they are often the cells
+  between two types) but carry no type: they are not tested in §4 and get
   pseudotime only when connected to a component's typed cells.
-- `--root TYPE` (repeatable) names a source of the prior; a type with an
-  incoming statement cannot be one. A root gets a `cli` statement to every
+- `--root TYPE` (repeatable) names a source of the prior; a type that a
+  node type precedes cannot be one (a type too small to be a node does not
+  count). A root gets a `cli` statement to every
   node it cannot otherwise reach, so a run with no other prior still orders
   every type from it (the check then says which of those edges the data
   supports).
@@ -95,8 +96,8 @@ run's types.
    (`develops_from`; a few hundred in cl-basic) besides `is_a`. Labels map to
    CL terms as in annotation (aliases, `--label-cl`). B develops from A when
    CL says so directly, through terms off the panel, or through an `is_a`
-   ancestor of B (CL coverage is sparse: B cell has no `develops_from` of its
-   own). Inherited statements are tagged `cl-inherited`.
+   ancestor of B (CL coverage is sparse: CT3 may have no `develops_from` of
+   its own). Inherited statements are tagged `cl-inherited`.
 2. **`precedence.tsv`**, `from<TAB>to<TAB>relation<TAB>note` with `relation`
    `precedes` or `unrelated`. It is a data file like `cl_aliases.tsv`, found
    along the same search path: the user's config, then the project's `lupin/`
@@ -108,19 +109,25 @@ run's types.
 statement about {A, B} replaces every earlier statement about that pair,
 whatever its direction: `B precedes A` in the project file reverses an
 ontology `A → B`; `unrelated` removes it. The order is ontology, then user,
-then project, then `--prior`.
+then project, then `--prior`. Within a file the later line wins; the
+ontology's statements have no order, so if it says both `A → B` and `B → A`
+both are kept and reported as a cycle. A `# kind` header marks a
+`{out}.trajectory_prior.tsv`, whose rows start with `statement` or `edge`.
 
 **From statements to edges.** The combined statements are closed
 transitively over all panel types (so `A → M → B` still orders A before B when
 M is dropped for size), restricted to the run's node types, then reduced to
 the **direct edges**: an edge is dropped when a longer path implies it. This
-removes the shortcuts inheritance creates (CL's "leukocyte develops from
-haematopoietic stem cell" would otherwise put HSC → B next to
-HSC → MPP → CLP → pro-B → B). Only direct edges are tested in §4 and define
+removes the shortcuts inheritance creates (an inherited "CT5 develops from
+CT1" would otherwise put CT1 → CT5 next to
+CT1 → CT2 → CT3 → CT4 → CT5). Only direct edges are tested in §4 and define
 lineages in §5.
 
 The result must be acyclic; a cycle is an error naming its statements and
-their sources (`cl`, `cl-inherited`, `user`, `project`, `run`).
+their sources (`cl`, `cl-inherited`, `user`, `project`, `run`). So is an
+`unrelated` pair that other statements still order (A → M → B with
+`A unrelated B`): it names the path and its statements, since `unrelated`
+removes only a statement about that pair.
 
 ## 4. Checking the prior against the data
 
@@ -136,8 +143,11 @@ The connectivity check does not depend on the root.
   out, so lupin asks for `k − 1` and counts the cell in, as scanpy's
   `n_neighbors` does; the cell is not its own neighbour, and the kernel has no
   diagonal. Exact duplicate cells make scanpy drop a true neighbour for a
-  self-loop, so lupin stops on them with a clear message (how many, and
-  which types), as §1 says. Edge weights are the Gaussian kernel of §5. The graph is built once over all cells, as scanpy
+  self-loop; lupin instead collapses each set of identical cells onto one
+  representative, builds the graph over those, and gives every copy its
+  representative's pseudotime and diffusion coordinates, with a warning
+  (how many cells, and how many coincide with a cell of another type; the
+  representative's type is the one counted in connectivity). Edge weights are the Gaussian kernel of §5. The graph is built once over all cells, as scanpy
   builds it on a whole dataset, and both §4 and §5 use it.
 - **Connectivity of types a, b**: scanpy's PAGA (`tl.paga`, connectivity
   model v1.2), which counts the kNN edges between groups against a random
@@ -152,7 +162,7 @@ The connectivity check does not depend on the root.
   `candidate`. PAGA's spanning tree is not used: with many pairs saturated at
   1 its tied edges follow the order of the type names.
 - **What it can and cannot show**: on the bench data every edge of the known
-  haematopoietic hierarchy sits above the default threshold and every planted
+  hierarchy sits above the default threshold and every planted
   edge between separated branches below it, which is how the default was
   set; but a planted edge between two types that touch (siblings under one
   progenitor, a stem cell and a small type beside it) saturates like a true
@@ -170,22 +180,22 @@ compared directly:
 - **Kernel**: `W(x, y) = sqrt(2σ_x σ_y / (σ_x² + σ_y²)) · exp(−d² / (σ_x² + σ_y²))`
   with σ_x² the median squared distance to x's `k − 1` neighbours, symmetrised;
   density-normalised `K = W / q qᵀ`; then `S = D^-1/2 K D^-1/2`.
-- **Diffusion components**: the `n_dcs` eigenpairs of the sparse, symmetric
+- **Diffusion components**: 15 eigenpairs (`diffmap`'s `n_comps`) of the sparse, symmetric
   `S` largest in magnitude, as scanpy's `eigsh(which='LM')` finds them, here
   in float64 by legume-numeric's randomised SVD (`rsvd_with`, from its next
   release; 20 power iterations, 10 oversample columns), each eigenvalue's
   sign taken from its Rayleigh quotient `uᵀSu`, then sorted by signed value,
   largest first, as scanpy orders them. At the default 5 iterations the
-  clustered leading eigenvalues come out wrong enough that pseudotime agrees
-  with scanpy's at only ρ 0.86; at 20 and 10 the bench matches `eigsh`
-  (eigenvalues to 5e-5, pseudotime ρ 1.000). Every pair is checked by its
+  clustered leading eigenvalues come out wrong enough that pseudotime departs
+  from scanpy's; at 20 and 10 the bench matches `eigsh`. Every pair is checked by its
   residual `‖Su − λu‖`; if any is too large (a flatter spectrum, or a ± pair
   of equal size that the SVD cannot separate), lupin doubles the iterations
   up to a cap and otherwise stops, saying so. The eigenvectors are those of
   `S`, not rescaled, and the eigenvalues are rounded to float32 before the
   0.9994 test below, as in scanpy; one within 1e-4 of 0.9994, where the
   solver's error could put it on the other side, is reported.
-- **Distance**, as scanpy computes it: over all components, eigenvalues below
+- **Distance**, as scanpy computes it: over the first `--n-dcs` components
+  (default 10, as `tl.dpt`; all 15 are written and drawn), eigenvalues below
   0.9994 contribute `(λ / (1 − λ))² (ψ(x) − ψ(y))²` and those at or above it
   `(ψ(x) − ψ(y))²` unweighted; the square root of the sum. Cells in another
   connected piece of the cell graph are at infinite distance.
@@ -200,16 +210,17 @@ compared directly:
   eigenvalue at or above 0.9994, unweighted (above); lupin names such regions
   in the report.
 - **Degenerate geometry**: a cell whose neighbours mostly coincide with it has
-  σ_x = 0, which turns scanpy's kernel NaN and fails its eigensolve (senna VAE
+  σ_x = 0 (after duplicates are collapsed, near-coincident cells can still do
+  this), which turns scanpy's kernel NaN and fails its eigensolve (senna VAE
   and topic latents with saturated cells did this on the bench data). lupin
   checks for σ_x = 0 before the eigensolve and stops, naming how many cells
   are affected and suggesting another embedding.
-- **Root cell**: the root type's medoid — among its cells in the graph
+- **Root cell**: the root type's medoid (among its cells in the graph
   component holding most of them, the one with the smallest mean diffusion
-  distance to the others — independent of eigenvector signs. On the bench
+  distance to the others), independent of eigenvector signs. On the bench
   data the first draft's rule, the root-type cell farthest from every
-  terminal type, picked an outlier and ordered the types far worse
-  (Spearman ρ 0.21 against 0.56 for the medoid on the same 10-d geometry).
+  terminal type, picked an outlier and ordered the types far worse than the
+  medoid on the same geometry.
   With several sources in a component, a cell's pseudotime is its distance
   to the nearest root.
 - **Lineages**: each root-to-leaf path of the direct-edge graph, listed in
@@ -225,16 +236,23 @@ compared directly:
 
 `lupin trajectory` (also `t` in the annotate TUI's tree pane) adds an
 **order view** in the tree pane: the run's types with their cell counts, the
-direct edges with their sources, and — once a check has run — each edge's
+direct edges with their sources, and, once a check has run, each edge's
 verdict. Mark type A, mark type B, then `>` for "A precedes B" or `-` for
 "unrelated" (`x` already stops a running pass anywhere in the TUI); a short
-reason is asked for, as for other edits. Saving appends to the project layer's
-`precedence.tsv`; annotation rounds (`decisions.jsonl`) are not touched.
+reason is asked for, as for other edits. Enter on the reason writes the
+statement to the project layer's `precedence.tsv` at once (no save step);
+annotation rounds (`decisions.jsonl`) are not touched. A new statement about a
+pair replaces the earlier one, which is how a statement is corrected. A
+statement is refused, with the reason shown and no reason asked, when the
+file's last line about the pair already makes it, when it would close a
+cycle, or when it says `unrelated` about a pair the rest of the prior orders.
 
 **Figures and what was exported.**
 
-The order view (above) sits beside figure panels drawn from the run's
-trajectory outputs, the same set the bench summary shows:
+The figure panels take the order table's place in the tree pane while they
+are shown (`v` shows them and steps through them, `V` brings the table back);
+space, `>` and `-` do nothing then, since types are marked in the table. The
+panels are drawn from the run's trajectory outputs, the same set the bench summary shows:
 
 - **Layout**: the run's layout coloured by pseudotime, the prior's direct
   edges as arrows between type medians (supported edges solid, the rest
@@ -272,12 +290,13 @@ renamed into place, and a list that cannot be read is set aside as
 panel, the manifest it came from, and each file's absolute path, size,
 modification time and content hash. A strip in the TUI (`f`) shows the list;
 an entry can be moved (`m`; nothing is replaced, and a failed move is undone),
-removed from the list (`d`), or removed with its files (`D`). Files are moved
-or deleted only when the log and its directory are this user's, writable
-by no one else and not links (lupin creates them so), and only when they
-are still the export that was logged: beside the
-PDF, with the same base name, and unchanged. A failed log write never fails
-the export.
+removed from the list (`d`), or removed with its files (`D`, which deletes
+only on a second `D` on the same export). Exporting (`p`), deleting (`D`) and
+moving (`m`) act on the log only when it and its directory are this user's
+alone: writable by no one else and not links (lupin creates them so); saving
+over a log others can write is refused. Files are moved or deleted only when
+they are still the export that was logged: beside the PDF, with the same base
+name, and unchanged. A failed log write never fails the export.
 
 **Refresh.** `R` re-reads the list and checks every entry against the files
 on disk: `ok`, `changed since export` or `missing`. A file whose size and
@@ -291,7 +310,7 @@ named `{out}.trajectory.{panel}` but not on the list are shown as
 
 | output | contents |
 |---|---|
-| `{out}.trajectory_prior.tsv` | the combined statements and the direct edges, each with its source — a complete prior on its own |
+| `{out}.trajectory_prior.tsv` | the combined statements and the direct edges, each with its source; a complete prior on its own |
 | `{out}.trajectory_edges.parquet` | type pairs: PAGA connectivity, in-prior, verdict, order agreement |
 | `{out}.cell_pseudotime.parquet` | per cell: `pseudotime`, `type`, `component`, one weight column per lineage |
 | `{out}.diffusion.parquet` | cells × diffusion components |
@@ -311,25 +330,25 @@ lupin's diffusion pseudotime must match established implementations before it
 is trusted.
 
 - **Reference**: scanpy 1.10 (`dpt` and `paga`, exact neighbours), run
-  locally as a test-driven-development tool; only its reference fixtures and the
-  notes in the source repository's `dev/trajectory-bench/README.md` are
-  committed.
-- **Data**: a CD34+ bone-marrow sample with published cell-type labels
-  (haematopoiesis gives a known order), embedded by `senna svd`; the sample
-  itself, the bench outputs and the reference fixtures stay out of the
-  repository. Baseline: scanpy's pseudotime from the HSC medoid agrees well
-  with the expected stage order.
+  locally as a test-driven-development tool; none of the bench, its notes or
+  its reference fixtures is committed.
+- **Data**: a sample with published cell-type labels whose developmental
+  order is known, embedded by `senna svd`; the sample itself, the bench
+  outputs and the reference fixtures stay out of the repository. Baseline:
+  scanpy's pseudotime from the root type's medoid agrees with the expected
+  stage order.
 - **Like for like**: same cells, same prepared geometry, same `k` (counting
-  self), same number of diffusion components, same root cell; no exact
-  duplicate cells.
+  self), same number of diffusion components computed and used by DPT, same
+  root cell; no exact duplicate cells (lupin collapses them, scanpy does
+  not).
 - **Metrics**: per-cell Spearman ρ between lupin's and scanpy's pseudotime on
   the full bench data (target ≥ 0.98; defined while both searches are exact,
-  up to 65,536 cells — scanpy's default goes approximate from 8,192, so the
+  up to 65,536 cells; scanpy's default goes approximate from 8,192, so the
   bench runs it exact), the diffusion subspaces compared by
   principal angles (single components can rotate within a near-degenerate
   pair, as λ₂ and λ₃ nearly do here), per-type median-pseudotime ranks, run
   time.
-- **Biology**: HSC → MPP → committed progenitors → mature types recovered; a
+- **Biology**: the known stage order recovered from the root type; a
   deliberately wrong prior (reversed root, a false edge) flagged as
   `unsupported` or by low order agreement.
 - **Reference tests**: a stratified subset of the bench cells with its

@@ -193,7 +193,7 @@ of the binary so they can be updated and amended without rebuilding:
 | file | what |
 |---|---|
 | `cl-basic.obo` | the Cell Ontology (downloaded once, then cached) |
-| `cl_matching.json` | matching rules: which synonyms count (abbreviations such as HSC, GMP), plurals, word order, which ontology subsets are classes |
+| `cl_matching.json` | matching rules: which synonyms count (abbreviations such as CT1 for its full name), plurals, word order, which ontology subsets are classes |
 | `cl_aliases.tsv` | curated `label<TAB>CL:id<TAB>note` mappings for names matching cannot settle (Azimuth's `CD14 Mono`, `Prog Mk`, …) |
 
 Each is looked up in layers, later ones winning (rules key by key, aliases row
@@ -219,7 +219,7 @@ What you curate in the TUI is kept as plain files in `lupin/` beside the run
 manifest (read after `~/.config/lupin/`, which holds the same names for every
 project): `cl_aliases.tsv` (label → CL term), `hidden_genes.txt` (genes or `*`
 patterns such as `MT-*` kept out of the specific-genes view) and
-`mixed_labels.tsv` (a name for a mixed label, e.g. `HSPC mix<TAB>EMP<TAB>HSC`, given
+`mixed_labels.tsv` (a name for a mixed label, e.g. `CT1 mix<TAB>CT2<TAB>CT3`, given
 to a cluster the evidence cannot split).
 
 ## Method write-ups
