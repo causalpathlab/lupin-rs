@@ -1085,7 +1085,7 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
     };
     let title = format!(
         " {} ({}/{}) ",
-        v.current().title(),
+        v.data.title(v.current()),
         v.sel + 1,
         v.panels.len()
     );

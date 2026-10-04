@@ -20,6 +20,7 @@ fn data() -> TrajectoryData {
         types,
         diffusion: Some(d),
         layout: Some((x, y)),
+        layout_method: None,
         edges: vec![EdgeRow {
             a: "A".into(),
             b: "B".into(),
@@ -53,6 +54,27 @@ fn the_order_panel_lists_types_by_median_and_skips_unreached_cells() {
     assert_eq!(rows[0].name.as_ref(), "A");
     assert_eq!(rows[0].cells, 19, "the NaN cell is left out");
     assert!(rows[0].median < rows[1].median);
+}
+
+#[test]
+fn phate_is_drawn_when_senna_made_one() {
+    let mut m: RunManifest = serde_json::from_str(
+        r#"{"version": 2, "kind": "topic", "prefix": "r", "layout": {"cell_coords": "r.umap.parquet", "current": "umap",
+            "methods": {"umap": {"cell_coords": "r.umap.parquet"}}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        pick_layout(&m),
+        (Some("umap".into()), Some("r.umap.parquet".into()))
+    );
+    m.layout.extra["methods"]["phate"] = serde_json::json!({"cell_coords": "r.phate.parquet"});
+    assert_eq!(
+        pick_layout(&m),
+        (Some("phate".into()), Some("r.phate.parquet".into()))
+    );
+    let mut t = data();
+    t.layout_method = Some("phate".into());
+    assert_eq!(t.title(Panel::Layout), "PHATE · pseudotime");
 }
 
 #[test]

@@ -32,7 +32,8 @@ const EXPORT_DPI: f32 = 200.0;
 /// Which figure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Panel {
-    /// The run's 2D layout, cells coloured by pseudotime, prior edges as arrows.
+    /// The run's 2D layout (senna's PHATE when it made one), cells coloured
+    /// by pseudotime, prior edges as arrows.
     Layout,
     /// Two diffusion components, cells coloured by pseudotime.
     Diffusion { x: usize, y: usize },
@@ -98,6 +99,8 @@ pub(crate) struct TrajectoryData {
     pub(crate) diffusion: Option<Mat>,
     /// The run's layout, `(x, y)` per cell, NaN where a cell has none.
     pub(crate) layout: Option<(Vec<f32>, Vec<f32>)>,
+    /// Which of senna's layouts it is (`phate`, `umap`, …), when known.
+    pub(crate) layout_method: Option<String>,
     pub(crate) edges: Vec<EdgeRow>,
 }
 
@@ -129,8 +132,9 @@ impl TrajectoryData {
             }
             None => None,
         };
-        let layout = match manifest.layout.cell_coords.as_deref() {
-            Some(rel) => Some(read_layout(&at(rel), &index)?),
+        let (layout_method, coords) = pick_layout(manifest);
+        let layout = match coords {
+            Some(rel) => Some(read_layout(&at(&rel), &index)?),
             None => None,
         };
         let edges = match t.edges.as_deref() {
@@ -143,6 +147,7 @@ impl TrajectoryData {
             types,
             diffusion,
             layout,
+            layout_method,
             edges,
         }))
     }
@@ -150,6 +155,14 @@ impl TrajectoryData {
     /// The run's output prefix, which export names start from.
     pub(crate) fn prefix(&self) -> String {
         derive_out_prefix(&self.manifest.to_string_lossy())
+    }
+
+    /// A panel's title, naming the layout drawn.
+    pub(crate) fn title(&self, panel: Panel) -> String {
+        match (panel, &self.layout_method) {
+            (Panel::Layout, Some(m)) => format!("{} · pseudotime", m.to_uppercase()),
+            _ => panel.title(),
+        }
     }
 
     /// The figures these outputs allow, in display order.
@@ -234,7 +247,7 @@ impl TrajectoryData {
             files,
             what: format!(
                 "{} · {EXPORT_WIDTH_IN:.0} in · {EXPORT_DPI:.0} dpi",
-                panel.title()
+                self.title(panel)
             ),
         })
     }
@@ -461,6 +474,31 @@ impl TrajectoryData {
             h: size.height_px,
         }
     }
+}
+
+/// The layout to draw pseudotime on: senna's PHATE (`senna layout phate`,
+/// recorded under `layout.methods.phate`) when the run has one, as PHATE is
+/// built to show trajectories; else the run's current layout. Returns the
+/// method's name, when known, and the table's manifest-relative path.
+fn pick_layout(manifest: &RunManifest) -> (Option<String>, Option<String>) {
+    let methods = manifest.layout.extra.get("methods");
+    let coords_of = |m: &str| {
+        methods?
+            .get(m)?
+            .get("cell_coords")?
+            .as_str()
+            .map(str::to_string)
+    };
+    if let Some(p) = coords_of("phate") {
+        return (Some("phate".into()), Some(p));
+    }
+    let current = manifest
+        .layout
+        .extra
+        .get("current")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    (current, manifest.layout.cell_coords.clone())
 }
 
 /// The layout at `path` as `(x, y)` per cell of `index`, NaN for a cell the

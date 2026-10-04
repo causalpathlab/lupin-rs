@@ -224,8 +224,10 @@ trajectory outputs, the same set the bench summary shows:
 
 - **Layout**: the run's layout coloured by pseudotime, the prior's direct
   edges as arrows between type medians (supported edges solid, the rest
-  faded). Phase 5 replaces this picture with a PHATE embedding of the
-  trajectory's own diffusion operator; the run's layout stays as it is.
+  faded). senna's PHATE (`senna layout phate`, Moon et al. 2019, in
+  legume-numeric's `matrix::layout`) is drawn when the run has one
+  (`layout.methods.phate`), being made to show trajectories; else the run's
+  current layout. lupin reads the layout and never writes one.
 - **Diffusion map**: cells on two diffusion components (`,`/`.` change the
   pair), coloured by pseudotime.
 - **Order by type**: median pseudotime and middle half per type, in order of
@@ -359,12 +361,4 @@ error, and DPT on a synthetic Y shape and on a disconnected one.
    against phase 0.
 3. (done) TUI order view, figures and export log.
 4. (done) `plot --colour-by pseudotime` with the edge overlay.
-5. PHATE (Moon et al. 2019) as the trajectory's own 2D picture, first among
-   the figure panels and the one `plot --colour-by pseudotime` draws, written
-   as `{out}.phate.parquet` and recorded as `trajectory.phate`. It is built
-   from the diffusion operator phase 2 already computes (powered to a `t`
-   chosen by the von Neumann entropy knee, log-potential distances, metric
-   MDS), following the reference `phate` package's defaults and checked
-   against it on the bench sample as DPT and PAGA were. The run's own layout
-   (`layout.cell_coords`) is not touched; a run without PHATE falls back to it.
-6. Later: association.
+5. Later: association.
