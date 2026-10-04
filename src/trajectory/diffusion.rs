@@ -384,6 +384,16 @@ fn transition_eigenpairs(s: &CscMatrix<f64>, n_dcs: usize) -> Result<(Vec<f32>, 
                 DMatrix::from_columns(&pairs.iter().map(|&(_, c)| u.column(c)).collect::<Vec<_>>());
             return Ok((evals, evecs));
         }
+        // Another try: say so on the progress popup, halfway through the
+        // stage at most.
+        let tries = (MAX_POWER_ITERS / EIGEN_ARGS.power_iters).ilog2() as usize + 1;
+        let tried = (args.power_iters / EIGEN_ARGS.power_iters).ilog2() as usize + 1;
+        super::run::STAGES.within(
+            super::run::STAGE_DIFFUSION,
+            tried,
+            2 * tries,
+            Some(&format!("{} power iterations", 2 * args.power_iters)),
+        );
         ensure!(
             args.power_iters < MAX_POWER_ITERS,
             "diffusion components did not converge (residual {worst:.2e} after {} power \

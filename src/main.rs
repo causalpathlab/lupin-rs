@@ -8,6 +8,7 @@ mod docs;
 mod gene_text;
 mod manifest;
 mod marker_embedding;
+mod progress;
 mod trajectory;
 mod tui;
 

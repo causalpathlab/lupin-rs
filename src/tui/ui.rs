@@ -10,7 +10,7 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap,
+    Block, BorderType, Borders, Cell, Clear, LineGauge, Paragraph, Row, Table, TableState, Wrap,
 };
 use ratatui::Frame;
 
@@ -70,39 +70,45 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.prompt.is_some() {
         draw_prompt(f, app, f.area());
     }
+    draw_progress(f, app);
 }
 
-/// The trajectory's order view: the ontology on the left, the ordering in
-/// the middle (the figures across both when shown), the clusters on the
-/// right. Narrow, the ontology and the ordering share the left column,
-/// whichever has the focus.
+/// The trajectory's order view: the clusters on the left, the ordering (or
+/// the figures) in the middle, the ontology on the right.
 fn draw_order_screen(f: &mut Frame, app: &App, [header, body, summary, log, keys]: [Rect; 5]) {
     let TreeMode::Order(v) = &app.tree_mode else {
         return;
     };
+    // Left: the clusters, their genes and their cell types' p-values;
+    // middle: the ordering, or the figures; right: the ontology. Narrow,
+    // the ontology takes the middle while it has the focus.
     let wide = f.area().width >= ORDER_WIDE;
-    let [main, right] = Layout::horizontal([
-        Constraint::Percentage(if wide { 68 } else { 58 }),
-        Constraint::Fill(1),
-    ])
-    .areas(body);
+    let [left, middle, right] = if wide {
+        Layout::horizontal([
+            Constraint::Percentage(28),
+            Constraint::Percentage(46),
+            Constraint::Fill(1),
+        ])
+        .areas(body)
+    } else {
+        let [l, m] =
+            Layout::horizontal([Constraint::Percentage(38), Constraint::Fill(1)]).areas(body);
+        [l, m, Rect::default()]
+    };
     let [clusters, genes, candidates] = Layout::vertical([
         Constraint::Min(8),
         Constraint::Length(12),
         Constraint::Length(10),
     ])
-    .areas(right);
+    .areas(left);
     draw_header(f, header, app);
     match app.figures.as_ref().filter(|fig| fig.shown) {
-        Some(fig) => draw_figures(f, main, app, fig),
-        None if wide => {
-            let [onto, ordering] =
-                Layout::horizontal([Constraint::Percentage(41), Constraint::Fill(1)]).areas(main);
-            draw_order_ontology(f, onto, app, v);
-            draw_order(f, ordering, app, v);
-        }
-        None if app.focus == Focus::Tree => draw_order_ontology(f, main, app, v),
-        None => draw_order(f, main, app, v),
+        Some(fig) => draw_figures(f, middle, app, fig),
+        None if !wide && app.focus == Focus::Tree => draw_order_ontology(f, middle, app, v),
+        None => draw_order(f, middle, app, v),
+    }
+    if wide {
+        draw_order_ontology(f, right, app, v);
     }
     draw_clusters(f, clusters, app);
     draw_genes(f, genes, app);
@@ -117,10 +123,82 @@ fn draw_order_screen(f: &mut Frame, app: &App, [header, body, summary, log, keys
         draw_guide(f);
     }
     if app.prompt.is_some() {
-        // A choice leaves the ontology and the ordering in sight: it opens
+        // A choice leaves the ordering and the ontology in sight: it opens
         // over the clusters.
-        draw_prompt(f, app, right);
+        draw_prompt(f, app, left);
     }
+    draw_progress(f, app);
+}
+
+/// The running job's popup: what it is, its stage, a bar, the time so far
+/// and left, and its latest log line; red with the reason once it failed.
+fn draw_progress(f: &mut Frame, app: &App) {
+    let [area] = Layout::vertical([Constraint::Length(8)])
+        .flex(Flex::Center)
+        .areas(f.area());
+    let [area] = Layout::horizontal([Constraint::Length(f.area().width.min(72))])
+        .flex(Flex::Center)
+        .areas(area);
+    if let Some(why) = &app.failed {
+        let block = popup(" failed ".into(), " any key closes ")
+            .border_style(Style::new().fg(Color::LightRed).bg(Color::Indexed(236)));
+        let text = vec![
+            Line::from(why.clone()).bold(),
+            Line::from(""),
+            Line::from("the log below has the details").fg(Color::Indexed(250)),
+        ];
+        f.render_widget(Clear, area);
+        f.render_widget(
+            Paragraph::new(text).wrap(Wrap { trim: true }).block(block),
+            area,
+        );
+        return;
+    }
+    if app.progress_hidden {
+        return;
+    }
+    let Some((what, elapsed)) = app.running_job() else {
+        return;
+    };
+    let p = app.progress.clone().unwrap_or_default();
+    let block = popup(format!(" {what} "), " x stop · b hide ");
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let [stage, bar, times, _, last] = Layout::vertical([Constraint::Length(1); 5]).areas(inner);
+    let stage_text = if p.stage.is_empty() {
+        "starting…"
+    } else {
+        p.stage.as_str()
+    };
+    f.render_widget(Paragraph::new(stage_text).style(POPUP), stage);
+    let f_done = p.fraction();
+    let gauge = LineGauge::default()
+        .filled_style(Style::new().fg(Color::LightGreen))
+        .unfilled_style(Style::new().fg(Color::Indexed(240)))
+        .ratio(f_done.unwrap_or(0.0))
+        .label(f_done.map_or("…".to_string(), |r| format!("{:.0}%", 100.0 * r)))
+        .style(POPUP);
+    f.render_widget(gauge, bar);
+    let left = f_done.map_or("estimating…".into(), |r| super::app::eta_text(r, elapsed));
+    f.render_widget(
+        Paragraph::new(format!(
+            "elapsed {} · {left}",
+            super::app::duration_text(elapsed)
+        ))
+        .style(POPUP),
+        times,
+    );
+    // The message alone, without the logger's `[time LEVEL module]`.
+    let msg = match p.last.strip_prefix('[').and_then(|r| r.split_once("] ")) {
+        Some((_, m)) => m.trim_start(),
+        None => p.last.as_str(),
+    };
+    let tail: String = msg.chars().take(last.width as usize).collect();
+    f.render_widget(
+        Paragraph::new(tail).style(POPUP.fg(Color::Indexed(245))),
+        last,
+    );
 }
 
 /// The bottom line: where the key guide is, and the pane's main keys.
@@ -134,16 +212,16 @@ fn help(app: &App) -> &'static str {
         }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) && !figures_shown(app) => {
             if app.order_cl.is_some() {
-                " ? keys · ↑↓ term · → children · ← parents · o back to the run's types · tab ordering"
+                " ? keys · ↑↓ term · → children · ← parents · o back to the run's types · tab clusters"
             } else {
-                " ? keys · ↑↓ type on the ontology · ← → fold · space mark · o full ontology · tab ordering"
+                " ? keys · ↑↓ type on the ontology · ← → fold · space mark · o full ontology · tab clusters"
             }
         }
         Focus::Order | Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
             if figures_shown(app) {
                 " ? keys · v next · w all · V table · t c m labels colour layout · , . pair · +-0 zoom · ←↑→↓ pan · p export · f exports · R check · r run · esc clusters"
             } else {
-                " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab clusters · t tree"
+                " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab ontology · t tree"
             }
         }
         Focus::Order => " ? keys · tab pane",

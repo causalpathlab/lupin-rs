@@ -221,6 +221,47 @@ pub struct Prompt {
     pub pending: Pending,
 }
 
+/// A running job's progress: the latest `@progress` line and log line.
+#[derive(Default, Clone)]
+pub struct JobProgress {
+    pub done: f64,
+    pub total: f64,
+    pub stage: String,
+    /// The job's latest log line.
+    pub last: String,
+}
+
+impl JobProgress {
+    /// The share done, once the job has reported any.
+    pub fn fraction(&self) -> Option<f64> {
+        (self.total > 0.0).then(|| (self.done / self.total).clamp(0.0, 1.0))
+    }
+}
+
+/// Time left after `elapsed` with `f` done, assuming the rest goes at the
+/// same pace; `None` until there is enough to go on (2% and 2 s).
+pub fn eta(f: f64, elapsed: std::time::Duration) -> Option<std::time::Duration> {
+    ((0.02..1.0).contains(&f) && elapsed.as_secs_f64() >= 2.0)
+        .then(|| elapsed.mul_f64((1.0 - f) / f))
+}
+
+/// `ETA 1m10s`, or `estimating…`.
+pub fn eta_text(f: f64, elapsed: std::time::Duration) -> String {
+    eta(f, elapsed).map_or("estimating…".into(), |d| {
+        format!("ETA {}", duration_text(d))
+    })
+}
+
+/// `45s`, `3m05s`, `1h02m`.
+pub fn duration_text(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m{:02}s", s / 60, s % 60),
+        _ => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
 /// What a child process is doing.
 #[derive(Clone, PartialEq, Eq)]
 pub enum Job {
@@ -267,6 +308,12 @@ enum Armed {
 }
 
 pub struct App {
+    /// The running job's progress, as its `@progress` lines report it.
+    pub progress: Option<JobProgress>,
+    /// The progress popup is hidden (`b`); the status line keeps the gist.
+    pub progress_hidden: bool,
+    /// A job that failed: its popup stays, red, until a key.
+    pub failed: Option<String>,
     /// The terminal tells Shift+Enter from Enter (the kitty keyboard
     /// protocol): Shift+Enter then runs a pass and Enter only edits.
     pub shift_enter: bool,
@@ -403,6 +450,9 @@ impl App {
             want_file: None,
             trajectory_after_pass: false,
             picker: None,
+            progress: None,
+            progress_hidden: false,
+            failed: None,
         }
     }
 
@@ -416,6 +466,17 @@ impl App {
     /// Take in finished work: new log lines, and a pass that has ended.
     pub fn tick(&mut self) {
         while let Ok(line) = self.log_rx.try_recv() {
+            // A running job's progress lines feed the popup, not the log.
+            if let Some((done, total, stage)) = crate::progress::parse(&line) {
+                if self.child.is_some() {
+                    let p = self.progress.get_or_insert_with(JobProgress::default);
+                    (p.done, p.total, p.stage) = (done, total, stage);
+                }
+                continue;
+            }
+            if self.child.is_some() {
+                self.progress.get_or_insert_with(JobProgress::default).last = line.clone();
+            }
             self.push_log(line);
         }
         for line in super::drain_own_log() {
@@ -427,9 +488,22 @@ impl App {
         };
         let (secs, job) = (started.elapsed().as_secs(), job.clone());
         match child.try_wait() {
-            Ok(None) => self.status = format!("{}… {secs}s  (x: stop)", job.name()),
+            Ok(None) => {
+                let p = self.progress.get_or_insert_with(JobProgress::default);
+                let elapsed = started.elapsed();
+                self.status = match p.fraction() {
+                    Some(f) if self.progress_hidden => format!(
+                        "{} {:.0}% · {} · b shows  (x: stop)",
+                        job.name(),
+                        100.0 * f,
+                        eta_text(f, elapsed)
+                    ),
+                    _ => format!("{}… {secs}s  (x: stop)", job.name()),
+                };
+            }
             Ok(Some(st)) if st.success() => {
                 self.child = None;
+                self.progress = None;
                 if let Job::Trajectory(m) = job {
                     self.trajectory_done(&m, secs);
                     return;
@@ -475,15 +549,30 @@ impl App {
             }
             Ok(Some(st)) => {
                 self.child = None;
+                self.progress = None;
                 self.trajectory_after_pass = false;
                 self.status = format!("{} failed ({st}); see the log", job.name());
+                self.failed = Some(self.status.clone());
             }
             Err(e) => {
                 self.child = None;
+                self.progress = None;
                 self.trajectory_after_pass = false;
                 self.status = format!("lost the {}: {e}", job.name());
+                self.failed = Some(self.status.clone());
             }
         }
+    }
+
+    /// The running job for its popup: what it is and how long it has run.
+    pub fn running_job(&self) -> Option<(String, std::time::Duration)> {
+        let (_, started, job) = self.child.as_ref()?;
+        let what = match job {
+            Job::Pass => format!("pass → {}", file_name(&self.target)),
+            Job::Save(n) => format!("saving {n} edit(s)"),
+            Job::Trajectory(m) => format!("trajectory → {}", file_name(m)),
+        };
+        Some((what, started.elapsed()))
     }
 
     /// Show round `manifest`, dropping unsaved edits.
@@ -1431,6 +1520,15 @@ impl App {
                 return;
             }
         }
+        // A failed job's popup goes with any key, which does nothing else.
+        if self.failed.take().is_some() {
+            return;
+        }
+        // `b` hides the running job's popup, or brings it back.
+        if k.code == KeyCode::Char('b') && self.child.is_some() {
+            self.progress_hidden = !self.progress_hidden;
+            return;
+        }
         if self.help_open {
             // Any key closes the guide.
             self.help_open = false;
@@ -1544,10 +1642,10 @@ impl App {
 
     fn cycle(&self, forward: bool) -> Focus {
         use Focus::{Clusters, Genes, Go, Order, Tree};
-        // The order view's columns, left to right: ontology, ordering,
-        // clusters (genes below them).
+        // The order view's columns, left to right: clusters (genes below
+        // them), ordering, ontology.
         let mut order = if matches!(self.tree_mode, TreeMode::Order(_)) {
-            vec![Tree, Order, Clusters, Genes]
+            vec![Clusters, Genes, Order, Tree]
         } else {
             vec![Clusters, Genes, Tree]
         };

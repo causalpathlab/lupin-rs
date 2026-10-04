@@ -10,6 +10,7 @@ use super::outputs::{
     CLUSTER_CELLTYPE_NES, CLUSTER_CELLTYPE_P, CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES,
     CLUSTER_CELLTYPE_Z, CLUSTER_TERM_NES, CLUSTER_TERM_P, CLUSTER_TERM_Q_VALUES,
 };
+use crate::progress::Stages;
 use enrichment::{
     annotate, annotate_types, AnnotateConfig, AnnotateOutputs, GroupInputs, SpecificityMode,
     TypeScores,
@@ -234,12 +235,38 @@ fn prepare_with(
     Ok((group, markers_gc, config))
 }
 
+/// An enrichment pass's stages for the TUI's progress popup, weighted by
+/// their rough share of the time; [`PASS_GO`] when GO terms are scored too.
+pub(crate) static PASS: Stages = Stages::new(&[
+    ("reading the data and its clusters", 3.0),
+    ("scoring cell types", 6.0),
+    ("writing outputs", 1.0),
+    ("recording the round", 0.5),
+]);
+pub(crate) static PASS_GO: Stages = Stages::new(&[
+    ("reading the data and its clusters", 3.0),
+    ("scoring cell types", 6.0),
+    ("writing outputs", 1.0),
+    ("scoring GO terms", 4.0),
+    ("recording the round", 0.5),
+]);
+
+/// The stages of a pass that scores GO terms too when `go`.
+pub(crate) fn pass_stages(go: bool) -> &'static Stages {
+    if go {
+        &PASS_GO
+    } else {
+        &PASS
+    }
+}
+
 pub fn run(
     args: &AnnotateArgs,
     plan: &EnrichmentPlan,
     inputs: &EnrichmentInputs,
 ) -> anyhow::Result<AnnotationOutputs> {
     let out = plan.out.as_ref();
+    let stages = pass_stages(plan.gene_sets_too);
     let g = inputs.gene_names.len();
     let n_clusters = inputs.n_clusters;
     let profile_gk = &inputs.profile_gk;
@@ -276,7 +303,11 @@ pub fn run(
         cell_annotation_nc,
         argmax_labels,
         bootstrap: _,
-    } = score(args, inputs)?;
+    } = {
+        stages.start(1);
+        score(args, inputs)?
+    };
+    stages.start(2);
 
     /////////////
     // Outputs //
@@ -376,6 +407,7 @@ pub fn run(
     // walk: the cell-type outputs above are already written.
     let mut gene_set_outputs = None;
     if plan.gene_sets_too {
+        stages.start(3);
         match gene_set_signature(args, out, inputs, &cluster_names) {
             Ok(paths) => gene_set_outputs = Some(paths),
             Err(e) => log::error!("GO term scoring failed ({e:#}); cell-type outputs are intact"),

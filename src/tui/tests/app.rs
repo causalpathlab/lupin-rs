@@ -309,7 +309,7 @@ fn state_the_order_myself_closes_the_menu_on_the_table_and_esc_cancels() {
 }
 
 #[test]
-fn in_the_order_view_tab_visits_the_ontology_then_the_precedence_table() {
+fn in_the_order_view_tab_follows_the_columns_clusters_ordering_ontology() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = order_app(dir.path(), &["CT1", "CT2"]);
     app.focus = Focus::Clusters;
@@ -319,7 +319,7 @@ fn in_the_order_view_tab_visits_the_ontology_then_the_precedence_table() {
             app.focus
         })
         .collect();
-    assert!(seen == [Focus::Genes, Focus::Tree, Focus::Order, Focus::Clusters]);
+    assert!(seen == [Focus::Genes, Focus::Order, Focus::Tree, Focus::Clusters]);
 }
 
 #[test]
@@ -433,4 +433,42 @@ fn in_the_order_view_r_runs_the_trajectory_from_any_pane() {
         menu(&app).is_some(),
         "the trajectory's own question instead"
     );
+}
+
+#[test]
+fn the_eta_waits_for_enough_to_go_on_then_scales_with_what_is_left() {
+    use super::super::app::{duration_text, eta, eta_text};
+    use std::time::Duration;
+    let s = Duration::from_secs;
+    assert_eq!(eta(0.5, Duration::from_millis(1500)), None, "under 2 s");
+    assert_eq!(eta(0.01, s(30)), None, "under 2%");
+    assert_eq!(eta(1.0, s(30)), None, "done");
+    assert_eq!(eta(0.5, s(10)), Some(s(10)));
+    assert_eq!(eta(0.25, s(10)), Some(s(30)));
+    // More done in the same time leaves less.
+    assert!(eta(0.8, s(10)) < eta(0.4, s(10)));
+    assert_eq!(eta_text(0.01, s(30)), "estimating…");
+    assert_eq!(eta_text(0.5, s(70)), "ETA 1m10s");
+    assert_eq!(duration_text(s(45)), "45s");
+    assert_eq!(duration_text(s(3725)), "1h02m");
+}
+
+#[test]
+fn a_failed_job_keeps_its_popup_until_a_key_which_does_nothing_else() {
+    let mut app = app_with_terms(false);
+    app.failed = Some("trajectory failed (exit status: 1); see the log".into());
+    let focus = app.focus;
+    press(&mut app, KeyCode::Tab);
+    assert!(app.failed.is_none());
+    assert!(app.focus == focus, "the key only closed the popup");
+}
+
+#[test]
+fn b_hides_the_running_job_and_brings_it_back() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    press(&mut app, KeyCode::Char('b'));
+    assert!(app.progress_hidden);
+    press(&mut app, KeyCode::Char('b'));
+    assert!(!app.progress_hidden);
 }

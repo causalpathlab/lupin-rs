@@ -220,10 +220,12 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         while !app.quit {
             let (logged, status) = (app.log.len(), app.status.clone());
             let rescoring = app.rescoring.is_some();
+            let progress = app.progress.as_ref().map(|p| (p.done, p.stage.clone()));
             app.tick();
             dirty |= app.log.len() != logged
                 || app.status != status
-                || app.rescoring.is_some() != rescoring;
+                || app.rescoring.is_some() != rescoring
+                || app.progress.as_ref().map(|p| (p.done, p.stage.clone())) != progress;
             if dirty {
                 terminal.draw(|f| ui::draw(f, &app))?;
                 dirty = false;

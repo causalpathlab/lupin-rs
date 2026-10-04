@@ -12,6 +12,7 @@ use crate::manifest::data_files::Fetch;
 use crate::manifest::run::{
     annotated_path, load, may_replace, rel_to_manifest, resolve, same_file, Loaded,
 };
+use crate::progress::Stages;
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use legume_numeric::matrix::common_io::mkdir_parent;
@@ -241,7 +242,22 @@ pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
     }
 }
 
+/// The batch run's stages for the TUI's progress popup, weighted by their
+/// rough share of the time: the kNN graph and the eigensolve dominate.
+pub(crate) const STAGES: Stages = Stages::new(&[
+    ("reading the run", 1.0),
+    ("building the prior", 0.5),
+    ("kNN graph", 4.0),
+    ("connectivity check", 0.5),
+    ("diffusion components", 4.0),
+    ("pseudotime and lineages", 1.0),
+    ("writing outputs", 1.0),
+]);
+/// [`STAGES`] by name.
+pub(crate) const STAGE_DIFFUSION: usize = 4;
+
 fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
+    STAGES.start(0);
     let loaded = load(from)?;
     let manifest_out = annotated_path(&loaded.file, out);
     // Refused before anything is written: the outputs would replace the
@@ -254,6 +270,7 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     may_replace(&manifest_out)?;
     mkdir_parent(out)?;
     let inputs = load_inputs(&loaded, args)?;
+    STAGES.start(1);
     let mut layers = gather_statements(&loaded, args, &inputs)?;
     let roots: Vec<&str> = args.root.iter().map(AsRef::as_ref).collect();
     if !roots.is_empty() {
@@ -275,7 +292,9 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
         );
     }
 
+    STAGES.start(2);
     let nb = Neighbours::new(&inputs.geometry, args.knn)?;
+    STAGES.start(3);
     let mut t = check(&inputs, &nb, prior, args.min_connectivity);
     report_check(&inputs, &t);
     if !args.check_only {
@@ -283,8 +302,10 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
         agreement(&mut t);
         report_order(&inputs, &t);
     }
+    STAGES.start(6);
     let written = write(&inputs, &t, out)?;
     record(&loaded, &manifest_out, &written, args)?;
+    STAGES.finish();
     info!(
         "wrote {}",
         written.values().cloned().collect::<Vec<_>>().join(", ")
@@ -509,7 +530,9 @@ fn report_check(inputs: &Inputs, t: &Trajectory) {
 /// Diffusion pseudotime from each component's roots (the root types'
 /// medoids), scaled to [0, 1] per component, and the lineages.
 fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, n_dcs: usize) -> Result<Ordering> {
+    STAGES.start(STAGE_DIFFUSION);
     let map = DiffusionMap::new(nb, DIFFMAP_COMPS, n_dcs)?;
+    STAGES.start(STAGE_DIFFUSION + 1);
     let n = inputs.cells.len();
     // Distance to the nearest root of each component.
     let mut dist: Vec<Vec<f64>> = Vec::with_capacity(prior.roots.len());

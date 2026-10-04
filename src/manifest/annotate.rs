@@ -69,6 +69,8 @@ pub fn annotate_by_enrichment(
     data: Option<&super::data_files::ClData>,
 ) -> Result<()> {
     let plan = by_enrichment::plan(args)?;
+    let stages = by_enrichment::pass_stages(plan.gene_sets_too);
+    stages.start(0);
     let inputs = load_enrichment_inputs(args, loaded, data)?;
     let mut outputs = by_enrichment::run(args, &plan, &inputs)?;
     // The ids the cluster tables' `K{id}` rows refer to, so later rounds and
@@ -108,7 +110,10 @@ pub fn annotate_by_enrichment(
             }),
         );
     }
-    record(loaded, &args.out, pass, &outputs, "enrichment", used)
+    stages.start(if plan.gene_sets_too { 4 } else { 3 });
+    record(loaded, &args.out, pass, &outputs, "enrichment", used)?;
+    stages.finish();
+    Ok(())
 }
 
 /// `lupin annotate --method projection`: score the run's co-embedded gene
