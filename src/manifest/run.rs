@@ -223,35 +223,11 @@ pub struct RunOutputs {
 }
 
 impl RunOutputs {
-    /// The topic dictionary or, failing that, the SVD loadings.
-    #[must_use]
-    pub fn gene_dictionary(&self) -> Option<&str> {
-        self.softmax_dictionary
-            .as_deref()
-            .or(self.dictionary.as_deref())
-    }
-
     /// The cell table for GEOMETRY (kNN, layout, clustering):
     /// `cell_embedding`, else `latent`.
     #[must_use]
     pub fn geometry_latent(&self) -> Option<&str> {
         self.cell_embedding.as_deref().or(self.latent.as_deref())
-    }
-
-    /// The cell table for a COMPOSITION view (structure bars, topic colour):
-    /// `latent`, else `cell_embedding`.
-    #[must_use]
-    pub fn structure_latent(&self) -> Option<&str> {
-        self.latent.as_deref().or(self.cell_embedding.as_deref())
-    }
-
-    /// The gene table paired with [`Self::structure_latent`].
-    #[must_use]
-    pub fn structure_dictionary(&self) -> Option<&str> {
-        self.dictionary_empirical
-            .as_deref()
-            .or_else(|| self.gene_dictionary())
-            .or(self.feature_embedding.as_deref())
     }
 }
 
@@ -902,15 +878,6 @@ pub fn load(from: &str) -> anyhow::Result<Loaded> {
         dir,
         file,
     })
-}
-
-/// Load `--from` when given; otherwise no manifest and paths resolve against `.`.
-pub fn load_optional(from: Option<&str>) -> anyhow::Result<(Option<RunManifest>, PathBuf)> {
-    let Some(from) = from else {
-        return Ok((None, PathBuf::from(".")));
-    };
-    let Loaded { manifest, dir, .. } = load(from)?;
-    Ok((Some(manifest), dir))
 }
 
 #[cfg(test)]

@@ -1,7 +1,8 @@
 # lupin-rs
 
 **L**abel, **U**nfold, **P**lace, **I**nterpret, **N**arrate — text graphs, cell-type
-annotation, plots, and short descriptions.
+annotation, trajectories, and short descriptions. Figures are drawn in each
+tool's own viewer (`senna view`, `pinto view`, lupin's `--tui`).
 
 Everything ships as one crate: `lupin-rs` (binary `lupin`). Annotation
 and gene-text logic live as internal modules — not separate crates.io packages.
@@ -37,7 +38,7 @@ Requires Rust 1.91+. Optional: `--features cuda` / `--features metal` / `--featu
 lupin text-qc --uniprot-tsv human.tsv --obo go-basic.obo -o run
 lupin word-graph --uniprot-tsv human.tsv --obo go-basic.obo -o run
 lupin annotate -f run.senna.json -m markers.tsv -o out   # writes out.senna.json
-lupin plot --from run.senna.json -o out/plot
+lupin trajectory -f out.senna.json -o out --tui         # prior, check, pseudotime
 lupin describe -f run.senna.json --text-prefix run -o out
 ```
 

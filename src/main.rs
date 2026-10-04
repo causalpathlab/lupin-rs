@@ -8,7 +8,6 @@ mod docs;
 mod gene_text;
 mod manifest;
 mod marker_embedding;
-mod plot;
 mod trajectory;
 mod tui;
 
@@ -17,16 +16,13 @@ use crate::gene_text::cli::{run_knn_graph, run_qc, KnnGraphCmd, QcCmd};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use describe::{run_describe, DescribeArgs};
-use plot::scatter::{fit_plot, PlotArgs};
-use plot::strand::{fit_plot_strand, PlotStrandArgs};
-use plot::topic::{fit_plot_topic, PlotTopicArgs};
 use trajectory::run::{run_trajectory, TrajectoryArgs};
 
 #[derive(Parser)]
 #[command(
     name = "lupin",
     version,
-    about = "Label, Unfold, Place, Interpret, Narrate — text graphs, cell-type annotation, review, plotting and description."
+    about = "Label, Unfold, Place, Interpret, Narrate — text graphs, cell-type annotation, review, trajectories and description."
 )]
 struct Cli {
     #[arg(short, long, global = true, help = "Verbose logging")]
@@ -140,24 +136,6 @@ enum Commands {
                       rescored like any enrichment run. Nothing is sent anywhere by lupin."
     )]
     Ask(manifest::ask::AskArgs),
-    #[command(
-        name = "plot",
-        about = "Publication-quality scatter over a senna layout embedding",
-        long_about = "Rasterized scatter with vector labels over a transparent background.\n\
-                      Preferred: `lupin plot --from {prefix}.senna.json` after `senna layout`.\n\
-                      Explicit flags override manifest defaults."
-    )]
-    Plot(PlotArgs),
-    #[command(
-        name = "plot-topic",
-        about = "Structure-bar and dictionary plots from a senna topic run"
-    )]
-    PlotTopic(PlotTopicArgs),
-    #[command(
-        name = "plot-strand",
-        about = "Watson/Crick mirrored genomic-activity ideograms per cell type"
-    )]
-    PlotStrand(PlotStrandArgs),
 }
 
 fn main() -> Result<()> {
@@ -188,8 +166,5 @@ fn main() -> Result<()> {
         Commands::Docs(c) => docs::run_docs(&c),
         Commands::Trajectory(c) => run_trajectory(&c),
         Commands::Data(c) => manifest::data_files::run_data(&c),
-        Commands::Plot(c) => fit_plot(&c),
-        Commands::PlotTopic(c) => fit_plot_topic(&c),
-        Commands::PlotStrand(c) => fit_plot_strand(&c),
     }
 }

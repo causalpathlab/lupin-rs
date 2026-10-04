@@ -43,7 +43,6 @@ metal = [
 [dependencies]
 # Foundations
 anyhow = "1.0"
-base64 = "0.22"
 clap = { version = "4.5.20", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
@@ -53,14 +52,12 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
 tempfile = "3"
-tiny-skia = "0.12"
 nalgebra = "0.34"
 nalgebra-sparse = "0.11"
 
 # Published legume stack
 data-beans = { version = "0.7.5", features = ["aux", "alg"] }
 enrichment = { version = "0.4.1", package = "legume-enrichment" }
-genomic-data = { version = "0.4.1", package = "legume-genomic-types" }
 graph-embedding-util = { version = "0.8.4", package = "legume-graph-embedding" }
 legume-numeric = { version = "0.8.18", features = ["matrix", "candle"] }
 legume-plot = { version = "0.3.2" }

@@ -6,7 +6,8 @@ Partly implemented. `lupin trajectory` builds the prior (§3), checks it
 against the kNN graph (§4), orders cells by diffusion pseudotime from the
 prior's roots (§5), writes its outputs and a `trajectory` manifest section
 (§7), and with `--tui` opens the order view with its figures and export log
-(§6); `lupin plot --colour-by pseudotime` draws the layout figure (§7). lupin 0.3.0 removed the previous trajectory stack
+(§6). lupin draws its figures only there: it has no plot commands, each
+tool having its own viewer. lupin 0.3.0 removed the previous trajectory stack
 (`lineage`, `pseudotime`, `dyn-assoc`, `lineage-plot`);
 `dev/trajectory-salvage.md` in the repository records what it did and why it
 went.
@@ -245,8 +246,7 @@ Images are drawn as senna view draws them, so both viewers behave alike:
 back to half-blocks.
 
 **Export.** `p` on a panel writes it as a figure through legume-plot's
-`write_figure` (SVG, then PDF and optionally PNG), the path lupin's `plot`
-commands already use; width and dpi are chosen in the save dialog. An export
+`write_figure` as SVG and PDF, 7 in wide at 200 dpi. An export
 is a set of files sharing one base name, handled as a unit: the default name
 `{out}.trajectory.{panel}` moves to `-2`, `-3` … while any file of the set
 exists, and a typed name with any existing file needs a second Enter.
@@ -295,14 +295,6 @@ settings (`knn`, `n_dcs`, `min_cells`, `min_connectivity`, `roots`, `prior`,
 `prior_only`). Because `precedence.tsv` files only grow, a rerun that should
 reproduce this prior reads `{out}.trajectory_prior.tsv` itself
 (`--prior … --prior-only`), which holds every statement that was used.
-
-`lupin plot --colour-by pseudotime` draws the trajectory's own layout figure
-(§6): cells from `trajectory.pseudotime` on a blue→red ramp, grey where no
-root reaches, and the direct edges as arrows between type medians, unsupported
-ones faded. A manifest with no `trajectory` section is an error when the flag
-is given, and a warning-and-default when it comes from `defaults.colour_by` —
-pre-0.3.0 runs may still carry `colour_by = "pseudotime"` and an old
-`pseudotime` block, which is never read.
 
 ## 8. Validation
 
@@ -360,5 +352,6 @@ error, and DPT on a synthetic Y shape and on a disconnected one.
 2. (done) Diffusion pseudotime, lineages, outputs, manifest section; validated
    against phase 0.
 3. (done) TUI order view, figures and export log.
-4. (done) `plot --colour-by pseudotime` with the edge overlay.
+4. (done) The layout figure with the edge overlay, in the TUI; lupin's
+   plot commands removed (each tool has its own viewer).
 5. Later: association.

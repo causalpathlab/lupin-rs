@@ -2,7 +2,8 @@
 //! (`docs/trajectory-plan.md` §6): the layout coloured by pseudotime with the
 //! prior's edges as arrows, the diffusion map, the types in pseudotime order,
 //! and the connectivity between types. Each is an SVG that legume-plot
-//! renders to PNG for the terminal or writes as a figure file.
+//! renders to PNG for the terminal or writes as a figure file; the TUI's
+//! figure pane is where they are shown and exported.
 
 use super::edges::{self, EdgeRow, Verdict};
 use crate::manifest::run::{derive_out_prefix, read_cell_coords, resolve, RunManifest};
@@ -260,13 +261,13 @@ impl TrajectoryData {
             .filter(|&i| x[i].is_finite() && y[i].is_finite())
             .collect();
         anyhow::ensure!(!finite.is_empty(), "no cell has coordinates");
-        let bounds = crate::plot::bounds_of(x, y, &finite);
+        let bounds = bounds_of(x, y, &finite);
         // Unreached cells first, so coloured ones draw over them.
         let mut order = finite.clone();
         order.sort_by_key(|&i| self.pseudotime[i].is_finite());
         let pts: Vec<(f32, f32)> = order
             .iter()
-            .map(|&i| crate::plot::to_pixel((x[i], y[i]), &bounds, ext))
+            .map(|&i| to_pixel((x[i], y[i]), &bounds, ext))
             .collect();
         let colors: Vec<Rgb> = order
             .iter()
@@ -320,10 +321,7 @@ impl TrajectoryData {
         let mut weak = Vec::new();
         for e in self.edges.iter().filter(|e| e.in_prior) {
             if let (Some(&a), Some(&b)) = (medians.get(e.a.as_ref()), medians.get(e.b.as_ref())) {
-                let seg = (
-                    crate::plot::to_pixel(a, bounds, ext),
-                    crate::plot::to_pixel(b, bounds, ext),
-                );
+                let seg = (to_pixel(a, bounds, ext), to_pixel(b, bounds, ext));
                 if e.verdict == Some(Verdict::Supported) {
                     strong.push(seg);
                 } else {
@@ -474,6 +472,24 @@ impl TrajectoryData {
             h: size.height_px,
         }
     }
+}
+
+/// Data → pixel with y pointing up (larger data-y higher on screen).
+fn to_pixel(p: (f32, f32), bounds: &DataBounds, ext: Extent) -> (f32, f32) {
+    let (x, y) = bounds.to_pixel(p, ext);
+    (x, ext.h as f32 - y)
+}
+
+/// The bounding box of the points `idx` of `(x, y)`.
+fn bounds_of(x: &[f32], y: &[f32], idx: &[usize]) -> DataBounds {
+    let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for &i in idx {
+        x0 = x0.min(x[i]);
+        x1 = x1.max(x[i]);
+        y0 = y0.min(y[i]);
+        y1 = y1.max(y[i]);
+    }
+    DataBounds::from_minmax(x0, x1, y0, y1)
 }
 
 /// The layout to draw pseudotime on: senna's PHATE (`senna layout phate`,
