@@ -155,12 +155,20 @@ impl Gallery {
     }
 
     /// Write the log: to a temporary file, then into place.
+    /// Write the log: to a fresh temporary file (created exclusively, under
+    /// a random name, readable by this user only), then into place. The
+    /// directory is made this user's alone, which deleting or moving files
+    /// on the log's word requires (see [`private`]).
     fn save(&self) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        let tmp = self.dir.join(format!("{LOG}.{}.tmp", std::process::id()));
-        let text = serde_json::to_string_pretty(&self.entries)?;
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, self.dir.join(LOG))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700));
+        }
+        let mut tmp = tempfile::NamedTempFile::new_in(&self.dir)?;
+        serde_json::to_writer_pretty(&mut tmp, &self.entries)?;
+        tmp.persist(self.dir.join(LOG))?;
         Ok(())
     }
 
@@ -266,6 +274,7 @@ impl Gallery {
     pub fn remove(&mut self, pdf: &Path, delete: bool) -> Result<()> {
         let index = self.find(pdf)?;
         if delete {
+            private(&self.dir)?;
             // Only the files that were exported, unchanged, are deleted.
             verify_set(&self.entries[index])?;
         }
@@ -283,6 +292,7 @@ impl Gallery {
     /// replaced, and a failed move puts back the files already moved.
     pub fn relocate(&mut self, pdf: &Path, new_base: &Path) -> Result<()> {
         let index = self.find(pdf)?;
+        private(&self.dir)?;
         let e = &mut self.entries[index];
         verify_set(e)?;
         let targets: Vec<PathBuf> = e
@@ -316,6 +326,35 @@ impl Gallery {
         }
         self.save()
     }
+}
+
+/// The log in `dir` may be acted on — files deleted or moved on its word —
+/// only when it and its directory are this user's and no one else can write
+/// them: a log another user can edit could name any of this user's files.
+#[cfg(unix)]
+fn private(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    // This process's user, as the owner of a file it has just created.
+    let me = tempfile::NamedTempFile::new_in(dir)?
+        .as_file()
+        .metadata()?
+        .uid();
+    for p in [dir.to_path_buf(), dir.join(LOG)] {
+        let m = std::fs::symlink_metadata(&p)
+            .with_context(|| format!("{} is not there", p.display()))?;
+        ensure!(
+            !m.file_type().is_symlink() && m.uid() == me && m.mode() & 0o022 == 0,
+            "{} is not this user's alone (others can write it, or it is a link): \
+             not deleting or moving files on its word",
+            p.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn private(_: &Path) -> Result<()> {
+    Ok(())
 }
 
 /// Every file of `e` is the export it was logged as: beside the PDF with the

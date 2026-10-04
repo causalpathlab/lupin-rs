@@ -273,7 +273,9 @@ panel, the manifest it came from, and each file's absolute path, size,
 modification time and content hash. A strip in the TUI (`f`) shows the list;
 an entry can be moved (`m`; nothing is replaced, and a failed move is undone),
 removed from the list (`d`), or removed with its files (`D`). Files are moved
-or deleted only when they are still the export that was logged: beside the
+or deleted only when the log and its directory are this user's alone (no one
+else can write them; lupin creates them so), and only when they are still
+the export that was logged: beside the
 PDF, with the same base name, and unchanged. A failed log write never fails
 the export.
 
