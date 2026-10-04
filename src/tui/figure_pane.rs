@@ -283,9 +283,9 @@ impl FigurePane {
     }
 
     /// Another pair of diffusion components, when that panel is shown.
-    pub fn step_pair(&mut self, forward: bool) {
+    pub fn step_pair(&mut self, forward: bool, x_axis: bool) {
         if let Panel::Diffusion { x, y } = self.current() {
-            self.pair = self.data.next_pair(x, y, forward);
+            self.pair = self.data.next_pair(x, y, forward, x_axis);
             self.view = View::default();
         }
     }

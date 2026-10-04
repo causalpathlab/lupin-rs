@@ -95,12 +95,12 @@ fn phate_is_drawn_when_senna_made_one() {
 fn diffusion_pairs_cycle_past_the_trivial_component() {
     let t = data();
     assert_eq!(
-        t.next_pair(1, 2, true),
+        t.next_pair(1, 2, true, false),
         (1, 2),
         "with three components the only pair after the trivial one is (1, 2)"
     );
     assert_eq!(
-        t.next_pair(1, 2, false),
+        t.next_pair(1, 2, false, false),
         (1, 2),
         "only two non-trivial components"
     );
@@ -377,4 +377,16 @@ fn a_label_near_the_edge_stays_inside_the_figure() {
     let (x, _) = keep_inside((400.0, 150.0), 12.0, name, ext);
     assert!(x + half <= 400.0, "{x}");
     assert_eq!(keep_inside((200.0, 150.0), 12.0, name, ext), (200.0, 150.0));
+}
+
+#[test]
+fn either_axis_of_the_diffusion_map_steps_and_skips_the_other() {
+    let mut t = data();
+    t.diffusion = Some(Mat::from_element(t.types.len(), 5, 0.0));
+    // y steps past x; x steps past y; both wrap past the trivial first.
+    assert_eq!(t.next_pair(1, 2, true, false), (1, 3));
+    assert_eq!(t.next_pair(1, 4, true, false), (1, 2));
+    assert_eq!(t.next_pair(1, 3, true, true), (2, 3));
+    assert_eq!(t.next_pair(2, 3, true, true), (4, 3));
+    assert_eq!(t.next_pair(1, 3, false, true), (4, 3));
 }

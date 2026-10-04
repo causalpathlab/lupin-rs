@@ -2753,8 +2753,10 @@ impl App {
                 v.shown = false;
                 v.grid = None;
             }
-            KeyCode::Char(',') if v.shown => v.step_pair(false),
-            KeyCode::Char('.') if v.shown => v.step_pair(true),
+            KeyCode::Char(',') if v.shown => v.step_pair(false, false),
+            KeyCode::Char('.') if v.shown => v.step_pair(true, false),
+            KeyCode::Char('[') if v.shown => v.step_pair(false, true),
+            KeyCode::Char(']') if v.shown => v.step_pair(true, true),
             // senna view's keys: labels, colouring, layout.
             KeyCode::Char('t') if v.shown => self.status = v.style.cycle_labels(),
             KeyCode::Char('c') if v.shown => {

@@ -223,7 +223,7 @@ fn help(app: &App) -> &'static str {
         }
         Focus::Order | Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
             if figures_shown(app) {
-                " ? keys · v next · w all · V table · t c m labels colour layout · , . pair · +-0 zoom · ←↑→↓ pan · p export · f exports · R check · r run · esc clusters"
+                " ? keys · v next · w all · V table · t c m labels colour layout · , . [ ] axes · +-0 zoom · ←↑→↓ pan · p export · f exports · R check · r run · esc clusters"
             } else {
                 " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab ontology · t tree"
             }
@@ -340,7 +340,8 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("t", "type labels on the scatter: small, medium, large, largest, off"),
             ("c", "colour the cells by pseudotime, cell type, lineage or component"),
             ("m", "the scatter's layout: each layout the run has (PHATE first), then the diffusion map"),
-            (", .", "another pair of diffusion components"),
+            (", .", "the diffusion map's y axis: the previous or next component"),
+            ("[ ]", "the diffusion map's x axis: the previous or next component"),
             ("w", "all figures as thumbnails: arrows choose, enter opens, p exports the tile, V the table, esc or w closes"),
             ("+ - 0", "zoom the scatter in / out / show it whole (m and , . also show it whole)"),
             ("arrows", "pan a zoomed scatter (with the exports strip open, ↑↓ move in the strip)"),

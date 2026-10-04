@@ -289,7 +289,7 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
 
 - **Scatter**: the cells on one of the run's layouts, with the prior's
   direct edges as arrows between type medians (supported edges solid, the
-  rest faded), or on two diffusion components (`,`/`.` change the pair).
+  rest faded), or on two diffusion components (`,`/`.` step the y axis, `[`/`]` the x axis).
   `m` steps through the coordinates: senna's PHATE first when the run has
   one (`senna layout phate`, Moon et al. 2019, in legume-numeric's
   `matrix::layout`; `layout.methods.phate`), being made to show

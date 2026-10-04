@@ -428,9 +428,16 @@ impl TrajectoryData {
         out
     }
 
-    /// The next diffusion pair after `(x, y)`, cycling through the components
-    /// after the trivial first one.
-    pub(crate) fn next_pair(&self, x: usize, y: usize, forward: bool) -> (usize, usize) {
+    /// The next diffusion pair after `(x, y)`: the y axis (or the x axis when
+    /// `x_axis`) steps through the components after the trivial first one,
+    /// skipping the other axis's.
+    pub(crate) fn next_pair(
+        &self,
+        x: usize,
+        y: usize,
+        forward: bool,
+        x_axis: bool,
+    ) -> (usize, usize) {
         let n = self.diffusion.as_ref().map_or(0, Mat::ncols);
         if n < 3 {
             return (x, y);
@@ -448,11 +455,15 @@ impl TrajectoryData {
                 n - 1
             }
         };
-        let ny = step(y);
-        if ny == x {
-            (x, step(ny))
+        let (moving, other) = if x_axis { (x, y) } else { (y, x) };
+        let mut next = step(moving);
+        if next == other {
+            next = step(next);
+        }
+        if x_axis {
+            (next, y)
         } else {
-            (x, ny)
+            (x, next)
         }
     }
 
