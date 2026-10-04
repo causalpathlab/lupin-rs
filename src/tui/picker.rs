@@ -1,4 +1,4 @@
-//! Choosing the files `--tui` was not given on the command line: a run
+//! Choosing the files the TUI was not given on the command line: a run
 //! manifest, then a marker panel, from a browser over the file system.
 
 use crate::annotate::gene_rows::GeneRows;

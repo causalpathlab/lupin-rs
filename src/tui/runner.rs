@@ -16,7 +16,6 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 pub fn spawn_pass(args: &AnnotateCliArgs, overwrite: bool, log: Sender<String>) -> Result<Child> {
     let args = AnnotateCliArgs {
         fine: true,
-        tui: false,
         ..args.clone()
     };
     let mut argv = vec!["annotate".to_string()];
@@ -25,6 +24,14 @@ pub fn spawn_pass(args: &AnnotateCliArgs, overwrite: bool, log: Sender<String>) 
         argv.push("--overwrite".into());
     }
     spawn(&argv, log)
+}
+
+/// Start `lupin trajectory` with `argv` (`-f`, `-o` and the run's options)
+/// as a child.
+pub fn spawn_trajectory(argv: &[String], log: Sender<String>) -> Result<Child> {
+    let mut v = vec!["trajectory".to_string()];
+    v.extend_from_slice(argv);
+    spawn(&v, log)
 }
 
 /// Start `lupin relabel -f <round> -d <decisions> --next` as a child.

@@ -2,7 +2,7 @@
 
 **L**abel, **U**nfold, **P**lace, **I**nterpret, **N**arrate — text graphs, cell-type
 annotation, trajectories, and short descriptions. Figures are drawn in each
-tool's own viewer (`senna view`, `pinto view`, lupin's `--tui`).
+tool's own viewer (`senna view`, `pinto view`, lupin's TUI).
 
 Everything ships as one crate: `lupin-rs` (binary `lupin`). Annotation
 and gene-text logic live as internal modules — not separate crates.io packages.
@@ -38,7 +38,8 @@ Requires Rust 1.91+. Optional: `--features cuda` / `--features metal` / `--featu
 lupin text-qc --uniprot-tsv human.tsv --obo go-basic.obo -o run
 lupin word-graph --uniprot-tsv human.tsv --obo go-basic.obo -o run
 lupin annotate -f run.senna.json -m markers.tsv -o out   # writes out.senna.json
-lupin trajectory -f out.senna.json -o out --tui         # prior, check, pseudotime
+lupin trajectory -f out.senna.json -o out.T1           # prior, check, pseudotime
+lupin trajectory                                       # the TUI: pick a run, state the order, run
 lupin describe -f run.senna.json --text-prefix run -o out
 ```
 
@@ -179,7 +180,7 @@ over the terms within each cluster (`{out}.cluster_term_{nes,p,q_values}.parquet
 Testing every term (some thousands of genes large) takes minutes where the
 cell types take seconds.
 GO terms need `--method enrichment`.
-In `lupin annotate --tui`, `GO terms` in the settings (`r`) turns `--go` on
+In the annotate TUI (`lupin annotate` without `-o`), `GO terms` in the settings (`r`) turns `--go` on
 for the next pass; once a round has terms, a third column lists the selected
 cluster's top terms with their effect, p and q beside its cell types (`tab`
 reaches it).
@@ -208,7 +209,7 @@ lupin data where -f run.senna.json   # which file each layer contributes
 lupin data fetch                     # cache everything (GO files too), for offline machines
 ```
 
-In `lupin annotate --tui`, `o` in the tree pane switches to the Cell Ontology
+In the annotate TUI, `o` in the tree pane switches to the Cell Ontology
 itself: browse a term's parents and children, `/` to search names, synonyms and
 abbreviations, `Enter` to label a cluster with any term. When the cluster's top
 candidate has no term, lupin offers to remember the pick in the project's

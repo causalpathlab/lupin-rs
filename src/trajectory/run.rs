@@ -23,15 +23,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Args, Debug)]
 pub struct TrajectoryArgs {
-    #[arg(short = 'f', long = "from", help = "Run manifest (or its prefix)")]
-    pub from: Box<str>,
+    #[arg(
+        short = 'f',
+        long = "from",
+        help = "Run manifest (or its prefix); the TUI asks for it when omitted"
+    )]
+    pub from: Option<Box<str>>,
 
     #[arg(
         short = 'o',
         long,
-        help = "Output prefix; also receives a copy of the manifest with a `trajectory` section"
+        help = "Output prefix; also receives a copy of the manifest with a `trajectory` section. \
+                With --from it runs without the TUI; otherwise the TUI asks for it"
     )]
-    pub out: Box<str>,
+    pub out: Option<Box<str>>,
 
     #[arg(
         long,
@@ -94,16 +99,49 @@ pub struct TrajectoryArgs {
     )]
     pub check_only: bool,
 
-    #[arg(long, help = "Then open the TUI on the order view, with the figures")]
-    pub tui: bool,
-
     #[arg(
         long,
         value_enum,
         default_value_t = crate::tui::Graphics::Auto,
-        help = "How figures reach the terminal"
+        help = "In the TUI, how figures reach the terminal"
     )]
     pub graphics: crate::tui::Graphics,
+}
+
+impl TrajectoryArgs {
+    /// The options a run started from the TUI carries over, less `--from`,
+    /// `--out` and `--graphics`.
+    pub(crate) fn child_argv(&self) -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        let mut val = |flag: &str, x: String| {
+            v.push(format!("--{flag}"));
+            v.push(x);
+        };
+        for r in &self.root {
+            val("root", r.to_string());
+        }
+        for (flag, x) in [
+            ("labels", &self.labels),
+            ("prior", &self.prior),
+            ("obo", &self.obo),
+            ("label-cl", &self.label_cl),
+        ] {
+            if let Some(x) = x {
+                val(flag, x.to_string());
+            }
+        }
+        val("knn", self.knn.to_string());
+        val("n-dcs", self.n_dcs.to_string());
+        val("min-cells", self.min_cells.to_string());
+        val("min-connectivity", self.min_connectivity.to_string());
+        if self.prior_only {
+            v.push("--prior-only".into());
+        }
+        if self.check_only {
+            v.push("--check-only".into());
+        }
+        v
+    }
 }
 
 /// What the manifest at `dir` records about the run; input files
@@ -180,11 +218,20 @@ struct Ordering {
     pub(crate) order: Vec<(f32, usize)>,
 }
 
+/// With both `--from` and `--out`, the run; otherwise the TUI, which asks for
+/// what is missing.
 pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
-    let loaded = load(&args.from)?;
-    let manifest_out = annotated_path(&loaded.file, &args.out);
+    match (args.from.as_deref(), args.out.as_deref()) {
+        (Some(from), Some(out)) => run_batch(args, from, out),
+        _ => crate::tui::run_trajectory(args),
+    }
+}
+
+fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
+    let loaded = load(from)?;
+    let manifest_out = annotated_path(&loaded.file, out);
     may_replace(&manifest_out)?;
-    mkdir_parent(&args.out)?;
+    mkdir_parent(out)?;
     let inputs = load_inputs(&loaded, args)?;
     let mut layers = gather_statements(&loaded, args, &inputs)?;
     let roots: Vec<&str> = args.root.iter().map(AsRef::as_ref).collect();
@@ -215,15 +262,12 @@ pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
         report_order(&inputs, &t);
     }
     report_check(&inputs, &t);
-    let written = write(&inputs, &t, &args.out)?;
+    let written = write(&inputs, &t, out)?;
     record(&loaded, &manifest_out, &written, args)?;
     info!(
         "wrote {}",
         written.values().cloned().collect::<Vec<_>>().join(", ")
     );
-    if args.tui {
-        crate::tui::run_on_manifest(&manifest_out, args.graphics)?;
-    }
     Ok(())
 }
 

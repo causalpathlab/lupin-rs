@@ -81,7 +81,7 @@ fn help(app: &App) -> &'static str {
             if app.figures.as_ref().is_some_and(|v| v.shown) {
                 " ? keys · v next figure · V table · , . components · p export · f exports · R check · t tree"
             } else {
-                " ? keys · ↑↓ type · space mark · > precedes · - unrelated · v figures · t back to the tree"
+                " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · t tree"
             }
         }
         Focus::Tree => {
@@ -172,6 +172,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("space", "mark a type; mark two, first the earlier one"),
             (">", "the first marked type precedes the second (asks why)"),
             ("-", "the two marked types are unrelated (asks why)"),
+            ("r", "run lupin trajectory on the labels on screen (asks for the output prefix)"),
             ("t / esc", "back to the tree / to the clusters"),
             ("", "statements go to the project's precedence.tsv; edges show source and, after a trajectory run, verdict"),
         ],
@@ -364,7 +365,7 @@ fn draw_settings(f: &mut Frame, app: &App) {
         .style(POPUP)
         .block(popup(
             format!(" cluster & run · {note} "),
-            " ↑↓ setting · ←→ change · enter run · esc close ",
+            " ↑↓ setting · ←→ change · enter run (on output: edit) · esc close ",
         ))
         .row_highlight_style(highlight(true));
     f.render_widget(Clear, area);

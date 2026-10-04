@@ -1,4 +1,4 @@
-//! `--tui` passes re-run as child processes: [`super::AnnotateCliArgs::to_argv`].
+//! The TUI's passes re-run as child processes: [`super::AnnotateCliArgs::to_argv`].
 
 use super::*;
 
@@ -38,12 +38,9 @@ fn the_argv_parses_back_to_the_same_arguments() {
         "cl.obo",
         "--fine",
         "--no-idf",
-        "--tui",
     ]);
     let argv = a.to_argv();
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     let b = parse(&argv);
-    assert!(!b.tui, "--tui is not passed on");
-    let b = AnnotateCliArgs { tui: true, ..b };
     assert_eq!(format!("{a:?}"), format!("{b:?}"));
 }

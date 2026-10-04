@@ -12,6 +12,7 @@ use crate::annotate::panel_tree::PanelTree;
 use crate::annotate::rounds::ClusterId;
 use crate::annotate_cmd::{AnnotateCliArgs, AnnotateMethod};
 use crate::manifest::rounds::chain_rounds;
+use crate::manifest::run::annotated_path;
 use crate::trajectory::prior::Relation;
 use enrichment::UNASSIGNED_LABEL;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -37,6 +38,8 @@ pub enum Focus {
 /// The settings the screen edits, in the order it lists them.
 #[derive(Clone, Copy)]
 pub enum Setting {
+    /// The output prefix of passes; Enter edits it.
+    Output,
     Method,
     Knn,
     Resolution,
@@ -45,7 +48,8 @@ pub enum Setting {
     Go,
 }
 
-pub const SETTINGS: [Setting; 6] = [
+pub const SETTINGS: [Setting; 7] = [
+    Setting::Output,
     Setting::Method,
     Setting::Knn,
     Setting::Resolution,
@@ -57,6 +61,7 @@ pub const SETTINGS: [Setting; 6] = [
 impl Setting {
     pub fn name(self) -> &'static str {
         match self {
+            Self::Output => "output",
             Self::Method => "method",
             Self::Knn => "knn",
             Self::Resolution => "resolution",
@@ -68,6 +73,7 @@ impl Setting {
 
     pub fn value(self, a: &AnnotateCliArgs) -> String {
         match self {
+            Self::Output => a.out.to_string(),
             Self::Method => match a.method {
                 AnnotateMethod::Auto => "auto".into(),
                 AnnotateMethod::Enrichment => "enrichment".into(),
@@ -120,7 +126,7 @@ impl Setting {
             Self::NumPerm => a.num_perm = step(a.num_perm, 100, 0),
             // Named gene sets are the command line's; only `--go` toggles.
             Self::Go if a.gaf.is_none() && a.gmt.is_none() => a.go = !a.go,
-            Self::Go => {}
+            Self::Go | Self::Output => {}
         }
     }
 }
@@ -181,6 +187,12 @@ pub enum Pending {
     },
     /// Move the selected export's files to the base name typed.
     Relocate,
+    /// The output prefix (the text) for passes; then start one when
+    /// `then_start`.
+    Output { then_start: bool },
+    /// Run `lupin trajectory` with the output prefix typed; `replace` is the
+    /// prefix whose existing manifest the user has agreed to replace.
+    TrajectoryOut { replace: Option<String> },
 }
 
 /// A one-line prompt for a decision's reason, prefilled.
@@ -191,11 +203,13 @@ pub struct Prompt {
 }
 
 /// What a child process is doing.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Job {
     Pass,
     /// Writing this many edits as the next round.
     Save(usize),
+    /// `lupin trajectory`, writing this manifest.
+    Trajectory(PathBuf),
 }
 
 /// A `lupin relabel --preview` rescoring the round against `edits`.
@@ -284,6 +298,11 @@ pub struct App {
     pub quit: bool,
     /// The trajectory figures of the manifests on screen, when they have any.
     pub figures: Option<super::figure_pane::FigurePane>,
+    /// The output prefix was given or confirmed; until then the first pass
+    /// asks for it.
+    pub out_chosen: bool,
+    /// How the order view runs `lupin trajectory`.
+    pub trajectory: super::order::TrajectoryRun,
 }
 
 impl App {
@@ -330,6 +349,8 @@ impl App {
             armed: None,
             quit: false,
             figures: None,
+            out_chosen: true,
+            trajectory: super::order::TrajectoryRun::default(),
         }
     }
 
@@ -352,17 +373,22 @@ impl App {
         let Some((child, started, job)) = &mut self.child else {
             return;
         };
-        let (secs, job) = (started.elapsed().as_secs(), *job);
+        let (secs, job) = (started.elapsed().as_secs(), job.clone());
         match child.try_wait() {
             Ok(None) => {
                 let what = match job {
                     Job::Pass => "pass",
                     Job::Save(_) => "saving",
+                    Job::Trajectory(_) => "trajectory",
                 };
                 self.status = format!("{what}… {secs}s  (x: stop)");
             }
             Ok(Some(st)) if st.success() => {
                 self.child = None;
+                if let Job::Trajectory(m) = job {
+                    self.trajectory_done(&m, secs);
+                    return;
+                }
                 // A new pass rewrote the base round: rounds made on the old
                 // one no longer apply.
                 if job == Job::Pass {
@@ -375,13 +401,13 @@ impl App {
                 // the new round (a save keeps the clusters' ids).
                 let later = match job {
                     Job::Save(n) => self.edits.split_off(n.min(self.edits.len())),
-                    Job::Pass => Vec::new(),
+                    Job::Pass | Job::Trajectory(_) => Vec::new(),
                 };
                 self.open(&latest);
                 let kept = later.len();
                 self.edits = later;
                 let done = match job {
-                    Job::Pass => format!("pass done in {secs}s"),
+                    Job::Pass | Job::Trajectory(_) => format!("pass done in {secs}s"),
                     Job::Save(n) if kept > 0 => format!(
                         "saved {n} edit(s), {kept} made since still unsaved; {}",
                         self.export()
@@ -395,6 +421,7 @@ impl App {
                 let what = match job {
                     Job::Pass => "pass",
                     Job::Save(_) => "save",
+                    Job::Trajectory(_) => "trajectory",
                 };
                 self.status = format!("{what} failed ({st}); see the log");
             }
@@ -718,6 +745,10 @@ impl App {
         if self.child.is_some() {
             return;
         }
+        if !self.out_chosen {
+            self.ask_output(true);
+            return;
+        }
         let (_, later) = chain_rounds(&self.target);
         let replaces = self.target.is_file();
         if (replaces || !self.edits.is_empty() || !later.is_empty())
@@ -753,11 +784,11 @@ impl App {
         }
     }
 
-    /// Stop a running pass. A save is not stopped midway, which could leave
-    /// a round half-written: it finishes on its own.
+    /// Stop a running pass or trajectory. A save is not stopped midway,
+    /// which could leave a round half-written: it finishes on its own.
     fn stop(&mut self) {
-        match self.child.as_ref().map(|c| c.2) {
-            Some(Job::Pass) => {
+        match self.child.as_ref().map(|c| c.2.clone()) {
+            Some(Job::Pass | Job::Trajectory(_)) => {
                 if let Some((mut c, _, _)) = self.child.take() {
                     let _ = c.kill();
                     let _ = c.wait();
@@ -772,7 +803,7 @@ impl App {
     /// How many of the edits a running save is writing: those stay as they
     /// are until it is done.
     fn saving(&self) -> usize {
-        match self.child.as_ref().map(|c| c.2) {
+        match self.child.as_ref().map(|c| c.2.clone()) {
             Some(Job::Save(n)) => n.min(self.edits.len()),
             _ => 0,
         }
@@ -1128,7 +1159,7 @@ impl App {
                 let Some(p) = self.prompt.take() else { return };
                 let reason = p.text.trim().to_string();
                 if reason.is_empty() {
-                    self.status = "a decision needs a reason".into();
+                    self.status = "type something, or Esc to cancel".into();
                     self.prompt = Some(p);
                     return;
                 }
@@ -1153,7 +1184,7 @@ impl App {
                                     " remember {alias} → {id} in {}? enter: yes (the text is the note) · esc: no ",
                                     file.display()
                                 ),
-                                text: "picked in lupin annotate --tui".into(),
+                                text: "picked in the lupin annotate TUI".into(),
                                 pending: Pending::Remember {
                                     label: alias,
                                     id,
@@ -1185,6 +1216,32 @@ impl App {
                             Err(e) => format!("could not record the statement: {e:#}"),
                         };
                         self.reload_order();
+                    }
+                    Pending::Output { then_start } => {
+                        self.set_output(&reason);
+                        if then_start {
+                            self.start();
+                            if self.child.is_some() {
+                                self.settings_open = false;
+                            }
+                        }
+                    }
+                    Pending::TrajectoryOut { replace } => {
+                        let exists = annotated_path(&self.source, &reason).exists();
+                        if exists && replace.as_deref() != Some(reason.as_str()) {
+                            // A name typed over the one offered: ask again.
+                            self.prompt = Some(Prompt {
+                                title: format!(
+                                    " {reason}: its manifest exists: Enter replaces it "
+                                ),
+                                text: reason.clone(),
+                                pending: Pending::TrajectoryOut {
+                                    replace: Some(reason),
+                                },
+                            });
+                        } else {
+                            self.run_trajectory(&reason, exists);
+                        }
                     }
                     Pending::Relocate => {
                         self.status = match &mut self.figures {
@@ -1316,7 +1373,7 @@ impl App {
     /// Quit on `key` (`q` or `ctrl-c`), asking again first while a pass runs
     /// or edits are unsaved; never during a save.
     fn request_quit(&mut self, armed: Option<Armed>, key: &str) {
-        let busy = self.child.as_ref().map(|c| c.2);
+        let busy = self.child.as_ref().map(|c| c.2.clone());
         let unsaved = match self.edits.len() {
             0 => String::new(),
             n => format!(" and {n} unsaved edit(s)"),
@@ -1349,6 +1406,9 @@ impl App {
             KeyCode::Left | KeyCode::Right => {
                 SETTINGS[self.setting].adjust(&mut self.args, code == KeyCode::Right);
                 self.stale = self.round.is_some();
+            }
+            KeyCode::Enter if matches!(SETTINGS[self.setting], Setting::Output) => {
+                self.ask_output(false);
             }
             KeyCode::Enter => {
                 self.armed = armed;
@@ -1518,7 +1578,7 @@ impl App {
     }
 
     /// Switch the tree pane to the order view (which types precede which) and
-    /// back; `show_figures` opens on the figures (`lupin trajectory --tui`).
+    /// back; `show_figures` opens on the figures (`lupin trajectory`).
     pub(super) fn toggle_order(&mut self, show_figures: bool) {
         self.tree_marked.clear();
         if matches!(self.tree_mode, TreeMode::Order(_)) {
@@ -1526,7 +1586,9 @@ impl App {
             return;
         }
         if self.figures.is_none() {
-            match super::figure_pane::FigurePane::load(&self.manifests(), self.args.graphics) {
+            let manifests = self.manifests();
+            let refs: Vec<&Path> = manifests.iter().map(PathBuf::as_path).collect();
+            match super::figure_pane::FigurePane::load(&refs, self.args.graphics) {
                 Ok(v) => self.figures = v,
                 Err(e) => self.push_log(format!("[WARN] trajectory figures: {e:#}")),
             }
@@ -1538,9 +1600,121 @@ impl App {
         self.status = "order view: space marks a type, then > states the first precedes the second, - that they are unrelated".into();
     }
 
-    /// The manifests on screen: the round's target, then the run opened.
-    fn manifests(&self) -> [&Path; 2] {
-        [self.target.as_path(), self.source.as_path()]
+    /// The manifests whose trajectory outputs the order view shows: the
+    /// trajectory run made here, the round's target, then the run opened.
+    fn manifests(&self) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = self
+            .trajectory
+            .out
+            .iter()
+            .map(|o| annotated_path(&self.source, o))
+            .collect();
+        v.extend([self.target.clone(), self.source.clone()]);
+        v
+    }
+
+    /// Ask for the output prefix of passes, prefilled with the one in use;
+    /// start a pass once given when `then_start`.
+    fn ask_output(&mut self, then_start: bool) {
+        self.prompt = Some(Prompt {
+            title: " output prefix for this run's rounds: ".into(),
+            text: self.args.out.to_string(),
+            pending: Pending::Output { then_start },
+        });
+    }
+
+    /// Take `out` as the output prefix of passes; its latest round, when it
+    /// has one, is opened.
+    fn set_output(&mut self, out: &str) {
+        self.args.out = out.into();
+        self.target = annotated_path(&self.source, out);
+        self.out_chosen = true;
+        if self.target.is_file() {
+            let (latest, _) = chain_rounds(&self.target);
+            self.open(&latest);
+        }
+        self.status = format!("writing under {out}");
+    }
+
+    /// Ask for the trajectory run's output prefix: the last one used, else
+    /// the next free `{stem}.T{k}`.
+    fn ask_trajectory_out(&mut self) {
+        if self.child.is_some() {
+            self.status = "wait for the running job, or stop it with x".into();
+            return;
+        }
+        let text = self
+            .trajectory
+            .out
+            .clone()
+            .unwrap_or_else(|| super::order::default_out(&self.source));
+        let exists = annotated_path(&self.source, &text).exists();
+        self.prompt = Some(Prompt {
+            title: if exists {
+                format!(" run the trajectory as {text} (its manifest exists: Enter replaces it): ")
+            } else {
+                " run the trajectory: output prefix ".into()
+            },
+            pending: Pending::TrajectoryOut {
+                replace: exists.then(|| text.clone()),
+            },
+            text,
+        });
+    }
+
+    /// Start `lupin trajectory` from the round on screen (else the run
+    /// opened) into `out`.
+    fn run_trajectory(&mut self, out: &str, replace: bool) {
+        let from = self
+            .round
+            .as_ref()
+            .map_or_else(|| self.source.clone(), |r| r.manifest.clone());
+        let mut argv = vec![
+            "-f".to_string(),
+            from.to_string_lossy().into_owned(),
+            "-o".into(),
+            out.into(),
+        ];
+        argv.extend(self.trajectory.argv.iter().cloned());
+        if replace {
+            argv.push("--overwrite".into());
+        }
+        self.push_log(format!("── lupin trajectory {}", argv.join(" ")));
+        match runner::spawn_trajectory(&argv, self.log_tx.clone()) {
+            Ok(c) => {
+                let manifest = annotated_path(&from, out);
+                self.child = Some((c, Instant::now(), Job::Trajectory(manifest)));
+                self.trajectory.out = Some(out.into());
+                self.status = "running the trajectory…".into();
+            }
+            Err(e) => self.status = format!("{e:#}"),
+        }
+    }
+
+    /// A trajectory run wrote `manifest`: show its figures and verdicts.
+    fn trajectory_done(&mut self, manifest: &Path, secs: u64) {
+        let graphics = self.args.graphics;
+        self.figures = match super::figure_pane::FigurePane::load(&[manifest], graphics) {
+            Ok(f) => f,
+            Err(e) => {
+                self.push_log(format!("[WARN] trajectory figures: {e:#}"));
+                None
+            }
+        };
+        let edges = match &self.figures {
+            Some(f) => f.data.edges.clone(),
+            None => super::order::run_edges(&[manifest]),
+        };
+        if let TreeMode::Order(v) = &mut self.tree_mode {
+            v.edges = edges;
+        }
+        if let Some(f) = &mut self.figures {
+            f.shown = true;
+        }
+        if matches!(self.tree_mode, TreeMode::Order(_)) {
+            self.reload_order();
+        }
+        self.status = format!("trajectory done in {secs}s: {}", manifest.display());
     }
 
     /// The labels on screen with their cell counts: the round's labels, else
@@ -1552,7 +1726,7 @@ impl App {
                 .into_iter()
                 .filter(|(l, _)| l != UNASSIGNED_LABEL)
                 .collect(),
-            // No round yet (`lupin trajectory --tui`): the trajectory run's
+            // No round yet (`lupin trajectory`): the trajectory run's
             // types with their cells, else the panel's types.
             None => match &self.figures {
                 Some(f) => {
@@ -1579,7 +1753,11 @@ impl App {
                 0,
                 match &self.figures {
                     Some(f) => f.data.edges.clone(),
-                    None => super::order::run_edges(&self.manifests()),
+                    None => {
+                        let manifests = self.manifests();
+                        let refs: Vec<&Path> = manifests.iter().map(PathBuf::as_path).collect();
+                        super::order::run_edges(&refs)
+                    }
                 },
             ),
         };
@@ -1611,6 +1789,10 @@ impl App {
             return true;
         }
         let relation = match code {
+            KeyCode::Char('r') => {
+                self.ask_trajectory_out();
+                return true;
+            }
             KeyCode::Char('>') => Relation::Precedes,
             KeyCode::Char('-') => Relation::Unrelated,
             KeyCode::Esc => {

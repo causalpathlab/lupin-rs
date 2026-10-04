@@ -5,7 +5,8 @@
 Partly implemented. `lupin trajectory` builds the prior (§3), checks it
 against the kNN graph (§4), orders cells by diffusion pseudotime from the
 prior's roots (§5), writes its outputs and a `trajectory` manifest section
-(§7), and with `--tui` opens the order view with its figures and export log
+(§7); without `-f` and `-o` it opens the TUI on the order view, with its
+figures and export log
 (§6). lupin draws its figures only there: it has no plot commands, each
 tool having its own viewer. lupin 0.3.0 removed the previous trajectory stack
 (`lineage`, `pseudotime`, `dyn-assoc`, `lineage-plot`);
@@ -48,9 +49,18 @@ input, lupin stops with a clear message instead of a home-grown fix.
 lupin trajectory -f run.senna.json -o out [--prior FILE [--prior-only]] [--root TYPE]...
                  [--labels FILE] [--label-cl FILE] [--obo FILE]
                  [--knn 15] [--n-dcs 15] [--min-cells 20] [--min-connectivity 0.1]
-                 [--check-only]
-                 [--tui] [--graphics auto|kitty|sixel|iterm2|blocks]
+                 [--check-only] [--graphics auto|kitty|sixel|iterm2|blocks]
+lupin trajectory [-f run.senna.json] [-o out] [options]   # the TUI
 ```
+
+With both `-f` and `-o` the command runs and exits. With either missing it
+opens the TUI on the order view: a manifest is picked in its file browser
+when `-f` is not given, and `r` runs the trajectory as a child process with
+the options given, asking for the output prefix (the last one used, else the
+next free `{stem}.T{k}`; an existing one is replaced only on a second
+Enter). `lupin annotate` follows the same rule: without `-o` it opens its
+TUI, which asks for the output prefix when the first pass starts (`.L1`
+offered) and lets it be changed in the settings (`r`).
 
 - **Labels** are the given round's `annotate.argmax`, so curation in later
   rounds (merges, relabels) is what the trajectory sees; `--labels` names
@@ -210,7 +220,7 @@ compared directly:
 
 ## 6. Supervising the prior in the TUI
 
-`lupin trajectory --tui` (also reachable from `annotate --tui`) adds an
+`lupin trajectory` (also `t` in the annotate TUI's tree pane) adds an
 **order view** in the tree pane: the run's types with their cell counts, the
 direct edges with their sources, and — once a check has run — each edge's
 verdict. Mark type A, mark type B, then `>` for "A precedes B" or `-` for

@@ -5,10 +5,27 @@
 
 use crate::annotate::celltype_tree::ClTerms;
 use crate::manifest::data_files::{append_row, SearchPath, PRECEDENCE};
-use crate::manifest::run::{load, resolve};
+use crate::manifest::run::{annotated_path, derive_out_prefix, load, resolve};
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
 use crate::trajectory::prior::{self, Prior, Relation, Statement};
 use std::path::{Path, PathBuf};
+
+/// How the order view runs `lupin trajectory`: the options it carries over
+/// and the output prefix last used.
+#[derive(Debug, Default)]
+pub struct TrajectoryRun {
+    pub argv: Vec<String>,
+    pub out: Option<String>,
+}
+
+/// The first `{stem}.T{k}` (k = 1, 2, …) beside `source` with no manifest yet.
+pub fn default_out(source: &Path) -> String {
+    let stem = derive_out_prefix(&source.to_string_lossy());
+    (1..)
+        .map(|k| format!("{stem}.T{k}"))
+        .find(|o| !annotated_path(source, o).exists())
+        .expect("some name is free")
+}
 
 /// A direct edge of the prior as the table shows it.
 pub struct EdgeView<'a> {

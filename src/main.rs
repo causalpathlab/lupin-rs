@@ -143,7 +143,12 @@ fn main() -> Result<()> {
     if cli.overwrite {
         manifest::run::allow_overwrite();
     }
-    if matches!(&cli.cmd, Commands::Annotate(c) if c.tui) {
+    let interactive = match &cli.cmd {
+        Commands::Annotate(c) => c.out.is_empty(),
+        Commands::Trajectory(c) => c.from.is_none() || c.out.is_none(),
+        _ => false,
+    };
+    if interactive {
         tui::init_logger(cli.verbose);
     } else {
         env_logger::Builder::from_env(

@@ -1,4 +1,5 @@
-//! `lupin annotate --tui`: run a pass, then go cluster by cluster, giving
+//! `lupin annotate` without `-o` (and `lupin trajectory` without `-f` and
+//! `-o`): run a pass, then go cluster by cluster, giving
 //! each a label (a candidate, or any node of the Cell Ontology over the
 //! panel), with the genes that set it apart at hand to add as markers.
 //!
@@ -66,28 +67,34 @@ fn drain_own_log() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The TUI on the manifest `lupin trajectory` just wrote, opening on the
-/// order view with its figures.
-pub fn run_on_manifest(manifest: &std::path::Path, graphics: Graphics) -> Result<()> {
+/// `lupin trajectory` without both `--from` and `--out`: the TUI on the
+/// order view, which picks the manifest when none is given and asks for the
+/// output prefix when it runs.
+pub fn run_trajectory(t: &crate::trajectory::run::TrajectoryArgs) -> Result<()> {
     use clap::Parser;
     #[derive(Parser)]
     struct Annotate {
         #[command(flatten)]
         args: AnnotateCliArgs,
     }
-    let mut a = Annotate::try_parse_from([
-        "lupin annotate",
-        "--from",
-        &manifest.to_string_lossy(),
-        "--tui",
-    ])
-    .context("building the TUI's arguments")?;
-    a.args.graphics = graphics;
-    run(&a.args, true)
+    let mut a = Annotate::try_parse_from(["lupin annotate"])
+        .context("building the TUI's arguments")?
+        .args;
+    a.from.clone_from(&t.from);
+    a.obo.clone_from(&t.obo);
+    a.label_cl.clone_from(&t.label_cl);
+    a.graphics = t.graphics;
+    let run_with = order::TrajectoryRun {
+        argv: t.child_argv(),
+        out: t.out.as_deref().map(str::to_string),
+    };
+    run(&a, Some(run_with))
 }
 
-/// Run the TUI on `args`, opening on the order view when `start_in_order`.
-pub fn run(args: &AnnotateCliArgs, start_in_order: bool) -> Result<()> {
+/// Run the TUI on `args`; with `trajectory`, it opens on the order view and
+/// runs `lupin trajectory` with those options.
+pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> Result<()> {
+    let start_in_order = trajectory.is_some();
     let cwd = std::env::current_dir()?;
     let from = match args.from.as_deref() {
         Some(f) => f.to_string(),
@@ -121,12 +128,12 @@ pub fn run(args: &AnnotateCliArgs, start_in_order: bool) -> Result<()> {
             }
         };
     }
-    if args.out.is_empty() {
-        // The run's prefix, next to its manifest, one level down: reopening
-        // the same run picks up this session's rounds.
+    // Without `-o`, the run's prefix one level down is offered when the
+    // first pass starts; reopening the same run picks up its rounds.
+    let out_chosen = !args.out.is_empty();
+    if !out_chosen {
         let stem = run::derive_out_prefix(&loaded.file.to_string_lossy());
         args.out = format!("{stem}.L1").into_boxed_str();
-        eprintln!("lupin: writing under -o {}", args.out);
     }
 
     eprintln!("lupin: placing the panel on the Cell Ontology…");
@@ -148,6 +155,8 @@ pub fn run(args: &AnnotateCliArgs, start_in_order: bool) -> Result<()> {
     let target = annotated_path(&loaded.file, &args.out);
     let mut app = App::new(args, loaded.file.clone(), target.clone(), tree);
     app.fixed_clusters = loaded.manifest.cluster.clusters.is_some();
+    app.out_chosen = out_chosen;
+    app.trajectory = trajectory.unwrap_or_default();
     if !app.args.markers.is_empty() {
         app.original = round::panel_sets(&app.args.markers)?;
     }

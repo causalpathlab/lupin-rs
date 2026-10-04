@@ -60,7 +60,7 @@ pub struct AnnotateCliArgs {
         long,
         short = 'o',
         default_value = "",
-        help = "Output prefix for every file this command writes (with --tui, defaults to the run's prefix + `.L1`)"
+        help = "Output prefix for every file this command writes. Without it, annotate opens its TUI, which asks for it (the run's prefix + `.L1` offered)"
     )]
     pub out: Box<str>,
 
@@ -155,22 +155,16 @@ pub struct AnnotateCliArgs {
 
     #[arg(
         long,
-        help = "Interactive: re-cluster, re-run and pick the Cell Ontology level in a terminal UI"
-    )]
-    pub tui: bool,
-
-    #[arg(
-        long,
         value_enum,
         default_value_t,
-        help = "With --tui, how figures reach the terminal"
+        help = "In the TUI, how figures reach the terminal"
     )]
     pub graphics: crate::tui::Graphics,
 }
 
 impl AnnotateCliArgs {
-    /// The `annotate` arguments that give back `self` (less `--tui`), for
-    /// re-running a pass as a child process.
+    /// The `annotate` arguments that give back `self`, for re-running a pass
+    /// as a child process (with `--out`, so the child runs without the TUI).
     #[must_use]
     pub fn to_argv(&self) -> Vec<String> {
         let mut v: Vec<String> = Vec::new();
@@ -250,10 +244,10 @@ impl AnnotateCliArgs {
 }
 
 pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
-    if args.tui {
-        return crate::tui::run(args, false);
+    // Without an output prefix, the TUI: it asks for one.
+    if args.out.is_empty() {
+        return crate::tui::run(args, None);
     }
-    anyhow::ensure!(!args.out.is_empty(), "annotate needs an output prefix (-o)");
     // One manifest load per invocation; every route below reuses it.
     let loaded = args
         .from
