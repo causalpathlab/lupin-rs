@@ -193,6 +193,9 @@ pub enum Pending {
     /// Run `lupin trajectory` with the output prefix typed; `replace` is the
     /// prefix whose existing manifest the user has agreed to replace.
     TrajectoryOut { replace: Option<String> },
+    /// The `cell<TAB>type` file (the text) a trajectory run takes its labels
+    /// from, for a run with no annotation.
+    TrajectoryLabels,
 }
 
 /// A one-line prompt for a decision's reason, prefilled.
@@ -1243,6 +1246,14 @@ impl App {
                             self.run_trajectory(&reason, exists);
                         }
                     }
+                    Pending::TrajectoryLabels => {
+                        if Path::new(&reason).is_file() {
+                            self.trajectory.argv.extend(["--labels".into(), reason]);
+                            self.ask_trajectory_out();
+                        } else {
+                            self.status = format!("{reason} is not a file");
+                        }
+                    }
                     Pending::Relocate => {
                         self.status = match &mut self.figures {
                             Some(v) => v
@@ -1641,6 +1652,18 @@ impl App {
     fn ask_trajectory_out(&mut self) {
         if self.child.is_some() {
             self.status = "wait for the running job, or stop it with x".into();
+            return;
+        }
+        let has_labels = self.trajectory.argv.iter().any(|a| a == "--labels")
+            || self.round.is_some()
+            || crate::manifest::run::load(&self.source.to_string_lossy())
+                .is_ok_and(|l| l.manifest.annotate.argmax.is_some());
+        if !has_labels {
+            self.prompt = Some(Prompt {
+                title: " this run has no annotation: cell<TAB>type labels file ".into(),
+                text: String::new(),
+                pending: Pending::TrajectoryLabels,
+            });
             return;
         }
         let text = self

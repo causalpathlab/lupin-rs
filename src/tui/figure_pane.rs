@@ -8,10 +8,12 @@ use crate::trajectory::figures::{self, Panel, TrajectoryData};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use image::DynamicImage;
+use ratatui::layout::{Rect, Size};
 use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use ratatui_image::picker::{Picker, ProtocolType};
-use ratatui_image::protocol::StatefulProtocol;
-use std::cell::{RefCell, RefMut};
+use ratatui_image::protocol::Protocol;
+use ratatui_image::{FilterType, Resize};
+use std::cell::{Ref, RefCell};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -27,9 +29,6 @@ pub enum Graphics {
     /// Unicode half-blocks, which every terminal shows.
     Blocks,
 }
-
-/// The raster a figure is drawn at once; ratatui-image scales it to the pane.
-const RASTER: (u32, u32) = (1200, 900);
 
 /// The exports strip: the gallery, checked against the files, and the
 /// figure files beside the run that it does not list.
@@ -131,6 +130,9 @@ impl Exports {
     }
 }
 
+/// A panel at a pane size, in terminal cells.
+type Shown = (Panel, u16, u16);
+
 pub struct FigurePane {
     pub data: TrajectoryData,
     pub panels: Vec<Panel>,
@@ -138,9 +140,9 @@ pub struct FigurePane {
     /// Show the figure instead of the order table.
     pub shown: bool,
     picker: Picker,
-    /// The current panel, encoded once and resized to the pane by
-    /// ratatui-image on each draw; or why it could not be drawn.
-    rendered: RefCell<Option<(Panel, Result<StatefulProtocol, String>)>>,
+    /// The figure on screen for (panel, pane size), or why it could not be
+    /// drawn.
+    rendered: RefCell<Option<(Shown, Result<Protocol, String>)>>,
     pub exports: Exports,
 }
 
@@ -188,22 +190,36 @@ impl FigurePane {
         }
     }
 
-    /// The current figure, ready to draw, rendered on first use.
-    pub fn protocol(&self) -> RefMut<'_, Result<StatefulProtocol, String>> {
-        let panel = self.current();
-        let mut slot = self.rendered.borrow_mut();
-        if slot.as_ref().is_none_or(|(p, _)| *p != panel) {
-            *slot = Some((panel, self.render(panel).map_err(|e| format!("{e:#}"))));
+    /// The current figure drawn for `area`, as senna view draws its
+    /// figures: rendered at the pane's pixel size and kept while the panel
+    /// and the size stay the same (a failure too, so it is not retried every
+    /// frame).
+    pub fn protocol(&self, area: Rect) -> Ref<'_, Result<Protocol, String>> {
+        let key = (self.current(), area.width, area.height);
+        if self
+            .rendered
+            .borrow()
+            .as_ref()
+            .is_none_or(|(k, _)| *k != key)
+        {
+            let drawn = self.render(key.0, area).map_err(|e| format!("{e:#}"));
+            *self.rendered.borrow_mut() = Some((key, drawn));
         }
-        RefMut::map(slot, |s| &mut s.as_mut().expect("filled above").1)
+        Ref::map(self.rendered.borrow(), |s| {
+            &s.as_ref().expect("filled above").1
+        })
     }
 
-    fn render(&self, panel: Panel) -> Result<StatefulProtocol> {
-        let fig = self.data.figure(panel, RASTER.0, RASTER.1)?;
-        let img = figures::render(&fig)?;
-        Ok(self
-            .picker
-            .new_resize_protocol(DynamicImage::ImageRgba8(img)))
+    fn render(&self, panel: Panel, area: Rect) -> Result<Protocol> {
+        let px = self.picker.font_size();
+        let w = (u32::from(area.width) * u32::from(px.width)).max(64);
+        let h = (u32::from(area.height) * u32::from(px.height)).max(64);
+        let img = figures::render(&self.data.figure(panel, w, h)?)?;
+        Ok(self.picker.new_protocol(
+            DynamicImage::ImageRgba8(img),
+            Size::new(area.width, area.height),
+            Resize::Fit(Some(FilterType::Triangle)),
+        )?)
     }
 
     /// Export the current panel and log it.

@@ -1094,14 +1094,8 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
     let block = pane(title, focused);
     let inner = block.inner(figure);
     f.render_widget(block, figure);
-    match &mut *v.protocol() {
-        Ok(p) => f.render_stateful_widget(
-            ratatui_image::StatefulImage::new().resize(ratatui_image::Resize::Fit(Some(
-                ratatui_image::FilterType::Triangle,
-            ))),
-            inner,
-            p,
-        ),
+    match &*v.protocol(inner) {
+        Ok(p) => f.render_widget(ratatui_image::Image::new(p), inner),
         Err(e) => f.render_widget(
             Paragraph::new(e.as_str()).wrap(Wrap { trim: true }).dim(),
             inner,
