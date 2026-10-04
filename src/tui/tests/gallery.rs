@@ -93,7 +93,12 @@ fn a_log_others_can_write_moves_and_deletes_nothing() {
     g.add(&files, "order", "order", &dir.join("run.senna.json"))
         .unwrap();
     let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode(&log_dir.join(LOG)) & 0o077, 0, "the log is private");
+    assert_eq!(
+        mode(&log_dir),
+        0o700,
+        "the log's directory is created private"
+    );
+    assert_eq!(mode(&log_dir.join(LOG)) & 0o077, 0, "so is the log");
 
     let open = std::fs::Permissions::from_mode(0o666);
     std::fs::set_permissions(log_dir.join(LOG), open).unwrap();
@@ -103,4 +108,23 @@ fn a_log_others_can_write_moves_and_deletes_nothing() {
     assert!(files.iter().all(|f| f.is_file()));
     // Nor is an entry taken off a log others can write.
     assert!(g.remove(&files[1], false).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_log_that_is_a_link_moves_and_deletes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    let files = figure_set(&dir, "run.trajectory.order");
+    // A genuine log of this user's elsewhere, linked in as this one.
+    let other = dir.join("elsewhere");
+    let mut g = Gallery::open(&other);
+    g.add(&files, "order", "order", &dir.join("run.senna.json"))
+        .unwrap();
+    let log_dir = dir.join(DIR);
+    std::fs::create_dir(&log_dir).unwrap();
+    std::os::unix::fs::symlink(other.join(LOG), log_dir.join(LOG)).unwrap();
+    let mut g = Gallery::open(&log_dir);
+    assert!(g.remove(&files[1], true).is_err());
+    assert!(files.iter().all(|f| f.is_file()));
 }

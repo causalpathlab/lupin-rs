@@ -158,7 +158,12 @@ impl Gallery {
     /// Write the log: to a fresh temporary file (created exclusively, under
     /// a random name, readable by this user only), then into place.
     fn save(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
+        // Created private; an existing directory is left as it is.
+        let mut make = std::fs::DirBuilder::new();
+        make.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut make, 0o700);
+        make.create(&self.dir)?;
         let mut tmp = tempfile::NamedTempFile::new_in(&self.dir)?;
         serde_json::to_writer_pretty(&mut tmp, &self.entries)?;
         tmp.persist(self.dir.join(LOG))?;
@@ -257,7 +262,7 @@ impl Gallery {
     /// drawn), read only from a log this user alone can write: files are
     /// deleted or moved on its word.
     fn find(&mut self, pdf: &Path) -> Result<usize> {
-        self.entries = read_private(&self.dir.join(LOG))?;
+        self.entries = read_private(&self.dir)?;
         self.entries
             .iter()
             .position(|e| e.path == pdf)
@@ -321,25 +326,38 @@ impl Gallery {
     }
 }
 
-/// The entries of the log at `log`, read from the file that was opened and
-/// only when that file is this user's and no one else can write it: a log
-/// another user can edit could name any of this user's files. The check is
-/// made on the opened file itself, so a file swapped in after it is not read.
-fn read_private(log: &Path) -> Result<Vec<Entry>> {
+/// The entries of the log in `dir`, only when the directory and the log are
+/// this user's, no one else can write them, and neither is a link: a log
+/// another user can edit, or swap for another, could name any of this
+/// user's files, and files are deleted or moved on its word. The log is
+/// checked on the file that was opened, and that file must be the one at
+/// the log's path.
+fn read_private(dir: &Path) -> Result<Vec<Entry>> {
     use std::io::Read;
-    let mut f = std::fs::File::open(log).with_context(|| format!("opening {}", log.display()))?;
+    let log = dir.join(LOG);
+    let mut f = std::fs::File::open(&log).with_context(|| format!("opening {}", log.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let m = f.metadata()?;
         // This process's user: the owner of a file it has just created.
         let me = tempfile::tempfile()?.metadata()?.uid();
-        ensure!(
-            m.is_file() && m.uid() == me && m.mode() & 0o022 == 0,
-            "{} is not this user's alone (others can write it): not deleting or moving \
-             files on its word",
-            log.display()
-        );
+        let mine = |m: &std::fs::Metadata| m.uid() == me && m.mode() & 0o022 == 0;
+        let refuse = |p: &Path| {
+            anyhow::anyhow!(
+                "{} is not this user's alone (a link, or others can write it): not deleting \
+                 or moving files on its word (chmod go-w, or remove it to start a new log)",
+                p.display()
+            )
+        };
+        let d = std::fs::symlink_metadata(dir)?;
+        if d.file_type().is_symlink() || !d.is_dir() || !mine(&d) {
+            return Err(refuse(dir));
+        }
+        let (at, opened) = (std::fs::symlink_metadata(&log)?, f.metadata()?);
+        let same = at.dev() == opened.dev() && at.ino() == opened.ino();
+        if at.file_type().is_symlink() || !opened.is_file() || !same || !mine(&opened) {
+            return Err(refuse(&log));
+        }
     }
     let mut bytes = Vec::new();
     f.read_to_end(&mut bytes)?;
