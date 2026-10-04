@@ -163,6 +163,12 @@ pub struct AnnotateCliArgs {
 }
 
 impl AnnotateCliArgs {
+    /// Without an output prefix, annotate opens its TUI, which asks for one.
+    #[must_use]
+    pub fn opens_tui(&self) -> bool {
+        self.out.is_empty()
+    }
+
     /// The `annotate` arguments that give back `self`, for re-running a pass
     /// as a child process (with `--out`, so the child runs without the TUI).
     #[must_use]
@@ -244,8 +250,7 @@ impl AnnotateCliArgs {
 }
 
 pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
-    // Without an output prefix, the TUI: it asks for one.
-    if args.out.is_empty() {
+    if args.opens_tui() {
         return crate::tui::run(args, None);
     }
     // One manifest load per invocation; every route below reuses it.

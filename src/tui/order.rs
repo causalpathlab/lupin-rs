@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 pub struct TrajectoryRun {
     pub argv: Vec<String>,
     pub out: Option<String>,
+    /// A labels file typed in the TUI for a run with no annotation.
+    pub labels: Option<String>,
 }
 
 /// The first `{stem}.T{k}` (k = 1, 2, …) beside `source` with no manifest yet.

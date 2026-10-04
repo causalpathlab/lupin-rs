@@ -87,6 +87,7 @@ pub fn run_trajectory(t: &crate::trajectory::run::TrajectoryArgs) -> Result<()> 
     let run_with = order::TrajectoryRun {
         argv: t.child_argv(),
         out: t.out.as_deref().map(str::to_string),
+        labels: None,
     };
     run(&a, Some(run_with))
 }
@@ -94,6 +95,11 @@ pub fn run_trajectory(t: &crate::trajectory::run::TrajectoryArgs) -> Result<()> 
 /// Run the TUI on `args`; with `trajectory`, it opens on the order view and
 /// runs `lupin trajectory` with those options.
 pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> Result<()> {
+    use std::io::IsTerminal;
+    anyhow::ensure!(
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        "no terminal for the TUI: give the output prefix (-o, and -f for trajectory) to run without it"
+    );
     let start_in_order = trajectory.is_some();
     let cwd = std::env::current_dir()?;
     let from = match args.from.as_deref() {
@@ -140,7 +146,16 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     let panel = if args.markers.is_empty() {
         Vec::new()
     } else {
-        crate::annotate::markers::read_panel(&args.markers)?
+        match crate::annotate::markers::read_panel(&args.markers) {
+            Ok(p) => p,
+            // The order view needs no panel.
+            Err(e) if start_in_order => {
+                eprintln!("lupin: no marker panel ({e:#})");
+                args.markers = Default::default();
+                Vec::new()
+            }
+            Err(e) => return Err(e),
+        }
     };
     let data = crate::manifest::ontology::load(
         Some(&loaded.dir),
@@ -168,7 +183,9 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     app.mixed = ontology::Mixed::load(&search)?;
     app.data_search = search;
     // Pick up where an earlier session left this prefix: its latest round.
-    if target.is_file() {
+    // The trajectory TUI starts from the manifest named instead, as the
+    // batch run would.
+    if target.is_file() && !start_in_order {
         let (latest, _) = crate::manifest::rounds::chain_rounds(&target);
         app.open(&latest);
     }

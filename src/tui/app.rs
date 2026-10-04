@@ -38,24 +38,24 @@ pub enum Focus {
 /// The settings the screen edits, in the order it lists them.
 #[derive(Clone, Copy)]
 pub enum Setting {
-    /// The output prefix of passes; Enter edits it.
-    Output,
     Method,
     Knn,
     Resolution,
     NumClusters,
     NumPerm,
     Go,
+    /// The output prefix of passes; Enter edits it.
+    Output,
 }
 
 pub const SETTINGS: [Setting; 7] = [
-    Setting::Output,
     Setting::Method,
     Setting::Knn,
     Setting::Resolution,
     Setting::NumClusters,
     Setting::NumPerm,
     Setting::Go,
+    Setting::Output,
 ];
 
 impl Setting {
@@ -185,8 +185,8 @@ pub enum Pending {
         to: String,
         relation: Relation,
     },
-    /// Move the selected export's files to the base name typed.
-    Relocate,
+    /// Move the export of `pdf` to the base name typed.
+    Relocate { pdf: PathBuf },
     /// The output prefix (the text) for passes; then start one when
     /// `then_start`.
     Output { then_start: bool },
@@ -213,6 +213,17 @@ pub enum Job {
     Save(usize),
     /// `lupin trajectory`, writing this manifest.
     Trajectory(PathBuf),
+}
+
+impl Job {
+    /// The job's name in the status line.
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Save(_) => "save",
+            Self::Trajectory(_) => "trajectory",
+        }
+    }
 }
 
 /// A `lupin relabel --preview` rescoring the round against `edits`.
@@ -311,6 +322,8 @@ pub struct App {
     pub want_markers: bool,
     /// Once the pass running now is done, run the trajectory.
     trajectory_after_pass: bool,
+    /// The terminal's picture protocol, asked for once.
+    picker: Option<ratatui_image::picker::Picker>,
 }
 
 impl App {
@@ -361,6 +374,7 @@ impl App {
             trajectory: super::order::TrajectoryRun::default(),
             want_markers: false,
             trajectory_after_pass: false,
+            picker: None,
         }
     }
 
@@ -385,14 +399,7 @@ impl App {
         };
         let (secs, job) = (started.elapsed().as_secs(), job.clone());
         match child.try_wait() {
-            Ok(None) => {
-                let what = match job {
-                    Job::Pass => "pass",
-                    Job::Save(_) => "saving",
-                    Job::Trajectory(_) => "trajectory",
-                };
-                self.status = format!("{what}… {secs}s  (x: stop)");
-            }
+            Ok(None) => self.status = format!("{}… {secs}s  (x: stop)", job.name()),
             Ok(Some(st)) if st.success() => {
                 self.child = None;
                 if let Job::Trajectory(m) = job {
@@ -413,36 +420,37 @@ impl App {
                 // the new round (a save keeps the clusters' ids).
                 let later = match job {
                     Job::Save(n) => self.edits.split_off(n.min(self.edits.len())),
-                    Job::Pass | Job::Trajectory(_) => Vec::new(),
+                    _ => Vec::new(),
                 };
                 self.open(&latest);
                 let kept = later.len();
                 self.edits = later;
                 let done = match job {
-                    Job::Pass | Job::Trajectory(_) => format!("pass done in {secs}s"),
                     Job::Save(n) if kept > 0 => format!(
                         "saved {n} edit(s), {kept} made since still unsaved; {}",
                         self.export()
                     ),
                     Job::Save(n) => format!("saved {n} edit(s); {}", self.export()),
+                    _ => format!("pass done in {secs}s"),
                 };
                 self.status = format!("{done}. {}", self.status);
                 if then_trajectory {
-                    self.ask_trajectory_out();
+                    if self.prompt.is_none() {
+                        self.ask_trajectory_out();
+                    } else {
+                        self.status += " r in the order view runs the trajectory.";
+                    }
                 }
             }
             Ok(Some(st)) => {
                 self.child = None;
-                let what = match job {
-                    Job::Pass => "pass",
-                    Job::Save(_) => "save",
-                    Job::Trajectory(_) => "trajectory",
-                };
-                self.status = format!("{what} failed ({st}); see the log");
+                self.trajectory_after_pass = false;
+                self.status = format!("{} failed ({st}); see the log", job.name());
             }
             Err(e) => {
                 self.child = None;
-                self.status = format!("lost the pass: {e}");
+                self.trajectory_after_pass = false;
+                self.status = format!("lost the {}: {e}", job.name());
             }
         }
     }
@@ -804,6 +812,7 @@ impl App {
     fn stop(&mut self) {
         match self.child.as_ref().map(|c| c.2.clone()) {
             Some(Job::Pass | Job::Trajectory(_)) => {
+                self.trajectory_after_pass = false;
                 if let Some((mut c, _, _)) = self.child.take() {
                     let _ = c.kill();
                     let _ = c.wait();
@@ -1160,7 +1169,14 @@ impl App {
     fn prompt_key(&mut self, k: KeyEvent) {
         let Some(p) = &mut self.prompt else { return };
         match k.code {
-            KeyCode::Esc => self.prompt = None,
+            KeyCode::Esc => {
+                if matches!(
+                    self.prompt.take().map(|p| p.pending),
+                    Some(Pending::Output { then_start: true })
+                ) {
+                    self.trajectory_after_pass = false;
+                }
+            }
             KeyCode::Enter => {
                 let edits_clusters = matches!(
                     p.pending,
@@ -1234,7 +1250,7 @@ impl App {
                     }
                     Pending::Output { then_start } => {
                         self.set_output(&reason);
-                        if then_start {
+                        if then_start && self.out_chosen && self.args.out.as_ref() == reason {
                             self.start();
                             if self.child.is_some() {
                                 self.settings_open = false;
@@ -1263,17 +1279,17 @@ impl App {
                     }
                     Pending::TrajectoryLabels => {
                         if Path::new(&reason).is_file() {
-                            self.trajectory.argv.extend(["--labels".into(), reason]);
+                            self.trajectory.labels = Some(reason);
                             self.ask_trajectory_out();
                         } else {
                             self.status = format!("{reason} is not a file");
                         }
                     }
-                    Pending::Relocate => {
+                    Pending::Relocate { pdf } => {
                         self.status = match &mut self.figures {
                             Some(v) => v
                                 .exports
-                                .relocate(&reason)
+                                .relocate(&pdf, &reason)
                                 .unwrap_or_else(|e| format!("could not move: {e:#}")),
                             None => "no figures".into(),
                         };
@@ -1406,9 +1422,12 @@ impl App {
         };
         if matches!(busy, Some(Job::Save(_))) {
             self.status = format!("saving… {key} once it is done");
-        } else if armed != Some(Armed::Quit) && busy.is_some() {
+        } else if let (true, Some(job)) = (armed != Some(Armed::Quit), &busy) {
             self.armed = Some(Armed::Quit);
-            self.status = format!("a pass is running{unsaved}: {key} again stops it and quits");
+            self.status = format!(
+                "a {} is running{unsaved}: {key} again stops it and quits",
+                job.name()
+            );
         } else if armed == Some(Armed::Quit) || self.edits.is_empty() {
             self.stop();
             self.stop_rescoring();
@@ -1614,7 +1633,8 @@ impl App {
         if self.figures.is_none() {
             let manifests = self.manifests();
             let refs: Vec<&Path> = manifests.iter().map(PathBuf::as_path).collect();
-            match super::figure_pane::FigurePane::load(&refs, self.args.graphics) {
+            let picker = self.picker().clone();
+            match super::figure_pane::FigurePane::load(&refs, &picker) {
                 Ok(v) => self.figures = v,
                 Err(e) => self.push_log(format!("[WARN] trajectory figures: {e:#}")),
             }
@@ -1652,6 +1672,21 @@ impl App {
     /// Take `out` as the output prefix of passes; its latest round, when it
     /// has one, is opened.
     fn set_output(&mut self, out: &str) {
+        if self.child.is_some() {
+            self.status = "wait for the running job before changing the output".into();
+            return;
+        }
+        if out == self.args.out.as_ref() {
+            self.out_chosen = true;
+            return;
+        }
+        if !self.edits.is_empty() {
+            self.status = format!(
+                "{} unsaved edit(s): save (s) or drop them before changing the output",
+                self.edits.len()
+            );
+            return;
+        }
         self.args.out = out.into();
         self.target = annotated_path(&self.source, out);
         self.out_chosen = true;
@@ -1669,7 +1704,15 @@ impl App {
             self.status = "wait for the running job, or stop it with x".into();
             return;
         }
+        if !self.edits.is_empty() {
+            self.status = format!(
+                "{} unsaved edit(s): save them (s) so the trajectory sees the labels on screen",
+                self.edits.len()
+            );
+            return;
+        }
         let has_labels = self.trajectory.argv.iter().any(|a| a == "--labels")
+            || self.trajectory.labels.is_some()
             || self.round.is_some()
             || crate::manifest::run::load(&self.source.to_string_lossy())
                 .is_ok_and(|l| l.manifest.annotate.argmax.is_some());
@@ -1714,6 +1757,11 @@ impl App {
             out.into(),
         ];
         argv.extend(self.trajectory.argv.iter().cloned());
+        // A labels file typed in the TUI stands in for a missing annotation:
+        // a round on screen has its own.
+        if let (None, Some(l)) = (&self.round, &self.trajectory.labels) {
+            argv.extend(["--labels".into(), l.clone()]);
+        }
         if replace {
             argv.push("--overwrite".into());
         }
@@ -1727,6 +1775,14 @@ impl App {
             }
             Err(e) => self.status = format!("{e:#}"),
         }
+    }
+
+    /// The terminal's picture protocol, asked for the first time figures are
+    /// shown and reused after.
+    fn picker(&mut self) -> &ratatui_image::picker::Picker {
+        let graphics = self.args.graphics;
+        self.picker
+            .get_or_insert_with(|| super::figure_pane::picker(graphics))
     }
 
     /// Annotate the run, then run the trajectory on its labels: the marker
@@ -1770,8 +1826,8 @@ impl App {
 
     /// A trajectory run wrote `manifest`: show its figures and verdicts.
     fn trajectory_done(&mut self, manifest: &Path, secs: u64) {
-        let graphics = self.args.graphics;
-        self.figures = match super::figure_pane::FigurePane::load(&[manifest], graphics) {
+        let picker = self.picker().clone();
+        self.figures = match super::figure_pane::FigurePane::load(&[manifest], &picker) {
             Ok(f) => f,
             Err(e) => {
                 self.push_log(format!("[WARN] trajectory figures: {e:#}"));
@@ -1945,11 +2001,13 @@ impl App {
                 self.status = x.remove(true).unwrap_or_else(|e| format!("{e:#}"));
             }
             KeyCode::Char('m') if strip => {
-                if let Some(base) = x.selected_base() {
+                if let Some(e) = x.gallery.entries.get(x.sel) {
                     self.prompt = Some(Prompt {
                         title: " move the export to (base name, no extension): ".into(),
-                        text: base,
-                        pending: Pending::Relocate,
+                        text: e.path.with_extension("").to_string_lossy().into_owned(),
+                        pending: Pending::Relocate {
+                            pdf: e.path.clone(),
+                        },
                     });
                 }
             }

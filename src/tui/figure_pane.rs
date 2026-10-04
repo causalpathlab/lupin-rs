@@ -115,18 +115,11 @@ impl Exports {
         })
     }
 
-    /// Move the selected entry's files to `new_base` (no extension).
-    pub fn relocate(&mut self, new_base: &str) -> Result<String> {
-        let pdf = self.selected_pdf()?;
-        self.gallery.relocate(&pdf, Path::new(new_base))?;
+    /// Move the export of `pdf` to `new_base` (no extension).
+    pub fn relocate(&mut self, pdf: &Path, new_base: &str) -> Result<String> {
+        self.gallery.relocate(pdf, Path::new(new_base))?;
         self.refresh();
         Ok(format!("moved to {new_base}.svg and .pdf"))
-    }
-
-    /// The selected entry's base name, for a move prompt.
-    pub fn selected_base(&self) -> Option<String> {
-        let e = self.gallery.entries.get(self.sel)?;
-        Some(e.path.with_extension("").to_string_lossy().into_owned())
     }
 }
 
@@ -143,13 +136,15 @@ pub struct FigurePane {
     /// The figure on screen for (panel, pane size), or why it could not be
     /// drawn.
     rendered: RefCell<Option<(Shown, Result<Protocol, String>)>>,
+    /// The current panel rasterised once; a new pane size only re-fits it.
+    image: RefCell<Option<(Panel, Result<DynamicImage, String>)>>,
     pub exports: Exports,
 }
 
 impl FigurePane {
     /// The figures of the first of `manifests` with a `trajectory` section;
     /// `None` when there is none, an error when its outputs cannot be read.
-    pub fn load(manifests: &[&Path], graphics: Graphics) -> Result<Option<Self>> {
+    pub fn load(manifests: &[&Path], picker: &Picker) -> Result<Option<Self>> {
         for m in manifests {
             let Ok(loaded) = load(&m.to_string_lossy()) else {
                 continue;
@@ -161,7 +156,8 @@ impl FigurePane {
                     data,
                     sel: 0,
                     shown: false,
-                    picker: picker(graphics),
+                    picker: picker.clone(),
+                    image: RefCell::new(None),
                     rendered: RefCell::new(None),
                     exports,
                 }));
@@ -191,9 +187,9 @@ impl FigurePane {
     }
 
     /// The current figure drawn for `area`, as senna view draws its
-    /// figures: rendered at the pane's pixel size and kept while the panel
-    /// and the size stay the same (a failure too, so it is not retried every
-    /// frame).
+    /// figures. The panel is rasterised once (at the pane's pixel size when
+    /// first shown) and only fitted again when the pane changes size; a
+    /// failure is kept too, so it is not retried every frame.
     pub fn protocol(&self, area: Rect) -> Ref<'_, Result<Protocol, String>> {
         let key = (self.current(), area.width, area.height);
         if self
@@ -202,7 +198,15 @@ impl FigurePane {
             .as_ref()
             .is_none_or(|(k, _)| *k != key)
         {
-            let drawn = self.render(key.0, area).map_err(|e| format!("{e:#}"));
+            let drawn = self.image(key.0, area).and_then(|img| {
+                self.picker
+                    .new_protocol(
+                        img,
+                        Size::new(area.width, area.height),
+                        Resize::Fit(Some(FilterType::Triangle)),
+                    )
+                    .map_err(|e| format!("{e:#}"))
+            });
             *self.rendered.borrow_mut() = Some((key, drawn));
         }
         Ref::map(self.rendered.borrow(), |s| {
@@ -210,16 +214,24 @@ impl FigurePane {
         })
     }
 
-    fn render(&self, panel: Panel, area: Rect) -> Result<Protocol> {
+    /// `panel` rasterised, from the cache when it is the one last drawn.
+    fn image(&self, panel: Panel, area: Rect) -> Result<DynamicImage, String> {
+        if let Some((p, img)) = self.image.borrow().as_ref() {
+            if *p == panel {
+                return img.clone();
+            }
+        }
         let px = self.picker.font_size();
         let w = (u32::from(area.width) * u32::from(px.width)).max(64);
         let h = (u32::from(area.height) * u32::from(px.height)).max(64);
-        let img = figures::render(&self.data.figure(panel, w, h)?)?;
-        Ok(self.picker.new_protocol(
-            DynamicImage::ImageRgba8(img),
-            Size::new(area.width, area.height),
-            Resize::Fit(Some(FilterType::Triangle)),
-        )?)
+        let img = self
+            .data
+            .figure(panel, w, h)
+            .and_then(|f| figures::render(&f))
+            .map(DynamicImage::ImageRgba8)
+            .map_err(|e| format!("{e:#}"));
+        *self.image.borrow_mut() = Some((panel, img.clone()));
+        img
     }
 
     /// Export the current panel and log it.
@@ -239,7 +251,7 @@ impl FigurePane {
 
 /// The terminal's picture protocol, asked for unless `graphics` names one;
 /// half-blocks when the terminal does not answer.
-fn picker(graphics: Graphics) -> Picker {
+pub fn picker(graphics: Graphics) -> Picker {
     let mut picker = if graphics == Graphics::Blocks {
         Picker::halfblocks()
     } else {

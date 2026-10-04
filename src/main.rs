@@ -144,8 +144,8 @@ fn main() -> Result<()> {
         manifest::run::allow_overwrite();
     }
     let interactive = match &cli.cmd {
-        Commands::Annotate(c) => c.out.is_empty(),
-        Commands::Trajectory(c) => c.from.is_none() || c.out.is_none(),
+        Commands::Annotate(c) => c.opens_tui(),
+        Commands::Trajectory(c) => c.opens_tui(),
         _ => false,
     };
     if interactive {

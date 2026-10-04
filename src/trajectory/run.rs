@@ -109,6 +109,13 @@ pub struct TrajectoryArgs {
 }
 
 impl TrajectoryArgs {
+    /// Without both `--from` and `--out`, the command opens its TUI, which
+    /// asks for what is missing.
+    #[must_use]
+    pub fn opens_tui(&self) -> bool {
+        self.from.is_none() || self.out.is_none()
+    }
+
     /// The options a run started from the TUI carries over, less `--from`,
     /// `--out` and `--graphics`.
     pub(crate) fn child_argv(&self) -> Vec<String> {
@@ -222,7 +229,7 @@ struct Ordering {
 /// what is missing.
 pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
     match (args.from.as_deref(), args.out.as_deref()) {
-        (Some(from), Some(out)) => run_batch(args, from, out),
+        (Some(from), Some(out)) if !args.opens_tui() => run_batch(args, from, out),
         _ => crate::tui::run_trajectory(args),
     }
 }
@@ -256,12 +263,12 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
 
     let nb = Neighbours::new(&inputs.geometry, args.knn)?;
     let mut t = check(&inputs, &nb, prior, args.min_connectivity);
+    report_check(&inputs, &t);
     if !args.check_only {
         t.ordering = Some(order(&inputs, &nb, &t.prior, usize::from(args.n_dcs))?);
         agreement(&mut t);
         report_order(&inputs, &t);
     }
-    report_check(&inputs, &t);
     let written = write(&inputs, &t, out)?;
     record(&loaded, &manifest_out, &written, args)?;
     info!(
@@ -458,18 +465,12 @@ fn report_check(inputs: &Inputs, t: &Trajectory) {
         t.edges.len(),
         t.candidates.len()
     );
-    for e in &t.edges {
-        let order = if e.order_agreement.is_finite() {
-            format!(", order agreement {:.2}", e.order_agreement)
-        } else {
-            String::new()
-        };
+    for e in t.edges.iter().filter(|e| e.verdict != Verdict::Supported) {
         info!(
-            "  {} → {}: connectivity {:.3} ({}){order}",
+            "  unsupported: {} → {} (connectivity {:.3})",
             inputs.names[e.from],
             inputs.names[e.to],
-            t.connectivity[(e.from, e.to)],
-            e.verdict.as_str()
+            t.connectivity[(e.from, e.to)]
         );
     }
     for &(a, b) in t.candidates.iter().take(10) {
@@ -603,6 +604,16 @@ fn report_order(inputs: &Inputs, t: &Trajectory) {
             "  {m:.3}  {} ({})",
             inputs.names[g],
             inputs.cells_of[g].len()
+        );
+    }
+    info!("order agreement of the prior's edges:");
+    for e in &t.edges {
+        info!(
+            "  {} → {}: {:.2} ({})",
+            inputs.names[e.from],
+            inputs.names[e.to],
+            e.order_agreement,
+            e.verdict.as_str()
         );
     }
     let paths: Vec<String> = o
