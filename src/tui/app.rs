@@ -306,6 +306,11 @@ pub struct App {
     pub out_chosen: bool,
     /// How the order view runs `lupin trajectory`.
     pub trajectory: super::order::TrajectoryRun,
+    /// Pick a marker panel (the main loop opens the file browser), to
+    /// annotate a run that has no annotation.
+    pub want_markers: bool,
+    /// Once the pass running now is done, run the trajectory.
+    trajectory_after_pass: bool,
 }
 
 impl App {
@@ -354,6 +359,8 @@ impl App {
             figures: None,
             out_chosen: true,
             trajectory: super::order::TrajectoryRun::default(),
+            want_markers: false,
+            trajectory_after_pass: false,
         }
     }
 
@@ -392,6 +399,8 @@ impl App {
                     self.trajectory_done(&m, secs);
                     return;
                 }
+                let then_trajectory =
+                    job == Job::Pass && std::mem::take(&mut self.trajectory_after_pass);
                 // A new pass rewrote the base round: rounds made on the old
                 // one no longer apply.
                 if job == Job::Pass {
@@ -418,6 +427,9 @@ impl App {
                     Job::Save(n) => format!("saved {n} edit(s); {}", self.export()),
                 };
                 self.status = format!("{done}. {}", self.status);
+                if then_trajectory {
+                    self.ask_trajectory_out();
+                }
             }
             Ok(Some(st)) => {
                 self.child = None;
@@ -1161,7 +1173,7 @@ impl App {
                 }
                 let Some(p) = self.prompt.take() else { return };
                 let reason = p.text.trim().to_string();
-                if reason.is_empty() {
+                if reason.is_empty() && !matches!(p.pending, Pending::TrajectoryLabels) {
                     self.status = "type something, or Esc to cancel".into();
                     self.prompt = Some(p);
                     return;
@@ -1245,6 +1257,9 @@ impl App {
                         } else {
                             self.run_trajectory(&reason, exists);
                         }
+                    }
+                    Pending::TrajectoryLabels if reason.is_empty() => {
+                        self.annotate_then_trajectory();
                     }
                     Pending::TrajectoryLabels => {
                         if Path::new(&reason).is_file() {
@@ -1660,7 +1675,7 @@ impl App {
                 .is_ok_and(|l| l.manifest.annotate.argmax.is_some());
         if !has_labels {
             self.prompt = Some(Prompt {
-                title: " this run has no annotation: cell<TAB>type labels file ".into(),
+                title: " no annotation yet: Enter annotates it (pick a marker panel, run a pass), or type a cell<TAB>type file ".into(),
                 text: String::new(),
                 pending: Pending::TrajectoryLabels,
             });
@@ -1711,6 +1726,45 @@ impl App {
                 self.status = "running the trajectory…".into();
             }
             Err(e) => self.status = format!("{e:#}"),
+        }
+    }
+
+    /// Annotate the run, then run the trajectory on its labels: the marker
+    /// panel is the manifest's, else picked in the file browser.
+    fn annotate_then_trajectory(&mut self) {
+        self.trajectory_after_pass = true;
+        if self.args.markers.is_empty() {
+            self.want_markers = true;
+            return;
+        }
+        self.start();
+    }
+
+    /// Take `path` as the marker panel (picked in the file browser), then go
+    /// on with the pass a missing annotation asked for.
+    pub fn set_markers(&mut self, path: Option<&Path>) {
+        let Some(path) = path else {
+            self.trajectory_after_pass = false;
+            self.status = "no marker panel picked".into();
+            return;
+        };
+        let p = path.to_string_lossy();
+        let read = crate::annotate::markers::read_panel(&p)
+            .and_then(|panel| Ok((panel, super::round::panel_sets(&p)?)));
+        match read {
+            Ok((panel, sets)) => {
+                self.tree = crate::manifest::ontology::panel_tree_on(self.cl.as_ref(), &panel);
+                if let Some(cl) = &self.cl {
+                    self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
+                }
+                self.original = sets;
+                self.args.markers = p.into();
+                self.start();
+            }
+            Err(e) => {
+                self.trajectory_after_pass = false;
+                self.status = format!("{e:#}");
+            }
         }
     }
 

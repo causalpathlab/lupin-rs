@@ -193,6 +193,20 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                 terminal.draw(|f| ui::draw(f, &app))?;
                 dirty = false;
             }
+            if std::mem::take(&mut app.want_markers) {
+                // The file browser takes the screen, then gives it back.
+                let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
+                let n = index.as_deref().map_or(0, GeneRows::n_genes);
+                let picked = picker::pick(
+                    "Pick a marker panel",
+                    &loaded.dir,
+                    picker::Want::Markers(index, n),
+                )?;
+                terminal = ratatui::init();
+                terminal.clear()?;
+                app.set_markers(picked.as_deref());
+                dirty = true;
+            }
             if event::poll(Duration::from_millis(150))? {
                 match event::read()? {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {

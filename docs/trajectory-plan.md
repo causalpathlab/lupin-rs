@@ -58,7 +58,10 @@ opens the TUI on the order view: a manifest is picked in its file browser
 when `-f` is not given, and `r` runs the trajectory as a child process with
 the options given, asking for the output prefix (the last one used, else the
 next free `{stem}.T{k}`; an existing one is replaced only on a second
-Enter). `lupin annotate` follows the same rule: without `-o` it opens its
+Enter). On a run with no annotation, `r` first annotates it: the
+manifest's marker panel, else one picked in the file browser, then a pass,
+then the trajectory on its labels (a `cell<TAB>type` file can be typed
+instead). `lupin annotate` follows the same rule: without `-o` it opens its
 TUI, which asks for the output prefix when the first pass starts (`.L1`
 offered) and lets it be changed in the settings (`r`).
 
