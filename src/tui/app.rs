@@ -1175,6 +1175,7 @@ impl App {
                         let TreeMode::Order(v) = &self.tree_mode else {
                             return;
                         };
+                        self.tree_marked.clear();
                         self.status = match v.record(&from, &to, relation, &reason) {
                             Ok(file) => format!(
                                 "recorded {from} {} {to} in {}",
@@ -1342,7 +1343,9 @@ impl App {
     fn settings_key(&mut self, code: KeyCode, armed: Option<Armed>) {
         match code {
             KeyCode::Esc | KeyCode::Char('r' | 'q') => self.settings_open = false,
-            KeyCode::Up | KeyCode::Down => step(&mut self.setting, SETTINGS.len(), code),
+            KeyCode::Up | KeyCode::Down => {
+                step(&mut self.setting, SETTINGS.len(), code);
+            }
             KeyCode::Left | KeyCode::Right => {
                 SETTINGS[self.setting].adjust(&mut self.args, code == KeyCode::Right);
                 self.stale = self.round.is_some();
@@ -1517,11 +1520,11 @@ impl App {
     /// Switch the tree pane to the order view (which types precede which) and
     /// back; `show_figures` opens on the figures (`lupin trajectory --tui`).
     pub(super) fn toggle_order(&mut self, show_figures: bool) {
+        self.tree_marked.clear();
         if matches!(self.tree_mode, TreeMode::Order(_)) {
             self.tree_mode = TreeMode::Panel;
             return;
         }
-        self.tree_marked.clear();
         if self.figures.is_none() {
             match super::figure_pane::FigurePane::load(&self.manifests(), self.args.graphics) {
                 Ok(v) => self.figures = v,
@@ -1549,7 +1552,20 @@ impl App {
                 .into_iter()
                 .filter(|(l, _)| l != UNASSIGNED_LABEL)
                 .collect(),
-            None => self.original.keys().map(|k| (k.clone(), 0)).collect(),
+            // No round yet (`lupin trajectory --tui`): the trajectory run's
+            // types with their cells, else the panel's types.
+            None => match &self.figures {
+                Some(f) => {
+                    let mut n: std::collections::BTreeMap<String, usize> = Default::default();
+                    for t in &f.data.types {
+                        *n.entry(t.to_string()).or_default() += 1;
+                    }
+                    n.into_iter()
+                        .filter(|(l, _)| l != UNASSIGNED_LABEL)
+                        .collect()
+                }
+                None => self.original.keys().map(|k| (k.clone(), 0)).collect(),
+            },
         }
     }
 
@@ -1576,6 +1592,8 @@ impl App {
         v.sel = sel.min(v.types.len().saturating_sub(1));
         if let Some(e) = &v.error {
             self.status = format!("the prior is not a DAG: {e}");
+        } else if !v.problems.is_empty() {
+            self.status = format!("unreadable precedence file: {}", v.problems.join("; "));
         }
         self.tree_mode = TreeMode::Order(v);
     }
@@ -1589,20 +1607,14 @@ impl App {
         let TreeMode::Order(v) = &mut self.tree_mode else {
             return false;
         };
-        step(&mut v.sel, v.types.len(), code);
+        if step(&mut v.sel, v.types.len(), code) {
+            return true;
+        }
         let relation = match code {
             KeyCode::Char('>') => Relation::Precedes,
             KeyCode::Char('-') => Relation::Unrelated,
             KeyCode::Esc => {
                 self.focus = Focus::Clusters;
-                return true;
-            }
-            KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::PageUp
-            | KeyCode::PageDown
-            | KeyCode::Home
-            | KeyCode::End => {
                 return true;
             }
             _ => return false,
@@ -1612,7 +1624,6 @@ impl App {
             return true;
         }
         let (from, to) = (self.tree_marked[0].clone(), self.tree_marked[1].clone());
-        self.tree_marked.clear();
         let title = match relation {
             Relation::Precedes => format!(" why does {from} precede {to}? "),
             Relation::Unrelated => format!(" why are {from} and {to} unrelated? "),
@@ -1636,6 +1647,14 @@ impl App {
             return false;
         };
         let x = &mut v.exports;
+        // The strip's keys act only while it is on screen.
+        let strip = v.shown && x.open;
+        if strip {
+            let rows = x.rows();
+            if step(&mut x.sel, rows, code) {
+                return true;
+            }
+        }
         match code {
             KeyCode::Char('v') => v.next_panel(),
             KeyCode::Char('V') => v.shown = false,
@@ -1655,29 +1674,18 @@ impl App {
                     x.not_listed.len()
                 );
             }
-            KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::PageUp
-            | KeyCode::PageDown
-            | KeyCode::Home
-            | KeyCode::End
-                if x.open =>
-            {
-                let rows = x.rows();
-                step(&mut x.sel, rows, code);
-            }
-            KeyCode::Enter if x.open => {
+            KeyCode::Enter if strip => {
                 self.status = x
                     .adopt(&v.data.manifest)
                     .unwrap_or_else(|e| format!("{e:#}"));
             }
-            KeyCode::Char('d') if x.open => {
+            KeyCode::Char('d') if strip => {
                 self.status = x.remove(false).unwrap_or_else(|e| format!("{e:#}"));
             }
-            KeyCode::Char('D') if x.open => {
+            KeyCode::Char('D') if strip => {
                 self.status = x.remove(true).unwrap_or_else(|e| format!("{e:#}"));
             }
-            KeyCode::Char('m') if x.open => {
+            KeyCode::Char('m') if strip => {
                 if let Some(base) = x.selected_base() {
                     self.prompt = Some(Prompt {
                         title: " move the export to (base name, no extension): ".into(),
@@ -1830,8 +1838,9 @@ pub(super) fn file_name(p: &Path) -> String {
 const PAGE: usize = 10;
 
 /// Move selection `sel` in a list of `n` rows by `code`: a row (↑↓), a page
-/// (PgUp/PgDn) or to an end (Home/End). Other keys leave it.
-pub(super) fn step(sel: &mut usize, n: usize, code: KeyCode) {
+/// (PgUp/PgDn) or to an end (Home/End). Other keys leave it; `false` for
+/// them.
+pub(super) fn step(sel: &mut usize, n: usize, code: KeyCode) -> bool {
     let last = n.saturating_sub(1);
     *sel = match code {
         KeyCode::Up => sel.saturating_sub(1),
@@ -1840,8 +1849,9 @@ pub(super) fn step(sel: &mut usize, n: usize, code: KeyCode) {
         KeyCode::PageDown => (*sel + PAGE).min(last),
         KeyCode::Home => 0,
         KeyCode::End => last,
-        _ => return,
+        _ => return false,
     };
+    true
 }
 
 #[cfg(test)]

@@ -27,7 +27,10 @@ pub struct OrderView {
     pub statements: Vec<Statement>,
     /// The prior they make; `None` when they do not form a DAG (see `error`).
     pub prior: Option<Prior>,
+    /// Why the statements do not form a DAG.
     pub error: Option<String>,
+    /// Precedence files that could not be read.
+    pub problems: Vec<String>,
     /// The latest trajectory run's pairs, with their verdicts.
     pub edges: Vec<EdgeRow>,
     /// The selected type.
@@ -47,33 +50,21 @@ impl OrderView {
         edges: Vec<EdgeRow>,
     ) -> Self {
         let names: Vec<Box<str>> = types.iter().map(|(t, _)| t.as_str().into()).collect();
-        let mut layers = Vec::new();
-        if let Some(cl) = cl {
-            let (mapped, _) = cl.map_labels(names.iter().map(AsRef::as_ref));
-            layers.push(prior::from_ontology(cl, &mapped));
-        }
-        let mut problems = Vec::new();
-        for (layer, path) in search.user_and_project_files(PRECEDENCE) {
-            match prior::read_layer(&path, layer) {
-                Ok(st) => layers.push(st),
-                Err(e) => problems.push(format!("{e:#}")),
-            }
-        }
+        let refs: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
+        let (layers, problems) = prior::standing_layers(cl, &refs, search);
+        let problems: Vec<String> = problems.iter().map(|e| format!("{e:#}")).collect();
         let statements = prior::combine(&layers);
         let is_node = vec![true; names.len()];
-        let (prior, mut error) = match prior::build(&names, &is_node, statements.clone()) {
+        let (prior, error) = match prior::build(&names, &is_node, statements.clone()) {
             Ok(p) => (Some(p), None),
             Err(e) => (None, Some(e.to_string())),
         };
-        if !problems.is_empty() {
-            let text = problems.join("; ");
-            error = Some(error.map_or(text.clone(), |e| format!("{e}; {text}")));
-        }
         Self {
             types,
             statements,
             prior,
             error,
+            problems,
             edges,
             sel: 0,
             file: search.amend(PRECEDENCE),

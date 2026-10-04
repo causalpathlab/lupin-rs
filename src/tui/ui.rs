@@ -983,19 +983,13 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
     let mut rows: Vec<Row> = v
         .types
         .iter()
-        .enumerate()
-        .map(|(i, (t, n))| {
-            let row = Row::new(vec![
+        .map(|(t, n)| {
+            Row::new(vec![
                 Cell::from(format!("{}{}", mark(t), t)),
                 Cell::from(format!("{n}")),
                 Cell::from(""),
                 Cell::from(""),
-            ]);
-            if focused && i == v.sel {
-                row.style(highlight(true))
-            } else {
-                row
-            }
+            ])
         })
         .collect();
     rows.push(Row::new(vec![Cell::from("")]));
@@ -1048,9 +1042,15 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
             ]));
         }
     }
+    let red = Style::default().fg(Color::Red);
     if let Some(e) = &v.error {
         rows.push(Row::new(vec![
-            Cell::from(format!("  not a DAG: {e}")).style(Style::default().fg(Color::Red))
+            Cell::from(format!("  not a DAG: {e}")).style(red)
+        ]));
+    }
+    for p in &v.problems {
+        rows.push(Row::new(vec![
+            Cell::from(format!("  unreadable: {p}")).style(red)
         ]));
     }
     let file = v
@@ -1069,7 +1069,8 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
     .header(
         Row::new(vec!["type", "cells", "", ""]).style(Style::default().add_modifier(Modifier::DIM)),
     )
-    .block(pane(format!(" order · {file} "), focused));
+    .block(pane(format!(" order · {file} "), focused))
+    .row_highlight_style(highlight(focused));
     let mut state = TableState::default().with_selected(if focused { Some(v.sel) } else { None });
     f.render_stateful_widget(table, area, &mut state);
 }
@@ -1156,7 +1157,8 @@ fn draw_exports(f: &mut Frame, area: Rect, x: &super::figure_pane::Exports, focu
             x.gallery.entries.len()
         ),
         focused,
-    ));
+    ))
+    .row_highlight_style(highlight(focused));
     let mut state = TableState::default().with_selected(Some(x.sel));
     f.render_stateful_widget(table, area, &mut state);
 }

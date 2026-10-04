@@ -1,26 +1,21 @@
 use super::*;
 use crate::manifest::data_files::SearchPath;
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lupin-order-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join("lupin")).unwrap();
-    dir
-}
-
 fn types() -> Vec<(String, usize)> {
     vec![("A".into(), 10), ("B".into(), 5), ("C".into(), 3)]
 }
 
 #[test]
 fn the_view_shows_the_project_statements_as_edges_and_records_new_ones() {
-    let dir = scratch("edges");
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::create_dir_all(dir.join("lupin")).unwrap();
     std::fs::write(
         dir.join("lupin").join(PRECEDENCE),
         "A\tB\tprecedes\tknown\n",
     )
     .unwrap();
-    let search = SearchPath::new(Some(&dir));
+    let search = SearchPath::new(Some(dir));
     let v = OrderView::load(types(), None, &search, Vec::new());
     assert_eq!(
         v.file.as_deref(),
@@ -55,7 +50,6 @@ fn the_view_shows_the_project_statements_as_edges_and_records_new_ones() {
     let v = OrderView::load(types(), None, &search, Vec::new());
     assert_eq!(v.edges().len(), 2);
     assert_eq!(v.unrelated().len(), 1);
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

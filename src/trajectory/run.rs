@@ -8,7 +8,7 @@ use super::encode_groups;
 use super::prior::{self, Prior, Source, Statement};
 use super::type_connectivity::connectivity;
 use crate::cell_labels::read_cell_labels;
-use crate::manifest::data_files::{Fetch, PRECEDENCE};
+use crate::manifest::data_files::Fetch;
 use crate::manifest::run::{annotated_path, load, may_replace, rel_to_manifest, resolve, Loaded};
 use anyhow::{bail, Context, Result};
 use clap::Args;
@@ -16,7 +16,7 @@ use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dense_mat_io::{axis_id_names, Mat};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
 use legume_numeric::matrix::traits::IoOps;
-use legume_numeric::matrix::utils::{median, partition_by_membership};
+use legume_numeric::matrix::utils::median;
 use log::{info, warn};
 use nalgebra::DMatrix;
 use std::collections::{BTreeMap, BTreeSet};
@@ -106,39 +106,20 @@ pub struct TrajectoryArgs {
     pub graphics: crate::tui::Graphics,
 }
 
-/// Settings a recomputation needs, apart from where the data came from.
-pub(crate) struct Params {
-    pub(crate) knn: usize,
-    pub(crate) n_dcs: usize,
-    pub(crate) min_cells: usize,
-    pub(crate) min_connectivity: f32,
-}
-
-impl Params {
-    fn from_args(args: &TrajectoryArgs) -> Self {
-        Self {
-            knn: args.knn,
-            n_dcs: usize::from(args.n_dcs),
-            min_cells: args.min_cells,
-            min_connectivity: args.min_connectivity,
-        }
-    }
-
-    /// What the manifest at `dir` records about the run; input files
-    /// manifest-relative, as every path in a manifest is.
-    fn settings(&self, args: &TrajectoryArgs, dir: &std::path::Path) -> serde_json::Value {
-        let rel = |p: &Option<Box<str>>| p.as_deref().map(|p| rel_to_manifest(dir, p));
-        serde_json::json!({
-            "knn": self.knn, "n_dcs": self.n_dcs, "min_cells": self.min_cells,
-            "min_connectivity": self.min_connectivity,
-            "roots": args.root, "prior": rel(&args.prior), "prior_only": args.prior_only,
-            "labels": rel(&args.labels), "obo": rel(&args.obo), "label_cl": rel(&args.label_cl),
-        })
-    }
+/// What the manifest at `dir` records about the run; input files
+/// manifest-relative, as every path in a manifest is.
+fn settings(args: &TrajectoryArgs, dir: &std::path::Path) -> serde_json::Value {
+    let rel = |p: &Option<Box<str>>| p.as_deref().map(|p| rel_to_manifest(dir, p));
+    serde_json::json!({
+        "knn": args.knn, "n_dcs": args.n_dcs, "min_cells": args.min_cells,
+        "min_connectivity": args.min_connectivity,
+        "roots": args.root, "prior": rel(&args.prior), "prior_only": args.prior_only,
+        "labels": rel(&args.labels), "obo": rel(&args.obo), "label_cl": rel(&args.label_cl),
+    })
 }
 
 /// The cells, their prepared geometry and their types.
-pub(crate) struct Inputs {
+struct Inputs {
     pub(crate) cells: Vec<Box<str>>,
     pub(crate) geometry: Mat,
     /// The distinct labels, sorted.
@@ -159,7 +140,7 @@ impl Inputs {
 
 /// A direct prior edge with its data verdict.
 #[derive(Debug, Clone)]
-pub(crate) struct EdgeCheck {
+struct EdgeCheck {
     pub(crate) from: usize,
     pub(crate) to: usize,
     pub(crate) verdict: Verdict,
@@ -169,7 +150,7 @@ pub(crate) struct EdgeCheck {
 }
 
 /// What a run computes.
-pub(crate) struct Trajectory {
+struct Trajectory {
     pub(crate) prior: Prior,
     /// PAGA connectivity between every pair of types.
     pub(crate) connectivity: DMatrix<f64>,
@@ -182,7 +163,7 @@ pub(crate) struct Trajectory {
 }
 
 /// Pseudotime and lineages.
-pub(crate) struct Ordering {
+struct Ordering {
     pub(crate) map: DiffusionMap,
     /// Per cell; NaN for cells no root reaches.
     pub(crate) pseudotime: Vec<f32>,
@@ -204,8 +185,7 @@ pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
     let manifest_out = annotated_path(&loaded.file, &args.out);
     may_replace(&manifest_out)?;
     mkdir_parent(&args.out)?;
-    let params = Params::from_args(args);
-    let inputs = load_inputs(&loaded, args, &params)?;
+    let inputs = load_inputs(&loaded, args)?;
     let mut layers = gather_statements(&loaded, args, &inputs)?;
     let roots: Vec<&str> = args.root.iter().map(AsRef::as_ref).collect();
     if !roots.is_empty() {
@@ -227,18 +207,16 @@ pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
         );
     }
 
-    let nb = Neighbours::new(&inputs.geometry, params.knn)?;
-    let mut t = check(&inputs, &nb, prior, &params);
-    report_check(&inputs, &t);
+    let nb = Neighbours::new(&inputs.geometry, args.knn)?;
+    let mut t = check(&inputs, &nb, prior, args.min_connectivity);
     if !args.check_only {
-        t.ordering = Some(order(&inputs, &nb, &t.prior, &params)?);
+        t.ordering = Some(order(&inputs, &nb, &t.prior, usize::from(args.n_dcs))?);
         agreement(&mut t);
         report_order(&inputs, &t);
     }
+    report_check(&inputs, &t);
     let written = write(&inputs, &t, &args.out)?;
-    record(&loaded, &manifest_out, &written, |dir| {
-        params.settings(args, dir)
-    })?;
+    record(&loaded, &manifest_out, &written, args)?;
     info!(
         "wrote {}",
         written.values().cloned().collect::<Vec<_>>().join(", ")
@@ -249,11 +227,7 @@ pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn load_inputs(
-    loaded: &Loaded,
-    args: &TrajectoryArgs,
-    params: &Params,
-) -> Result<Inputs> {
+fn load_inputs(loaded: &Loaded, args: &TrajectoryArgs) -> Result<Inputs> {
     let x = loaded.prepared_geometry()?;
     let label_path = match args.labels.as_deref() {
         Some(p) => p.to_string(),
@@ -298,14 +272,13 @@ pub(crate) fn load_inputs(
         );
     }
     let (names, group) = encode_groups(&labels);
-    let by_group = partition_by_membership(&group, None);
-    let cells_of: Vec<Vec<usize>> = (0..names.len())
-        .map(|g| by_group.get(&g).cloned().unwrap_or_default())
-        .collect();
+    let mut cells_of = vec![Vec::new(); names.len()];
+    for (i, &g) in group.iter().enumerate() {
+        cells_of[g].push(i);
+    }
     let is_node: Vec<bool> = (0..names.len())
         .map(|g| {
-            cells_of[g].len() >= params.min_cells
-                && names[g].as_ref() != enrichment::UNASSIGNED_LABEL
+            cells_of[g].len() >= args.min_cells && names[g].as_ref() != enrichment::UNASSIGNED_LABEL
         })
         .collect();
     let small: Vec<String> = (0..names.len())
@@ -316,7 +289,7 @@ pub(crate) fn load_inputs(
         info!(
             "{} type(s) below --min-cells {} are not nodes: {}",
             small.len(),
-            params.min_cells,
+            args.min_cells,
             small.join(", ")
         );
     }
@@ -349,33 +322,15 @@ fn gather_statements(
             .filter(|&g| inputs.is_node[g])
             .map(|g| inputs.names[g].as_ref())
             .collect();
-        match data.terms()? {
-            Some(terms) => {
-                let (mapped, unmapped) = terms.map_labels(node_names.iter().copied());
-                if !unmapped.is_empty() {
-                    info!(
-                        "{} type(s) match no Cell Ontology term (add them to --label-cl): {}",
-                        unmapped.len(),
-                        unmapped.join(", ")
-                    );
-                }
-                let cl = prior::from_ontology(terms, &mapped);
-                info!(
-                    "Cell Ontology ({}): {} of {} types matched, {} develops-from statement(s)",
-                    terms.release.as_deref().unwrap_or("release unknown"),
-                    mapped.len(),
-                    node_names.len(),
-                    cl.len()
-                );
-                layers.push(cl);
-            }
-            None => warn!("no Cell Ontology at hand; the prior comes from precedence files alone"),
+        let terms = data.terms()?;
+        if terms.is_none() {
+            warn!("no Cell Ontology at hand; the prior comes from precedence files alone");
         }
-        for (layer, path) in data.search.user_and_project_files(PRECEDENCE) {
-            let st = prior::read_layer(&path, layer)?;
-            info!("{layer} {}: {} statement(s)", path.display(), st.len());
-            layers.push(st);
+        let (standing, problems) = prior::standing_layers(terms, &node_names, &data.search);
+        if let Some(e) = problems.into_iter().next() {
+            return Err(e);
         }
+        layers = standing;
     }
     if let Some(p) = args.prior.as_deref() {
         let text = std::fs::read_to_string(p).with_context(|| format!("reading --prior {p}"))?;
@@ -412,7 +367,7 @@ fn report_prior(inputs: &Inputs, prior: &Prior) {
 
 /// PAGA connectivity over all types, verdicts on the direct edges, and
 /// candidate pairs the prior does not order.
-fn check(inputs: &Inputs, nb: &Neighbours, prior: Prior, params: &Params) -> Trajectory {
+fn check(inputs: &Inputs, nb: &Neighbours, prior: Prior, min_connectivity: f32) -> Trajectory {
     let conn = connectivity(nb, &inputs.group, inputs.names.len());
     let n = inputs.names.len();
     let edges = prior
@@ -421,7 +376,7 @@ fn check(inputs: &Inputs, nb: &Neighbours, prior: Prior, params: &Params) -> Tra
         .map(|e| EdgeCheck {
             from: e.from,
             to: e.to,
-            verdict: if conn[(e.from, e.to)] as f32 >= params.min_connectivity {
+            verdict: if conn[(e.from, e.to)] as f32 >= min_connectivity {
                 Verdict::Supported
             } else {
                 Verdict::Unsupported
@@ -435,7 +390,7 @@ fn check(inputs: &Inputs, nb: &Neighbours, prior: Prior, params: &Params) -> Tra
             inputs.is_node[a]
                 && inputs.is_node[b]
                 && !prior.related(a, b)
-                && conn[(a, b)] as f32 >= params.min_connectivity
+                && conn[(a, b)] as f32 >= min_connectivity
         })
         .collect();
     candidates.sort_by(|&p, &q| conn[q].total_cmp(&conn[p]));
@@ -459,12 +414,18 @@ fn report_check(inputs: &Inputs, t: &Trajectory) {
         t.edges.len(),
         t.candidates.len()
     );
-    for e in t.edges.iter().filter(|e| e.verdict != Verdict::Supported) {
+    for e in &t.edges {
+        let order = if e.order_agreement.is_finite() {
+            format!(", order agreement {:.2}", e.order_agreement)
+        } else {
+            String::new()
+        };
         info!(
-            "  unsupported: {} → {} (connectivity {:.3})",
+            "  {} → {}: connectivity {:.3} ({}){order}",
             inputs.names[e.from],
             inputs.names[e.to],
-            t.connectivity[(e.from, e.to)]
+            t.connectivity[(e.from, e.to)],
+            e.verdict.as_str()
         );
     }
     for &(a, b) in t.candidates.iter().take(10) {
@@ -479,24 +440,22 @@ fn report_check(inputs: &Inputs, t: &Trajectory) {
 
 /// Diffusion pseudotime from each component's roots (the root types'
 /// medoids), scaled to [0, 1] per component, and the lineages.
-fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, params: &Params) -> Result<Ordering> {
-    let map = DiffusionMap::new(nb, params.n_dcs)?;
+fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, n_dcs: usize) -> Result<Ordering> {
+    let map = DiffusionMap::new(nb, n_dcs)?;
     let n = inputs.cells.len();
     // Distance to the nearest root of each component.
     let mut dist: Vec<Vec<f64>> = Vec::with_capacity(prior.roots.len());
     for (c, roots) in prior.roots.iter().enumerate() {
-        let mut best = vec![f64::INFINITY; n];
+        let mut cells = Vec::with_capacity(roots.len());
         for &g in roots {
             let r = map.medoid(&inputs.cells_of[g]).context("no root cell")?;
             info!(
                 "component {c}: root {} is the medoid of {}",
                 inputs.cells[r], inputs.names[g]
             );
-            for (i, b) in best.iter_mut().enumerate() {
-                *b = b.min(map.distance(r, i));
-            }
+            cells.push(r);
         }
-        dist.push(best);
+        dist.push(map.distances_from(&cells));
     }
     // A node type's cell belongs to its type's component; any other cell to
     // the component whose root is nearest.
@@ -602,16 +561,6 @@ fn report_order(inputs: &Inputs, t: &Trajectory) {
             inputs.cells_of[g].len()
         );
     }
-    for e in &t.edges {
-        info!(
-            "  {} → {}: connectivity {:.3} ({}), order agreement {:.2}",
-            inputs.names[e.from],
-            inputs.names[e.to],
-            t.connectivity[(e.from, e.to)],
-            e.verdict.as_str(),
-            e.order_agreement
-        );
-    }
     let paths: Vec<String> = o
         .lineages
         .iter()
@@ -626,11 +575,7 @@ fn report_order(inputs: &Inputs, t: &Trajectory) {
 }
 
 /// The outputs, keyed by their manifest slot.
-pub(crate) fn write(
-    inputs: &Inputs,
-    t: &Trajectory,
-    out: &str,
-) -> Result<BTreeMap<&'static str, String>> {
+fn write(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<BTreeMap<&'static str, String>> {
     let mut written = BTreeMap::new();
     let prior_path = format!("{out}.trajectory_prior.tsv");
     prior::write_tsv(&prior_path, &inputs.names, &t.prior)?;
@@ -734,10 +679,10 @@ fn record(
     loaded: &Loaded,
     manifest_out: &std::path::Path,
     written: &BTreeMap<&'static str, String>,
-    settings: impl FnOnce(&std::path::Path) -> serde_json::Value,
+    args: &TrajectoryArgs,
 ) -> Result<()> {
     let mut copy = loaded.copy_to(manifest_out.to_path_buf())?;
-    let settings = settings(&copy.dir);
+    let settings = settings(args, &copy.dir);
     let rel = |k: &str| written.get(k).map(|p| rel_to_manifest(&copy.dir, p));
     let t = &mut copy.manifest.trajectory;
     t.prior = rel("prior");

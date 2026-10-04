@@ -69,24 +69,20 @@ fn drain_own_log() -> Vec<String> {
 /// The TUI on the manifest `lupin trajectory` just wrote, opening on the
 /// order view with its figures.
 pub fn run_on_manifest(manifest: &std::path::Path, graphics: Graphics) -> Result<()> {
-    use clap::{Parser, ValueEnum};
+    use clap::Parser;
     #[derive(Parser)]
     struct Annotate {
         #[command(flatten)]
         args: AnnotateCliArgs,
     }
-    let graphics = graphics
-        .to_possible_value()
-        .expect("every variant is named");
-    let a = Annotate::try_parse_from([
+    let mut a = Annotate::try_parse_from([
         "lupin annotate",
         "--from",
         &manifest.to_string_lossy(),
         "--tui",
-        "--graphics",
-        graphics.get_name(),
     ])
     .context("building the TUI's arguments")?;
+    a.args.graphics = graphics;
     run(&a.args, true)
 }
 
@@ -112,6 +108,8 @@ pub fn run(args: &AnnotateCliArgs, start_in_order: bool) -> Result<()> {
     if args.markers.is_empty() {
         args.markers = match loaded.manifest.annotate.markers.as_deref() {
             Some(rel) => resolve(&loaded.dir, rel).into_boxed_str(),
+            // The order view needs no marker panel: open on the run's types.
+            None if start_in_order => Default::default(),
             None => {
                 let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
                 let n = index.as_deref().map_or(0, GeneRows::n_genes);
@@ -132,7 +130,11 @@ pub fn run(args: &AnnotateCliArgs, start_in_order: bool) -> Result<()> {
     }
 
     eprintln!("lupin: placing the panel on the Cell Ontology…");
-    let panel = crate::annotate::markers::read_panel(&args.markers)?;
+    let panel = if args.markers.is_empty() {
+        Vec::new()
+    } else {
+        crate::annotate::markers::read_panel(&args.markers)?
+    };
     let data = crate::manifest::ontology::load(
         Some(&loaded.dir),
         args.obo.as_deref(),
@@ -146,7 +148,9 @@ pub fn run(args: &AnnotateCliArgs, start_in_order: bool) -> Result<()> {
     let target = annotated_path(&loaded.file, &args.out);
     let mut app = App::new(args, loaded.file.clone(), target.clone(), tree);
     app.fixed_clusters = loaded.manifest.cluster.clusters.is_some();
-    app.original = round::panel_sets(&app.args.markers)?;
+    if !app.args.markers.is_empty() {
+        app.original = round::panel_sets(&app.args.markers)?;
+    }
     if let Some(cl) = &terms {
         app.panel_ancestry = ontology::type_ancestry(cl, &app.tree);
     }

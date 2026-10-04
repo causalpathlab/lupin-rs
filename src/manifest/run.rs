@@ -561,21 +561,6 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
     canon(a) == canon(b)
 }
 
-/// A cell-coordinates table: the cell names (the parquet's row labels, in
-/// order) and each column by name.
-pub type CellCoords = (Vec<Box<str>>, rustc_hash::FxHashMap<String, Vec<f32>>);
-
-/// The cells × columns table at `path` (a `senna layout` output), by column.
-pub fn read_cell_coords(path: &str) -> anyhow::Result<CellCoords> {
-    let MatWithNames { rows, cols, mat } = Mat::from_parquet(path)?;
-    let by_name = cols
-        .iter()
-        .enumerate()
-        .map(|(j, name)| (name.to_string(), mat.column(j).iter().copied().collect()))
-        .collect();
-    Ok((rows, by_name))
-}
-
 /// Resolve a manifest-relative path against the manifest's directory.
 /// Absolute paths pass through.
 #[must_use]

@@ -7,6 +7,7 @@
 //! types and reduced to the direct edges, which must form a DAG.
 
 use crate::annotate::celltype_tree::ClTerms;
+use crate::manifest::data_files::{SearchPath, PRECEDENCE};
 use anyhow::{bail, ensure, Context, Result};
 use legume_numeric::matrix::graph::{connected_components, AdjListGraph};
 use log::info;
@@ -162,10 +163,10 @@ pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Resu
             continue;
         }
         let mut fields: Vec<&str> = line.split('\t').map(str::trim).collect();
-        if fields.first() == Some(&"from")
-            && fields
-                .get(2)
-                .is_some_and(|r| r.eq_ignore_ascii_case("relation"))
+        // A header row: `from<TAB>to<TAB>…`.
+        if fields.len() >= 2
+            && fields[0].eq_ignore_ascii_case("from")
+            && fields[1].eq_ignore_ascii_case("to")
         {
             continue;
         }
@@ -206,6 +207,48 @@ pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Resu
         });
     }
     Ok(out)
+}
+
+/// The standing statements about `names`: the Cell Ontology's (when `terms`
+/// is given), then the user's and the project's `precedence.tsv` along
+/// `search`. A precedence file that cannot be read is returned beside the
+/// layers that could, for the caller to stop on or to show.
+pub(crate) fn standing_layers(
+    terms: Option<&ClTerms>,
+    names: &[&str],
+    search: &SearchPath,
+) -> (Vec<Vec<Statement>>, Vec<anyhow::Error>) {
+    let mut layers = Vec::new();
+    if let Some(terms) = terms {
+        let (mapped, unmapped) = terms.map_labels(names.iter().copied());
+        if !unmapped.is_empty() {
+            log::info!(
+                "{} type(s) match no Cell Ontology term (add them to --label-cl): {}",
+                unmapped.len(),
+                unmapped.join(", ")
+            );
+        }
+        let cl = from_ontology(terms, &mapped);
+        log::info!(
+            "Cell Ontology ({}): {} of {} types matched, {} develops-from statement(s)",
+            terms.release.as_deref().unwrap_or("release unknown"),
+            mapped.len(),
+            names.len(),
+            cl.len()
+        );
+        layers.push(cl);
+    }
+    let mut problems = Vec::new();
+    for (layer, path) in search.user_and_project_files(PRECEDENCE) {
+        match read_layer(&path, layer) {
+            Ok(st) => {
+                log::info!("{layer} {}: {} statement(s)", path.display(), st.len());
+                layers.push(st);
+            }
+            Err(e) => problems.push(e),
+        }
+    }
+    (layers, problems)
 }
 
 /// The statements of a user- or project-layer `precedence.tsv` at `path`

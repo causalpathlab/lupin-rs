@@ -216,13 +216,23 @@ impl DiffusionMap {
             .map(|(c, _)| c)
     }
 
+    /// Each cell's DPT distance to the nearest of `roots`.
+    pub(crate) fn distances_from(&self, roots: &[usize]) -> Vec<f64> {
+        (0..self.coords.nrows())
+            .map(|c| {
+                roots
+                    .iter()
+                    .map(|&r| self.distance(r, c))
+                    .fold(f64::INFINITY, f64::min)
+            })
+            .collect()
+    }
+
     /// Pseudotime from `root`: DPT distance divided by its largest finite
     /// value, as scanpy scales it.
     #[cfg(test)]
     pub(crate) fn pseudotime(&self, root: usize) -> Vec<f32> {
-        let d: Vec<f64> = (0..self.coords.nrows())
-            .map(|c| self.distance(root, c))
-            .collect();
+        let d = self.distances_from(&[root]);
         let top = d
             .iter()
             .copied()

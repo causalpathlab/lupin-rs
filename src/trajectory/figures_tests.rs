@@ -64,13 +64,16 @@ fn phate_is_drawn_when_senna_made_one() {
     )
     .unwrap();
     assert_eq!(
-        pick_layout(&m),
-        (Some("umap".into()), Some("r.umap.parquet".into()))
+        layouts(&m),
+        vec![(Some("umap".into()), "r.umap.parquet".to_string())]
     );
     m.layout.extra["methods"]["phate"] = serde_json::json!({"cell_coords": "r.phate.parquet"});
     assert_eq!(
-        pick_layout(&m),
-        (Some("phate".into()), Some("r.phate.parquet".into()))
+        layouts(&m),
+        vec![
+            (Some("phate".into()), "r.phate.parquet".to_string()),
+            (Some("umap".into()), "r.umap.parquet".to_string())
+        ]
     );
     let mut t = data();
     t.layout_method = Some("phate".into());
@@ -94,9 +97,8 @@ fn diffusion_pairs_cycle_past_the_trivial_component() {
 
 #[test]
 fn export_writes_svg_and_pdf_past_existing_files() {
-    let dir = std::env::temp_dir().join(format!("lupin-figures-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
     let mut t = data();
     t.manifest = dir.join("x.senna.json");
     let first = t.export(Panel::Order).unwrap();
@@ -104,5 +106,4 @@ fn export_writes_svg_and_pdf_past_existing_files() {
     assert!(first.files.iter().all(|f| f.is_file()), "{:?}", first.files);
     let second = t.export(Panel::Order).unwrap();
     assert_eq!(second.base, dir.join("x.trajectory.order-2"));
-    std::fs::remove_dir_all(dir).unwrap();
 }

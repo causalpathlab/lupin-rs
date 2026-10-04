@@ -1,8 +1,8 @@
 //! What the TUI exported: a log of each figure set (`.svg` + `.pdf` sharing a
-//! base name) in `.lupin-view/saved.json` in the directory lupin runs from, in
-//! the gallery format `senna view` keeps, plus what lupin needs to trace a
-//! figure back and to check it against the files on disk
-//! (`docs/trajectory-plan.md` §6). The runs' own directories are not touched.
+//! base name) in `.lupin-view/saved.json` in the directory lupin runs from,
+//! with what lupin needs to trace a figure back and to check it against the
+//! files on disk (`docs/trajectory-plan.md` §6). The runs' own directories
+//! are not touched.
 
 use crate::manifest::data_files::absolute;
 use anyhow::{ensure, Context, Result};
@@ -35,7 +35,7 @@ impl FileRecord {
     pub fn of(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         Ok(Self {
-            path: path.to_path_buf(),
+            path: absolute(path),
             size: bytes.len() as u64,
             mtime: std::fs::metadata(path).map_or(0, |m| mtime_of(&m)),
             hash: hex(&Sha256::digest(&bytes)),
@@ -63,8 +63,7 @@ fn mtime_of(m: &std::fs::Metadata) -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// One export: the PDF's path (as senna's gallery keys entries), what and
-/// when, then lupin's trace.
+/// One export: the PDF's path, what and when, and its trace.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
     /// The PDF, absolute.
@@ -73,9 +72,6 @@ pub struct Entry {
     pub what: String,
     /// Seconds since the Unix epoch.
     pub when: u64,
-    /// Kept for senna's gallery format; lupin draws from the SVG instead.
-    #[serde(default)]
-    pub thumb: String,
     /// The figure (`layout`, `diffusion_dc1_dc2`, …).
     pub panel: String,
     /// The manifest the figure was drawn from.
@@ -192,7 +188,6 @@ impl Gallery {
             path: absolute(pdf),
             what: what.into(),
             when: now(),
-            thumb: String::new(),
             panel: panel.into(),
             manifest: absolute(manifest),
             files: records,
@@ -256,10 +251,20 @@ impl Gallery {
         out
     }
 
-    /// Take an entry off the list, deleting its files when `delete`.
-    pub fn remove(&mut self, index: usize, delete: bool) -> Result<()> {
+    /// The entry for the PDF `pdf`, after reloading the log: another viewer
+    /// may have changed it since the row on screen was drawn.
+    fn find(&mut self, pdf: &Path) -> Result<usize> {
         self.reload();
-        ensure!(index < self.entries.len(), "no such export");
+        self.entries
+            .iter()
+            .position(|e| e.path == pdf)
+            .with_context(|| format!("{} is no longer listed", pdf.display()))
+    }
+
+    /// Take the export of `pdf` off the list, deleting its files when
+    /// `delete`.
+    pub fn remove(&mut self, pdf: &Path, delete: bool) -> Result<()> {
+        let index = self.find(pdf)?;
         if delete {
             // Only the files that were exported, unchanged, are deleted.
             verify_set(&self.entries[index])?;
@@ -274,11 +279,11 @@ impl Gallery {
         self.save()
     }
 
-    /// Move an entry's set to a new base name (no extension); nothing is
-    /// replaced.
-    pub fn relocate(&mut self, index: usize, new_base: &Path) -> Result<()> {
-        self.reload();
-        let e = self.entries.get_mut(index).context("no such export")?;
+    /// Move the export of `pdf` to a new base name (no extension); nothing is
+    /// replaced, and a failed move puts back the files already moved.
+    pub fn relocate(&mut self, pdf: &Path, new_base: &Path) -> Result<()> {
+        let index = self.find(pdf)?;
+        let e = &mut self.entries[index];
         verify_set(e)?;
         let targets: Vec<PathBuf> = e
             .files
@@ -294,9 +299,16 @@ impl Gallery {
         for t in &targets {
             ensure!(!t.exists(), "{} exists", t.display());
         }
+        for (k, (f, t)) in e.files.iter().zip(&targets).enumerate() {
+            if let Err(err) = std::fs::rename(&f.path, t) {
+                for (g, u) in e.files.iter().zip(&targets).take(k) {
+                    let _ = std::fs::rename(u, &g.path);
+                }
+                return Err(err)
+                    .with_context(|| format!("moving {} to {}", f.path.display(), t.display()));
+            }
+        }
         for (f, t) in e.files.iter_mut().zip(&targets) {
-            std::fs::rename(&f.path, t)
-                .with_context(|| format!("moving {} to {}", f.path.display(), t.display()))?;
             f.path = absolute(t);
             if t.extension().is_some_and(|x| x == "pdf") {
                 e.path = absolute(t);

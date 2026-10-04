@@ -59,7 +59,9 @@ impl Exports {
 
     /// Re-read the gallery and check every entry against its files.
     pub fn refresh(&mut self) {
+        let set_aside = self.gallery.set_aside.take();
         self.gallery = Gallery::here();
+        self.gallery.set_aside = self.gallery.set_aside.take().or(set_aside);
         self.statuses = self.gallery.check();
         self.not_listed = self.gallery.not_listed(&self.prefix);
         self.sel = self.sel.min(self.rows().saturating_sub(1));
@@ -70,13 +72,13 @@ impl Exports {
         self.gallery.entries.len() + self.not_listed.len()
     }
 
-    /// The selected row as an index into the gallery's entries.
-    fn listed_index(&self) -> Result<usize> {
-        anyhow::ensure!(
-            self.sel < self.gallery.entries.len(),
-            "the selected row is not a listed export"
-        );
-        Ok(self.sel)
+    /// The selected listed export's PDF.
+    fn selected_pdf(&self) -> Result<PathBuf> {
+        self.gallery
+            .entries
+            .get(self.sel)
+            .map(|e| e.path.clone())
+            .context("the selected row is not a listed export")
     }
 
     /// Add the selected not-listed file set to the gallery, as a figure of
@@ -103,9 +105,9 @@ impl Exports {
 
     /// Take the selected entry off the list, deleting its files when `delete`.
     pub fn remove(&mut self, delete: bool) -> Result<String> {
-        let i = self.listed_index()?;
-        let name = self.gallery.entries[i].path.display().to_string();
-        self.gallery.remove(i, delete)?;
+        let pdf = self.selected_pdf()?;
+        self.gallery.remove(&pdf, delete)?;
+        let name = pdf.display();
         self.refresh();
         Ok(if delete {
             format!("deleted {name}")
@@ -116,8 +118,8 @@ impl Exports {
 
     /// Move the selected entry's files to `new_base` (no extension).
     pub fn relocate(&mut self, new_base: &str) -> Result<String> {
-        let i = self.listed_index()?;
-        self.gallery.relocate(i, Path::new(new_base))?;
+        let pdf = self.selected_pdf()?;
+        self.gallery.relocate(&pdf, Path::new(new_base))?;
         self.refresh();
         Ok(format!("moved to {new_base}.svg and .pdf"))
     }

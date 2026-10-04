@@ -6,7 +6,7 @@
 //! figure pane is where they are shown and exported.
 
 use super::edges::{self, EdgeRow, Verdict};
-use crate::manifest::run::{derive_out_prefix, read_cell_coords, resolve, RunManifest};
+use crate::manifest::run::{derive_out_prefix, resolve, RunManifest};
 use anyhow::{Context, Result};
 use legume_numeric::matrix::dense_mat_io::Mat;
 use legume_numeric::matrix::parquet::read_table_columns;
@@ -133,11 +133,16 @@ impl TrajectoryData {
             }
             None => None,
         };
-        let (layout_method, coords) = pick_layout(manifest);
-        let layout = match coords {
-            Some(rel) => Some(read_layout(&at(&rel), &index)?),
-            None => None,
-        };
+        let (mut layout_method, mut layout) = (None, None);
+        for (method, rel) in layouts(manifest) {
+            match read_layout(&at(&rel), &index) {
+                Ok(l) => {
+                    (layout_method, layout) = (method, Some(l));
+                    break;
+                }
+                Err(e) => log::warn!("layout {rel}: {e:#}"),
+            }
+        }
         let edges = match t.edges.as_deref() {
             Some(rel) => edges::read(&at(rel))?,
             None => Vec::new(),
@@ -234,15 +239,17 @@ impl TrajectoryData {
         let base = free_base(&format!("{}.trajectory.{}", self.prefix(), panel.slug()));
         let w = (EXPORT_WIDTH_IN * EXPORT_DPI) as u32;
         let fig = self.figure(panel, w, w * 3 / 4)?;
-        let files = write(
-            &fig,
-            &base.to_string_lossy(),
-            FigureFormats {
-                svg: true,
-                png: false,
-                pdf: true,
-            },
-        )?;
+        let b = base.to_string_lossy();
+        let formats = FigureFormats {
+            svg: true,
+            png: false,
+            pdf: true,
+        };
+        legume_plot::write_figure(&fig.svg, fig.w, fig.h, &b, formats)?;
+        let files = vec![
+            PathBuf::from(format!("{b}.svg")),
+            PathBuf::from(format!("{b}.pdf")),
+        ];
         Ok(Export {
             base,
             files,
@@ -431,12 +438,16 @@ impl TrajectoryData {
     /// Connectivity as a Hinton diagram (box area ∝ connectivity), the types
     /// in pseudotime order; pairs the prior orders are in ink, the rest grey.
     fn connectivity_figure(&self, w: u32, h: u32) -> Figure {
-        let nodes: Vec<Box<str>> = self
-            .type_order()
-            .into_iter()
-            .map(|r| r.name)
-            .filter(|t| self.edges.iter().any(|e| e.a == *t || e.b == *t))
-            .collect();
+        // The types in pseudotime order, then any no root reaches.
+        let mut nodes: Vec<Box<str>> = self.type_order().into_iter().map(|r| r.name).collect();
+        for e in &self.edges {
+            for t in [&e.a, &e.b] {
+                if !nodes.contains(t) {
+                    nodes.push(t.clone());
+                }
+            }
+        }
+        nodes.retain(|t| self.edges.iter().any(|e| e.a == *t || e.b == *t));
         let n = nodes.len().max(1);
         let at = |t: &str| nodes.iter().position(|x| x.as_ref() == t);
         let mut mat = vec![0.0f32; n * n];
@@ -492,47 +503,40 @@ fn bounds_of(x: &[f32], y: &[f32], idx: &[usize]) -> DataBounds {
     DataBounds::from_minmax(x0, x1, y0, y1)
 }
 
-/// The layout to draw pseudotime on: senna's PHATE (`senna layout phate`,
-/// recorded under `layout.methods.phate`) when the run has one, as PHATE is
-/// built to show trajectories; else the run's current layout. Returns the
-/// method's name, when known, and the table's manifest-relative path.
-fn pick_layout(manifest: &RunManifest) -> (Option<String>, Option<String>) {
-    let methods = manifest.layout.extra.get("methods");
-    let coords_of = |m: &str| {
-        methods?
-            .get(m)?
-            .get("cell_coords")?
-            .as_str()
-            .map(str::to_string)
-    };
-    if let Some(p) = coords_of("phate") {
-        return (Some("phate".into()), Some(p));
-    }
-    let current = manifest
-        .layout
+/// The layouts to draw pseudotime on, best first: senna's PHATE (`senna
+/// layout phate`, recorded under `layout.methods.phate`), as PHATE is built
+/// to show trajectories, then the run's current layout. Each with its
+/// method's name, when known, and its manifest-relative path.
+fn layouts(manifest: &RunManifest) -> Vec<(Option<String>, String)> {
+    let l = &manifest.layout;
+    let phate = l
         .extra
-        .get("current")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    (current, manifest.layout.cell_coords.clone())
+        .get("methods")
+        .and_then(|m| m.get("phate")?.get("cell_coords")?.as_str());
+    let current = l.extra.get("current").and_then(|v| v.as_str());
+    let mut out: Vec<(Option<String>, String)> = Vec::new();
+    if let Some(p) = phate {
+        out.push((Some("phate".into()), p.into()));
+    }
+    if let Some(p) = l.cell_coords.as_deref().filter(|p| Some(*p) != phate) {
+        out.push((current.map(str::to_string), p.into()));
+    }
+    out
 }
 
 /// The layout at `path` as `(x, y)` per cell of `index`, NaN for a cell the
 /// layout lacks.
 fn read_layout(path: &str, index: &FxHashMap<&str, usize>) -> Result<(Vec<f32>, Vec<f32>)> {
-    let (names, cols) = read_cell_coords(path)?;
-    let (Some(x), Some(y)) = (cols.get("x"), cols.get("y")) else {
+    let t = Mat::from_parquet(path)?;
+    let col = |name: &str| t.cols.iter().position(|c| c.as_ref() == name);
+    let (Some(x), Some(y)) = (col("x"), col("y")) else {
         anyhow::bail!("{path} has no x and y columns");
     };
-    let mut lx = vec![f32::NAN; index.len()];
-    let mut ly = vec![f32::NAN; index.len()];
-    for (i, name) in names.iter().enumerate() {
-        if let Some(&j) = index.get(name.as_ref()) {
-            lx[j] = x[i];
-            ly[j] = y[i];
-        }
-    }
-    Ok((lx, ly))
+    let m = aligned(&t.rows, &t.mat, index, index.len());
+    Ok((
+        m.column(x).iter().copied().collect(),
+        m.column(y).iter().copied().collect(),
+    ))
 }
 
 /// `mat`'s rows reordered to `cells` by name; a cell the matrix lacks is NaN.
@@ -564,11 +568,14 @@ fn free_base(base: &str) -> PathBuf {
             .iter()
             .any(|ext| Path::new(&format!("{b}.{ext}")).exists())
     };
+    if !taken(base) {
+        return PathBuf::from(base);
+    }
     (2..)
         .map(|k| format!("{base}-{k}"))
         .find(|b| !taken(b))
-        .filter(|_| taken(base))
-        .map_or_else(|| PathBuf::from(base), PathBuf::from)
+        .map(PathBuf::from)
+        .expect("some suffix is free")
 }
 
 /// `fig` rendered to pixels, through legume-plot's renderer (which writes a
@@ -584,21 +591,6 @@ pub(crate) fn render(fig: &Figure) -> Result<image::RgbaImage> {
         .with_context(|| format!("reading {}", tmp.path().display()))?
         .to_rgba8();
     Ok(img)
-}
-
-/// Write `fig` as `{base}.svg` / `.png` / `.pdf` per `formats`; returns the
-/// files written.
-pub(crate) fn write(fig: &Figure, base: &str, formats: FigureFormats) -> Result<Vec<PathBuf>> {
-    legume_plot::write_figure(&fig.svg, fig.w, fig.h, base, formats)?;
-    Ok([
-        ("svg", formats.svg),
-        ("png", formats.png),
-        ("pdf", formats.pdf),
-    ]
-    .into_iter()
-    .filter(|&(_, on)| on)
-    .map(|(ext, _)| PathBuf::from(format!("{base}.{ext}")))
-    .collect())
 }
 
 #[cfg(test)]

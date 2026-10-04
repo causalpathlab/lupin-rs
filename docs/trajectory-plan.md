@@ -245,38 +245,32 @@ Images are drawn as senna view draws them, so both viewers behave alike:
 {auto,kitty,sixel,iterm2,blocks}`, querying the terminal on `auto` and falling
 back to half-blocks.
 
-**Export.** `p` on a panel writes it as a figure through legume-plot's
-`write_figure` as SVG and PDF, 7 in wide at 200 dpi. An export
-is a set of files sharing one base name, handled as a unit: the default name
-`{out}.trajectory.{panel}` moves to `-2`, `-3` … while any file of the set
-exists, and a typed name with any existing file needs a second Enter.
+**Export.** `p` on a panel writes it through legume-plot's `write_figure` as
+SVG and PDF, 7 in wide at 200 dpi. An export is a set of files sharing one
+base name, handled as a unit: the name `{out}.trajectory.{panel}` moves to
+`-2`, `-3` … while any file of the set exists.
 
-**What was exported.** Each export is listed in `./.lupin-view/saved.json`
-in the directory lupin runs from, with a thumbnail in `./.lupin-view/thumbs/`,
-in senna view's gallery format (`path`, `what`, `when`, `thumb`; newest first;
-an existing path replaces its entry; reloaded from disk before every change).
-The list is written to a temporary file and renamed into place, and a list
-that cannot be read is set aside as `saved.json.bad` and reported, never
-treated as empty, so an interrupted write cannot wipe the history.
-lupin adds what senna's record leaves out, so a figure can be traced back: the
-panel, the manifest it came from, the root, the diffusion pair, a hash of
-`{out}.trajectory_prior.tsv`, and each exported file's size and content hash.
-A strip in the TUI (`f`) shows the list with thumbnails; an entry can be
-renamed or moved, removed from the list, or removed with its files, and moving
-or removing an entry moves or removes its whole set. A failed log write never
-fails the export.
+**What was exported.** Each export is listed in `./.lupin-view/saved.json` in
+the directory lupin runs from (newest first; an existing PDF path replaces
+its entry; reloaded from disk before every change, and a change finds its
+entry by path, not by row). The list is written to a temporary file and
+renamed into place, and a list that cannot be read is set aside as
+`saved.json.bad` and reported, never treated as empty. Each entry records the
+panel, the manifest it came from, and each file's absolute path, size,
+modification time and content hash. A strip in the TUI (`f`) shows the list;
+an entry can be moved (`m`; nothing is replaced, and a failed move is undone),
+removed from the list (`d`), or removed with its files (`D`). Files are moved
+or deleted only when they are still the export that was logged: beside the
+PDF, with the same base name, and unchanged. A failed log write never fails
+the export.
 
 **Refresh.** `R` re-reads the list and checks every entry against the files
-on disk: `ok`, `changed since export` (content hash differs) or `missing`.
-A file whose size and modification time match the record is taken as
-unchanged without hashing; otherwise it is hashed, so a touched file with the
-same bytes stays `ok`. Missing
-entries stay listed, marked, until removed, instead of disappearing silently;
-a lost thumbnail is redrawn from the set's SVG. Figures in the output
-directory that follow the `{out}.trajectory.{panel}` names but are not on the
-list are shown as `not listed`; Enter on one adds it. The same check runs
-when the TUI opens. (`e` stays the annotation export it is today; `p`, `R`,
-`f` and `,`/`.` are free in lupin's TUI.)
+on disk: `ok`, `changed since export` or `missing`. A file whose size and
+modification time match the record is taken as unchanged without hashing;
+otherwise it is hashed, so a touched file with the same bytes stays `ok`.
+Missing entries stay listed, marked, until removed. Figures beside the run
+named `{out}.trajectory.{panel}` but not on the list are shown as
+`not listed`; Enter on one adds it. The same check runs when the TUI opens.
 
 ## 7. Outputs and the manifest
 
