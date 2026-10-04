@@ -50,25 +50,34 @@ impl OrderView {
             let (mapped, _) = cl.map_labels(names.iter().map(AsRef::as_ref));
             layers.push(prior::from_ontology(cl, &mapped));
         }
+        let mut problems = Vec::new();
         for (layer, path) in search.user_and_project_files(PRECEDENCE) {
             let source = if layer == "user" {
                 Source::User
             } else {
                 Source::Project
             };
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(st) = prior::parse_statements(&text, source, &path.display().to_string())
-                {
-                    layers.push(st);
-                }
+            let read = std::fs::read_to_string(&path)
+                .map_err(|e| format!("reading {}: {e}", path.display()))
+                .and_then(|text| {
+                    prior::parse_statements(&text, source, &path.display().to_string())
+                        .map_err(|e| format!("{e}"))
+                });
+            match read {
+                Ok(st) => layers.push(st),
+                Err(e) => problems.push(e),
             }
         }
         let statements = prior::combine(&layers);
         let is_node = vec![true; names.len()];
-        let (prior, error) = match prior::build(&names, &is_node, statements.clone()) {
+        let (prior, mut error) = match prior::build(&names, &is_node, statements.clone()) {
             Ok(p) => (Some(p), None),
             Err(e) => (None, Some(e.to_string())),
         };
+        if !problems.is_empty() {
+            let text = problems.join("; ");
+            error = Some(error.map_or(text.clone(), |e| format!("{e}; {text}")));
+        }
         let verdicts = manifests
             .iter()
             .find_map(|m| edges_table(m))
@@ -112,10 +121,29 @@ impl OrderView {
                     },
                     |s| s.as_str().to_string(),
                 );
-                let v = self.verdicts.get(&(from.clone(), to.clone()));
+                let v = self.verdict(&from, &to);
                 (from, to, source, v)
             })
             .collect()
+    }
+
+    /// A pair's verdict from the trajectory run, whichever way it was written.
+    pub fn verdict(&self, a: &str, b: &str) -> Option<&Verdict> {
+        self.verdicts
+            .get(&(a.to_string(), b.to_string()))
+            .or_else(|| self.verdicts.get(&(b.to_string(), a.to_string())))
+    }
+
+    /// Pairs the trajectory run found connected but the prior does not order.
+    pub fn candidates(&self) -> Vec<(&str, &str, &Verdict)> {
+        let mut out: Vec<(&str, &str, &Verdict)> = self
+            .verdicts
+            .iter()
+            .filter(|(_, v)| v.verdict == "candidate")
+            .map(|((a, b), v)| (a.as_str(), b.as_str(), v))
+            .collect();
+        out.sort_by(|p, q| q.2.connectivity.total_cmp(&p.2.connectivity));
+        out
     }
 
     /// The `unrelated` statements, which show no edge.

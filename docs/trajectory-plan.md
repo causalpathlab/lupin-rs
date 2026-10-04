@@ -4,9 +4,9 @@
 
 Partly implemented. `lupin trajectory` builds the prior (§3), checks it
 against the kNN graph (§4), orders cells by diffusion pseudotime from the
-prior's roots (§5) and writes its outputs and a `trajectory` manifest section
-(§7). The TUI order view and figures (§6) and `plot --colour-by pseudotime`
-(§7) remain plans. lupin 0.3.0 removed the previous trajectory stack
+prior's roots (§5), writes its outputs and a `trajectory` manifest section
+(§7), and with `--tui` opens the order view with its figures and export log
+(§6). `plot --colour-by pseudotime` (§7) remains a plan. lupin 0.3.0 removed the previous trajectory stack
 (`lineage`, `pseudotime`, `dyn-assoc`, `lineage-plot`);
 `dev/trajectory-salvage.md` in the repository records what it did and why it
 went.
@@ -48,7 +48,7 @@ lupin trajectory -f run.senna.json -o out [--prior FILE [--prior-only]] [--root 
                  [--labels FILE] [--label-cl FILE] [--obo FILE]
                  [--knn 15] [--n-dcs 15] [--min-cells 20] [--min-connectivity 0.1]
                  [--check-only]
-                 [--tui] [--graphics auto|kitty|sixel|iterm2|blocks]   (planned)
+                 [--tui] [--graphics auto|kitty|sixel|iterm2|blocks]
 ```
 
 - **Labels** are the given round's `annotate.argmax`, so curation in later
@@ -352,6 +352,6 @@ error, and DPT on a synthetic Y shape and on a disconnected one.
    bench data.
 2. (done) Diffusion pseudotime, lineages, outputs, manifest section; validated
    against phase 0.
-3. TUI order view.
+3. (done) TUI order view, figures and export log.
 4. `plot --colour-by pseudotime` and the edge overlay.
 5. Later: association.

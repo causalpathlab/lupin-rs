@@ -161,7 +161,11 @@ pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Resu
             continue;
         }
         let mut fields: Vec<&str> = line.split('\t').map(str::trim).collect();
-        if n == 0 && fields.first() == Some(&"from") {
+        if fields.first() == Some(&"from")
+            && fields
+                .get(2)
+                .is_some_and(|r| r.eq_ignore_ascii_case("relation"))
+        {
             continue;
         }
         let mut note_from = 3;
@@ -227,6 +231,12 @@ pub(crate) fn root_layer(
     roots: &[&str],
 ) -> Result<Vec<Statement>> {
     let index = index_of(types);
+    let statements: Vec<Statement> = statements
+        .iter()
+        .filter(|s| known(s, &index))
+        .cloned()
+        .collect();
+    let statements = statements.as_slice();
     let adj = adjacency(types.len(), &index, statements);
     let reach = reachability(&adj);
     let mut root_idx = Vec::new();
@@ -250,10 +260,24 @@ pub(crate) fn root_layer(
         }
         root_idx.push(ri);
     }
+    // An explicit `unrelated` between the root and a type stands.
+    let unrelated: BTreeSet<(usize, usize)> = statements
+        .iter()
+        .filter(|s| s.relation == Relation::Unrelated)
+        .map(|s| {
+            let (a, b) = (index[s.from.as_str()], index[s.to.as_str()]);
+            (a.min(b), a.max(b))
+        })
+        .collect();
     let mut out = Vec::new();
     for &ri in &root_idx {
         for t in 0..types.len() {
-            if t != ri && is_node[t] && !reach[ri][t] && !root_idx.contains(&t) {
+            if t != ri
+                && is_node[t]
+                && !reach[ri][t]
+                && !root_idx.contains(&t)
+                && !unrelated.contains(&(ri.min(t), ri.max(t)))
+            {
                 out.push(Statement {
                     from: types[ri].to_string(),
                     to: types[t].to_string(),
@@ -343,8 +367,8 @@ pub(crate) fn build(
     let statements: Vec<Statement> = statements
         .into_iter()
         .filter(|s| {
-            let known = index.contains_key(s.from.as_str()) && index.contains_key(s.to.as_str());
-            if !known {
+            let k = known(s, &index);
+            if !k {
                 info!(
                     "prior statement about a type not in this run is set aside: {} {} {}",
                     s.from,
@@ -352,7 +376,7 @@ pub(crate) fn build(
                     s.to
                 );
             }
-            known
+            k
         })
         .collect();
     let adj = adjacency(n, &index, &statements);
@@ -442,6 +466,11 @@ pub(crate) fn build(
         component,
         roots,
     })
+}
+
+/// Whether both of a statement's types are in the run.
+fn known(s: &Statement, index: &BTreeMap<&str, usize>) -> bool {
+    index.contains_key(s.from.as_str()) && index.contains_key(s.to.as_str())
 }
 
 fn index_of(types: &[Box<str>]) -> BTreeMap<&str, usize> {

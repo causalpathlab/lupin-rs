@@ -179,6 +179,8 @@ pub enum Pending {
         to: String,
         relation: Relation,
     },
+    /// Move the selected export's files to the base name typed.
+    Relocate,
 }
 
 /// A one-line prompt for a decision's reason, prefilled.
@@ -280,6 +282,12 @@ pub struct App {
     pub stale: bool,
     armed: Option<Armed>,
     pub quit: bool,
+    /// The trajectory figures of the manifests on screen, when they have any.
+    pub figures: Option<super::figures::FiguresView>,
+    /// How figures reach the terminal.
+    pub graphics: super::figures::Graphics,
+    /// Open on the order view (`lupin trajectory --tui`).
+    pub start_in_order: bool,
 }
 
 impl App {
@@ -325,6 +333,9 @@ impl App {
             stale: false,
             armed: None,
             quit: false,
+            figures: None,
+            graphics: super::figures::Graphics::default(),
+            start_in_order: false,
         }
     }
 
@@ -1180,6 +1191,14 @@ impl App {
                         };
                         self.reload_order();
                     }
+                    Pending::Relocate => {
+                        self.status = match &mut self.figures {
+                            Some(v) => v
+                                .relocate_selected(&reason)
+                                .unwrap_or_else(|e| format!("could not move: {e:#}")),
+                            None => "no figures".into(),
+                        };
+                    }
                     Pending::Remember { label, id, file } => {
                         self.status = match remember_alias(&file, &label, &id, &reason) {
                             Ok(()) => format!("remembered {label} → {id} in {}", file.display()),
@@ -1502,13 +1521,22 @@ impl App {
 
     /// Switch the tree pane to the order view (which types precede which) and
     /// back.
-    fn toggle_order(&mut self) {
+    pub(super) fn toggle_order(&mut self) {
         if matches!(self.tree_mode, TreeMode::Order(_)) {
             self.tree_mode = TreeMode::Panel;
             return;
         }
         self.tree_marked.clear();
         self.reload_order();
+        if self.figures.is_none() {
+            self.figures = super::figures::FiguresView::load(
+                &[self.target.as_path(), self.source.as_path()],
+                self.graphics,
+            );
+            if let Some(v) = &mut self.figures {
+                v.shown = self.start_in_order;
+            }
+        }
         self.status = "order view: space marks a type, then > states the first precedes the second, - that they are unrelated".into();
     }
 
@@ -1553,8 +1581,12 @@ impl App {
         self.tree_mode = TreeMode::Order(v);
     }
 
-    /// Keys of the order view: move, and `>` / `-` on two marked types.
+    /// Keys of the order view: move, `>` / `-` on two marked types, and the
+    /// figure pane's keys.
     fn order_key(&mut self, code: KeyCode) -> bool {
+        if self.figure_key(code) {
+            return true;
+        }
         let TreeMode::Order(v) = &mut self.tree_mode else {
             return false;
         };
@@ -1591,6 +1623,71 @@ impl App {
             text: String::new(),
             pending: Pending::Precedence { from, to, relation },
         });
+        true
+    }
+
+    /// Keys of the figure pane and its gallery strip; `false` when the key is
+    /// not one of them (or no figures are loaded).
+    fn figure_key(&mut self, code: KeyCode) -> bool {
+        let Some(v) = &mut self.figures else {
+            return code == KeyCode::Char('v')
+                && {
+                    self.status = "no trajectory outputs for the manifests on screen: run `lupin trajectory` first".into();
+                    true
+                };
+        };
+        match code {
+            KeyCode::Char('v') => v.next_panel(),
+            KeyCode::Char('V') => v.shown = false,
+            KeyCode::Char(',') if v.shown => v.step_pair(false),
+            KeyCode::Char('.') if v.shown => v.step_pair(true),
+            KeyCode::Char('p') if v.shown => {
+                self.status = v
+                    .export()
+                    .unwrap_or_else(|e| format!("export failed: {e:#}"));
+            }
+            KeyCode::Char('f') => v.gallery_open = !v.gallery_open,
+            KeyCode::Char('R') => {
+                v.refresh();
+                self.status = format!(
+                    "{} export(s) checked, {} not listed",
+                    v.gallery.entries.len(),
+                    v.not_listed.len()
+                );
+            }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End
+                if v.gallery_open =>
+            {
+                let rows = v.rows();
+                step(&mut v.gallery_sel, rows, code);
+            }
+            KeyCode::Enter if v.gallery_open => {
+                self.status = v.adopt_selected().unwrap_or_else(|e| format!("{e:#}"));
+            }
+            KeyCode::Char('d') if v.gallery_open => {
+                self.status = v
+                    .remove_selected(false)
+                    .unwrap_or_else(|e| format!("{e:#}"));
+            }
+            KeyCode::Char('D') if v.gallery_open => {
+                self.status = v.remove_selected(true).unwrap_or_else(|e| format!("{e:#}"));
+            }
+            KeyCode::Char('m') if v.gallery_open => {
+                if let Some(base) = v.selected_base() {
+                    self.prompt = Some(Prompt {
+                        title: " move the export to (base name, no extension): ".into(),
+                        text: base,
+                        pending: Pending::Relocate,
+                    });
+                }
+            }
+            _ => return false,
+        }
         true
     }
 

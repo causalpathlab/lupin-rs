@@ -92,6 +92,17 @@ pub struct TrajectoryArgs {
         help = "Stop after the prior and its connectivity check; write no pseudotime"
     )]
     pub check_only: bool,
+
+    #[arg(long, help = "Then open the TUI on the order view, with the figures")]
+    pub tui: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = crate::tui::figures::Graphics::Auto,
+        help = "How figures reach the terminal"
+    )]
+    pub graphics: crate::tui::figures::Graphics,
 }
 
 /// Settings a recomputation needs, apart from where the data came from.
@@ -112,12 +123,15 @@ impl Params {
         }
     }
 
-    /// What the manifest records about the run.
-    fn settings(&self, args: &TrajectoryArgs) -> serde_json::Value {
+    /// What the manifest at `dir` records about the run; input files
+    /// manifest-relative, as every path in a manifest is.
+    fn settings(&self, args: &TrajectoryArgs, dir: &std::path::Path) -> serde_json::Value {
+        let rel = |p: &Option<Box<str>>| p.as_deref().map(|p| rel_to_manifest(dir, p));
         serde_json::json!({
             "knn": self.knn, "n_dcs": self.n_dcs, "min_cells": self.min_cells,
             "min_connectivity": self.min_connectivity,
-            "roots": args.root, "prior": args.prior, "prior_only": args.prior_only,
+            "roots": args.root, "prior": rel(&args.prior), "prior_only": args.prior_only,
+            "labels": rel(&args.labels), "obo": rel(&args.obo), "label_cl": rel(&args.label_cl),
         })
     }
 }
@@ -225,6 +239,13 @@ pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
     }
     let prior = prior::build(&inputs.names, &inputs.is_node, prior::combine(&layers))?;
     report_prior(&inputs, &prior);
+    if prior.edges.is_empty() {
+        bail!(
+            "the prior orders no pair of types, so there is nothing to check or to order from: \
+             name a root (--root TYPE), add statements to precedence.tsv or --prior, or map the \
+             types to Cell Ontology terms (--label-cl)"
+        );
+    }
 
     let nb = Neighbours::new(&inputs.geometry, params.knn)?;
     let mut t = check(&inputs, &nb, prior, &params);
@@ -235,12 +256,38 @@ pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
         report_order(&inputs, &t);
     }
     let written = write(&inputs, &t, &args.out)?;
-    record(&loaded, &manifest_out, &written, params.settings(args))?;
+    record(&loaded, &manifest_out, &written, |dir| {
+        params.settings(args, dir)
+    })?;
     info!(
         "wrote {}",
         written.values().cloned().collect::<Vec<_>>().join(", ")
     );
+    if args.tui {
+        open_tui(&manifest_out, args.graphics)?;
+    }
     Ok(())
+}
+
+/// The annotation TUI on the manifest just written, opening on the order view.
+fn open_tui(manifest: &std::path::Path, graphics: crate::tui::figures::Graphics) -> Result<()> {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Annotate {
+        #[command(flatten)]
+        args: crate::annotate_cmd::AnnotateCliArgs,
+    }
+    let a = Annotate::try_parse_from([
+        "lupin annotate",
+        "--from",
+        &manifest.to_string_lossy(),
+        "--tui",
+    ])
+    .context("building the TUI's arguments")?;
+    crate::tui::run_with(&a.args, |app| {
+        app.graphics = graphics;
+        app.start_in_order = true;
+    })
 }
 
 pub(crate) fn load_inputs(
@@ -764,9 +811,10 @@ fn record(
     loaded: &Loaded,
     manifest_out: &std::path::Path,
     written: &BTreeMap<&'static str, String>,
-    settings: serde_json::Value,
+    settings: impl FnOnce(&std::path::Path) -> serde_json::Value,
 ) -> Result<()> {
     let mut copy = loaded.copy_to(manifest_out.to_path_buf())?;
+    let settings = settings(&copy.dir);
     let rel = |k: &str| written.get(k).map(|p| rel_to_manifest(&copy.dir, p));
     let t = &mut copy.manifest.trajectory;
     t.prior = rel("prior");

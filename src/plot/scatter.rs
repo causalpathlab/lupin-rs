@@ -614,12 +614,12 @@ fn parse_palette(s: &str) -> Option<Palette> {
     Palette::from_str(s, true).ok()
 }
 
-type CellCoords = (Vec<Box<str>>, FxHashMap<String, Vec<f32>>);
+pub(crate) type CellCoords = (Vec<Box<str>>, FxHashMap<String, Vec<f32>>);
 
 /// Returns `(cell_names, columns_by_name)`. Cell names are the parquet
 /// row labels (in data column order), needed when matching against an
 /// annotation TSV by cell name.
-fn read_cell_coords(path: &str) -> anyhow::Result<CellCoords> {
+pub(crate) fn read_cell_coords(path: &str) -> anyhow::Result<CellCoords> {
     let MatWithNames { rows, cols, mat } = Mat::from_parquet(path)?;
     let mut by_name: FxHashMap<String, Vec<f32>> = FxHashMap::default();
     for (j, name) in cols.iter().enumerate() {

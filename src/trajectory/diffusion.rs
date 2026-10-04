@@ -202,8 +202,13 @@ impl DiffusionMap {
                     .map(|(a, b)| (a - b) * (a - b))
                     .sum()
             };
-            pool.sort_by(|&a, &b| to_centroid(a).total_cmp(&to_centroid(b)));
-            pool.truncate(MEDOID_POOL);
+            let mut keyed: Vec<(f64, usize)> = pool.iter().map(|&c| (to_centroid(c), c)).collect();
+            keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
+            pool = keyed
+                .into_iter()
+                .take(MEDOID_POOL)
+                .map(|(_, c)| c)
+                .collect();
         }
         pool.iter()
             .map(|&c| (c, pool.iter().map(|&o| self.distance(c, o)).sum::<f64>()))

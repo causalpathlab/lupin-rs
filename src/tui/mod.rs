@@ -8,6 +8,8 @@
 
 mod app;
 mod export;
+pub mod figures;
+mod gallery;
 mod genes;
 mod ontology;
 mod order;
@@ -63,7 +65,14 @@ fn drain_own_log() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Run the TUI on `args`.
 pub fn run(args: &AnnotateCliArgs) -> Result<()> {
+    run_with(args, |_| {})
+}
+
+/// Run the TUI, with `setup` applied to the app once it is loaded (how
+/// `lupin trajectory --tui` opens on the order view).
+pub fn run_with(args: &AnnotateCliArgs, setup: impl FnOnce(&mut App)) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let from = match args.from.as_deref() {
         Some(f) => f.to_string(),
@@ -130,6 +139,11 @@ pub fn run(args: &AnnotateCliArgs) -> Result<()> {
     if target.is_file() {
         let (latest, _) = crate::manifest::rounds::chain_rounds(&target);
         app.open(&latest);
+    }
+    setup(&mut app);
+    if app.start_in_order {
+        app.focus = app::Focus::Tree;
+        app.toggle_order();
     }
 
     let mut terminal = ratatui::init();
