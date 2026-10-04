@@ -20,7 +20,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Log lines kept for the log pane.
 const LOG_KEEP: usize = 1000;
@@ -224,32 +224,72 @@ pub struct Prompt {
 /// A running job's progress: the latest `@progress` line and log line.
 #[derive(Default, Clone)]
 pub struct JobProgress {
-    pub done: f64,
-    pub total: f64,
-    pub stage: String,
+    pub report: Option<crate::progress::Report>,
+    /// The job's time when `report` came.
+    pub reported_at: Duration,
     /// The job's latest log line.
     pub last: String,
 }
 
+/// What the popup shows: the share done and the time left.
+#[derive(Debug, PartialEq)]
+pub struct Estimate {
+    pub fraction: f64,
+    /// `None` while there is no pace to go on yet.
+    pub left: Option<Duration>,
+    /// The current stage has taken longer than its share: `left` is what
+    /// the later stages should take, and this one's end is unknown.
+    pub over: bool,
+}
+
 impl JobProgress {
-    /// The share done, once the job has reported any.
-    pub fn fraction(&self) -> Option<f64> {
-        (self.total > 0.0).then(|| (self.done / self.total).clamp(0.0, 1.0))
+    /// The estimate `elapsed` into the job.
+    pub fn estimate(&self, elapsed: Duration) -> Option<Estimate> {
+        let r = self.report.as_ref()?;
+        Some(estimate(r, self.reported_at, elapsed))
     }
 }
 
-/// Time left after `elapsed` with `f` done, assuming the rest goes at the
-/// same pace; `None` until there is enough to go on (2% and 2 s).
-pub fn eta(f: f64, elapsed: std::time::Duration) -> Option<std::time::Duration> {
-    ((0.02..1.0).contains(&f) && elapsed.as_secs_f64() >= 2.0)
-        .then(|| elapsed.mul_f64((1.0 - f) / f))
+/// The share done and the time left `now` into a job whose last report
+/// `r` came at `at`. The pace (time per unit of work) is the one the job
+/// kept up to that report; the current stage is expected to take its
+/// share at that pace, so the time left counts down through it and the
+/// share creeps on; past that, the time left holds at the later stages'
+/// and is marked `over`, rather than growing with every second.
+pub fn estimate(r: &crate::progress::Report, at: Duration, now: Duration) -> Estimate {
+    let share = |w: f64| (w / r.total).clamp(0.0, 1.0);
+    // A pace needs some work done and some time spent on it.
+    let pace = (r.done > 0.0 && at.as_secs_f64() >= 1.0).then(|| at.as_secs_f64() / r.done);
+    let Some(pace) = pace else {
+        return Estimate {
+            fraction: share(r.done),
+            left: None,
+            over: false,
+        };
+    };
+    let here = (r.end - r.done) * pace;
+    let spent = now.saturating_sub(at).as_secs_f64();
+    let later = (r.total - r.end) * pace;
+    let over = spent > here;
+    let into = if here > 0.0 {
+        (spent / here).min(0.95)
+    } else {
+        0.0
+    };
+    Estimate {
+        fraction: share(r.done + (r.end - r.done) * into),
+        left: Some(Duration::from_secs_f64((here - spent).max(0.0) + later)),
+        over,
+    }
 }
 
-/// `ETA 1m10s`, or `estimating…`.
-pub fn eta_text(f: f64, elapsed: std::time::Duration) -> String {
-    eta(f, elapsed).map_or("estimating…".into(), |d| {
-        format!("ETA {}", duration_text(d))
-    })
+/// `ETA 1m10s`, `ETA 40s+` past a stage's share, or `estimating…`.
+pub fn eta_text(e: &Estimate) -> String {
+    match e.left {
+        None => "estimating…".into(),
+        Some(d) if e.over => format!("ETA {}+ (this stage is slower)", duration_text(d)),
+        Some(d) => format!("ETA {}", duration_text(d)),
+    }
 }
 
 /// `45s`, `3m05s`, `1h02m`.
@@ -467,10 +507,11 @@ impl App {
     pub fn tick(&mut self) {
         while let Ok(line) = self.log_rx.try_recv() {
             // A running job's progress lines feed the popup, not the log.
-            if let Some((done, total, stage)) = crate::progress::parse(&line) {
-                if self.child.is_some() {
+            if let Some(report) = crate::progress::parse(&line) {
+                if let Some((_, started, _)) = &self.child {
+                    let at = started.elapsed();
                     let p = self.progress.get_or_insert_with(JobProgress::default);
-                    (p.done, p.total, p.stage) = (done, total, stage);
+                    (p.report, p.reported_at) = (Some(report), at);
                 }
                 continue;
             }
@@ -491,12 +532,12 @@ impl App {
             Ok(None) => {
                 let p = self.progress.get_or_insert_with(JobProgress::default);
                 let elapsed = started.elapsed();
-                self.status = match p.fraction() {
-                    Some(f) if self.progress_hidden => format!(
+                self.status = match p.estimate(elapsed) {
+                    Some(e) if self.progress_hidden => format!(
                         "{} {:.0}% · {} · b shows  (x: stop)",
                         job.name(),
-                        100.0 * f,
-                        eta_text(f, elapsed)
+                        100.0 * e.fraction,
+                        eta_text(&e)
                     ),
                     _ => format!("{}… {secs}s  (x: stop)", job.name()),
                 };

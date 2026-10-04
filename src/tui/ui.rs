@@ -166,21 +166,25 @@ fn draw_progress(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
     f.render_widget(block, area);
     let [stage, bar, times, _, last] = Layout::vertical([Constraint::Length(1); 5]).areas(inner);
-    let stage_text = if p.stage.is_empty() {
-        "starting…"
-    } else {
-        p.stage.as_str()
+    let stage_text = match &p.report {
+        Some(r) if !r.stage.is_empty() => r.stage.as_str(),
+        _ => "starting…",
     };
     f.render_widget(Paragraph::new(stage_text).style(POPUP), stage);
-    let f_done = p.fraction();
+    let e = p.estimate(elapsed);
     let gauge = LineGauge::default()
         .filled_style(Style::new().fg(Color::LightGreen))
         .unfilled_style(Style::new().fg(Color::Indexed(240)))
-        .ratio(f_done.unwrap_or(0.0))
-        .label(f_done.map_or("…".to_string(), |r| format!("{:.0}%", 100.0 * r)))
+        .ratio(e.as_ref().map_or(0.0, |e| e.fraction))
+        .label(
+            e.as_ref()
+                .map_or("…".to_string(), |e| format!("{:.0}%", 100.0 * e.fraction)),
+        )
         .style(POPUP);
     f.render_widget(gauge, bar);
-    let left = f_done.map_or("estimating…".into(), |r| super::app::eta_text(r, elapsed));
+    let left = e
+        .as_ref()
+        .map_or("estimating…".into(), super::app::eta_text);
     f.render_widget(
         Paragraph::new(format!(
             "elapsed {} · {left}",

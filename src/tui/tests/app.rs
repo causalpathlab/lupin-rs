@@ -436,19 +436,42 @@ fn in_the_order_view_r_runs_the_trajectory_from_any_pane() {
 }
 
 #[test]
-fn the_eta_waits_for_enough_to_go_on_then_scales_with_what_is_left() {
-    use super::super::app::{duration_text, eta, eta_text};
+fn the_eta_counts_down_through_a_stage_and_holds_when_it_runs_long() {
+    use super::super::app::{duration_text, estimate, eta_text};
+    use crate::progress::Report;
     use std::time::Duration;
     let s = Duration::from_secs;
-    assert_eq!(eta(0.5, Duration::from_millis(1500)), None, "under 2 s");
-    assert_eq!(eta(0.01, s(30)), None, "under 2%");
-    assert_eq!(eta(1.0, s(30)), None, "done");
-    assert_eq!(eta(0.5, s(10)), Some(s(10)));
-    assert_eq!(eta(0.25, s(10)), Some(s(30)));
-    // More done in the same time leaves less.
-    assert!(eta(0.8, s(10)) < eta(0.4, s(10)));
-    assert_eq!(eta_text(0.01, s(30)), "estimating…");
-    assert_eq!(eta_text(0.5, s(70)), "ETA 1m10s");
+    let report = |done: f64, end: f64| Report {
+        done,
+        end,
+        total: 10.0,
+        stage: "CT1".into(),
+    };
+    // Nothing done yet: no pace.
+    let e = estimate(&report(0.0, 2.0), s(0), s(5));
+    assert_eq!((e.left, e.fraction), (None, 0.0));
+    assert_eq!(eta_text(&e), "estimating…");
+    // 2 units in 4 s: 2 s a unit. A stage of 4 units then 4 more: 16 s.
+    let r = report(2.0, 6.0);
+    let at = s(4);
+    assert_eq!(estimate(&r, at, s(4)).left, Some(s(16)));
+    // Through the stage the time left falls and the share rises.
+    let mid = estimate(&r, at, s(8));
+    assert_eq!(mid.left, Some(s(12)));
+    assert!(mid.fraction > 0.2 && mid.fraction < 0.6);
+    assert!(!mid.over);
+    // Past the stage's share: it holds at the later stages' 8 s, marked.
+    for now in [s(13), s(30), s(300)] {
+        let e = estimate(&r, at, now);
+        assert_eq!(e.left, Some(s(8)), "{now:?}");
+        assert!(e.over);
+        assert!(e.fraction < 0.6, "the share stops short of the stage's end");
+    }
+    assert_eq!(
+        eta_text(&estimate(&r, at, s(30))),
+        "ETA 8s+ (this stage is slower)"
+    );
+    assert_eq!(eta_text(&estimate(&r, at, s(8))), "ETA 12s");
     assert_eq!(duration_text(s(45)), "45s");
     assert_eq!(duration_text(s(3725)), "1h02m");
 }
