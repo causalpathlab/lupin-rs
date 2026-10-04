@@ -1009,22 +1009,12 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
         ])
         .style(Style::default().add_modifier(Modifier::DIM)),
     );
-    for (from, to, source, verdict) in &edges {
-        let data = verdict.map_or(String::new(), |d| {
-            if d.order_agreement.is_finite() {
-                format!(
-                    "{} {:.2} · order {:.2}",
-                    d.verdict, d.connectivity, d.order_agreement
-                )
-            } else {
-                format!("{} {:.2}", d.verdict, d.connectivity)
-            }
-        });
+    for e in &edges {
         rows.push(Row::new(vec![
-            Cell::from(format!("  {from} → {to}")),
+            Cell::from(format!("  {} → {}", e.from, e.to)),
             Cell::from(""),
-            Cell::from(source.clone()),
-            Cell::from(data),
+            Cell::from(e.source.clone()),
+            Cell::from(e.data.map_or(String::new(), |d| d.summary())),
         ]));
     }
     for s in v.unrelated() {
@@ -1049,12 +1039,12 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
             ])
             .style(Style::default().add_modifier(Modifier::DIM)),
         );
-        for (a, b, d) in candidates.iter().take(8) {
+        for d in candidates.iter().take(8) {
             rows.push(Row::new(vec![
-                Cell::from(format!("  {a} — {b}")),
+                Cell::from(format!("  {} — {}", d.a, d.b)),
                 Cell::from(""),
                 Cell::from(""),
-                Cell::from(format!("candidate {:.2}", d.connectivity)),
+                Cell::from(d.summary()),
             ]));
         }
     }
@@ -1063,7 +1053,7 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
             Cell::from(format!("  not a DAG: {e}")).style(Style::default().fg(Color::Red))
         ]));
     }
-    let where_ = v
+    let file = v
         .file
         .as_ref()
         .map_or("nowhere to write".to_string(), |p| p.display().to_string());
@@ -1079,15 +1069,15 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
     .header(
         Row::new(vec!["type", "cells", "", ""]).style(Style::default().add_modifier(Modifier::DIM)),
     )
-    .block(pane(format!(" order · {where_} "), focused));
+    .block(pane(format!(" order · {file} "), focused));
     let mut state = TableState::default().with_selected(if focused { Some(v.sel) } else { None });
     f.render_stateful_widget(table, area, &mut state);
 }
 
 /// The figure pane: the current figure, and the exports strip when open.
-fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figures::FiguresView) {
+fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::FigurePane) {
     let focused = app.focus == Focus::Tree;
-    let (figure, strip) = if v.gallery_open {
+    let (figure, strip) = if v.exports.open {
         let [a, b] = Layout::vertical([Constraint::Min(6), Constraint::Length(8)]).areas(area);
         (a, Some(b))
     } else {
@@ -1096,59 +1086,60 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figures::Figure
     let title = format!(
         " {} ({}/{}) ",
         v.current().title(),
-        v.panel + 1,
+        v.sel + 1,
         v.panels.len()
     );
     let block = pane(title, focused);
     let inner = block.inner(figure);
     f.render_widget(block, figure);
-    match v.protocol(inner) {
-        Some(p) => f.render_widget(ratatui_image::Image::new(&p), inner),
-        None => {
-            let msg = v
-                .error
-                .borrow()
-                .clone()
-                .unwrap_or_else(|| "no picture protocol".into());
-            f.render_widget(Paragraph::new(msg).wrap(Wrap { trim: true }).dim(), inner);
-        }
+    match &mut *v.protocol() {
+        Ok(p) => f.render_stateful_widget(
+            ratatui_image::StatefulImage::new().resize(ratatui_image::Resize::Fit(Some(
+                ratatui_image::FilterType::Triangle,
+            ))),
+            inner,
+            p,
+        ),
+        Err(e) => f.render_widget(
+            Paragraph::new(e.as_str()).wrap(Wrap { trim: true }).dim(),
+            inner,
+        ),
     }
-    let Some(strip) = strip else { return };
-    let mut rows: Vec<Row> = v
+    if let Some(strip) = strip {
+        draw_exports(f, strip, &v.exports, focused);
+    }
+}
+
+/// The exports strip: the gallery's entries with their check, then the
+/// figure files beside the run that it does not list.
+fn draw_exports(f: &mut Frame, area: Rect, x: &super::figure_pane::Exports, focused: bool) {
+    let now = super::gallery::now();
+    let mut rows: Vec<Row> = x
         .gallery
         .entries
         .iter()
-        .zip(&v.statuses)
+        .zip(&x.statuses)
         .map(|(e, s)| {
-            let name = e
-                .path
-                .file_name()
-                .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-            let style = match s {
-                super::gallery::Status::Ok => Style::default(),
-                super::gallery::Status::Changed => Style::default().fg(Color::Yellow),
-                super::gallery::Status::Missing => Style::default().fg(Color::Red),
-            };
-            Row::new(vec![
-                Cell::from(name),
-                Cell::from(super::gallery::ago(e.when)),
+            let row = Row::new(vec![
+                Cell::from(super::app::file_name(&e.path)),
+                Cell::from(super::gallery::ago(e.when, now)),
                 Cell::from(s.as_str()),
-            ])
-            .style(style)
+            ]);
+            match s.color() {
+                Some(c) => row.style(Style::default().fg(c)),
+                None => row,
+            }
         })
         .collect();
-    rows.extend(v.not_listed.iter().map(|p| {
+    rows.extend(x.not_listed.iter().map(|p| {
         Row::new(vec![
-            Cell::from(
-                p.file_name()
-                    .map_or(String::new(), |n| n.to_string_lossy().into_owned()),
-            ),
+            Cell::from(super::app::file_name(p)),
             Cell::from(""),
             Cell::from("not listed"),
         ])
         .style(Style::default().add_modifier(Modifier::DIM))
     }));
-    let note = v.gallery.set_aside.as_ref().map_or(String::new(), |p| {
+    let note = x.gallery.set_aside.as_ref().map_or(String::new(), |p| {
         format!(" · unreadable log set aside as {}", p.display())
     });
     let table = Table::new(
@@ -1162,12 +1153,12 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figures::Figure
     .block(pane(
         format!(
             " exports ({}){note} · enter list · m move · d unlist · D delete ",
-            v.gallery.entries.len()
+            x.gallery.entries.len()
         ),
         focused,
     ));
-    let mut state = TableState::default().with_selected(Some(v.gallery_sel));
-    f.render_stateful_widget(table, strip, &mut state);
+    let mut state = TableState::default().with_selected(Some(x.sel));
+    f.render_stateful_widget(table, area, &mut state);
 }
 
 #[cfg(test)]

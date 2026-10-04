@@ -7,10 +7,11 @@
 //! types and reduced to the direct edges, which must form a DAG.
 
 use crate::annotate::celltype_tree::ClTerms;
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use legume_numeric::matrix::graph::{connected_components, AdjListGraph};
 use log::info;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::Path;
 
 /// What a statement says about two types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,6 +206,20 @@ pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Resu
         });
     }
     Ok(out)
+}
+
+/// The statements of a user- or project-layer `precedence.tsv` at `path`
+/// (`layer` is `"user"` or `"project"`, as `SearchPath::user_and_project_files`
+/// names them).
+pub(crate) fn read_layer(path: &Path, layer: &str) -> Result<Vec<Statement>> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let source = if layer == "user" {
+        Source::User
+    } else {
+        Source::Project
+    };
+    parse_statements(&text, source, &path.display().to_string())
 }
 
 /// One statement per pair of types: within a layer the last wins, and a later

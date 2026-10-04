@@ -25,11 +25,16 @@ fn an_export_is_logged_checked_moved_and_removed() {
         .unwrap();
     assert_eq!(g.entries.len(), 1);
     assert_eq!(g.entries[0].files.len(), 2);
-    assert_eq!(g.check(), vec![Status::Ok]);
+    assert_eq!(g.check(), vec![Status::Intact]);
 
-    // Same bytes under a new mtime: still ok; different bytes: changed.
+    // Same bytes under a new mtime: still ok; other bytes of the same size,
+    // or another size: changed.
     std::fs::write(&files[1], "%PDF-1.4 fake").unwrap();
-    assert_eq!(Gallery::open(&log_dir).check(), vec![Status::Ok]);
+    assert_eq!(Gallery::open(&log_dir).check(), vec![Status::Intact]);
+    let mut g2 = Gallery::open(&log_dir);
+    g2.entries[0].files[1].mtime = 1;
+    std::fs::write(&files[1], "%PDF-1.4 faKe").unwrap();
+    assert_eq!(g2.check(), vec![Status::Changed]);
     std::fs::write(&files[1], "%PDF-1.4 other").unwrap();
     assert_eq!(Gallery::open(&log_dir).check(), vec![Status::Changed]);
 

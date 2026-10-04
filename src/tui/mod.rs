@@ -8,7 +8,7 @@
 
 mod app;
 mod export;
-pub mod figures;
+mod figure_pane;
 mod gallery;
 mod genes;
 mod ontology;
@@ -21,8 +21,9 @@ mod ui;
 use crate::annotate::gene_rows::GeneRows;
 use crate::annotate_cmd::AnnotateCliArgs;
 use crate::manifest::run::{self, annotated_path, resolve};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use app::App;
+pub use figure_pane::Graphics;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -65,14 +66,32 @@ fn drain_own_log() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Run the TUI on `args`.
-pub fn run(args: &AnnotateCliArgs) -> Result<()> {
-    run_with(args, |_| {})
+/// The TUI on the manifest `lupin trajectory` just wrote, opening on the
+/// order view with its figures.
+pub fn run_on_manifest(manifest: &std::path::Path, graphics: Graphics) -> Result<()> {
+    use clap::{Parser, ValueEnum};
+    #[derive(Parser)]
+    struct Annotate {
+        #[command(flatten)]
+        args: AnnotateCliArgs,
+    }
+    let graphics = graphics
+        .to_possible_value()
+        .expect("every variant is named");
+    let a = Annotate::try_parse_from([
+        "lupin annotate",
+        "--from",
+        &manifest.to_string_lossy(),
+        "--tui",
+        "--graphics",
+        graphics.get_name(),
+    ])
+    .context("building the TUI's arguments")?;
+    run(&a.args, true)
 }
 
-/// Run the TUI, with `setup` applied to the app once it is loaded (how
-/// `lupin trajectory --tui` opens on the order view).
-pub fn run_with(args: &AnnotateCliArgs, setup: impl FnOnce(&mut App)) -> Result<()> {
+/// Run the TUI on `args`, opening on the order view when `start_in_order`.
+pub fn run(args: &AnnotateCliArgs, start_in_order: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let from = match args.from.as_deref() {
         Some(f) => f.to_string(),
@@ -140,10 +159,9 @@ pub fn run_with(args: &AnnotateCliArgs, setup: impl FnOnce(&mut App)) -> Result<
         let (latest, _) = crate::manifest::rounds::chain_rounds(&target);
         app.open(&latest);
     }
-    setup(&mut app);
-    if app.start_in_order {
+    if start_in_order {
         app.focus = app::Focus::Tree;
-        app.toggle_order();
+        app.toggle_order(true);
     }
 
     let mut terminal = ratatui::init();

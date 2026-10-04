@@ -15,7 +15,7 @@
 use crate::annotate::inputs::load_cluster_labels;
 use crate::manifest::annotate::{compute_clusters_from_latent, LeidenArgs};
 use crate::manifest::run::RunManifest;
-use crate::manifest::run::{load_optional, manifest_file, resolve};
+use crate::manifest::run::{load_optional, manifest_file, read_cell_coords, resolve};
 use crate::plot::hull::{convex_hull, hull_centroid, median_xy, trim_outliers_by_median, Pt};
 use crate::plot::palette::{self, Palette};
 use crate::plot::rasterize::{rasterize_group_png, DataBounds, Extent, PointShape};
@@ -634,12 +634,11 @@ fn trajectory_figure(
     let (Some(manifest), Some(path)) = (&resolved.manifest, &resolved.manifest_path) else {
         return Ok(None);
     };
-    let loaded = crate::manifest::run::Loaded {
-        manifest: manifest.clone(),
-        dir: resolved.manifest_dir.clone(),
-        file: PathBuf::from(path),
-    };
-    crate::trajectory::figures::TrajectoryData::load(&loaded)
+    crate::trajectory::figures::TrajectoryData::load(
+        manifest,
+        &resolved.manifest_dir,
+        Path::new(path),
+    )
 }
 
 /// The layout coloured by pseudotime, through the trajectory's own figure.
@@ -650,15 +649,13 @@ fn plot_pseudotime(
 ) -> anyhow::Result<()> {
     let width_px = (args.width * args.dpi as f32).round() as u32;
     let height_px = (args.height * args.dpi as f32).round() as u32;
-    let svg = data.svg(
+    let fig = data.figure(
         crate::trajectory::figures::Panel::Layout,
         width_px,
         height_px,
     )?;
-    legume_plot::write_figure(
-        &svg,
-        width_px,
-        height_px,
+    crate::trajectory::figures::write(
+        &fig,
         &format!("{}.plot", resolved.out),
         legume_plot::FigureFormats {
             svg: args.svg,
@@ -681,21 +678,6 @@ fn parse_colour_by(s: &str) -> Option<ColorBy> {
 fn parse_palette(s: &str) -> Option<Palette> {
     use clap::ValueEnum;
     Palette::from_str(s, true).ok()
-}
-
-pub(crate) type CellCoords = (Vec<Box<str>>, FxHashMap<String, Vec<f32>>);
-
-/// Returns `(cell_names, columns_by_name)`. Cell names are the parquet
-/// row labels (in data column order), needed when matching against an
-/// annotation TSV by cell name.
-pub(crate) fn read_cell_coords(path: &str) -> anyhow::Result<CellCoords> {
-    let MatWithNames { rows, cols, mat } = Mat::from_parquet(path)?;
-    let mut by_name: FxHashMap<String, Vec<f32>> = FxHashMap::default();
-    for (j, name) in cols.iter().enumerate() {
-        let col: Vec<f32> = (0..mat.nrows()).map(|i| mat[(i, j)]).collect();
-        by_name.insert(name.to_string(), col);
-    }
-    Ok((rows, by_name))
 }
 
 /// Argmax over cells × K, returning the **axis ID** per row rather than

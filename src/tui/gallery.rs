@@ -4,7 +4,9 @@
 //! figure back and to check it against the files on disk
 //! (`docs/trajectory-plan.md` §6). The runs' own directories are not touched.
 
-use anyhow::{Context, Result};
+use crate::manifest::data_files::absolute;
+use anyhow::{ensure, Context, Result};
+use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -21,6 +23,10 @@ const KEEP: usize = 200;
 pub struct FileRecord {
     pub path: PathBuf,
     pub size: u64,
+    /// Modification time, seconds since the Unix epoch; a quick check
+    /// before the hash.
+    #[serde(default)]
+    pub mtime: u64,
     /// SHA-256 of the contents, hex.
     pub hash: String,
 }
@@ -31,9 +37,30 @@ impl FileRecord {
         Ok(Self {
             path: path.to_path_buf(),
             size: bytes.len() as u64,
+            mtime: std::fs::metadata(path).map_or(0, |m| mtime_of(&m)),
             hash: hex(&Sha256::digest(&bytes)),
         })
     }
+
+    /// The file on disk is still this record: same size and mtime, else the
+    /// same hash.
+    fn unchanged(&self) -> Option<bool> {
+        let m = std::fs::metadata(&self.path).ok()?;
+        if m.len() != self.size {
+            return Some(false);
+        }
+        if mtime_of(&m) == self.mtime && self.mtime != 0 {
+            return Some(true);
+        }
+        Some(Self::of(&self.path).is_ok_and(|now| now.hash == self.hash))
+    }
+}
+
+fn mtime_of(m: &std::fs::Metadata) -> u64 {
+    m.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs())
 }
 
 /// One export: the PDF's path (as senna's gallery keys entries), what and
@@ -60,7 +87,7 @@ pub struct Entry {
 /// What a check finds about an entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
-    Ok,
+    Intact,
     Changed,
     Missing,
 }
@@ -68,9 +95,18 @@ pub enum Status {
 impl Status {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Ok => "ok",
+            Self::Intact => "ok",
             Self::Changed => "changed since export",
             Self::Missing => "missing",
+        }
+    }
+
+    /// The row's colour; `None` for the default.
+    pub fn color(self) -> Option<Color> {
+        match self {
+            Self::Intact => None,
+            Self::Changed => Some(Color::Yellow),
+            Self::Missing => Some(Color::Red),
         }
     }
 }
@@ -155,9 +191,7 @@ impl Gallery {
         let entry = Entry {
             path: absolute(pdf),
             what: what.into(),
-            when: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs()),
+            when: now(),
             thumb: String::new(),
             panel: panel.into(),
             manifest: absolute(manifest),
@@ -169,26 +203,18 @@ impl Gallery {
         self.save()
     }
 
-    /// Each entry against the files on disk: the hash is compared only when
-    /// size or modification time differ from a quick look, so unchanged
-    /// files are not read.
+    /// Each entry against the files on disk: a file whose size and mtime are
+    /// as recorded is taken as unchanged without reading it.
     pub fn check(&self) -> Vec<Status> {
         self.entries
             .iter()
             .map(|e| {
-                let mut status = Status::Ok;
+                let mut status = Status::Intact;
                 for f in &e.files {
-                    match std::fs::metadata(&f.path) {
-                        Err(_) => return Status::Missing,
-                        Ok(m) => {
-                            if m.len() != f.size {
-                                status = Status::Changed;
-                            } else if let Ok(now) = FileRecord::of(&f.path) {
-                                if now.hash != f.hash {
-                                    status = Status::Changed;
-                                }
-                            }
-                        }
+                    match f.unchanged() {
+                        None => return Status::Missing,
+                        Some(false) => status = Status::Changed,
+                        Some(true) => {}
                     }
                 }
                 status
@@ -233,9 +259,7 @@ impl Gallery {
     /// Take an entry off the list, deleting its files when `delete`.
     pub fn remove(&mut self, index: usize, delete: bool) -> Result<()> {
         self.reload();
-        if index >= self.entries.len() {
-            return Ok(());
-        }
+        ensure!(index < self.entries.len(), "no such export");
         if delete {
             // Only the files that were exported, unchanged, are deleted.
             verify_set(&self.entries[index])?;
@@ -254,9 +278,7 @@ impl Gallery {
     /// replaced.
     pub fn relocate(&mut self, index: usize, new_base: &Path) -> Result<()> {
         self.reload();
-        let Some(e) = self.entries.get_mut(index) else {
-            return Ok(());
-        };
+        let e = self.entries.get_mut(index).context("no such export")?;
         verify_set(e)?;
         let targets: Vec<PathBuf> = e
             .files
@@ -270,7 +292,7 @@ impl Gallery {
             })
             .collect();
         for t in &targets {
-            anyhow::ensure!(!t.exists(), "{} exists", t.display());
+            ensure!(!t.exists(), "{} exists", t.display());
         }
         for (f, t) in e.files.iter_mut().zip(&targets) {
             std::fs::rename(&f.path, t)
@@ -295,7 +317,7 @@ fn verify_set(e: &Entry) -> Result<()> {
     for f in &e.files {
         let c = std::fs::canonicalize(&f.path)
             .with_context(|| format!("{} is not there", f.path.display()))?;
-        anyhow::ensure!(
+        ensure!(
             c.with_extension("") == base
                 && matches!(
                     c.extension().and_then(|x| x.to_str()),
@@ -305,7 +327,7 @@ fn verify_set(e: &Entry) -> Result<()> {
             c.display(),
             e.path.display()
         );
-        anyhow::ensure!(
+        ensure!(
             FileRecord::of(&c)?.hash == f.hash,
             "{} has changed since it was exported; not touching it",
             c.display()
@@ -314,24 +336,19 @@ fn verify_set(e: &Entry) -> Result<()> {
     Ok(())
 }
 
-/// `p` made absolute against the working directory (canonical when it exists).
-fn absolute(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| {
-        std::env::current_dir()
-            .map(|d| d.join(p))
-            .unwrap_or_else(|_| p.to_path_buf())
-    })
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// "3 min ago", for a gallery row.
-pub fn ago(when: u64) -> String {
-    let now = SystemTime::now()
+/// Seconds since the Unix epoch.
+pub fn now() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+        .map_or(0, |d| d.as_secs())
+}
+
+/// "3 min ago", for a gallery row.
+pub fn ago(when: u64, now: u64) -> String {
     let d = now.saturating_sub(when);
     match d {
         0..=59 => "just now".into(),

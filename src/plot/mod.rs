@@ -15,6 +15,18 @@ pub(crate) fn to_pixel(p: (f32, f32), bounds: &DataBounds, ext: Extent) -> (f32,
     (x, ext.h as f32 - y)
 }
 
+/// The bounding box of the points `idx` of `(x, y)`.
+pub(crate) fn bounds_of(x: &[f32], y: &[f32], idx: &[usize]) -> DataBounds {
+    let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for &i in idx {
+        x0 = x0.min(x[i]);
+        x1 = x1.max(x[i]);
+        y0 = y0.min(y[i]);
+        y1 = y1.max(y[i]);
+    }
+    DataBounds::from_minmax(x0, x1, y0, y1)
+}
+
 /// Map a label (cell type, batch, …) to a filesystem-safe basename:
 /// keep ASCII alphanumerics and `-_.`, replace everything else with `_`.
 pub(crate) fn sanitize_filename(s: &str) -> String {

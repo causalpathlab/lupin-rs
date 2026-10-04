@@ -283,11 +283,7 @@ pub struct App {
     armed: Option<Armed>,
     pub quit: bool,
     /// The trajectory figures of the manifests on screen, when they have any.
-    pub figures: Option<super::figures::FiguresView>,
-    /// How figures reach the terminal.
-    pub graphics: super::figures::Graphics,
-    /// Open on the order view (`lupin trajectory --tui`).
-    pub start_in_order: bool,
+    pub figures: Option<super::figure_pane::FigurePane>,
 }
 
 impl App {
@@ -334,8 +330,6 @@ impl App {
             armed: None,
             quit: false,
             figures: None,
-            graphics: super::figures::Graphics::default(),
-            start_in_order: false,
         }
     }
 
@@ -1194,7 +1188,8 @@ impl App {
                     Pending::Relocate => {
                         self.status = match &mut self.figures {
                             Some(v) => v
-                                .relocate_selected(&reason)
+                                .exports
+                                .relocate(&reason)
                                 .unwrap_or_else(|e| format!("could not move: {e:#}")),
                             None => "no figures".into(),
                         };
@@ -1475,7 +1470,7 @@ impl App {
                     _ => return false,
                 }
             }
-            Focus::Tree if code == KeyCode::Char('t') => self.toggle_order(),
+            Focus::Tree if code == KeyCode::Char('t') => self.toggle_order(false),
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
             // A search is of the ontology: open it there.
             Focus::Tree
@@ -1520,59 +1515,63 @@ impl App {
     }
 
     /// Switch the tree pane to the order view (which types precede which) and
-    /// back.
-    pub(super) fn toggle_order(&mut self) {
+    /// back; `show_figures` opens on the figures (`lupin trajectory --tui`).
+    pub(super) fn toggle_order(&mut self, show_figures: bool) {
         if matches!(self.tree_mode, TreeMode::Order(_)) {
             self.tree_mode = TreeMode::Panel;
             return;
         }
         self.tree_marked.clear();
-        self.reload_order();
         if self.figures.is_none() {
-            self.figures = super::figures::FiguresView::load(
-                &[self.target.as_path(), self.source.as_path()],
-                self.graphics,
-            );
+            match super::figure_pane::FigurePane::load(&self.manifests(), self.args.graphics) {
+                Ok(v) => self.figures = v,
+                Err(e) => self.push_log(format!("[WARN] trajectory figures: {e:#}")),
+            }
             if let Some(v) = &mut self.figures {
-                v.shown = self.start_in_order;
+                v.shown = show_figures;
             }
         }
+        self.reload_order();
         self.status = "order view: space marks a type, then > states the first precedes the second, - that they are unrelated".into();
+    }
+
+    /// The manifests on screen: the round's target, then the run opened.
+    fn manifests(&self) -> [&Path; 2] {
+        [self.target.as_path(), self.source.as_path()]
     }
 
     /// The labels on screen with their cell counts: the round's labels, else
     /// the panel's types.
     fn order_types(&self) -> Vec<(String, usize)> {
-        let mut counts: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
         match &self.round {
-            Some(r) => {
-                for c in &r.clusters {
-                    if let Some(l) = r.label_of(c.id, &self.edits) {
-                        *counts.entry(l).or_default() += c.cells;
-                    }
-                }
-            }
-            None => {
-                for key in self.original.keys() {
-                    counts.entry(key.clone()).or_default();
-                }
-            }
+            Some(r) => r
+                .summary(&self.edits)
+                .into_iter()
+                .filter(|(l, _)| l != UNASSIGNED_LABEL)
+                .collect(),
+            None => self.original.keys().map(|k| (k.clone(), 0)).collect(),
         }
-        counts.into_iter().collect()
     }
 
     /// (Re)build the order view from the labels on screen and the data files.
+    /// The trajectory run's edges are kept from the view on screen (or the
+    /// figures), so only the precedence files are read again.
     fn reload_order(&mut self) {
-        let sel = match &self.tree_mode {
-            TreeMode::Order(v) => v.sel,
-            _ => 0,
+        let (sel, edges) = match std::mem::replace(&mut self.tree_mode, TreeMode::Panel) {
+            TreeMode::Order(v) => (v.sel, v.edges),
+            _ => (
+                0,
+                match &self.figures {
+                    Some(f) => f.data.edges.clone(),
+                    None => super::order::run_edges(&self.manifests()),
+                },
+            ),
         };
         let mut v = super::order::OrderView::load(
             self.order_types(),
             self.cl.as_ref(),
             &self.data_search,
-            &[self.target.as_path(), self.source.as_path()],
+            edges,
         );
         v.sel = sel.min(v.types.len().saturating_sub(1));
         if let Some(e) = &v.error {
@@ -1626,16 +1625,17 @@ impl App {
         true
     }
 
-    /// Keys of the figure pane and its gallery strip; `false` when the key is
+    /// Keys of the figure pane and its exports strip; `false` when the key is
     /// not one of them (or no figures are loaded).
     fn figure_key(&mut self, code: KeyCode) -> bool {
         let Some(v) = &mut self.figures else {
-            return code == KeyCode::Char('v')
-                && {
-                    self.status = "no trajectory outputs for the manifests on screen: run `lupin trajectory` first".into();
-                    true
-                };
+            if code == KeyCode::Char('v') {
+                self.status = "no trajectory outputs for the manifests on screen: run `lupin trajectory` first".into();
+                return true;
+            }
+            return false;
         };
+        let x = &mut v.exports;
         match code {
             KeyCode::Char('v') => v.next_panel(),
             KeyCode::Char('V') => v.shown = false,
@@ -1646,13 +1646,13 @@ impl App {
                     .export()
                     .unwrap_or_else(|e| format!("export failed: {e:#}"));
             }
-            KeyCode::Char('f') => v.gallery_open = !v.gallery_open,
+            KeyCode::Char('f') => x.open = !x.open,
             KeyCode::Char('R') => {
-                v.refresh();
+                x.refresh();
                 self.status = format!(
                     "{} export(s) checked, {} not listed",
-                    v.gallery.entries.len(),
-                    v.not_listed.len()
+                    x.gallery.entries.len(),
+                    x.not_listed.len()
                 );
             }
             KeyCode::Up
@@ -1661,24 +1661,24 @@ impl App {
             | KeyCode::PageDown
             | KeyCode::Home
             | KeyCode::End
-                if v.gallery_open =>
+                if x.open =>
             {
-                let rows = v.rows();
-                step(&mut v.gallery_sel, rows, code);
+                let rows = x.rows();
+                step(&mut x.sel, rows, code);
             }
-            KeyCode::Enter if v.gallery_open => {
-                self.status = v.adopt_selected().unwrap_or_else(|e| format!("{e:#}"));
-            }
-            KeyCode::Char('d') if v.gallery_open => {
-                self.status = v
-                    .remove_selected(false)
+            KeyCode::Enter if x.open => {
+                self.status = x
+                    .adopt(&v.data.manifest)
                     .unwrap_or_else(|e| format!("{e:#}"));
             }
-            KeyCode::Char('D') if v.gallery_open => {
-                self.status = v.remove_selected(true).unwrap_or_else(|e| format!("{e:#}"));
+            KeyCode::Char('d') if x.open => {
+                self.status = x.remove(false).unwrap_or_else(|e| format!("{e:#}"));
             }
-            KeyCode::Char('m') if v.gallery_open => {
-                if let Some(base) = v.selected_base() {
+            KeyCode::Char('D') if x.open => {
+                self.status = x.remove(true).unwrap_or_else(|e| format!("{e:#}"));
+            }
+            KeyCode::Char('m') if x.open => {
+                if let Some(base) = x.selected_base() {
                     self.prompt = Some(Prompt {
                         title: " move the export to (base name, no extension): ".into(),
                         text: base,
@@ -1799,11 +1799,11 @@ const ROOT_TERM: &str = "CL:0000000";
 /// Append `label → id` to the alias table `file`, creating it (and its
 /// directory) with a header the first time.
 fn remember_alias(file: &Path, label: &str, id: &str, note: &str) -> anyhow::Result<()> {
-    crate::manifest::data_files::append_line(
+    crate::manifest::data_files::append_row(
         file,
         "Cell-type labels mapped to Cell Ontology terms, layered over lupin's own\n\
          (see `lupin data where`). Columns: label, CL id, note.",
-        &format!("{label}\t{id}\t{}", note.replace(['\t', '\n'], " ")),
+        &[label, id, note],
     )
 }
 
@@ -1819,7 +1819,7 @@ fn evidence(c: &super::round::Candidate) -> String {
     s
 }
 
-fn file_name(p: &Path) -> String {
+pub(super) fn file_name(p: &Path) -> String {
     p.file_name().map_or_else(
         || p.display().to_string(),
         |n| n.to_string_lossy().into_owned(),

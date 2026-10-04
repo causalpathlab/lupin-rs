@@ -158,6 +158,14 @@ pub struct AnnotateCliArgs {
         help = "Interactive: re-cluster, re-run and pick the Cell Ontology level in a terminal UI"
     )]
     pub tui: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t,
+        help = "With --tui, how figures reach the terminal"
+    )]
+    pub graphics: crate::tui::Graphics,
 }
 
 impl AnnotateCliArgs {
@@ -243,7 +251,7 @@ impl AnnotateCliArgs {
 
 pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     if args.tui {
-        return crate::tui::run(args);
+        return crate::tui::run(args, false);
     }
     anyhow::ensure!(!args.out.is_empty(), "annotate needs an output prefix (-o)");
     // One manifest load per invocation; every route below reuses it.

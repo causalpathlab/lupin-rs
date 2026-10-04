@@ -5,6 +5,7 @@
 //! The TUI order view and the plot build on these.
 
 pub(crate) mod diffusion;
+pub(crate) mod edges;
 pub(crate) mod figures;
 pub(crate) mod prior;
 pub(crate) mod run;

@@ -3,6 +3,7 @@
 //! roots, written with a `trajectory` section into a copy of the manifest.
 
 use super::diffusion::{DiffusionMap, Neighbours};
+use super::edges::{self, EdgeRow, Verdict};
 use super::encode_groups;
 use super::prior::{self, Prior, Source, Statement};
 use super::type_connectivity::connectivity;
@@ -99,10 +100,10 @@ pub struct TrajectoryArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = crate::tui::figures::Graphics::Auto,
+        default_value_t = crate::tui::Graphics::Auto,
         help = "How figures reach the terminal"
     )]
-    pub graphics: crate::tui::figures::Graphics,
+    pub graphics: crate::tui::Graphics,
 }
 
 /// Settings a recomputation needs, apart from where the data came from.
@@ -153,27 +154,6 @@ pub(crate) struct Inputs {
 impl Inputs {
     fn label(&self, cell: usize) -> &str {
         self.names[self.group[cell]].as_ref()
-    }
-}
-
-/// What the connectivity check says about a pair of types.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Verdict {
-    /// A prior edge whose connectivity reaches the threshold.
-    Supported,
-    /// A prior edge below it.
-    Unsupported,
-    /// A pair the prior does not order whose connectivity reaches it.
-    Candidate,
-}
-
-impl Verdict {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Supported => "supported",
-            Self::Unsupported => "unsupported",
-            Self::Candidate => "candidate",
-        }
     }
 }
 
@@ -264,30 +244,9 @@ pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
         written.values().cloned().collect::<Vec<_>>().join(", ")
     );
     if args.tui {
-        open_tui(&manifest_out, args.graphics)?;
+        crate::tui::run_on_manifest(&manifest_out, args.graphics)?;
     }
     Ok(())
-}
-
-/// The annotation TUI on the manifest just written, opening on the order view.
-fn open_tui(manifest: &std::path::Path, graphics: crate::tui::figures::Graphics) -> Result<()> {
-    use clap::Parser;
-    #[derive(Parser)]
-    struct Annotate {
-        #[command(flatten)]
-        args: crate::annotate_cmd::AnnotateCliArgs,
-    }
-    let a = Annotate::try_parse_from([
-        "lupin annotate",
-        "--from",
-        &manifest.to_string_lossy(),
-        "--tui",
-    ])
-    .context("building the TUI's arguments")?;
-    crate::tui::run_with(&a.args, |app| {
-        app.graphics = graphics;
-        app.start_in_order = true;
-    })
 }
 
 pub(crate) fn load_inputs(
@@ -413,14 +372,7 @@ fn gather_statements(
             None => warn!("no Cell Ontology at hand; the prior comes from precedence files alone"),
         }
         for (layer, path) in data.search.user_and_project_files(PRECEDENCE) {
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            let source = if layer == "user" {
-                Source::User
-            } else {
-                Source::Project
-            };
-            let st = prior::parse_statements(&text, source, &path.display().to_string())?;
+            let st = prior::read_layer(&path, layer)?;
             info!("{layer} {}: {} statement(s)", path.display(), st.len());
             layers.push(st);
         }
@@ -693,14 +645,6 @@ pub(crate) fn write(
 /// `{out}.trajectory_edges.parquet`: every node pair, so the table is the
 /// connectivity matrix as well as the verdicts.
 fn write_edges(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<String> {
-    struct Row {
-        a: Box<str>,
-        b: Box<str>,
-        connectivity: f32,
-        in_prior: Box<str>,
-        verdict: Box<str>,
-        agreement: f32,
-    }
     let edge_at: BTreeMap<(usize, usize), &EdgeCheck> = t
         .edges
         .iter()
@@ -715,43 +659,22 @@ fn write_edges(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<String> {
         for &q in &nodes[i + 1..] {
             let edge = edge_at.get(&(p, q)).copied();
             let (from, to) = edge.map_or((p, q), |e| (e.from, e.to));
-            rows.push(Row {
+            rows.push(EdgeRow {
                 a: inputs.names[from].clone(),
                 b: inputs.names[to].clone(),
                 connectivity: t.connectivity[(p, q)] as f32,
-                in_prior: if edge.is_some() { "true" } else { "false" }.into(),
+                in_prior: edge.is_some(),
                 verdict: match edge {
-                    Some(e) => e.verdict.as_str(),
-                    None if candidate.contains(&(p, q)) => Verdict::Candidate.as_str(),
-                    None => "",
-                }
-                .into(),
-                agreement: edge.map_or(f32::NAN, |e| e.order_agreement),
+                    Some(e) => Some(e.verdict),
+                    None if candidate.contains(&(p, q)) => Some(Verdict::Candidate),
+                    None => None,
+                },
+                order_agreement: edge.map_or(f32::NAN, |e| e.order_agreement),
             });
         }
     }
-    let col = |f: fn(&Row) -> Box<str>| rows.iter().map(f).collect::<Vec<_>>();
-    let (a, b, in_prior, verdict) = (
-        col(|r| r.a.clone()),
-        col(|r| r.b.clone()),
-        col(|r| r.in_prior.clone()),
-        col(|r| r.verdict.clone()),
-    );
-    let conn: Vec<f32> = rows.iter().map(|r| r.connectivity).collect();
-    let agree: Vec<f32> = rows.iter().map(|r| r.agreement).collect();
     let path = format!("{out}.trajectory_edges.parquet");
-    write_named_table(
-        &path,
-        "a",
-        &a,
-        &[
-            ("b".into(), Column::Str(&b)),
-            ("connectivity".into(), Column::F32(&conn)),
-            ("in_prior".into(), Column::Str(&in_prior)),
-            ("verdict".into(), Column::Str(&verdict)),
-            ("order_agreement".into(), Column::F32(&agree)),
-        ],
-    )?;
+    edges::write(&path, &rows)?;
     Ok(path)
 }
 

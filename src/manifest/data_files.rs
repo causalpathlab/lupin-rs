@@ -377,8 +377,18 @@ pub fn append_line(file: &Path, header: &str, line: &str) -> Result<()> {
     Ok(())
 }
 
+/// Append a TSV row of `fields` to `file` as [`append_line`] does; a tab or a
+/// newline inside a field becomes a space.
+pub fn append_row(file: &Path, header: &str, fields: &[&str]) -> Result<()> {
+    let row: Vec<String> = fields
+        .iter()
+        .map(|f| f.replace(['\t', '\n'], " "))
+        .collect();
+    append_line(file, header, &row.join("\t"))
+}
+
 /// `p` made absolute (and canonical when it exists).
-fn absolute(p: &Path) -> PathBuf {
+pub(crate) fn absolute(p: &Path) -> PathBuf {
     p.canonicalize().unwrap_or_else(|_| {
         std::env::current_dir()
             .map(|d| d.join(p))

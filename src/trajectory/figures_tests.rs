@@ -15,7 +15,7 @@ fn data() -> TrajectoryData {
         d[(i, 2)] = y[i];
     }
     TrajectoryData {
-        prefix: "run".into(),
+        manifest: "run.senna.json".into(),
         pseudotime,
         types,
         diffusion: Some(d),
@@ -25,7 +25,8 @@ fn data() -> TrajectoryData {
             b: "B".into(),
             connectivity: 0.8,
             in_prior: true,
-            verdict: "supported".into(),
+            verdict: Some(Verdict::Supported),
+            order_agreement: 0.9,
         }],
     }
 }
@@ -36,19 +37,22 @@ fn every_panel_renders_to_svg_and_pixels() {
     let panels = t.panels();
     assert_eq!(panels.len(), 4);
     for p in panels {
-        let svg = t.svg(p, 320, 240).unwrap();
-        assert!(svg.starts_with("<?xml"), "{}", p.slug());
-        let img = render(&svg, 320, 240).unwrap();
-        assert_eq!((img.width(), img.height()), (320, 240));
+        let fig = t.figure(p, 320, 240).unwrap();
+        assert!(fig.svg.starts_with("<?xml"), "{}", p.slug());
+        let img = render(&fig).unwrap();
+        assert_eq!((img.width(), img.height()), (fig.w, fig.h));
+        if p != Panel::Connectivity {
+            assert_eq!((fig.w, fig.h), (320, 240), "{}", p.slug());
+        }
     }
 }
 
 #[test]
 fn the_order_panel_lists_types_by_median_and_skips_unreached_cells() {
     let rows = data().type_order();
-    assert_eq!(rows[0].0.as_ref(), "A");
-    assert_eq!(rows[0].1, 19, "the NaN cell is left out");
-    assert!(rows[0].3 < rows[1].3);
+    assert_eq!(rows[0].name.as_ref(), "A");
+    assert_eq!(rows[0].cells, 19, "the NaN cell is left out");
+    assert!(rows[0].median < rows[1].median);
 }
 
 #[test]
@@ -67,12 +71,16 @@ fn diffusion_pairs_cycle_past_the_trivial_component() {
 }
 
 #[test]
-fn export_writes_svg_and_pdf() {
-    let t = data();
+fn export_writes_svg_and_pdf_past_existing_files() {
     let dir = std::env::temp_dir().join(format!("lupin-figures-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let svg = t.svg(Panel::Order, 200, 150).unwrap();
-    let files = export(&svg, 200, 150, &dir.join("x.trajectory.order")).unwrap();
-    assert!(files.iter().all(|f| f.is_file()), "{files:?}");
+    let mut t = data();
+    t.manifest = dir.join("x.senna.json");
+    let first = t.export(Panel::Order).unwrap();
+    assert_eq!(first.base, dir.join("x.trajectory.order"));
+    assert!(first.files.iter().all(|f| f.is_file()), "{:?}", first.files);
+    let second = t.export(Panel::Order).unwrap();
+    assert_eq!(second.base, dir.join("x.trajectory.order-2"));
     std::fs::remove_dir_all(dir).unwrap();
 }

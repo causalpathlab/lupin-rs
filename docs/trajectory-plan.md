@@ -222,15 +222,20 @@ reason is asked for, as for other edits. Saving appends to the project layer's
 The order view (above) sits beside figure panels drawn from the run's
 trajectory outputs, the same set the bench summary shows:
 
+- **Layout**: the run's layout coloured by pseudotime, the prior's direct
+  edges as arrows between type medians (supported edges solid, the rest
+  faded). Phase 5 replaces this picture with a PHATE embedding of the
+  trajectory's own diffusion operator; the run's layout stays as it is.
 - **Diffusion map**: cells on two diffusion components (`,`/`.` change the
-  pair), coloured by pseudotime, the root ringed; picking a type or a prior
-  component greys out the rest.
-- **Order by type**: median pseudotime and middle half per type, beside the
-  stage the prior implies.
-- **Connectivity**: PAGA connectivity between the node types, ordered by
-  pseudotime, saturated pairs outlined, the prior's direct edges marked.
-- **Edges**: each direct prior edge with its connectivity, order agreement and
-  verdict, so an edit in the order view shows its effect after the next run.
+  pair), coloured by pseudotime.
+- **Order by type**: median pseudotime and middle half per type, in order of
+  the median.
+- **Connectivity**: PAGA connectivity between the node types as a Hinton
+  diagram (box area ∝ connectivity; legume-plot's `render_hinton`), ordered by
+  pseudotime, pairs the prior orders in ink.
+- The direct prior edges with their connectivity, order agreement and verdict
+  are in the order view's table, so an edit there shows its effect after the
+  next run.
 
 Images are drawn as senna view draws them, so both viewers behave alike:
 `ratatui-image` (same major version, crossterm) with `--graphics
@@ -354,4 +359,12 @@ error, and DPT on a synthetic Y shape and on a disconnected one.
    against phase 0.
 3. (done) TUI order view, figures and export log.
 4. (done) `plot --colour-by pseudotime` with the edge overlay.
-5. Later: association.
+5. PHATE (Moon et al. 2019) as the trajectory's own 2D picture, first among
+   the figure panels and the one `plot --colour-by pseudotime` draws, written
+   as `{out}.phate.parquet` and recorded as `trajectory.phate`. It is built
+   from the diffusion operator phase 2 already computes (powered to a `t`
+   chosen by the von Neumann entropy knee, log-potential distances, metric
+   MDS), following the reference `phate` package's defaults and checked
+   against it on the bench sample as DPT and PAGA were. The run's own layout
+   (`layout.cell_coords`) is not touched; a run without PHATE falls back to it.
+6. Later: association.
