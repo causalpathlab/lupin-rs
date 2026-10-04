@@ -917,3 +917,22 @@ fn a_pasted_chat_answer_reads_as_decisions() {
         "a broken decision is still refused"
     );
 }
+
+#[test]
+fn a_moved_runs_markers_are_read_from_where_the_run_now_is() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("proj");
+    std::fs::create_dir_all(proj.join("run")).unwrap();
+    std::fs::create_dir_all(proj.join("data")).unwrap();
+    std::fs::write(proj.join("data/panel.tsv"), "GENE1\tCT1\nGENE2\tCT2\n").unwrap();
+    let manifest = proj.join("run/x.senna.json");
+    std::fs::write(
+        &manifest,
+        r#"{"version":2,"kind":"topic","prefix":"/elsewhere/proj/run/x",
+            "annotate":{"markers":"/elsewhere/proj/data/panel.tsv"}}"#,
+    )
+    .unwrap();
+    let loaded = run::load(&manifest.to_string_lossy()).unwrap();
+    let (pairs, _) = read_markers(&loaded).expect("the panel, found again");
+    assert_eq!(pairs.len(), 2);
+}

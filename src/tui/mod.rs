@@ -18,7 +18,6 @@ mod order;
 mod picker;
 mod round;
 mod runner;
-mod runs;
 mod ui;
 
 use crate::annotate::gene_rows::GeneRows;
@@ -138,12 +137,19 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
             }
         };
     }
-    // Without `-o`, the run's prefix one level down is offered when the
-    // first pass starts; reopening the same run picks up its rounds.
+    // Passes start from the manifest opened. Without `-o`, annotate offers
+    // its first round (`.L1`), so reopening the run picks its rounds up
+    // again; the trajectory's view offers the next free round under it,
+    // never an existing one.
     let out_chosen = !args.out.is_empty();
     if !out_chosen {
-        let stem = run::derive_out_prefix(&loaded.file.to_string_lossy());
-        args.out = format!("{stem}.L1").into_boxed_str();
+        args.out = if start_in_order {
+            crate::manifest::family::pass_origin(&loaded.file).1
+        } else {
+            let stem = run::derive_out_prefix(&loaded.file.to_string_lossy());
+            crate::manifest::family::Tag::Round.name(&stem, 1)
+        }
+        .into_boxed_str();
     }
 
     eprintln!("lupin: placing the panel on the Cell Ontology…");
@@ -205,7 +211,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         app.focus = app::Focus::Order;
     }
     // A run with no annotation whose rounds sit beside it: say where they are.
-    if app.round.is_none() && runs::has_rounds(&runs::family(&loaded.file)) {
+    if app.round.is_none() && crate::manifest::family::has_round(&loaded.file) {
         app.status = "this run has annotated rounds: g lists them".into();
     }
 

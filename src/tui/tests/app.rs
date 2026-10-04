@@ -700,9 +700,18 @@ fn a_failed_job_notice_takes_the_key_before_an_open_prompt() {
     );
 }
 
-/// An app on the run `X` of a family made by the runs tests.
+/// The family member `name` of a family made by `family_dir`, to show.
+fn pick(dir: &std::path::Path, name: &str) -> crate::manifest::family::Pick {
+    crate::manifest::family::family(&dir.join("X.senna.json"))
+        .into_iter()
+        .find(|m| m.name() == name)
+        .expect("a member")
+        .pick
+}
+
+/// An app on the run `X` of a family made by the family tests.
 fn family_app(dir: &std::path::Path) -> App {
-    super::super::runs::tests::family_dir(dir);
+    crate::manifest::family::tests::family_dir(dir);
     let mut app = app_with_terms(false);
     app.round = None;
     app.source = dir.join("X.senna.json");
@@ -713,6 +722,8 @@ fn family_app(dir: &std::path::Path) -> App {
 fn g_lists_the_family_and_a_round_opens_with_its_clusters() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = family_app(tmp.path());
+    // No output chosen: switching offers the next free round.
+    app.out_chosen = false;
     press(&mut app, KeyCode::Char('g'));
     let m = menu(&app).expect("the runs");
     assert_eq!(m.choices.len(), 5);
@@ -728,8 +739,13 @@ fn g_lists_the_family_and_a_round_opens_with_its_clusters() {
     let r = app.round.as_ref().expect("the round");
     assert_eq!(r.clusters.len(), 2);
     assert!(app.shown_manifest().ends_with("X.L0.senna.json"));
-    // Passes still start from the run the round was made from.
-    assert!(app.source.ends_with("X.senna.json"));
+    // Passes start from the round shown, offered the next free round under
+    // it, as when the TUI is opened on it.
+    assert!(app.source.ends_with("X.L0.senna.json"));
+    let (from, out) = crate::manifest::family::pass_origin(&tmp.path().join("X.L0.senna.json"));
+    assert_eq!(app.source, from);
+    assert_eq!(app.args.out.as_ref(), out);
+    assert!(out.ends_with("X.L0.L2"), "L1 exists: {out}");
     // And back to the run: no round.
     press(&mut app, KeyCode::Char('g'));
     assert_eq!(menu(&app).unwrap().sel, 1, "the round is on screen now");
@@ -743,7 +759,7 @@ fn a_round_from_the_list_gives_the_order_view_its_labels() {
     let mut app = order_app(tmp.path(), &["CT9"]);
     let mut fam = family_app(tmp.path());
     std::mem::swap(&mut app.source, &mut fam.source);
-    app.open_run(&tmp.path().join("X.L0.senna.json"), false);
+    app.open_run(pick(tmp.path(), "X.L0"), false);
     let TreeMode::Order(v) = &app.tree_mode else {
         panic!("still the order view")
     };
@@ -755,24 +771,26 @@ fn a_round_from_the_list_gives_the_order_view_its_labels() {
 fn unsaved_edits_are_asked_about_and_a_running_job_refuses() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = family_app(tmp.path());
-    let round = tmp.path().join("X.L0.senna.json");
-    app.open_run(&round, false);
+    let round = pick(tmp.path(), "X.L0");
+    app.open_run(round.clone(), false);
     app.edits.push(Edit::Keep {
         cluster: 0,
         reason: "kept".into(),
     });
-    app.open_run(&tmp.path().join("X.senna.json"), false);
+    app.open_run(pick(tmp.path(), "X"), false);
     let m = menu(&app).expect("asked first");
     assert!(m.question.contains("1 unsaved edit"), "{}", m.question);
     assert!(app.round.is_some(), "nothing switched yet");
-    // Stay keeps the edits; dropping them opens the run.
-    press(&mut app, KeyCode::Char('2'));
+    // Esc keeps the edits; the one choice drops them and opens the run.
+    assert_eq!(m.choices.len(), 1);
+    press(&mut app, KeyCode::Esc);
     assert_eq!(app.edits.len(), 1);
-    app.open_run(&tmp.path().join("X.senna.json"), true);
+    assert!(app.status.contains("kept"), "{}", app.status);
+    app.open_run(pick(tmp.path(), "X"), true);
     assert!(app.round.is_none() && app.edits.is_empty());
     // A running job: no switching, no list.
     running(&mut app);
-    app.open_run(&round, false);
+    app.open_run(round, false);
     assert!(app.round.is_none());
     assert!(
         app.status.contains("wait for the running job"),
@@ -782,4 +800,31 @@ fn unsaved_edits_are_asked_about_and_a_running_job_refuses() {
     press(&mut app, KeyCode::Char('g'));
     assert!(app.menu.is_none());
     app.stop();
+}
+
+#[test]
+fn switching_runs_gives_the_order_view_the_edges_of_what_is_shown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = order_app(tmp.path(), &["CT9"]);
+    let mut fam = family_app(tmp.path());
+    std::mem::swap(&mut app.source, &mut fam.source);
+    // The edges of an earlier trajectory, on screen.
+    if let TreeMode::Order(v) = &mut app.tree_mode {
+        v.edges = vec![crate::trajectory::edges::EdgeRow {
+            a: "CT8".into(),
+            b: "CT9".into(),
+            connectivity: 0.5,
+            in_prior: true,
+            verdict: None,
+            order_agreement: f32::NAN,
+        }];
+    }
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    let TreeMode::Order(v) = &app.tree_mode else {
+        panic!("still the order view")
+    };
+    assert!(
+        !v.edges.iter().any(|e| e.is_pair("CT8", "CT9")),
+        "the earlier trajectory's edges are gone"
+    );
 }

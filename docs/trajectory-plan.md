@@ -88,12 +88,17 @@ names one of them), each with what it holds and when it changed, the one on
 screen marked ●. Picking a round shows its clusters and gives the order view
 its labels; picking a trajectory shows its figures with the round it was
 made from; picking the run clears the round. Unsaved edits are asked about
-first. Passes then start from the manifest the round shown was made from
-(the run, for a first round), as when the TUI is opened on that round. A
-run with no annotation whose rounds sit beside it says so on opening, and
-the no-labels menu offers to open one. `lupin annotate` follows the same rule: without `-o` it opens its
-TUI, where `r` (or `A` in the clusters pane) opens the same annotation
-form.
+first. The family may mix senna, lupin and pinto manifests (a pinto run
+and its `.lupin.json` rounds list together).
+
+Passes start from the manifest shown (the run, a round or a trajectory's
+copy, as opened or picked with `g`), whichever way it was reached; the
+trajectory's view offers the next free `.L{k}` under it as the output, never
+an existing round. A run with no annotation whose rounds sit beside it says
+so on opening, and the no-labels menu offers to open one. `lupin annotate`
+follows the same rule: without `-o` it opens its TUI, where `r` (or `A` in
+the clusters pane) opens the same annotation form, offering `.L1` so that
+reopening a run picks its rounds up again.
 
 - **Labels** are the given round's `annotate.argmax`, so curation in later
   rounds (merges, relabels) is what the trajectory sees; `--labels` names

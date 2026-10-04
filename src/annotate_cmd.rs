@@ -382,9 +382,7 @@ fn round_markers(args: &AnnotateCliArgs, loaded: &crate::manifest::run::Loaded) 
 /// The marker panel `loaded` recorded, found again if the run moved (a path
 /// from another machine is looked up by its tail); `None` when it is gone.
 pub(crate) fn recorded_markers(loaded: &crate::manifest::run::Loaded) -> Option<String> {
-    let rel = loaded.manifest.annotate.markers.as_deref()?;
-    let path = loaded.manifest.data_file(&loaded.dir, rel);
-    std::path::Path::new(&path).is_file().then_some(path)
+    loaded.recorded(loaded.manifest.annotate.markers.as_deref()?)
 }
 
 /// Settle a GO pass's ontology: `--go-obo`, else (in a pass without markers,

@@ -26,12 +26,12 @@ pub enum Action {
     NotNow,
     /// List the run's family: the run, its rounds, its trajectories (`g`).
     ListRuns,
-    /// Open this member of the run's family.
-    OpenRun(std::path::PathBuf),
-    /// Open it, dropping the unsaved edits.
-    OpenRunDropping(std::path::PathBuf),
-    /// Keep what is on screen.
-    Stay,
+    /// Show this member of the run's family; with `drop_edits`, even over
+    /// unsaved edits.
+    OpenRun {
+        pick: crate::manifest::family::Pick,
+        drop_edits: bool,
+    },
 }
 
 pub struct Choice {
@@ -46,9 +46,8 @@ pub struct Menu {
     pub question: String,
     pub choices: Vec<Choice>,
     pub sel: usize,
-    /// The status line when the menu is closed without a choice; the
-    /// trajectory's "nothing started" when unset.
-    pub on_cancel: Option<String>,
+    /// The status line when the menu is closed without a choice.
+    pub on_cancel: String,
     /// Drawn across the screen, not over the clusters column.
     pub wide: bool,
 }
@@ -63,12 +62,16 @@ pub enum Outcome {
 }
 
 impl Menu {
-    pub fn new(question: impl Into<String>, choices: Vec<Choice>) -> Self {
+    pub fn new(
+        question: impl Into<String>,
+        choices: Vec<Choice>,
+        on_cancel: impl Into<String>,
+    ) -> Self {
         Self {
             question: question.into(),
             choices,
             sel: 0,
-            on_cancel: None,
+            on_cancel: on_cancel.into(),
             wide: false,
         }
     }
@@ -130,6 +133,7 @@ mod tests {
                 ("one".into(), "the first".into(), Action::StateOrder),
                 ("two".into(), "the second".into(), Action::PriorFile),
             ]),
+            "closed",
         )
     }
 

@@ -6,7 +6,7 @@
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::panel_tree::PanelTree;
 use crate::manifest::data_files::{append_row, SearchPath, PRECEDENCE};
-use crate::manifest::run::{annotated_path, derive_out_prefix, load, resolve};
+use crate::manifest::run::{load, resolve};
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
 use crate::trajectory::prior::{self, Prior, Relation, Source, Statement};
 use std::path::{Path, PathBuf};
@@ -23,11 +23,7 @@ pub struct TrajectoryRun {
 
 /// The first `{stem}.T{k}` (k = 1, 2, …) beside `source` with no manifest yet.
 pub fn default_out(source: &Path) -> String {
-    let stem = derive_out_prefix(&source.to_string_lossy());
-    (1..)
-        .map(|k| format!("{stem}.T{k}"))
-        .find(|o| !annotated_path(source, o).exists())
-        .expect("some name is free")
+    crate::manifest::family::Tag::Trajectory.next_free(source)
 }
 
 /// A direct edge of the prior as the table shows it.

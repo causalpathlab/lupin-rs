@@ -631,19 +631,25 @@ impl App {
                     file_name(manifest),
                     r.clusters.len()
                 );
-                self.stop_rescoring();
-                self.recorded = None;
-                self.scored_for.clear();
-                self.round = Some(r);
-                self.edits.clear();
-                self.marked.clear();
-                self.tree_marked.clear();
-                self.gene_sel = 0;
-                self.stale = false;
-                self.cluster_sel = self.cluster_sel.min(self.n_clusters().saturating_sub(1));
+                self.set_round(Some(r));
             }
             Err(e) => self.status = format!("could not read {}: {e:#}", manifest.display()),
         }
+    }
+
+    /// Put `r` on screen (or none), dropping what belonged to the round
+    /// shown before: edits, marks, scores and the stale note.
+    fn set_round(&mut self, r: Option<RoundView>) {
+        self.stop_rescoring();
+        self.recorded = None;
+        self.scored_for.clear();
+        self.round = r;
+        self.edits.clear();
+        self.marked.clear();
+        self.tree_marked.clear();
+        self.gene_sel = 0;
+        self.stale = false;
+        self.cluster_sel = self.cluster_sel.min(self.n_clusters().saturating_sub(1));
     }
 
     /// The unsaved marker edits, in order.
@@ -965,7 +971,7 @@ impl App {
         // From the trajectory's view a pass writes a new round beside the
         // run unless one was chosen.
         if !self.out_chosen && self.in_order() {
-            let out = next_free_round(&self.source);
+            let (_, out) = crate::manifest::family::pass_origin(&self.source);
             self.target = annotated_path(&self.source, &out);
             self.args.out = out.into();
         }
@@ -1438,9 +1444,10 @@ impl App {
         match menu.key(code) {
             Outcome::Open => {}
             Outcome::Cancel => {
-                let note = self.menu.take().and_then(|m| m.on_cancel);
+                let note = self.menu.take().map(|m| m.on_cancel).unwrap_or_default();
+                // Nothing follows a pass the menu was asked about.
                 self.after_pass = AfterPass::Nothing;
-                self.status = note.unwrap_or_else(|| "no trajectory run started".into());
+                self.status = note;
             }
             Outcome::Chosen(a) => {
                 self.menu = None;
@@ -2117,7 +2124,7 @@ impl App {
                 Action::LabelsFile,
             ),
         ];
-        if super::runs::has_rounds(&super::runs::family(&self.source)) {
+        if crate::manifest::family::has_round(&self.source) {
             items.insert(
                 0,
                 (
@@ -2131,6 +2138,7 @@ impl App {
             "This run has no cell-type labels yet, and the trajectory needs them. \
              Where should they come from?",
             numbered(items),
+            NOT_STARTED,
         ));
     }
 
@@ -2207,6 +2215,7 @@ impl App {
                     Action::LabelCl,
                 ),
             ]),
+            NOT_STARTED,
         ));
     }
 
@@ -2229,6 +2238,7 @@ impl App {
         let mut menu = Menu::new(
             "Which type does the trajectory start from?",
             numbered(items),
+            NOT_STARTED,
         );
         menu.sel = v.sel.min(menu.choices.len().saturating_sub(1));
         self.show(menu);
@@ -2259,9 +2269,7 @@ impl App {
                 self.status = "r runs the trajectory when you are ready".into();
             }
             Action::ListRuns => self.list_runs(),
-            Action::OpenRun(p) => self.open_run(&p, false),
-            Action::OpenRunDropping(p) => self.open_run(&p, true),
-            Action::Stay => self.status = "kept the run on screen (s saves the edits)".into(),
+            Action::OpenRun { pick, drop_edits } => self.open_run(pick, drop_edits),
         }
     }
 
@@ -2276,137 +2284,96 @@ impl App {
     /// List the run's family (`g`): the run, its rounds and the
     /// trajectories made from them, the one on screen marked.
     pub(super) fn list_runs(&mut self) {
+        use crate::manifest::family;
         if self.child.is_some() {
             self.status = "wait for the running job, or stop it with x".into();
             return;
         }
         let shown = self.shown_manifest();
-        let members = super::runs::family(&shown);
+        let members = family::family(&shown);
         if members.is_empty() {
             self.status = format!("no run manifests beside {}", shown.display());
             return;
         }
-        let at = super::runs::current(&members, &shown);
+        let at = family::current(&members, &shown);
         let now = super::gallery::now();
         let items = members
-            .iter()
+            .into_iter()
             .enumerate()
             .map(|(i, m)| {
                 let mark = if Some(i) == at { "● " } else { "  " };
                 let label = format!(
                     "{mark}{} · {} · {} · {}",
                     m.name(),
-                    m.kind.name(),
+                    m.pick.kind.name(),
                     m.holds,
                     super::gallery::ago(m.modified, now)
                 );
-                let detail = match m.kind {
-                    super::runs::Kind::Run => {
-                        "the run itself: no clusters on the left until a pass (A); passes start from it"
-                    }
-                    super::runs::Kind::Round => {
-                        "show this round's clusters and labels; the order view takes its labels, and passes start from the run it was made from"
-                    }
-                    super::runs::Kind::Trajectory => {
-                        "show this trajectory's figures with the round it was made from"
-                    }
+                let detail = m.pick.kind.detail().to_string();
+                let action = Action::OpenRun {
+                    pick: m.pick,
+                    drop_edits: false,
                 };
-                (label, detail.to_string(), Action::OpenRun(m.path.clone()))
+                (label, detail, action)
             })
             .collect();
         let mut menu = Menu::new(
             format!(
                 "The runs of {} (● on screen). Which should the TUI show?",
-                super::runs::stem(&shown)
+                family::stem(&shown)
             ),
             numbered(items),
+            "kept the run on screen",
         );
         menu.sel = at.unwrap_or(0);
-        menu.on_cancel = Some("kept the run on screen".into());
         menu.wide = true;
         self.show(menu);
     }
 
-    /// Show `path`, a member of the run's family: a round (or a trajectory's
-    /// copy of one) in the cluster panes, a trajectory's figures, the run
-    /// with no round. Passes then start from the manifest the round was
-    /// made from, as when the TUI is opened on it.
-    pub(super) fn open_run(&mut self, path: &Path, drop_edits: bool) {
+    /// Show `pick`, a member of the run's family: a round (or a
+    /// trajectory's copy of one) in the cluster panes, a trajectory's
+    /// figures, the run with no round. Passes then start from it, as when
+    /// the TUI is opened on it.
+    pub(super) fn open_run(&mut self, pick: crate::manifest::family::Pick, drop_edits: bool) {
+        use crate::manifest::family::{pass_origin, Kind};
         if self.child.is_some() {
             self.status = "wait for the running job, or stop it with x".into();
             return;
         }
+        let path = pick.path.as_path();
         let name = file_name(path);
         if !drop_edits && !self.edits.is_empty() {
-            let mut menu = Menu::new(
-                format!(
-                    "{} unsaved edit(s) on the round on screen. Open {name} anyway?",
-                    self.edits.len()
-                ),
-                numbered(vec![
-                    (
-                        format!("Open {name}, dropping the edits"),
-                        "the edits are lost; s first would save them as a new round".into(),
-                        Action::OpenRunDropping(path.to_path_buf()),
-                    ),
-                    (
-                        "Stay".into(),
-                        "keep the round and its edits on screen".into(),
-                        Action::Stay,
-                    ),
-                ]),
-            );
-            menu.on_cancel = Some("kept the run on screen (s saves the edits)".into());
-            return self.show(menu);
+            let detail =
+                "the edits are lost; esc keeps them, and s first saves them as a new round";
+            let n = self.edits.len();
+            return self.show(Menu::new(
+                format!("{n} unsaved edit(s) on the round on screen. Open {name} anyway?"),
+                numbered(vec![(
+                    format!("Open {name}, dropping the edits"),
+                    detail.into(),
+                    Action::OpenRun {
+                        pick: pick.clone(),
+                        drop_edits: true,
+                    },
+                )]),
+                "kept the run on screen (s saves the edits)",
+            ));
         }
-        let loaded = match crate::manifest::run::load(&path.to_string_lossy()) {
-            Ok(l) => l,
-            Err(e) => {
-                self.status = format!("could not read {name}: {e:#}");
-                return;
-            }
-        };
-        let m = &loaded.manifest;
-        let made_from = |m: &crate::manifest::run::RunManifest, dir: &Path| {
-            m.annotate
-                .source
-                .as_deref()
-                .map(|s| PathBuf::from(crate::manifest::run::resolve(dir, s)))
-                .filter(|p| p.is_file())
-        };
-        let trajectory = m.trajectory.prior.is_some() || m.trajectory.pseudotime.is_some();
-        // Passes start from what a round was made from; a trajectory's copy
-        // names its round, whose own source is the run.
-        let source = match made_from(m, &loaded.dir) {
-            Some(round) if trajectory => crate::manifest::run::load(&round.to_string_lossy())
-                .ok()
-                .and_then(|r| made_from(&r.manifest, &r.dir))
-                .or(Some(round)),
-            other => other,
-        }
-        .unwrap_or_else(|| path.to_path_buf());
-        if m.annotate.argmax.is_some() {
+        if pick.labelled {
             self.open(path);
         } else {
-            self.stop_rescoring();
-            self.recorded = None;
-            self.scored_for.clear();
-            self.round = None;
-            self.edits.clear();
-            self.marked.clear();
-            self.tree_marked.clear();
-            self.cluster_sel = 0;
-            self.gene_sel = 0;
+            self.set_round(None);
         }
-        if !crate::manifest::run::same_file(&source, &self.source) {
+        if !crate::manifest::run::same_file(path, &self.source) {
+            let (source, out) = pass_origin(path);
             self.source = source;
             if !self.out_chosen {
-                let stem = crate::manifest::run::derive_out_prefix(&self.source.to_string_lossy());
-                self.args.out = format!("{stem}.L1").into_boxed_str();
+                self.args.out = out.into_boxed_str();
             }
             self.args.from = Some(self.source.to_string_lossy().into());
             self.target = annotated_path(&self.source, &self.args.out);
         }
+        let trajectory = pick.kind == Kind::Trajectory;
         if trajectory {
             let picker = self.picker().clone();
             match super::figure_pane::FigurePane::load(&[path], &picker) {
@@ -2419,7 +2386,8 @@ impl App {
             }
         }
         if self.in_order() {
-            self.reload_order();
+            // The order view's edges follow the trajectory now shown.
+            self.rebuild_order(true);
         }
         self.status = match (&self.round, trajectory) {
             (Some(r), true) => format!(
@@ -2427,7 +2395,8 @@ impl App {
                 r.clusters.len()
             ),
             (Some(r), false) => format!("{name}: {} clusters (g lists the runs)", r.clusters.len()),
-            (None, _) => {
+            (None, true) => format!("{name}: its figures; it carries no round (g lists the runs)"),
+            (None, false) => {
                 format!("{name}: the run, no annotation (A annotates it, g lists its rounds)")
             }
         };
@@ -2565,6 +2534,7 @@ impl App {
                 ),
                 ("Not now".into(), "r runs it later".into(), Action::NotNow),
             ]),
+            "r runs the trajectory when you are ready",
         ));
     }
 
@@ -2664,20 +2634,28 @@ impl App {
     /// The trajectory run's edges are kept from the view on screen (or the
     /// figures), so only the precedence files are read again.
     fn reload_order(&mut self) {
+        self.rebuild_order(false);
+    }
+
+    /// The edges of the trajectory shown: the figures', else the manifests'.
+    fn shown_edges(&self) -> Vec<crate::trajectory::edges::EdgeRow> {
+        match &self.figures {
+            Some(f) => f.data.edges.clone(),
+            None => {
+                let manifests = self.manifests();
+                let refs: Vec<&Path> = manifests.iter().map(PathBuf::as_path).collect();
+                super::order::run_edges(&refs)
+            }
+        }
+    }
+
+    /// [`Self::reload_order`]; with `new_edges` (the manifest shown changed)
+    /// the edges are those of the trajectory now shown, not the view's.
+    fn rebuild_order(&mut self, new_edges: bool) {
         let (sel, edges, ontology) = match std::mem::replace(&mut self.tree_mode, TreeMode::Panel) {
-            TreeMode::Order(v) => (v.sel, v.edges, v.ontology),
-            _ => (
-                0,
-                match &self.figures {
-                    Some(f) => f.data.edges.clone(),
-                    None => {
-                        let manifests = self.manifests();
-                        let refs: Vec<&Path> = manifests.iter().map(PathBuf::as_path).collect();
-                        super::order::run_edges(&refs)
-                    }
-                },
-                None,
-            ),
+            TreeMode::Order(v) if !new_edges => (v.sel, v.edges, v.ontology),
+            TreeMode::Order(v) => (v.sel, self.shown_edges(), v.ontology),
+            _ => (0, self.shown_edges(), None),
         };
         let mut v = super::order::OrderView::load(
             self.order_types(),
@@ -3147,6 +3125,9 @@ impl Drop for App {
     }
 }
 
+/// The status line when a trajectory menu is closed without a choice.
+const NOT_STARTED: &str = "no trajectory run started";
+
 /// What the thumbnail grid's keys do.
 const GRID_KEYS: &str =
     "arrows choose · Enter, space or 1-9 opens · p exports it · f exports · t c restyle · V table · esc or w closes";
@@ -3155,18 +3136,7 @@ const GRID_KEYS: &str =
 /// resolved against the manifest's directory, when it is still there.
 pub(super) fn recorded_labels(loaded: &crate::manifest::run::Loaded) -> Option<String> {
     let settings = loaded.manifest.trajectory.settings.as_ref()?;
-    let rel = settings.get("labels")?.as_str()?;
-    let path = crate::manifest::run::resolve(&loaded.dir, rel);
-    Path::new(&path).is_file().then_some(path)
-}
-
-/// The first `{stem}.L{k}` (k = 1, 2, …) beside `source` with no round yet.
-fn next_free_round(source: &Path) -> String {
-    let stem = crate::manifest::run::derive_out_prefix(&source.to_string_lossy());
-    (1..)
-        .map(|k| format!("{stem}.L{k}"))
-        .find(|o| !annotated_path(source, o).exists())
-        .expect("some k is free")
+    loaded.recorded(settings.get("labels")?.as_str()?)
 }
 
 /// `X.decisions.jsonl` for round `X.senna.json`: what a save hands relabel.
@@ -3204,12 +3174,7 @@ fn evidence(c: &super::round::Candidate) -> String {
     s
 }
 
-pub(super) fn file_name(p: &Path) -> String {
-    p.file_name().map_or_else(
-        || p.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    )
-}
+pub(super) use crate::manifest::family::file_name;
 
 /// Rows a page key moves.
 const PAGE: usize = 10;

@@ -780,6 +780,15 @@ pub fn prepare_geometry(manifest: &RunManifest, dir: &Path) -> anyhow::Result<Ma
 }
 
 impl Loaded {
+    /// A file the manifest recorded at `rel`, found again if the run moved
+    /// (a path from another machine is looked up by its tail); `None` when
+    /// it is gone.
+    #[must_use]
+    pub fn recorded(&self, rel: &str) -> Option<String> {
+        let path = self.manifest.data_file(&self.dir, rel);
+        Path::new(&path).is_file().then_some(path)
+    }
+
     /// `{dir}/{name}` for a manifest at `{dir}/{name}.senna.json`: where the
     /// run's artifacts that the manifest does not record (NB-Fisher weights)
     /// sit. Derived from where the manifest IS, never from its
