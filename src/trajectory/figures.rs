@@ -461,14 +461,17 @@ fn blue(t: f32) -> String {
 }
 
 /// `svg` rendered to pixels, through legume-plot's renderer (which writes a
-/// file) and the `image` crate.
+/// file, here a private temporary one) and the `image` crate.
 pub(crate) fn render(svg: &str, w: u32, h: u32) -> Result<image::RgbaImage> {
-    let tmp = std::env::temp_dir().join(format!("lupin-figure-{}.png", std::process::id()));
-    legume_plot::render_png(svg, w, h, &tmp)?;
-    let img = image::open(&tmp)
-        .with_context(|| format!("reading {}", tmp.display()))?
+    let tmp = tempfile::Builder::new()
+        .prefix("lupin-figure-")
+        .suffix(".png")
+        .tempfile()
+        .context("creating a temporary file for the figure")?;
+    legume_plot::render_png(svg, w, h, tmp.path())?;
+    let img = image::open(tmp.path())
+        .with_context(|| format!("reading {}", tmp.path().display()))?
         .to_rgba8();
-    let _ = std::fs::remove_file(&tmp);
     Ok(img)
 }
 

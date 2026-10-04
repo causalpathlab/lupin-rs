@@ -51,6 +51,10 @@ pub enum ColorBy {
     /// Per-cell celltype label from `lupin annotate --method enrichment`'s argmax TSV
     /// (`--annotation`, defaults to `manifest.annotate.argmax`).
     Annotation,
+    /// Pseudotime from `lupin trajectory` (the manifest's `trajectory.pseudotime`),
+    /// on a blue→red ramp, with the prior's direct edges as arrows between
+    /// the types' medians; unsupported edges faded.
+    Pseudotime,
 }
 
 /// Label placement strategy per group.
@@ -251,6 +255,26 @@ pub struct PlotArgs {
 pub fn fit_plot(args: &PlotArgs) -> anyhow::Result<()> {
     let mut resolved = resolve_inputs(args)?;
     mkdir_parent(&resolved.out)?;
+    if matches!(resolved.colour_by, ColorBy::Pseudotime) {
+        match trajectory_figure(&resolved)? {
+            Some(data) => return plot_pseudotime(args, &resolved, &data),
+            None if args.colour_by.is_some() => anyhow::bail!(
+                "--colour-by pseudotime needs a manifest with a `trajectory` section: run \
+                 `lupin trajectory` first"
+            ),
+            None => {
+                log::warn!(
+                    "the manifest's default colour is pseudotime but it has no trajectory section; \
+                     colouring by annotation or cluster instead"
+                );
+                resolved.colour_by = if resolved.annotation.is_some() {
+                    ColorBy::Annotation
+                } else {
+                    ColorBy::Cluster
+                };
+            }
+        }
+    }
     let (cell_names, coords_by_name) = read_cell_coords(&resolved.cell_coords)?;
     let x = coords_by_name
         .get("x")
@@ -267,6 +291,8 @@ pub fn fit_plot(args: &PlotArgs) -> anyhow::Result<()> {
     let mut auto_label_map: FxHashMap<i64, String> = FxHashMap::default();
 
     let group_ids = match resolved.colour_by {
+        // Drawn by the trajectory's own figure above, never grouped.
+        ColorBy::Pseudotime => anyhow::bail!("pseudotime colouring is not a grouping"),
         ColorBy::Cluster => {
             let ids = match coords_by_name.get("cluster") {
                 Some(col) => col
@@ -600,6 +626,49 @@ fn resolve_inputs(args: &PlotArgs) -> anyhow::Result<ResolvedInputs> {
 
 /// A manifest default lupin does not know (hand-edited, or a mode since
 /// removed, e.g. `pseudotime`) is reported and skipped, not silently ignored.
+/// The trajectory outputs the manifest records, when `--from` gave one with a
+/// `trajectory` section.
+fn trajectory_figure(
+    resolved: &ResolvedInputs,
+) -> anyhow::Result<Option<crate::trajectory::figures::TrajectoryData>> {
+    let (Some(manifest), Some(path)) = (&resolved.manifest, &resolved.manifest_path) else {
+        return Ok(None);
+    };
+    let loaded = crate::manifest::run::Loaded {
+        manifest: manifest.clone(),
+        dir: resolved.manifest_dir.clone(),
+        file: PathBuf::from(path),
+    };
+    crate::trajectory::figures::TrajectoryData::load(&loaded)
+}
+
+/// The layout coloured by pseudotime, through the trajectory's own figure.
+fn plot_pseudotime(
+    args: &PlotArgs,
+    resolved: &ResolvedInputs,
+    data: &crate::trajectory::figures::TrajectoryData,
+) -> anyhow::Result<()> {
+    let width_px = (args.width * args.dpi as f32).round() as u32;
+    let height_px = (args.height * args.dpi as f32).round() as u32;
+    let svg = data.svg(
+        crate::trajectory::figures::Panel::Layout,
+        width_px,
+        height_px,
+    )?;
+    legume_plot::write_figure(
+        &svg,
+        width_px,
+        height_px,
+        &format!("{}.plot", resolved.out),
+        legume_plot::FigureFormats {
+            svg: args.svg,
+            png: args.png,
+            pdf: !args.no_pdf,
+        },
+    )?;
+    Ok(())
+}
+
 fn parse_colour_by(s: &str) -> Option<ColorBy> {
     use clap::ValueEnum;
     let parsed = ColorBy::from_str(s, true).ok();

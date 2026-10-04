@@ -6,7 +6,7 @@ Partly implemented. `lupin trajectory` builds the prior (§3), checks it
 against the kNN graph (§4), orders cells by diffusion pseudotime from the
 prior's roots (§5), writes its outputs and a `trajectory` manifest section
 (§7), and with `--tui` opens the order view with its figures and export log
-(§6). `plot --colour-by pseudotime` (§7) remains a plan. lupin 0.3.0 removed the previous trajectory stack
+(§6); `lupin plot --colour-by pseudotime` draws the layout figure (§7). lupin 0.3.0 removed the previous trajectory stack
 (`lineage`, `pseudotime`, `dyn-assoc`, `lineage-plot`);
 `dev/trajectory-salvage.md` in the repository records what it did and why it
 went.
@@ -289,13 +289,13 @@ settings (`knn`, `n_dcs`, `min_cells`, `min_connectivity`, `roots`, `prior`,
 reproduce this prior reads `{out}.trajectory_prior.tsv` itself
 (`--prior … --prior-only`), which holds every statement that was used.
 
-`lupin plot --colour-by pseudotime` colours cells from `trajectory.pseudotime`
-through a continuous-colour path (the categorical one cannot), with an
-optional overlay of the direct edges as arrows between type medians, width by
-connectivity, unsupported edges faded. A manifest with no `trajectory` section
-is an error when the flag is given, and a warning-and-default when it comes
-from `defaults.colour_by` — pre-0.3.0 runs may still carry
-`colour_by = "pseudotime"` and an old `pseudotime` block, which is never read.
+`lupin plot --colour-by pseudotime` draws the trajectory's own layout figure
+(§6): cells from `trajectory.pseudotime` on a blue→red ramp, grey where no
+root reaches, and the direct edges as arrows between type medians, unsupported
+ones faded. A manifest with no `trajectory` section is an error when the flag
+is given, and a warning-and-default when it comes from `defaults.colour_by` —
+pre-0.3.0 runs may still carry `colour_by = "pseudotime"` and an old
+`pseudotime` block, which is never read.
 
 ## 8. Validation
 
@@ -353,5 +353,5 @@ error, and DPT on a synthetic Y shape and on a disconnected one.
 2. (done) Diffusion pseudotime, lineages, outputs, manifest section; validated
    against phase 0.
 3. (done) TUI order view, figures and export log.
-4. `plot --colour-by pseudotime` and the edge overlay.
+4. (done) `plot --colour-by pseudotime` with the edge overlay.
 5. Later: association.
