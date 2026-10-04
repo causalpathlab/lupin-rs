@@ -233,7 +233,11 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                 }
                 dirty = true;
             }
-            if event::poll(Duration::from_millis(150))? {
+            // Every event already waiting is handled before the next draw, so
+            // a held key draws only where it ends.
+            let mut wait = Duration::from_millis(150);
+            while !app.quit && app.want_file.is_none() && event::poll(wait)? {
+                wait = Duration::ZERO;
                 match event::read()? {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {
                         app.key(k);

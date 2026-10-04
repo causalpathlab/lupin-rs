@@ -4,7 +4,7 @@
 
 use super::gallery::{Gallery, Status};
 use crate::manifest::run::load;
-use crate::trajectory::figures::{self, Panel, TrajectoryData, View};
+use crate::trajectory::figures::{self, Panel, Style, TrajectoryData, View};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use image::DynamicImage;
@@ -13,6 +13,7 @@ use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{FilterType, Resize};
+use rayon::prelude::*;
 use std::cell::{Ref, RefCell};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -142,18 +143,28 @@ impl Exports {
     }
 }
 
-/// A panel at a pane size, in terminal cells.
-type Shown = (Panel, u16, u16);
+/// What a figure on screen depends on: the panel and, for a scatter, the
+/// style and the view (the other panels ignore both).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Look {
+    panel: Panel,
+    style: Option<Style>,
+    view: View,
+}
 
-/// A thumbnail drawn at a tile size, in terminal cells, or why it could not
-/// be.
-type Tile = Option<((u16, u16), Result<Protocol, String>)>;
+/// A figure drawn for the terminal, or why it could not be.
+type Drawn = Result<Protocol, String>;
+
+/// A figure on screen: what it shows, at a size in terminal cells.
+type Sized = (Look, (u16, u16));
+
+/// Thumbnails kept across openings of the grid before they are dropped.
+const TILES_KEPT: usize = 32;
 
 /// The thumbnail grid (`w`, as in `senna view`): every figure as a tile.
 pub struct Grid {
     pub tiles: Vec<Panel>,
     pub sel: usize,
-    drawn: RefCell<Vec<Tile>>,
 }
 
 impl Grid {
@@ -189,14 +200,19 @@ pub struct FigurePane {
     pub sel: usize,
     /// Show the figure instead of the order table.
     pub shown: bool,
-    picker: Picker,
-    /// The figure on screen for (panel, pane size), or why it could not be
-    /// drawn.
-    rendered: RefCell<Option<(Shown, Result<Protocol, String>)>>,
-    /// The current panel rasterised once; a new pane size only re-fits it.
-    image: RefCell<Option<(Panel, Result<DynamicImage, String>)>>,
-    /// The diffusion pair `m` comes back to.
+    /// How the scatters are drawn (`t`, `c`).
+    pub style: Style,
+    /// The part of the scatter on screen (`+` `-` and the arrows).
+    view: View,
+    /// The diffusion pair the diffusion map shows (`,` `.`).
     pair: (usize, usize),
+    picker: Picker,
+    /// The figure on screen, drawn for the pane.
+    rendered: RefCell<Option<(Sized, Drawn)>>,
+    /// The figure on screen rasterised once; a new pane size only re-fits it.
+    image: RefCell<Option<(Look, Result<DynamicImage, String>)>>,
+    /// Thumbnails drawn, kept while the grid closes and opens again.
+    tiles: RefCell<Vec<(Sized, Drawn)>>,
     /// The thumbnail grid, while it is open.
     pub grid: Option<Grid>,
     pub exports: Exports,
@@ -224,23 +240,44 @@ impl FigurePane {
             data,
             sel: 0,
             shown: false,
+            style: Style::default(),
+            view: View::default(),
+            pair: (1, 2),
             picker: picker.clone(),
             image: RefCell::new(None),
             rendered: RefCell::new(None),
-            pair: (1, 2),
+            tiles: RefCell::new(Vec::new()),
             grid: None,
             exports,
         }
     }
 
+    /// The panel on screen; the diffusion map at the pair chosen.
     pub fn current(&self) -> Panel {
-        self.panels[self.sel]
+        self.at_pair(self.panels[self.sel])
+    }
+
+    /// `panel`, a diffusion map at the pair chosen.
+    fn at_pair(&self, panel: Panel) -> Panel {
+        match panel {
+            Panel::Diffusion { .. } => Panel::Diffusion {
+                x: self.pair.0,
+                y: self.pair.1,
+            },
+            p => p,
+        }
+    }
+
+    /// A panel's title, naming the layout and, on a scatter, the colouring.
+    pub fn title(&self, panel: Panel) -> String {
+        self.data.title(panel, self.style.colouring)
     }
 
     /// Show the figures, or move to the next panel when they are shown.
     pub fn next_panel(&mut self) {
         if self.shown {
             self.sel = (self.sel + 1) % self.panels.len();
+            self.view = View::default();
         }
         self.shown = true;
     }
@@ -248,97 +285,71 @@ impl FigurePane {
     /// Another pair of diffusion components, when that panel is shown.
     pub fn step_pair(&mut self, forward: bool) {
         if let Panel::Diffusion { x, y } = self.current() {
-            let (nx, ny) = self.data.next_pair(x, y, forward);
-            self.panels[self.sel] = Panel::Diffusion { x: nx, y: ny };
-            self.set_view(View::default());
+            self.pair = self.data.next_pair(x, y, forward);
+            self.view = View::default();
         }
     }
 
-    /// Whether the panel on screen is a scatter, which pans and zooms.
-    fn on_scatter(&self) -> bool {
-        matches!(
-            self.current(),
-            Panel::Layout { .. } | Panel::Diffusion { .. }
-        )
+    /// Change the scatter's view by `f`; `None` when the panel on screen is
+    /// not a scatter, else the view before and after.
+    fn with_view(&mut self, f: impl FnOnce(&mut View)) -> Option<(View, View)> {
+        if !self.current().is_scatter() {
+            return None;
+        }
+        let before = self.view;
+        f(&mut self.view);
+        Some((before, self.view))
     }
 
     /// Zoom the scatter in or out by a step (`+` / `-`).
     pub fn zoom(&mut self, inward: bool) -> String {
-        if !self.on_scatter() {
-            return "only the scatter zooms (m and v choose it)".into();
-        }
-        let mut view = self.data.view;
-        view.zoom(inward);
-        self.set_view(view);
-        if view.is_whole() {
-            "the whole scatter".into()
-        } else {
-            format!("zoom ×{:.1} · arrows pan · 0 shows it whole", view.zoom)
+        match self.with_view(|v| v.zoom(inward)) {
+            None => "only the scatter zooms (m and v choose it)".into(),
+            Some((_, v)) if v.is_whole() => "the whole scatter".into(),
+            Some((_, v)) => format!("zoom ×{:.1} · arrows pan · 0 shows it whole", v.zoom),
         }
     }
 
     /// Pan the scatter by a step (the arrows); `dx`, `dy` right and up.
     pub fn pan(&mut self, dx: f32, dy: f32) -> String {
-        if !self.on_scatter() {
-            return "only the scatter pans (m and v choose it)".into();
+        match self.with_view(|v| v.pan(dx, dy)) {
+            None => "only the scatter pans (m and v choose it)".into(),
+            Some((a, b)) if a != b => String::new(),
+            Some((_, v)) if v.is_whole() => "+ zooms in; the arrows then pan".into(),
+            Some(_) => "at the edge of the scatter".into(),
         }
-        let mut view = self.data.view;
-        view.pan(dx, dy);
-        if view == self.data.view {
-            return if view.is_whole() {
-                "+ zooms in; the arrows then pan".into()
-            } else {
-                "at the edge of the scatter".into()
-            };
-        }
-        self.set_view(view);
-        String::new()
     }
 
     /// The whole scatter again (`0`).
     pub fn reset_view(&mut self) -> String {
-        if !self.on_scatter() {
-            return "only the scatter zooms (m and v choose it)".into();
+        match self.with_view(|v| *v = View::default()) {
+            None => "only the scatter zooms (m and v choose it)".into(),
+            Some(_) => "the whole scatter".into(),
         }
-        self.set_view(View::default());
-        "the whole scatter".into()
     }
 
-    fn set_view(&mut self, view: View) {
-        if self.data.view != view {
-            self.data.view = view;
-            self.redraw();
+    /// What `panel` looks like drawn now, a scatter at `view`.
+    fn look(&self, panel: Panel, view: View) -> Look {
+        let scatter = panel.is_scatter();
+        Look {
+            panel,
+            style: scatter.then_some(self.style),
+            view: if scatter { view } else { View::default() },
         }
     }
 
     /// Open the thumbnail grid on the figure on screen (`w`).
     pub fn open_grid(&mut self) {
-        let mut tiles = self.data.scatters();
-        let pair = match self.current() {
-            Panel::Diffusion { x, y } => (x, y),
-            _ => self.pair,
-        };
-        for t in &mut tiles {
-            if let Panel::Diffusion { .. } = t {
-                *t = Panel::Diffusion {
-                    x: pair.0,
-                    y: pair.1,
-                };
-            }
-        }
-        tiles.extend(
-            self.panels
-                .iter()
-                .copied()
-                .filter(|p| !matches!(p, Panel::Layout { .. } | Panel::Diffusion { .. })),
-        );
+        let mut tiles: Vec<Panel> = self
+            .data
+            .scatters()
+            .into_iter()
+            .map(|p| self.at_pair(p))
+            .collect();
+        tiles.extend(self.panels.iter().copied().filter(|p| !p.is_scatter()));
         let cur = self.current();
         let sel = tiles.iter().position(|&t| t == cur).unwrap_or(0);
-        self.grid = Some(Grid {
-            drawn: RefCell::new(vec![None; tiles.len()]),
-            tiles,
-            sel,
-        });
+        self.grid = Some(Grid { tiles, sel });
     }
 
     /// Show the grid's selected tile and close the grid (Enter).
@@ -347,118 +358,113 @@ impl FigurePane {
         let Some(&tile) = g.tiles.get(g.sel) else {
             return;
         };
-        let scatter = |p: &Panel| matches!(p, Panel::Layout { .. } | Panel::Diffusion { .. });
-        let at = if scatter(&tile) {
-            self.panels.iter().position(scatter)
+        let at = if tile.is_scatter() {
+            self.panels.iter().position(|p| p.is_scatter())
         } else {
             self.panels.iter().position(|&p| p == tile)
         };
         let Some(at) = at else { return };
-        if self.panels[at] != tile {
-            if let Panel::Diffusion { x, y } = self.panels[at] {
-                self.pair = (x, y);
-            }
+        if self.at_pair(self.panels[at]) != tile {
             self.panels[at] = tile;
-            self.set_view(View::default());
+            self.view = View::default();
         }
         self.sel = at;
         self.shown = true;
     }
 
-    /// Tile `i` of the grid drawn for `area`, the scatter whole; kept until
-    /// the tile's size or a setting changes.
-    pub fn tile(&self, i: usize, area: Rect) -> Option<Ref<'_, Result<Protocol, String>>> {
-        let g = self.grid.as_ref()?;
-        let panel = *g.tiles.get(i)?;
-        let size = (area.width, area.height);
-        if g.drawn.borrow()[i].as_ref().is_none_or(|(s, _)| *s != size) {
-            let px = self.picker.font_size();
-            let w = (u32::from(area.width) * u32::from(px.width)).max(32);
-            let h = (u32::from(area.height) * u32::from(px.height)).max(32);
-            let drawn = self
-                .data
-                .figure_at(panel, w, h, View::default())
-                .and_then(|f| figures::render(&f))
-                .map_err(|e| format!("{e:#}"))
-                .and_then(|img| {
-                    self.picker
-                        .new_protocol(
-                            DynamicImage::ImageRgba8(img),
-                            Size::new(area.width, area.height),
-                            Resize::Fit(Some(FilterType::Triangle)),
-                        )
-                        .map_err(|e| format!("{e:#}"))
-                });
-            g.drawn.borrow_mut()[i] = Some((size, drawn));
+    /// Draw the grid's tiles `wanted` (index, area) that are not drawn yet:
+    /// the figures in parallel, then their terminal pictures.
+    pub fn draw_tiles(&self, wanted: &[(usize, Rect)]) {
+        let Some(g) = &self.grid else { return };
+        let missing: Vec<(Sized, Rect)> = wanted
+            .iter()
+            .filter_map(|&(i, area)| {
+                let key = (
+                    self.look(*g.tiles.get(i)?, View::default()),
+                    (area.width, area.height),
+                );
+                let drawn = self.tiles.borrow().iter().any(|(k, _)| *k == key);
+                (!drawn).then_some((key, area))
+            })
+            .collect();
+        if missing.is_empty() {
+            return;
         }
-        Some(Ref::map(g.drawn.borrow(), |d| {
-            &d[i].as_ref().expect("filled above").1
-        }))
+        let (data, px) = (&self.data, self.picker.font_size());
+        let images: Vec<Result<image::RgbaImage, String>> = missing
+            .par_iter()
+            .map(|((look, _), area)| {
+                let w = (u32::from(area.width) * u32::from(px.width)).max(32);
+                let h = (u32::from(area.height) * u32::from(px.height)).max(32);
+                let style = look.style.unwrap_or_default();
+                data.figure(look.panel, w, h, &style, View::default())
+                    .and_then(|f| figures::render(&f))
+                    .map_err(|e| format!("{e:#}"))
+            })
+            .collect();
+        let mut tiles = self.tiles.borrow_mut();
+        if tiles.len() + missing.len() > TILES_KEPT {
+            tiles.clear();
+        }
+        for ((key, area), img) in missing.into_iter().zip(images) {
+            let drawn = img.and_then(|img| {
+                self.picker
+                    .new_protocol(
+                        DynamicImage::ImageRgba8(img),
+                        Size::new(area.width, area.height),
+                        Resize::Fit(Some(FilterType::Triangle)),
+                    )
+                    .map_err(|e| format!("{e:#}"))
+            });
+            tiles.push((key, drawn));
+        }
     }
 
-    /// Labels on the scatters in turn (`t`), as `senna view` does.
-    pub fn cycle_labels(&mut self) -> String {
-        let note = self.data.cycle_labels();
-        self.redraw();
-        note
-    }
-
-    /// The next colouring of the scatters (`c`).
-    pub fn cycle_colouring(&mut self) -> String {
-        let note = self.data.cycle_colouring();
-        self.redraw();
-        note
+    /// Tile `i` of the grid drawn for `area`, the scatter whole.
+    pub fn tile(&self, i: usize, area: Rect) -> Option<Ref<'_, Drawn>> {
+        let g = self.grid.as_ref()?;
+        let key = (
+            self.look(*g.tiles.get(i)?, View::default()),
+            (area.width, area.height),
+        );
+        let find = || self.tiles.borrow().iter().position(|(k, _)| *k == key);
+        if find().is_none() {
+            self.draw_tiles(&[(i, area)]);
+        }
+        let at = find()?;
+        Some(Ref::map(self.tiles.borrow(), |t| &t[at].1))
     }
 
     /// The scatter's next coordinates (`m`): the run's layouts, then the
-    /// diffusion map, which comes back on the pair last shown.
+    /// diffusion map at the pair last shown.
     pub fn next_layout(&mut self) -> String {
         let cur = self.current();
         let Some(next) = self.data.next_scatter(cur) else {
-            return match cur {
-                Panel::Layout { .. } | Panel::Diffusion { .. } => {
-                    "only one layout in this run".into()
-                }
-                _ => "m switches the layout of the scatter (v shows it)".into(),
+            return if cur.is_scatter() {
+                "only one layout in this run".into()
+            } else {
+                "m switches the layout of the scatter (v shows it)".into()
             };
         };
-        if let Panel::Diffusion { x, y } = cur {
-            self.pair = (x, y);
-        }
-        self.set_view(View::default());
-        self.panels[self.sel] = match next {
-            Panel::Diffusion { .. } => Panel::Diffusion {
-                x: self.pair.0,
-                y: self.pair.1,
-            },
-            p => p,
-        };
-        self.data.title(self.current())
-    }
-
-    /// Draw the current panel and the thumbnails again, after the style or
-    /// the view changed.
-    fn redraw(&self) {
-        self.image.borrow_mut().take();
-        self.rendered.borrow_mut().take();
-        if let Some(g) = &self.grid {
-            g.drawn.borrow_mut().iter_mut().for_each(|t| *t = None);
-        }
+        self.panels[self.sel] = next;
+        self.view = View::default();
+        self.title(self.current())
     }
 
     /// The current figure drawn for `area`, as senna view draws its
-    /// figures. The panel is rasterised once (at the pane's pixel size when
+    /// figures. The figure is rasterised once (at the pane's pixel size when
     /// first shown) and only fitted again when the pane changes size; a
     /// failure is kept too, so it is not retried every frame.
-    pub fn protocol(&self, area: Rect) -> Ref<'_, Result<Protocol, String>> {
-        let key = (self.current(), area.width, area.height);
+    pub fn protocol(&self, area: Rect) -> Ref<'_, Drawn> {
+        let look = self.look(self.current(), self.view);
+        let key = (look, (area.width, area.height));
         if self
             .rendered
             .borrow()
             .as_ref()
             .is_none_or(|(k, _)| *k != key)
         {
-            let drawn = self.image(key.0, area).and_then(|img| {
+            let drawn = self.image(look, area).and_then(|img| {
                 self.picker
                     .new_protocol(
                         img,
@@ -474,10 +480,10 @@ impl FigurePane {
         })
     }
 
-    /// `panel` rasterised, from the cache when it is the one last drawn.
-    fn image(&self, panel: Panel, area: Rect) -> Result<DynamicImage, String> {
-        if let Some((p, img)) = self.image.borrow().as_ref() {
-            if *p == panel {
+    /// `look` rasterised, from the cache when it is the one last drawn.
+    fn image(&self, look: Look, area: Rect) -> Result<DynamicImage, String> {
+        if let Some((l, img)) = self.image.borrow().as_ref() {
+            if *l == look {
                 return img.clone();
             }
         }
@@ -486,18 +492,18 @@ impl FigurePane {
         let h = (u32::from(area.height) * u32::from(px.height)).max(64);
         let img = self
             .data
-            .figure(panel, w, h)
+            .figure(look.panel, w, h, &self.style, look.view)
             .and_then(|f| figures::render(&f))
             .map(DynamicImage::ImageRgba8)
             .map_err(|e| format!("{e:#}"));
-        *self.image.borrow_mut() = Some((panel, img.clone()));
+        *self.image.borrow_mut() = Some((look, img.clone()));
         img
     }
 
-    /// Export the current panel and log it.
+    /// Export the current panel as it is on screen and log it.
     pub fn export(&mut self) -> Result<String> {
         let panel = self.current();
-        let e = self.data.export(panel)?;
+        let e = self.data.export(panel, &self.style, self.view)?;
         let logged = self
             .exports
             .gallery

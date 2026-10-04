@@ -269,12 +269,12 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
   several; cells without a value are grey, and a categorical colouring has
   a legend. Unassigned cells get no label.
   `+`/`=` and `-`/`_` zoom the scatter in and out about its centre, the
-  arrows pan it (with the exports strip open they move in the strip
-  instead), and `0` shows it whole again, as in senna view. The figure is
+  arrows pan it (with the exports strip open, ↑ and ↓ move in the strip
+  and ← → still pan), and `0` shows it whole again, as in senna view. The figure is
   drawn again from the data at the part on screen, so points and labels stay
   sharp; a label sits at the median of its type's cells on screen, and a
-  type with none there has no label. A new layout (`m`) or diffusion pair
-  starts whole. The order and connectivity panels do not zoom.
+  type with none there has no label. A new layout (`m`), diffusion pair or
+  figure (`v`) starts whole. The order and connectivity panels do not zoom.
 - **Order by type**: median pseudotime and middle half per type, in order of
   the median.
 - **Connectivity**: PAGA connectivity between the node types as a Hinton

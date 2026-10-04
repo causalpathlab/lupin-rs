@@ -10,7 +10,7 @@ use crate::manifest::run::{derive_out_prefix, resolve, RunManifest};
 use anyhow::{Context, Result};
 use enrichment::UNASSIGNED_LABEL;
 use legume_numeric::matrix::dense_mat_io::Mat;
-use legume_numeric::matrix::parquet::{read_table_columns, ParquetReader};
+use legume_numeric::matrix::parquet::{peek_parquet_field_names, read_table_columns};
 use legume_numeric::matrix::traits::IoOps;
 use legume_numeric::matrix::utils::{median, quantiles};
 use legume_plot::hinton::{hinton_size, render_hinton, HintonOpts};
@@ -23,6 +23,7 @@ use legume_plot::FigureFormats;
 use rustc_hash::FxHashMap;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Cells no root reaches, pairs outside the prior, and the frame.
 const GREY: Rgb = (190, 190, 190);
@@ -37,6 +38,15 @@ const EXPORT_DPI: f32 = 200.0;
 /// large, largest, then off.
 pub(crate) const TEXT_SCALES: [f32; 4] = [1.0, 1.4, 1.8, 2.4];
 const TEXT_SIZES: [&str; 4] = ["small", "medium", "large", "largest"];
+/// The label states `t` cycles through: each size, then off.
+const LABELS: [Option<usize>; 5] = [Some(0), Some(1), Some(2), Some(3), None];
+
+/// The value after `cur` in `all`, wrapping round; the first when `cur` is
+/// not in it.
+pub(crate) fn next_in<T: Copy + PartialEq>(all: &[T], cur: T) -> T {
+    let at = all.iter().position(|&v| v == cur);
+    all[at.map_or(0, |k| (k + 1) % all.len())]
+}
 
 /// What the cells of a scatter are coloured by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +66,11 @@ impl Colouring {
             Self::Component => "component",
         }
     }
+
+    /// Its slot in [`TrajectoryData`]'s colour cache.
+    fn slot(self) -> usize {
+        self as usize
+    }
 }
 
 /// How the scatters are drawn: the label size (an index into
@@ -72,6 +87,31 @@ impl Default for Style {
             labels: Some(1),
             colouring: Colouring::Pseudotime,
         }
+    }
+}
+
+impl Style {
+    /// Labels in turn: small, medium, large, largest, off (`t`, as
+    /// `senna view` does); the note for the status line.
+    pub(crate) fn cycle_labels(&mut self) -> String {
+        self.labels = next_in(&LABELS, self.labels);
+        match self.labels {
+            Some(k) => {
+                let then = next_in(&LABELS, self.labels).map_or("off", |j| TEXT_SIZES[j]);
+                format!("labels {} · t for {then}", TEXT_SIZES[k])
+            }
+            None => "labels off · t shows them small".into(),
+        }
+    }
+
+    /// The next of the colourings `all` (`c`); the note for the status line.
+    pub(crate) fn cycle_colouring(&mut self, all: &[Colouring]) -> String {
+        self.colouring = next_in(all, self.colouring);
+        format!(
+            "coloured by {} · c for {}",
+            self.colouring.name(),
+            next_in(all, self.colouring).name()
+        )
     }
 }
 
@@ -155,6 +195,12 @@ pub(crate) enum Panel {
 }
 
 impl Panel {
+    /// Whether it is a scatter of cells, which the style colours and labels
+    /// and which pans and zooms.
+    pub(crate) fn is_scatter(self) -> bool {
+        matches!(self, Self::Layout { .. } | Self::Diffusion { .. })
+    }
+
     /// The figure's name in file names and the export log.
     pub(crate) fn slug(self) -> String {
         match self {
@@ -200,6 +246,7 @@ pub(crate) struct Export {
 }
 
 /// A trajectory run's outputs, aligned to its cells.
+#[derive(Default)]
 pub(crate) struct TrajectoryData {
     /// The manifest the outputs were read from; export names derive from it.
     pub(crate) manifest: PathBuf,
@@ -216,10 +263,17 @@ pub(crate) struct TrajectoryData {
     /// The run's layouts that share cells with it, best first.
     pub(crate) layouts: Vec<Layout>,
     pub(crate) edges: Vec<EdgeRow>,
-    pub(crate) style: Style,
-    /// The part of the scatter on screen (`+` `-` and the arrows).
-    pub(crate) view: View,
+    /// Each colouring's cell colours and legend, made on first use.
+    pub(crate) colours: [OnceLock<CellColours>; 4],
+    /// Each scatter's type medians over all its cells, made on first use.
+    pub(crate) medians: Mutex<Vec<(Panel, Arc<Medians>)>>,
 }
+
+/// Each cell's colour (`None` for grey) and the legend of a categorical
+/// colouring.
+type CellColours = (Vec<Option<Rgb>>, Vec<(String, Rgb)>);
+/// Each type's median position on a scatter.
+type Medians = BTreeMap<Box<str>, (f32, f32)>;
 
 /// A 2D layout of the run's cells, NaN where a cell has none.
 pub(crate) struct Layout {
@@ -239,12 +293,8 @@ impl TrajectoryData {
         };
         let at = |rel: &str| resolve(dir, rel);
         let pt_path = at(pt_rel);
-        let (strings, numbers) = read_table_columns(&pt_path, &["cell", "type"], &["pseudotime"])
-            .with_context(|| format!("reading {pt_path}"))?;
-        let cells: Vec<Box<str>> = strings[0].clone();
-        let types: Vec<Box<str>> = strings[1].clone();
-        let pseudotime: Vec<f32> = numbers[0].iter().map(|&v| v as f32).collect();
-        let (component, lineage) = components_and_lineages(&pt_path, cells.len())?;
+        let (cells, types, pseudotime, component, lineage) =
+            read_pseudotime(&pt_path).with_context(|| format!("reading {pt_path}"))?;
         let index: FxHashMap<&str, usize> = cells
             .iter()
             .enumerate()
@@ -278,8 +328,7 @@ impl TrajectoryData {
             diffusion,
             layouts: all,
             edges,
-            style: Style::default(),
-            view: View::default(),
+            ..Self::default()
         }))
     }
 
@@ -288,9 +337,10 @@ impl TrajectoryData {
         derive_out_prefix(&self.manifest.to_string_lossy())
     }
 
-    /// A panel's title, naming the layout drawn and the colouring.
-    pub(crate) fn title(&self, panel: Panel) -> String {
-        let colouring = self.style.colouring.name();
+    /// A panel's title, naming the layout drawn and, on a scatter, the
+    /// colouring.
+    pub(crate) fn title(&self, panel: Panel, colouring: Colouring) -> String {
+        let colouring = colouring.name();
         match panel {
             Panel::Layout { k } => {
                 let method = self.layouts.get(k).and_then(|l| l.method.as_deref());
@@ -316,7 +366,7 @@ impl TrajectoryData {
     }
 
     /// The coordinates a scatter can show, in the order `m` steps through
-    /// them: the layouts, then the diffusion map.
+    /// them: the layouts, then the diffusion map at its first pair.
     pub(crate) fn scatters(&self) -> Vec<Panel> {
         let mut out: Vec<Panel> = (0..self.layouts.len())
             .map(|k| Panel::Layout { k })
@@ -359,40 +409,6 @@ impl TrajectoryData {
         out
     }
 
-    /// Labels in turn: small, medium, large, largest, off; the note for the
-    /// status line.
-    pub(crate) fn cycle_labels(&mut self) -> String {
-        let next = match self.style.labels {
-            Some(k) if k + 1 < TEXT_SCALES.len() => Some(k + 1),
-            Some(_) => None,
-            None => Some(0),
-        };
-        self.style.labels = next;
-        match next {
-            Some(k) => {
-                let then = TEXT_SIZES.get(k + 1).copied().unwrap_or("off");
-                format!("labels {} · t for {then}", TEXT_SIZES[k])
-            }
-            None => "labels off · t shows them small".into(),
-        }
-    }
-
-    /// The next colouring; the note for the status line.
-    pub(crate) fn cycle_colouring(&mut self) -> String {
-        let all = self.colourings();
-        let at = all
-            .iter()
-            .position(|&c| c == self.style.colouring)
-            .unwrap_or(0);
-        self.style.colouring = all[(at + 1) % all.len()];
-        let then = all[(at + 2) % all.len()];
-        format!(
-            "coloured by {} · c for {}",
-            self.style.colouring.name(),
-            then.name()
-        )
-    }
-
     /// The figures these outputs allow, in display order: one scatter (the
     /// best layout, else the diffusion map), the order and the connectivity.
     pub(crate) fn panels(&self) -> Vec<Panel> {
@@ -432,24 +448,26 @@ impl TrajectoryData {
         }
     }
 
-    /// The figure, drawn to fit `w × h` pixels, a scatter at the view on
-    /// screen.
-    pub(crate) fn figure(&self, panel: Panel, w: u32, h: u32) -> Result<Figure> {
-        self.figure_at(panel, w, h, self.view)
-    }
-
-    /// The figure with a scatter at `view` (a thumbnail shows it whole).
-    pub(crate) fn figure_at(&self, panel: Panel, w: u32, h: u32, view: View) -> Result<Figure> {
+    /// The figure, drawn to fit `w × h` pixels; a scatter in `style` at
+    /// `view` (a thumbnail shows it whole).
+    pub(crate) fn figure(
+        &self,
+        panel: Panel,
+        w: u32,
+        h: u32,
+        style: &Style,
+        view: View,
+    ) -> Result<Figure> {
         match panel {
             Panel::Layout { k } => {
                 let l = self.layouts.get(k).context("the run has no layout")?;
-                self.scatter(&l.x, &l.y, w, h, true, view)
+                self.scatter(panel, &l.x, &l.y, (w, h), true, style, view)
             }
             Panel::Diffusion { x, y } => {
                 let d = self.diffusion.as_ref().context("no diffusion map")?;
                 let cx: Vec<f32> = d.column(x).iter().copied().collect();
                 let cy: Vec<f32> = d.column(y).iter().copied().collect();
-                self.scatter(&cx, &cy, w, h, false, view)
+                self.scatter(panel, &cx, &cy, (w, h), false, style, view)
             }
             Panel::Order => Ok(self.order_figure(w, h)),
             Panel::Connectivity => Ok(self.connectivity_figure(w, h)),
@@ -457,15 +475,15 @@ impl TrajectoryData {
     }
 
     /// Write `panel` as `{prefix}.trajectory.{panel}.svg` and `.pdf`, moved
-    /// past existing files as `-2`, `-3` ….
-    pub(crate) fn export(&self, panel: Panel) -> Result<Export> {
+    /// past existing files as `-2`, `-3` …, a scatter as it is on screen.
+    pub(crate) fn export(&self, panel: Panel, style: &Style, view: View) -> Result<Export> {
         let base = free_base(&format!(
             "{}.trajectory.{}",
             self.prefix(),
             self.slug(panel)
         ));
         let w = (EXPORT_WIDTH_IN * EXPORT_DPI) as u32;
-        let fig = self.figure(panel, w, w * 3 / 4)?;
+        let fig = self.figure(panel, w, w * 3 / 4, style, view)?;
         let b = base.to_string_lossy();
         let formats = FigureFormats {
             svg: true,
@@ -477,17 +495,17 @@ impl TrajectoryData {
             PathBuf::from(format!("{b}.svg")),
             PathBuf::from(format!("{b}.pdf")),
         ];
+        let zoomed = if panel.is_scatter() && !view.is_whole() {
+            format!(" · zoomed ×{:.1}", view.zoom)
+        } else {
+            String::new()
+        };
         Ok(Export {
             base,
             files,
             what: format!(
-                "{}{} · {EXPORT_WIDTH_IN:.0} in · {EXPORT_DPI:.0} dpi",
-                self.title(panel),
-                match panel {
-                    Panel::Layout { .. } | Panel::Diffusion { .. } if !self.view.is_whole() =>
-                        format!(" · zoomed ×{:.1}", self.view.zoom),
-                    _ => String::new(),
-                }
+                "{}{zoomed} · {EXPORT_WIDTH_IN:.0} in · {EXPORT_DPI:.0} dpi",
+                self.title(panel, style.colouring),
             ),
         })
     }
@@ -496,13 +514,15 @@ impl TrajectoryData {
     /// when they have no value), the type labels at the medians of their
     /// cells on screen, with the prior's direct edges as arrows between type
     /// medians when `arrows`.
+    #[allow(clippy::too_many_arguments)]
     fn scatter(
         &self,
+        panel: Panel,
         x: &[f32],
         y: &[f32],
-        w: u32,
-        h: u32,
+        (w, h): (u32, u32),
         arrows: bool,
+        style: &Style,
         view: View,
     ) -> Result<Figure> {
         let ext = Extent { w, h };
@@ -516,7 +536,7 @@ impl TrajectoryData {
                 && (bounds.ymin..=bounds.ymax).contains(&y[*i])
         };
         let shown: Vec<usize> = finite.iter().copied().filter(inside).collect();
-        let (colour_of, legend) = self.cell_colours();
+        let (colour_of, legend) = self.cell_colours(style.colouring);
         // Grey cells first, so coloured ones draw over them.
         let mut order = shown.clone();
         order.sort_by_key(|&i| colour_of[i].is_some());
@@ -537,8 +557,9 @@ impl TrajectoryData {
             0.85,
             PointShape::Circle,
         )?)];
+        let all = self.medians(panel, x, y, &finite);
         if arrows {
-            layers.extend(self.arrow_layers(x, y, &finite, &bounds, ext, radius)?);
+            layers.extend(self.arrow_layers(&all, &bounds, ext, radius)?);
         }
         let mut svg = emit_svg(
             &layers,
@@ -550,14 +571,22 @@ impl TrajectoryData {
                 ..SvgOpts::default()
             },
         );
-        // Text over the layers, as legume-plot draws its labels.
+        // Text over the layers, as legume-plot draws its labels. Spliced in:
+        // legume-plot's labels come with an image per layer.
         let base_font = (w.min(h) as f32 / 48.0).max(6.0);
-        let mut text = legend_svg(&legend, base_font);
-        if let Some(k) = self.style.labels {
+        let mut text = legend_svg(legend, base_font);
+        if let Some(k) = style.labels {
             let font = base_font * TEXT_SCALES[k];
-            for (t, at) in self.type_medians(x, y, &shown) {
-                if t != UNASSIGNED_LABEL {
-                    text += &halo_text(to_pixel(at, &bounds, ext), font, INK, t);
+            let on_screen;
+            let medians = if view.is_whole() {
+                &*all
+            } else {
+                on_screen = self.type_medians(x, y, &shown);
+                &on_screen
+            };
+            for (t, &at) in medians {
+                if t.as_ref() != UNASSIGNED_LABEL {
+                    text += &svg_text(to_pixel(at, &bounds, ext), font, Some("middle"), true, t);
                 }
             }
         }
@@ -566,23 +595,9 @@ impl TrajectoryData {
         Ok(Figure { svg, w, h })
     }
 
-    /// Each cell's colour in the style's colouring (`None` for grey: no
-    /// pseudotime, unassigned, or no single lineage or component), and the
-    /// legend of a categorical colouring.
-    fn cell_colours(&self) -> (Vec<Option<Rgb>>, Vec<(String, Rgb)>) {
-        let categorical = |codes: &[i32], name: &dyn Fn(i32) -> String| {
-            let mut used: Vec<i32> = codes.iter().copied().filter(|&c| c >= 0).collect();
-            used.sort_unstable();
-            used.dedup();
-            let pal = palette::resolve(&Palette::Auto, used.len());
-            let colour = |c: i32| used.binary_search(&c).ok().map(|k| palette::color(&pal, k));
-            let legend = used
-                .iter()
-                .map(|&c| (name(c), colour(c).expect("used")))
-                .collect();
-            (codes.iter().map(|&c| colour(c)).collect(), legend)
-        };
-        match self.style.colouring {
+    /// Each cell's colour in `colouring` and its legend, made once.
+    fn cell_colours(&self, colouring: Colouring) -> &CellColours {
+        self.colours[colouring.slot()].get_or_init(|| match colouring {
             Colouring::Pseudotime => (
                 self.pseudotime
                     .iter()
@@ -591,42 +606,45 @@ impl TrajectoryData {
                 Vec::new(),
             ),
             Colouring::Type => {
-                let mut names: Vec<&str> = self
+                let keys: Vec<Option<&str>> = self
                     .types
                     .iter()
-                    .map(AsRef::as_ref)
-                    .filter(|&t| t != UNASSIGNED_LABEL)
+                    .map(|t| Some(t.as_ref()).filter(|&t| t != UNASSIGNED_LABEL))
                     .collect();
-                names.sort_unstable();
-                names.dedup();
-                let codes: Vec<i32> = self
-                    .types
-                    .iter()
-                    .map(|t| names.binary_search(&t.as_ref()).map_or(-1, |k| k as i32))
-                    .collect();
-                categorical(&codes, &|c| names[c as usize].to_string())
+                categorical(&keys, str::to_string)
             }
-            Colouring::Lineage => categorical(&self.lineage, &|c| format!("lineage {c}")),
-            Colouring::Component => categorical(&self.component, &|c| format!("component {c}")),
-        }
+            Colouring::Lineage => categorical(&codes(&self.lineage), |c| format!("lineage {c}")),
+            Colouring::Component => {
+                categorical(&codes(&self.component), |c| format!("component {c}"))
+            }
+        })
     }
 
-    /// The prior's direct edges as arrows between type medians: supported
-    /// ones solid, the rest faded.
+    /// The type medians over all of `cells` on the scatter `panel`, kept for
+    /// the next figure of it.
+    fn medians(&self, panel: Panel, x: &[f32], y: &[f32], cells: &[usize]) -> Arc<Medians> {
+        let mut kept = self.medians.lock().expect("not poisoned");
+        if let Some((_, m)) = kept.iter().find(|(p, _)| *p == panel) {
+            return m.clone();
+        }
+        let m = Arc::new(self.type_medians(x, y, cells));
+        kept.push((panel, m.clone()));
+        m
+    }
+
+    /// The prior's direct edges as arrows between the type `medians`:
+    /// supported ones solid, the rest faded.
     fn arrow_layers(
         &self,
-        x: &[f32],
-        y: &[f32],
-        cells: &[usize],
+        medians: &Medians,
         bounds: &DataBounds,
         ext: Extent,
         radius: f32,
     ) -> Result<Vec<TopicLayer>> {
-        let medians = self.type_medians(x, y, cells);
         let mut strong = Vec::new();
         let mut weak = Vec::new();
         for e in self.edges.iter().filter(|e| e.in_prior) {
-            if let (Some(&a), Some(&b)) = (medians.get(e.a.as_ref()), medians.get(e.b.as_ref())) {
+            if let (Some(&a), Some(&b)) = (medians.get(&e.a), medians.get(&e.b)) {
                 let seg = (to_pixel(a, bounds, ext), to_pixel(b, bounds, ext));
                 if e.verdict == Some(Verdict::Supported) {
                     strong.push(seg);
@@ -653,7 +671,7 @@ impl TrajectoryData {
     }
 
     /// Each type's median position among `cells`.
-    fn type_medians(&self, x: &[f32], y: &[f32], cells: &[usize]) -> BTreeMap<&str, (f32, f32)> {
+    fn type_medians(&self, x: &[f32], y: &[f32], cells: &[usize]) -> Medians {
         let mut by_type: BTreeMap<&str, (Vec<f32>, Vec<f32>)> = BTreeMap::new();
         for &i in cells {
             let e = by_type.entry(self.types[i].as_ref()).or_default();
@@ -662,7 +680,7 @@ impl TrajectoryData {
         }
         by_type
             .into_iter()
-            .map(|(t, (xs, ys))| (t, (median(&xs), median(&ys))))
+            .map(|(t, (xs, ys))| (t.into(), (median(&xs), median(&ys))))
             .collect()
     }
 
@@ -832,34 +850,57 @@ fn layouts(manifest: &RunManifest) -> Vec<(Option<String>, String)> {
     out
 }
 
-/// Per cell of the pseudotime table at `path` (`n` rows): its component
-/// and the one lineage its type lies on (-1 when shared or none), from the
-/// `component` and `L0`, `L1`, … columns; all -1 when they are absent.
-fn components_and_lineages(path: &str, n: usize) -> Result<(Vec<i32>, Vec<i32>)> {
-    let t =
-        ParquetReader::new(path, None, None, None).with_context(|| format!("reading {path}"))?;
-    let ncols = t.column_names.len();
-    let col = |name: &str| t.column_names.iter().position(|c| c.as_ref() == name);
-    let at = |i: usize, j: usize| t.row_major_data[i * ncols + j];
-    let rows = t.row_major_data.len().checked_div(ncols).unwrap_or(0);
-    anyhow::ensure!(rows == n, "{path}: {rows} rows for {n} cells");
-    let component = match col("component") {
-        Some(j) => (0..n).map(|i| at(i, j) as i32).collect(),
-        None => vec![-1; n],
-    };
-    let lineages: Vec<usize> = (0..).map_while(|k| col(&format!("L{k}"))).collect();
-    let lineage = (0..n)
-        .map(|i| {
-            let w: Vec<f64> = lineages.iter().map(|&j| at(i, j)).collect();
-            let best = w.iter().copied().fold(0.0, f64::max);
-            let on: Vec<usize> = (0..w.len()).filter(|&k| w[k] == best).collect();
-            match on.as_slice() {
-                [k] if best > 0.0 => *k as i32,
-                _ => -1,
-            }
-        })
+/// The pseudotime table at `path`, in one read: per cell its name, type,
+/// pseudotime, component (-1 when the table has none) and the one lineage
+/// its type lies on (-1 when shared or none), from the `L0`, `L1`, …
+/// weights.
+#[allow(clippy::type_complexity)]
+fn read_pseudotime(
+    path: &str,
+) -> Result<(Vec<Box<str>>, Vec<Box<str>>, Vec<f32>, Vec<i32>, Vec<i32>)> {
+    let fields = peek_parquet_field_names(path)?;
+    let has = |name: &str| fields.iter().any(|f| f.as_ref() == name);
+    let lineages: Vec<String> = (0..)
+        .map(|k| format!("L{k}"))
+        .take_while(|c| has(c))
         .collect();
-    Ok((component, lineage))
+    let with_component = has("component");
+    let mut numeric = vec!["pseudotime"];
+    if with_component {
+        numeric.push("component");
+    }
+    numeric.extend(lineages.iter().map(String::as_str));
+    let (strings, numbers) = read_table_columns(path, &["cell", "type"], &numeric)?;
+    let [cells, types]: [Vec<Box<str>>; 2] = strings
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("no cell and type columns"))?;
+    let n = cells.len();
+    let pseudotime = numbers[0].iter().map(|&v| v as f32).collect();
+    let component = if with_component {
+        numbers[1].iter().map(|&v| v as i32).collect()
+    } else {
+        vec![-1; n]
+    };
+    let weights = &numbers[1 + usize::from(with_component)..];
+    let lineage = (0..n).map(|i| sole_lineage(weights, i)).collect();
+    Ok((cells, types, pseudotime, component, lineage))
+}
+
+/// The lineage cell `i` weighs most on, -1 when it ties or weighs on none.
+fn sole_lineage(weights: &[Vec<f64>], i: usize) -> i32 {
+    let (mut best, mut at, mut tied) = (0.0, -1, false);
+    for (k, w) in weights.iter().enumerate() {
+        if w[i] > best {
+            (best, at, tied) = (w[i], k as i32, false);
+        } else if w[i] == best && best > 0.0 {
+            tied = true;
+        }
+    }
+    if tied {
+        -1
+    } else {
+        at
+    }
 }
 
 /// The layout at `path` as `(x, y)` per cell of `index`, NaN for a cell the
@@ -903,15 +944,51 @@ fn raster_layer(png: Vec<u8>) -> TopicLayer {
     }
 }
 
-/// `text` centred on `xy` with a white halo, as legume-plot draws a label.
-fn halo_text(xy: (f32, f32), font: f32, colour: Rgb, text: &str) -> String {
+/// Colours for `keys` (one per cell, `None` for grey), a palette entry per
+/// distinct key in order, and the legend naming them.
+fn categorical<K: Ord + Copy>(keys: &[Option<K>], name: impl Fn(K) -> String) -> CellColours {
+    let mut used: Vec<K> = keys.iter().flatten().copied().collect();
+    used.sort_unstable();
+    used.dedup();
+    let pal = palette::resolve(&Palette::Auto, used.len());
+    let colours = keys
+        .iter()
+        .map(|k| {
+            k.and_then(|k| used.binary_search(&k).ok())
+                .map(|j| palette::color(&pal, j))
+        })
+        .collect();
+    let legend = used
+        .iter()
+        .enumerate()
+        .map(|(j, &k)| (name(k), palette::color(&pal, j)))
+        .collect();
+    (colours, legend)
+}
+
+/// Lineage or component codes as keys, -1 (none) as `None`.
+fn codes(v: &[i32]) -> Vec<Option<i32>> {
+    v.iter().map(|&c| (c >= 0).then_some(c)).collect()
+}
+
+/// `text` at `xy` in [`INK`], centred vertically and anchored at `anchor`
+/// (the start when `None`), with a white halo as legume-plot draws a label
+/// when `halo`.
+fn svg_text(xy: (f32, f32), font: f32, anchor: Option<&str>, halo: bool, text: &str) -> String {
     let (x, y) = xy;
-    let (r, g, b) = colour;
+    let (r, g, b) = INK;
+    let anchor = anchor.map_or(String::new(), |a| format!(" text-anchor='{a}'"));
+    let halo = if halo {
+        format!(
+            " paint-order='stroke' stroke='white' stroke-width='{:.2}' stroke-linejoin='round'",
+            (font * 0.35).max(1.5)
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "<text x='{x:.2}' y='{y:.2}' font-family='Helvetica, Arial, sans-serif' font-size='{font:.2}' \
-         text-anchor='middle' dominant-baseline='central' paint-order='stroke' stroke='white' \
-         stroke-width='{:.2}' stroke-linejoin='round' fill='rgb({r},{g},{b})'>{}</text>\n",
-        (font * 0.35).max(1.5),
+        "<text x='{x:.2}' y='{y:.2}' font-family='Helvetica, Arial, sans-serif' font-size='{font:.2}'{anchor} \
+         dominant-baseline='central'{halo} fill='rgb({r},{g},{b})'>{}</text>\n",
         escape_xml(text)
     )
 }
@@ -925,25 +1002,20 @@ fn legend_svg(entries: &[(String, Rgb)], font: f32) -> String {
     for (k, (name, (r, g, b))) in entries.iter().take(shown).enumerate() {
         let y = font + row * k as f32;
         s += &format!(
-            "<rect x='{:.2}' y='{:.2}' width='{font:.2}' height='{font:.2}' fill='rgb({r},{g},{b})'/>\
-             <text x='{:.2}' y='{:.2}' font-family='Helvetica, Arial, sans-serif' font-size='{font:.2}' \
-             dominant-baseline='central' paint-order='stroke' stroke='white' stroke-width='{:.2}' \
-             fill='rgb(40,40,40)'>{}</text>\n",
+            "<rect x='{:.2}' y='{:.2}' width='{font:.2}' height='{font:.2}' fill='rgb({r},{g},{b})'/>",
             font * 0.6,
             y - font * 0.5,
-            font * 1.9,
-            y,
-            (font * 0.35).max(1.5),
-            escape_xml(name)
         );
+        s += &svg_text((font * 1.9, y), font, None, true, name);
     }
     if entries.len() > shown {
-        s += &format!(
-            "<text x='{:.2}' y='{:.2}' font-family='Helvetica, Arial, sans-serif' font-size='{font:.2}' \
-             dominant-baseline='central' fill='rgb(40,40,40)'>+{} more</text>\n",
-            font * 0.6,
-            font + row * shown as f32,
-            entries.len() - shown
+        let more = format!("+{} more", entries.len() - shown);
+        s += &svg_text(
+            (font * 0.6, font + row * shown as f32),
+            font,
+            None,
+            false,
+            &more,
         );
     }
     s

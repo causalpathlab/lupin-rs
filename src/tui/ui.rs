@@ -187,7 +187,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             (", .", "another pair of diffusion components"),
             ("w", "all figures as thumbnails: arrows choose, enter opens, esc or w closes"),
             ("+ - 0", "zoom the scatter in / out / show it whole (m and , . also show it whole)"),
-            ("arrows", "pan a zoomed scatter (with the exports strip open, they move in the strip)"),
+            ("arrows", "pan a zoomed scatter (with the exports strip open, ↑↓ move in the strip)"),
             ("p", "export the figure as on screen (zoomed too) as {run}.trajectory.{figure}.svg + .pdf and log it"),
             ("f", "the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete"),
             ("R", "re-read the log and check every export against its files"),
@@ -1109,7 +1109,7 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
     };
     let title = format!(
         " {} ({}/{}) ",
-        v.data.title(v.current()),
+        v.title(v.current()),
         v.sel + 1,
         v.panels.len()
     );
@@ -1148,35 +1148,35 @@ fn draw_grid(
     let cols = g.cols();
     let rows = g.tiles.len().div_ceil(cols);
     let row_areas = Layout::vertical(vec![Constraint::Ratio(1, rows as u32); rows]).split(inner);
+    // Each tile's frame, then their pictures, drawn together.
+    let mut frames = Vec::new();
     for (r, row) in row_areas.iter().enumerate() {
         let cells = Layout::horizontal(vec![Constraint::Ratio(1, cols as u32); cols]).split(*row);
         for (c, cell) in cells.iter().enumerate() {
             let i = r * cols + c;
-            let Some(&panel) = g.tiles.get(i) else {
-                continue;
-            };
-            let selected = i == g.sel;
-            let mut tile = Block::bordered().title(format!(" {} ", v.data.title(panel)));
-            if selected {
-                tile = tile
-                    .border_style(Style::default().fg(Color::Cyan))
-                    .title_style(Style::default().add_modifier(Modifier::REVERSED));
-            } else {
-                tile = tile.border_style(Style::default().add_modifier(Modifier::DIM));
+            if let Some(&panel) = g.tiles.get(i) {
+                let mut tile = Block::bordered().title(format!(" {} ", v.title(panel)));
+                tile = if i == g.sel {
+                    tile.border_style(Style::default().fg(Color::Cyan))
+                        .title_style(Style::default().add_modifier(Modifier::REVERSED))
+                } else {
+                    tile.border_style(Style::default().add_modifier(Modifier::DIM))
+                };
+                frames.push((i, tile.inner(*cell)));
+                f.render_widget(tile, *cell);
             }
-            let inside = tile.inner(*cell);
-            f.render_widget(tile, *cell);
-            if inside.width < 2 || inside.height < 2 {
-                continue;
-            }
-            match v.tile(i, inside).as_deref() {
-                Some(Ok(p)) => f.render_widget(ratatui_image::Image::new(p), inside),
-                Some(Err(e)) => f.render_widget(
-                    Paragraph::new(e.as_str()).wrap(Wrap { trim: true }).dim(),
-                    inside,
-                ),
-                None => {}
-            }
+        }
+    }
+    frames.retain(|(_, inside)| inside.width >= 2 && inside.height >= 2);
+    v.draw_tiles(&frames);
+    for (i, inside) in frames {
+        match v.tile(i, inside).as_deref() {
+            Some(Ok(p)) => f.render_widget(ratatui_image::Image::new(p), inside),
+            Some(Err(e)) => f.render_widget(
+                Paragraph::new(e.as_str()).wrap(Wrap { trim: true }).dim(),
+                inside,
+            ),
+            None => {}
         }
     }
 }

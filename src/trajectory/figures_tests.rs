@@ -30,9 +30,13 @@ fn data() -> TrajectoryData {
             verdict: Some(Verdict::Supported),
             order_agreement: 0.9,
         }],
-        style: Style::default(),
-        view: View::default(),
+        ..TrajectoryData::default()
     }
+}
+
+/// `t`'s figure of `panel` at 320 × 240 in `style`, whole.
+fn draw(t: &TrajectoryData, panel: Panel, style: &Style) -> Figure {
+    t.figure(panel, 320, 240, style, View::default()).unwrap()
 }
 
 #[test]
@@ -41,7 +45,7 @@ fn every_panel_renders_to_svg_and_pixels() {
     let panels = t.panels();
     assert_eq!(panels.len(), 3, "one scatter, the order, the connectivity");
     for p in panels.into_iter().chain(t.scatters()) {
-        let fig = t.figure(p, 320, 240).unwrap();
+        let fig = draw(&t, p, &Style::default());
         assert!(fig.svg.starts_with("<?xml"), "{}", p.slug());
         let img = render(&fig).unwrap();
         assert_eq!((img.width(), img.height()), (fig.w, fig.h));
@@ -80,7 +84,10 @@ fn phate_is_drawn_when_senna_made_one() {
     );
     let mut t = data();
     t.layouts[0].method = Some("phate".into());
-    assert_eq!(t.title(Panel::Layout { k: 0 }), "PHATE · pseudotime");
+    assert_eq!(
+        t.title(Panel::Layout { k: 0 }, Colouring::Pseudotime),
+        "PHATE · pseudotime"
+    );
     assert_eq!(t.slug(Panel::Layout { k: 0 }), "layout_phate");
 }
 
@@ -105,10 +112,14 @@ fn export_writes_svg_and_pdf_past_existing_files() {
     let dir = tmp.path();
     let mut t = data();
     t.manifest = dir.join("x.senna.json");
-    let first = t.export(Panel::Order).unwrap();
+    let first = t
+        .export(Panel::Order, &Style::default(), View::default())
+        .unwrap();
     assert_eq!(first.base, dir.join("x.trajectory.order"));
     assert!(first.files.iter().all(|f| f.is_file()), "{:?}", first.files);
-    let second = t.export(Panel::Order).unwrap();
+    let second = t
+        .export(Panel::Order, &Style::default(), View::default())
+        .unwrap();
     assert_eq!(second.base, dir.join("x.trajectory.order-2"));
 }
 
@@ -154,68 +165,82 @@ fn m_steps_through_the_layouts_then_the_diffusion_map() {
 
 #[test]
 fn type_labels_follow_the_text_size_and_turn_off() {
-    let mut t = data();
-    let labels = |t: &TrajectoryData| {
-        let svg = t.figure(Panel::Layout { k: 0 }, 320, 240).unwrap().svg;
+    let t = data();
+    let mut style = Style::default();
+    let labels = |style: &Style| {
+        let svg = draw(&t, Panel::Layout { k: 0 }, style).svg;
         let a = svg.matches(">A</text>").count();
         let b = svg.matches(">B</text>").count();
         (a, b, svg)
     };
-    let (a, b, svg) = labels(&t);
+    let (a, b, svg) = labels(&style);
     assert_eq!((a, b), (1, 1), "one label per type, on at medium");
     let medium = svg
         .find("font-size='")
         .map(|i| svg[i..].to_string())
         .unwrap();
-    assert_eq!(t.cycle_labels(), "labels large · t for largest");
-    let (_, _, svg) = labels(&t);
+    assert_eq!(style.cycle_labels(), "labels large · t for largest");
+    let (_, _, svg) = labels(&style);
     let large = svg
         .find("font-size='")
         .map(|i| svg[i..].to_string())
         .unwrap();
     assert_ne!(medium[..20], large[..20], "the size changed");
-    t.cycle_labels();
-    assert_eq!(t.cycle_labels(), "labels off · t shows them small");
-    assert_eq!(labels(&t).0 + labels(&t).1, 0);
-    assert_eq!(t.cycle_labels(), "labels small · t for medium");
+    style.cycle_labels();
+    assert_eq!(style.cycle_labels(), "labels off · t shows them small");
+    assert_eq!(labels(&style).0 + labels(&style).1, 0);
+    assert_eq!(style.cycle_labels(), "labels small · t for medium");
 }
 
 #[test]
 fn the_unassigned_type_gets_no_label() {
     let mut t = data();
     t.types[39] = enrichment::UNASSIGNED_LABEL.into();
-    let svg = t.figure(Panel::Layout { k: 0 }, 320, 240).unwrap().svg;
+    let svg = draw(&t, Panel::Layout { k: 0 }, &Style::default()).svg;
     assert!(!svg.contains(&format!(">{}</text>", enrichment::UNASSIGNED_LABEL)));
 }
 
 #[test]
 fn colourings_cycle_over_what_the_outputs_support() {
-    let mut t = data();
+    let t = data();
+    let all = t.colourings();
     assert_eq!(
-        t.colourings(),
+        all,
         vec![Colouring::Pseudotime, Colouring::Type, Colouring::Component],
         "a single lineage is no colouring"
     );
-    let by_time = t.figure(Panel::Layout { k: 0 }, 160, 120).unwrap().svg;
+    let mut style = Style::default();
+    let by_time = draw(&t, Panel::Layout { k: 0 }, &style).svg;
     assert_eq!(
-        t.cycle_colouring(),
+        style.cycle_colouring(&all),
         "coloured by cell type · c for component"
     );
-    let by_type = t.figure(Panel::Layout { k: 0 }, 160, 120).unwrap().svg;
+    let by_type = draw(&t, Panel::Layout { k: 0 }, &style).svg;
     assert_ne!(by_time, by_type);
     assert!(
         by_type.contains(">A</text>") && by_type.contains("<rect"),
         "a legend"
     );
-    assert_eq!(t.title(Panel::Layout { k: 0 }), "layout · cell type");
     assert_eq!(
-        t.cycle_colouring(),
+        t.title(Panel::Layout { k: 0 }, style.colouring),
+        "layout · cell type"
+    );
+    assert_eq!(
+        style.cycle_colouring(&all),
         "coloured by component · c for pseudotime"
     );
     assert_eq!(
-        t.cycle_colouring(),
+        style.cycle_colouring(&all),
         "coloured by pseudotime · c for cell type"
     );
+}
+
+#[test]
+fn a_cell_takes_the_one_lineage_it_weighs_most_on() {
+    let w = vec![vec![0.2, 0.0, 0.5], vec![0.7, 0.0, 0.5]];
+    assert_eq!(sole_lineage(&w, 0), 1);
+    assert_eq!(sole_lineage(&w, 1), -1, "on none");
+    assert_eq!(sole_lineage(&w, 2), -1, "a tie");
 }
 
 #[test]
@@ -264,31 +289,38 @@ fn the_view_zooms_pans_and_stays_inside_the_scatter() {
 
 #[test]
 fn a_zoomed_scatter_labels_only_the_types_on_screen() {
-    let mut t = data();
-    let svg = |t: &TrajectoryData| t.figure(Panel::Layout { k: 0 }, 320, 240).unwrap().svg;
-    let whole = svg(&t);
+    let t = data();
+    let style = Style::default();
+    let svg = |view: View| {
+        t.figure(Panel::Layout { k: 0 }, 320, 240, &style, view)
+            .unwrap()
+            .svg
+    };
+    let whole = svg(View::default());
     assert!(whole.contains(">A</text>") && whole.contains(">B</text>"));
     // The left half holds only type A's cells.
-    t.view = View {
+    let left = svg(View {
         zoom: 2.0,
         cx: 0.25,
         cy: 0.5,
-    };
-    let left = svg(&t);
+    });
     assert!(left.contains(">A</text>"));
     assert!(!left.contains(">B</text>"), "B is off screen");
     assert_ne!(whole, left);
-    // A thumbnail shows the scatter whole whatever the view.
-    let thumb = t
-        .figure_at(Panel::Layout { k: 0 }, 320, 240, View::default())
-        .unwrap()
-        .svg;
-    assert_eq!(thumb, whole);
-    // The order panel ignores the view.
     assert_eq!(
-        t.figure(Panel::Order, 320, 240).unwrap().svg,
-        t.figure_at(Panel::Order, 320, 240, View::default())
+        svg(View::default()),
+        whole,
+        "the medians kept draw the same"
+    );
+    // The order panel ignores the view.
+    let zoomed = View {
+        zoom: 2.0,
+        ..View::default()
+    };
+    assert_eq!(
+        t.figure(Panel::Order, 320, 240, &style, zoomed)
             .unwrap()
-            .svg
+            .svg,
+        draw(&t, Panel::Order, &style).svg
     );
 }

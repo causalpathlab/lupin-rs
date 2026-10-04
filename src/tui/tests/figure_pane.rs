@@ -1,6 +1,6 @@
 use super::*;
 use crate::trajectory::edges::{EdgeRow, Verdict};
-use crate::trajectory::figures::{Layout, Style};
+use crate::trajectory::figures::Layout;
 use legume_numeric::matrix::dense_mat_io::Mat;
 use ratatui::crossterm::event::KeyCode;
 
@@ -43,8 +43,7 @@ fn pane() -> FigurePane {
             verdict: Some(Verdict::Supported),
             order_agreement: 0.9,
         }],
-        style: Style::default(),
-        view: View::default(),
+        ..TrajectoryData::default()
     };
     let mut p = FigurePane::new(data, &Picker::halfblocks());
     p.shown = true;
@@ -98,39 +97,67 @@ fn tiles_are_drawn_once_and_again_after_a_setting_changes() {
     let mut p = pane();
     p.open_grid();
     let area = Rect::new(0, 0, 20, 8);
+    let all: Vec<(usize, Rect)> = (0..5).map(|i| (i, area)).collect();
+    p.draw_tiles(&all);
+    assert_eq!(p.tiles.borrow().len(), 5);
     for i in 0..5 {
         assert!(p.tile(i, area).unwrap().is_ok(), "tile {i}");
     }
     assert!(p.tile(5, area).is_none());
-    let drawn = |p: &FigurePane| {
-        p.grid
-            .as_ref()
-            .unwrap()
-            .drawn
-            .borrow()
-            .iter()
-            .filter(|t| t.is_some())
-            .count()
-    };
-    assert_eq!(drawn(&p), 5);
-    p.cycle_labels();
-    assert_eq!(drawn(&p), 0, "a new label size draws them again");
+    assert_eq!(p.tiles.borrow().len(), 5, "drawn once");
+    p.style.cycle_labels();
+    p.draw_tiles(&all);
+    assert_eq!(
+        p.tiles.borrow().len(),
+        8,
+        "the three scatters again; the order and connectivity are kept"
+    );
+    p.grid = None;
+    p.open_grid();
+    p.draw_tiles(&all);
+    assert_eq!(p.tiles.borrow().len(), 8, "kept while the grid was closed");
 }
 
 #[test]
-fn only_the_scatter_zooms_and_a_new_layout_shows_it_whole() {
+fn only_the_scatter_zooms_and_a_new_panel_shows_it_whole() {
     let mut p = pane();
     assert!(p.zoom(true).starts_with("zoom ×1.4"));
-    assert!(!p.data.view.is_whole());
+    assert!(!p.view.is_whole());
     assert_eq!(p.pan(1.0, 0.0), "");
-    assert!(p.data.view.cx > 0.5);
+    assert!(p.view.cx > 0.5);
     p.next_layout();
-    assert!(p.data.view.is_whole(), "m shows the new layout whole");
+    assert!(p.view.is_whole(), "m shows the new layout whole");
     p.zoom(true);
     assert_eq!(p.reset_view(), "the whole scatter");
-    assert!(p.data.view.is_whole());
+    assert!(p.view.is_whole());
+    p.zoom(true);
     p.next_panel();
     assert_eq!(p.current(), Panel::Order);
+    assert!(p.view.is_whole(), "v shows the next panel whole");
     assert!(p.zoom(true).starts_with("only the scatter"));
-    assert!(p.data.view.is_whole());
+    assert!(p.view.is_whole());
+}
+
+#[test]
+fn the_diffusion_map_keeps_its_pair_across_layouts() {
+    let mut p = pane();
+    p.next_layout();
+    p.next_layout();
+    assert_eq!(p.current(), Panel::Diffusion { x: 1, y: 2 });
+    p.pair = (2, 1);
+    p.next_layout();
+    p.next_layout();
+    p.next_layout();
+    assert_eq!(
+        p.current(),
+        Panel::Diffusion { x: 2, y: 1 },
+        "m comes back to it"
+    );
+    p.open_grid();
+    assert!(p
+        .grid
+        .as_ref()
+        .unwrap()
+        .tiles
+        .contains(&Panel::Diffusion { x: 2, y: 1 }));
 }

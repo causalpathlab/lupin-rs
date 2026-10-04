@@ -1519,6 +1519,13 @@ impl App {
     /// The focused pane's binding for `code`, if it has one: `false` leaves
     /// the key to the global bindings. Moving in the pane's list never claims it.
     fn pane_key(&mut self, code: KeyCode) -> bool {
+        // The order view's figures take their keys before the tree's.
+        if self.focus == Focus::Tree
+            && matches!(self.tree_mode, TreeMode::Order(_))
+            && self.figure_key(code)
+        {
+            return true;
+        }
         let move_in = |sel: &mut usize, n: usize| step(sel, n, code);
         match self.focus {
             Focus::Clusters => {
@@ -1613,13 +1620,7 @@ impl App {
                     _ => return false,
                 }
             }
-            // On the figures, `t` sizes the labels (as in `senna view`).
-            Focus::Tree
-                if code == KeyCode::Char('t')
-                    && !(matches!(self.tree_mode, TreeMode::Order(_)) && self.figures_shown()) =>
-            {
-                self.toggle_order(false);
-            }
+            Focus::Tree if code == KeyCode::Char('t') => self.toggle_order(false),
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
             // A search is of the ontology: open it there.
             Focus::Tree
@@ -1630,13 +1631,7 @@ impl App {
                     v.typing = Some(String::new());
                 }
             }
-            Focus::Tree if code == KeyCode::Char(' ') => {
-                if matches!(self.tree_mode, TreeMode::Order(_)) && self.figures_shown() {
-                    self.status = "V shows the order table to mark types".into();
-                } else {
-                    self.toggle_tree_mark();
-                }
-            }
+            Focus::Tree if code == KeyCode::Char(' ') => self.toggle_tree_mark(),
             Focus::Tree if matches!(self.tree_mode, TreeMode::Order(_)) => {
                 return self.order_key(code);
             }
@@ -1982,12 +1977,9 @@ impl App {
         self.tree_mode = TreeMode::Order(v);
     }
 
-    /// Keys of the order view: move, `>` / `-` on two marked types, and the
-    /// figure pane's keys.
+    /// Keys of the order view: move, `>` / `-` on two marked types (the
+    /// figure pane's keys come first, in `pane_key`).
     fn order_key(&mut self, code: KeyCode) -> bool {
-        if self.figure_key(code) {
-            return true;
-        }
         let shown = self.figures_shown();
         let TreeMode::Order(v) = &mut self.tree_mode else {
             return false;
@@ -2047,30 +2039,30 @@ impl App {
         if code != KeyCode::Char('D') {
             v.exports.disarm();
         }
-        // The thumbnail grid takes the pane: arrows choose, Enter opens.
-        if v.shown {
-            if let Some(g) = &mut v.grid {
-                if g.step(code) {
-                    return true;
-                }
-                match code {
-                    KeyCode::Enter => {
-                        v.open_tile();
-                        self.status = v.data.title(v.current());
-                    }
-                    KeyCode::Esc | KeyCode::Char('w') => v.grid = None,
-                    KeyCode::Char('t') => self.status = v.cycle_labels(),
-                    KeyCode::Char('c') => self.status = v.cycle_colouring(),
-                    KeyCode::Char(
-                        'v' | 'V' | 'm' | ',' | '.' | 'p' | 'f' | 'R' | '+' | '=' | '-' | '_' | '0',
-                    ) => self.status = "Enter opens the figure, esc or w closes the grid".into(),
-                    _ => return false,
-                }
+        // The thumbnail grid is modal: arrows choose, Enter opens, and only
+        // the app's own keys (quit, run, stop, save, export, panes) go by.
+        if let Some(g) = &mut v.grid {
+            if g.step(code) {
                 return true;
             }
+            match code {
+                KeyCode::Enter => {
+                    v.open_tile();
+                    self.status = v.title(v.current());
+                }
+                KeyCode::Esc | KeyCode::Char('w') => v.grid = None,
+                KeyCode::Char('t') => self.status = v.style.cycle_labels(),
+                KeyCode::Char('c') => self.status = v.style.cycle_colouring(&v.data.colourings()),
+                KeyCode::Char(c) if !"qrxse".contains(c) => {
+                    self.status = "Enter opens the figure, esc or w closes the grid".into();
+                }
+                _ => return false,
+            }
+            return true;
         }
         let x = &mut v.exports;
-        // The strip's keys act only while it is on screen.
+        // The strip's keys act only while it is on screen; the arrows it
+        // does not take pan.
         let strip = v.shown && x.open;
         if strip {
             let rows = x.rows();
@@ -2087,8 +2079,14 @@ impl App {
             KeyCode::Char(',') if v.shown => v.step_pair(false),
             KeyCode::Char('.') if v.shown => v.step_pair(true),
             // senna view's keys: labels, colouring, layout.
-            KeyCode::Char('t') if v.shown => self.status = v.cycle_labels(),
-            KeyCode::Char('c') if v.shown => self.status = v.cycle_colouring(),
+            KeyCode::Char('t') if v.shown => self.status = v.style.cycle_labels(),
+            KeyCode::Char('c') if v.shown => {
+                self.status = v.style.cycle_colouring(&v.data.colourings());
+            }
+            // The table is hidden behind the figures: its marks wait for `V`.
+            KeyCode::Char(' ') if v.shown => {
+                self.status = "V shows the order table to mark types".into();
+            }
             KeyCode::Char('m') if v.shown => self.status = v.next_layout(),
             // senna view's navigation: the grid, zoom and pan.
             KeyCode::Char('w') if v.shown => {
@@ -2099,8 +2097,7 @@ impl App {
             KeyCode::Char('+' | '=') if v.shown => self.status = v.zoom(true),
             KeyCode::Char('-' | '_') if v.shown => self.status = v.zoom(false),
             KeyCode::Char('0') if v.shown => self.status = v.reset_view(),
-            // With the strip open the arrows are its own.
-            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if v.shown && !strip => {
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if v.shown => {
                 let (dx, dy) = match code {
                     KeyCode::Left => (-1.0, 0.0),
                     KeyCode::Right => (1.0, 0.0),
