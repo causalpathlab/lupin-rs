@@ -75,6 +75,71 @@ impl Default for Style {
     }
 }
 
+/// How far `+` / `-` zoom a scatter, how far in it can go, and how far an
+/// arrow pans, as a share of the part on screen.
+const ZOOM_STEP: f32 = 1.4;
+const MAX_ZOOM: f32 = 64.0;
+const PAN_STEP: f32 = 0.2;
+
+/// The part of a scatter on screen: the whole extent zoomed `zoom` times
+/// about the centre `(cx, cy)`, both in shares of the whole extent (y up).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct View {
+    pub(crate) zoom: f32,
+    pub(crate) cx: f32,
+    pub(crate) cy: f32,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self {
+            zoom: 1.0,
+            cx: 0.5,
+            cy: 0.5,
+        }
+    }
+}
+
+impl View {
+    pub(crate) fn is_whole(&self) -> bool {
+        self.zoom <= 1.0
+    }
+
+    /// Zoom in (`inward`) or out by one step about the centre.
+    pub(crate) fn zoom(&mut self, inward: bool) {
+        let f = if inward { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+        self.zoom = (self.zoom * f).clamp(1.0, MAX_ZOOM);
+        self.clamp();
+    }
+
+    /// Move the part on screen by `(dx, dy)` steps (right and up positive).
+    pub(crate) fn pan(&mut self, dx: f32, dy: f32) {
+        let span = 1.0 / self.zoom;
+        self.cx += dx * PAN_STEP * span;
+        self.cy += dy * PAN_STEP * span;
+        self.clamp();
+    }
+
+    /// Keep the part on screen inside the whole extent.
+    fn clamp(&mut self) {
+        let half = 0.5 / self.zoom;
+        self.cx = self.cx.clamp(half, 1.0 - half);
+        self.cy = self.cy.clamp(half, 1.0 - half);
+    }
+
+    /// The part of `whole` on screen.
+    pub(crate) fn of(&self, whole: &DataBounds) -> DataBounds {
+        let half = 0.5 / self.zoom;
+        let (w, h) = (whole.xmax - whole.xmin, whole.ymax - whole.ymin);
+        DataBounds {
+            xmin: whole.xmin + (self.cx - half) * w,
+            xmax: whole.xmin + (self.cx + half) * w,
+            ymin: whole.ymin + (self.cy - half) * h,
+            ymax: whole.ymin + (self.cy + half) * h,
+        }
+    }
+}
+
 /// Which figure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Panel {
@@ -152,6 +217,8 @@ pub(crate) struct TrajectoryData {
     pub(crate) layouts: Vec<Layout>,
     pub(crate) edges: Vec<EdgeRow>,
     pub(crate) style: Style,
+    /// The part of the scatter on screen (`+` `-` and the arrows).
+    pub(crate) view: View,
 }
 
 /// A 2D layout of the run's cells, NaN where a cell has none.
@@ -212,6 +279,7 @@ impl TrajectoryData {
             layouts: all,
             edges,
             style: Style::default(),
+            view: View::default(),
         }))
     }
 
@@ -364,18 +432,24 @@ impl TrajectoryData {
         }
     }
 
-    /// The figure, drawn to fit `w × h` pixels.
+    /// The figure, drawn to fit `w × h` pixels, a scatter at the view on
+    /// screen.
     pub(crate) fn figure(&self, panel: Panel, w: u32, h: u32) -> Result<Figure> {
+        self.figure_at(panel, w, h, self.view)
+    }
+
+    /// The figure with a scatter at `view` (a thumbnail shows it whole).
+    pub(crate) fn figure_at(&self, panel: Panel, w: u32, h: u32, view: View) -> Result<Figure> {
         match panel {
             Panel::Layout { k } => {
                 let l = self.layouts.get(k).context("the run has no layout")?;
-                self.scatter(&l.x, &l.y, w, h, true)
+                self.scatter(&l.x, &l.y, w, h, true, view)
             }
             Panel::Diffusion { x, y } => {
                 let d = self.diffusion.as_ref().context("no diffusion map")?;
                 let cx: Vec<f32> = d.column(x).iter().copied().collect();
                 let cy: Vec<f32> = d.column(y).iter().copied().collect();
-                self.scatter(&cx, &cy, w, h, false)
+                self.scatter(&cx, &cy, w, h, false, view)
             }
             Panel::Order => Ok(self.order_figure(w, h)),
             Panel::Connectivity => Ok(self.connectivity_figure(w, h)),
@@ -407,25 +481,44 @@ impl TrajectoryData {
             base,
             files,
             what: format!(
-                "{} · {EXPORT_WIDTH_IN:.0} in · {EXPORT_DPI:.0} dpi",
-                self.title(panel)
+                "{}{} · {EXPORT_WIDTH_IN:.0} in · {EXPORT_DPI:.0} dpi",
+                self.title(panel),
+                match panel {
+                    Panel::Layout { .. } | Panel::Diffusion { .. } if !self.view.is_whole() =>
+                        format!(" · zoomed ×{:.1}", self.view.zoom),
+                    _ => String::new(),
+                }
             ),
         })
     }
 
-    /// Cells at `(x, y)` in the style's colouring (grey when they have no
-    /// value), the type labels at their medians, with the prior's direct
-    /// edges as arrows between type medians when `arrows`.
-    fn scatter(&self, x: &[f32], y: &[f32], w: u32, h: u32, arrows: bool) -> Result<Figure> {
+    /// The cells of `(x, y)` inside `view` in the style's colouring (grey
+    /// when they have no value), the type labels at the medians of their
+    /// cells on screen, with the prior's direct edges as arrows between type
+    /// medians when `arrows`.
+    fn scatter(
+        &self,
+        x: &[f32],
+        y: &[f32],
+        w: u32,
+        h: u32,
+        arrows: bool,
+        view: View,
+    ) -> Result<Figure> {
         let ext = Extent { w, h };
         let finite: Vec<usize> = (0..x.len())
             .filter(|&i| x[i].is_finite() && y[i].is_finite())
             .collect();
         anyhow::ensure!(!finite.is_empty(), "no cell has coordinates");
-        let bounds = bounds_of(x, y, &finite);
+        let bounds = view.of(&bounds_of(x, y, &finite));
+        let inside = |i: &usize| {
+            (bounds.xmin..=bounds.xmax).contains(&x[*i])
+                && (bounds.ymin..=bounds.ymax).contains(&y[*i])
+        };
+        let shown: Vec<usize> = finite.iter().copied().filter(inside).collect();
         let (colour_of, legend) = self.cell_colours();
         // Grey cells first, so coloured ones draw over them.
-        let mut order = finite.clone();
+        let mut order = shown.clone();
         order.sort_by_key(|&i| colour_of[i].is_some());
         let pts: Vec<(f32, f32)> = order
             .iter()
@@ -462,7 +555,7 @@ impl TrajectoryData {
         let mut text = legend_svg(&legend, base_font);
         if let Some(k) = self.style.labels {
             let font = base_font * TEXT_SCALES[k];
-            for (t, at) in self.type_medians(x, y, &finite) {
+            for (t, at) in self.type_medians(x, y, &shown) {
                 if t != UNASSIGNED_LABEL {
                     text += &halo_text(to_pixel(at, &bounds, ext), font, INK, t);
                 }

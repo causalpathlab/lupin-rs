@@ -268,11 +268,23 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
   type on one lineage only) or component, the last two only when there are
   several; cells without a value are grey, and a categorical colouring has
   a legend. Unassigned cells get no label.
+  `+`/`=` and `-`/`_` zoom the scatter in and out about its centre, the
+  arrows pan it (with the exports strip open they move in the strip
+  instead), and `0` shows it whole again, as in senna view. The figure is
+  drawn again from the data at the part on screen, so points and labels stay
+  sharp; a label sits at the median of its type's cells on screen, and a
+  type with none there has no label. A new layout (`m`) or diffusion pair
+  starts whole. The order and connectivity panels do not zoom.
 - **Order by type**: median pseudotime and middle half per type, in order of
   the median.
 - **Connectivity**: PAGA connectivity between the node types as a Hinton
   diagram (box area ∝ connectivity; legume-plot's `render_hinton`), ordered by
   pseudotime, pairs the prior orders in ink.
+- **All figures** (`w`, as senna view's grid): each layout the run has, the
+  diffusion map at the pair last shown, the order and the connectivity as
+  thumbnails, drawn whole with the labels and colouring on screen. The
+  arrows choose one, Enter opens it in the pane, and esc or `w` closes the
+  grid on the figure it came from. `t` and `c` also work there.
 - The direct prior edges with their connectivity, order agreement and verdict
   are in the order view's table, so an edit there shows its effect after the
   next run.
@@ -283,8 +295,8 @@ Images are drawn as senna view draws them, so both viewers behave alike:
 back to half-blocks.
 
 **Export.** `p` on a panel writes it through legume-plot's `write_figure` as
-SVG and PDF, 7 in wide at 200 dpi, with the labels, colouring and layout on
-screen. An export is a set of files sharing one base name, handled as a
+SVG and PDF, 7 in wide at 200 dpi, with the labels, colouring, layout and
+zoom on screen; the log notes a zoomed export. An export is a set of files sharing one base name, handled as a
 unit: the name `{out}.trajectory.{panel}` (`layout_phate`, `layout_umap`, …
 for a layout) moves to
 `-2`, `-3` … while any file of the set exists.

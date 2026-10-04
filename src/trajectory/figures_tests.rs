@@ -31,6 +31,7 @@ fn data() -> TrajectoryData {
             order_agreement: 0.9,
         }],
         style: Style::default(),
+        view: View::default(),
     }
 }
 
@@ -214,5 +215,80 @@ fn colourings_cycle_over_what_the_outputs_support() {
     assert_eq!(
         t.cycle_colouring(),
         "coloured by pseudotime · c for cell type"
+    );
+}
+
+#[test]
+fn the_view_zooms_pans_and_stays_inside_the_scatter() {
+    let mut v = View::default();
+    assert!(v.is_whole());
+    v.pan(1.0, 0.0);
+    assert_eq!(v, View::default(), "the whole scatter does not pan");
+    v.zoom(false);
+    assert_eq!(v.zoom, 1.0, "no further out than the whole");
+    v.zoom(true);
+    v.zoom(true);
+    assert!((v.zoom - ZOOM_STEP * ZOOM_STEP).abs() < 1e-5);
+    let half = 0.5 / v.zoom;
+    for _ in 0..50 {
+        v.pan(1.0, -1.0);
+    }
+    assert!(
+        (v.cx - (1.0 - half)).abs() < 1e-6,
+        "stops at the right edge"
+    );
+    assert!((v.cy - half).abs() < 1e-6, "and at the bottom");
+    for _ in 0..50 {
+        v.zoom(true);
+    }
+    assert_eq!(v.zoom, MAX_ZOOM);
+    let whole = DataBounds {
+        xmin: 0.0,
+        xmax: 10.0,
+        ymin: -5.0,
+        ymax: 5.0,
+    };
+    let part = View {
+        zoom: 2.0,
+        cx: 0.25,
+        cy: 0.75,
+    }
+    .of(&whole);
+    assert_eq!(
+        (part.xmin, part.xmax, part.ymin, part.ymax),
+        (0.0, 5.0, 0.0, 5.0)
+    );
+    let all = View::default().of(&whole);
+    assert_eq!((all.xmin, all.xmax), (0.0, 10.0));
+}
+
+#[test]
+fn a_zoomed_scatter_labels_only_the_types_on_screen() {
+    let mut t = data();
+    let svg = |t: &TrajectoryData| t.figure(Panel::Layout { k: 0 }, 320, 240).unwrap().svg;
+    let whole = svg(&t);
+    assert!(whole.contains(">A</text>") && whole.contains(">B</text>"));
+    // The left half holds only type A's cells.
+    t.view = View {
+        zoom: 2.0,
+        cx: 0.25,
+        cy: 0.5,
+    };
+    let left = svg(&t);
+    assert!(left.contains(">A</text>"));
+    assert!(!left.contains(">B</text>"), "B is off screen");
+    assert_ne!(whole, left);
+    // A thumbnail shows the scatter whole whatever the view.
+    let thumb = t
+        .figure_at(Panel::Layout { k: 0 }, 320, 240, View::default())
+        .unwrap()
+        .svg;
+    assert_eq!(thumb, whole);
+    // The order panel ignores the view.
+    assert_eq!(
+        t.figure(Panel::Order, 320, 240).unwrap().svg,
+        t.figure_at(Panel::Order, 320, 240, View::default())
+            .unwrap()
+            .svg
     );
 }

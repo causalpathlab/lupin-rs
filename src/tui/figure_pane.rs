@@ -4,7 +4,7 @@
 
 use super::gallery::{Gallery, Status};
 use crate::manifest::run::load;
-use crate::trajectory::figures::{self, Panel, TrajectoryData};
+use crate::trajectory::figures::{self, Panel, TrajectoryData, View};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use image::DynamicImage;
@@ -145,6 +145,44 @@ impl Exports {
 /// A panel at a pane size, in terminal cells.
 type Shown = (Panel, u16, u16);
 
+/// A thumbnail drawn at a tile size, in terminal cells, or why it could not
+/// be.
+type Tile = Option<((u16, u16), Result<Protocol, String>)>;
+
+/// The thumbnail grid (`w`, as in `senna view`): every figure as a tile.
+pub struct Grid {
+    pub tiles: Vec<Panel>,
+    pub sel: usize,
+    drawn: RefCell<Vec<Tile>>,
+}
+
+impl Grid {
+    /// Columns of the grid for its tiles: as square as it gets.
+    pub fn cols(&self) -> usize {
+        grid_cols(self.tiles.len())
+    }
+
+    /// Move the selection by an arrow key; `false` for any other key.
+    pub fn step(&mut self, code: ratatui::crossterm::event::KeyCode) -> bool {
+        use ratatui::crossterm::event::KeyCode;
+        let (n, cols) = (self.tiles.len(), self.cols());
+        self.sel = match code {
+            KeyCode::Left => (self.sel + n - 1) % n,
+            KeyCode::Right => (self.sel + 1) % n,
+            KeyCode::Up if self.sel >= cols => self.sel - cols,
+            KeyCode::Down if self.sel + cols < n => self.sel + cols,
+            KeyCode::Up | KeyCode::Down => self.sel,
+            _ => return false,
+        };
+        true
+    }
+}
+
+/// Columns for `n` tiles: the smallest square that holds them.
+pub fn grid_cols(n: usize) -> usize {
+    (1..=n.max(1)).find(|c| c * c >= n).unwrap_or(1)
+}
+
 pub struct FigurePane {
     pub data: TrajectoryData,
     pub panels: Vec<Panel>,
@@ -159,6 +197,8 @@ pub struct FigurePane {
     image: RefCell<Option<(Panel, Result<DynamicImage, String>)>>,
     /// The diffusion pair `m` comes back to.
     pair: (usize, usize),
+    /// The thumbnail grid, while it is open.
+    pub grid: Option<Grid>,
     pub exports: Exports,
 }
 
@@ -171,21 +211,26 @@ impl FigurePane {
                 continue;
             };
             if let Some(data) = TrajectoryData::load(&loaded.manifest, &loaded.dir, &loaded.file)? {
-                let exports = Exports::new(data.prefix());
-                return Ok(Some(Self {
-                    panels: data.panels(),
-                    data,
-                    sel: 0,
-                    shown: false,
-                    picker: picker.clone(),
-                    image: RefCell::new(None),
-                    rendered: RefCell::new(None),
-                    pair: (1, 2),
-                    exports,
-                }));
+                return Ok(Some(Self::new(data, picker)));
             }
         }
         Ok(None)
+    }
+
+    fn new(data: TrajectoryData, picker: &Picker) -> Self {
+        let exports = Exports::new(data.prefix());
+        Self {
+            panels: data.panels(),
+            data,
+            sel: 0,
+            shown: false,
+            picker: picker.clone(),
+            image: RefCell::new(None),
+            rendered: RefCell::new(None),
+            pair: (1, 2),
+            grid: None,
+            exports,
+        }
     }
 
     pub fn current(&self) -> Panel {
@@ -205,7 +250,150 @@ impl FigurePane {
         if let Panel::Diffusion { x, y } = self.current() {
             let (nx, ny) = self.data.next_pair(x, y, forward);
             self.panels[self.sel] = Panel::Diffusion { x: nx, y: ny };
+            self.set_view(View::default());
         }
+    }
+
+    /// Whether the panel on screen is a scatter, which pans and zooms.
+    fn on_scatter(&self) -> bool {
+        matches!(
+            self.current(),
+            Panel::Layout { .. } | Panel::Diffusion { .. }
+        )
+    }
+
+    /// Zoom the scatter in or out by a step (`+` / `-`).
+    pub fn zoom(&mut self, inward: bool) -> String {
+        if !self.on_scatter() {
+            return "only the scatter zooms (m and v choose it)".into();
+        }
+        let mut view = self.data.view;
+        view.zoom(inward);
+        self.set_view(view);
+        if view.is_whole() {
+            "the whole scatter".into()
+        } else {
+            format!("zoom ×{:.1} · arrows pan · 0 shows it whole", view.zoom)
+        }
+    }
+
+    /// Pan the scatter by a step (the arrows); `dx`, `dy` right and up.
+    pub fn pan(&mut self, dx: f32, dy: f32) -> String {
+        if !self.on_scatter() {
+            return "only the scatter pans (m and v choose it)".into();
+        }
+        let mut view = self.data.view;
+        view.pan(dx, dy);
+        if view == self.data.view {
+            return if view.is_whole() {
+                "+ zooms in; the arrows then pan".into()
+            } else {
+                "at the edge of the scatter".into()
+            };
+        }
+        self.set_view(view);
+        String::new()
+    }
+
+    /// The whole scatter again (`0`).
+    pub fn reset_view(&mut self) -> String {
+        if !self.on_scatter() {
+            return "only the scatter zooms (m and v choose it)".into();
+        }
+        self.set_view(View::default());
+        "the whole scatter".into()
+    }
+
+    fn set_view(&mut self, view: View) {
+        if self.data.view != view {
+            self.data.view = view;
+            self.redraw();
+        }
+    }
+
+    /// Open the thumbnail grid on the figure on screen (`w`).
+    pub fn open_grid(&mut self) {
+        let mut tiles = self.data.scatters();
+        let pair = match self.current() {
+            Panel::Diffusion { x, y } => (x, y),
+            _ => self.pair,
+        };
+        for t in &mut tiles {
+            if let Panel::Diffusion { .. } = t {
+                *t = Panel::Diffusion {
+                    x: pair.0,
+                    y: pair.1,
+                };
+            }
+        }
+        tiles.extend(
+            self.panels
+                .iter()
+                .copied()
+                .filter(|p| !matches!(p, Panel::Layout { .. } | Panel::Diffusion { .. })),
+        );
+        let cur = self.current();
+        let sel = tiles.iter().position(|&t| t == cur).unwrap_or(0);
+        self.grid = Some(Grid {
+            drawn: RefCell::new(vec![None; tiles.len()]),
+            tiles,
+            sel,
+        });
+    }
+
+    /// Show the grid's selected tile and close the grid (Enter).
+    pub fn open_tile(&mut self) {
+        let Some(g) = self.grid.take() else { return };
+        let Some(&tile) = g.tiles.get(g.sel) else {
+            return;
+        };
+        let scatter = |p: &Panel| matches!(p, Panel::Layout { .. } | Panel::Diffusion { .. });
+        let at = if scatter(&tile) {
+            self.panels.iter().position(scatter)
+        } else {
+            self.panels.iter().position(|&p| p == tile)
+        };
+        let Some(at) = at else { return };
+        if self.panels[at] != tile {
+            if let Panel::Diffusion { x, y } = self.panels[at] {
+                self.pair = (x, y);
+            }
+            self.panels[at] = tile;
+            self.set_view(View::default());
+        }
+        self.sel = at;
+        self.shown = true;
+    }
+
+    /// Tile `i` of the grid drawn for `area`, the scatter whole; kept until
+    /// the tile's size or a setting changes.
+    pub fn tile(&self, i: usize, area: Rect) -> Option<Ref<'_, Result<Protocol, String>>> {
+        let g = self.grid.as_ref()?;
+        let panel = *g.tiles.get(i)?;
+        let size = (area.width, area.height);
+        if g.drawn.borrow()[i].as_ref().is_none_or(|(s, _)| *s != size) {
+            let px = self.picker.font_size();
+            let w = (u32::from(area.width) * u32::from(px.width)).max(32);
+            let h = (u32::from(area.height) * u32::from(px.height)).max(32);
+            let drawn = self
+                .data
+                .figure_at(panel, w, h, View::default())
+                .and_then(|f| figures::render(&f))
+                .map_err(|e| format!("{e:#}"))
+                .and_then(|img| {
+                    self.picker
+                        .new_protocol(
+                            DynamicImage::ImageRgba8(img),
+                            Size::new(area.width, area.height),
+                            Resize::Fit(Some(FilterType::Triangle)),
+                        )
+                        .map_err(|e| format!("{e:#}"))
+                });
+            g.drawn.borrow_mut()[i] = Some((size, drawn));
+        }
+        Some(Ref::map(g.drawn.borrow(), |d| {
+            &d[i].as_ref().expect("filled above").1
+        }))
     }
 
     /// Labels on the scatters in turn (`t`), as `senna view` does.
@@ -237,6 +425,7 @@ impl FigurePane {
         if let Panel::Diffusion { x, y } = cur {
             self.pair = (x, y);
         }
+        self.set_view(View::default());
         self.panels[self.sel] = match next {
             Panel::Diffusion { .. } => Panel::Diffusion {
                 x: self.pair.0,
@@ -247,10 +436,14 @@ impl FigurePane {
         self.data.title(self.current())
     }
 
-    /// Draw the current panel again, after its style changed.
+    /// Draw the current panel and the thumbnails again, after the style or
+    /// the view changed.
     fn redraw(&self) {
         self.image.borrow_mut().take();
         self.rendered.borrow_mut().take();
+        if let Some(g) = &self.grid {
+            g.drawn.borrow_mut().iter_mut().for_each(|t| *t = None);
+        }
     }
 
     /// The current figure drawn for `area`, as senna view draws its
@@ -341,3 +534,7 @@ pub fn picker(graphics: Graphics) -> Picker {
     }
     picker
 }
+
+#[cfg(test)]
+#[path = "tests/figure_pane.rs"]
+mod tests;

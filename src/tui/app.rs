@@ -2044,10 +2044,32 @@ impl App {
             }
             return false;
         };
-        let x = &mut v.exports;
         if code != KeyCode::Char('D') {
-            x.disarm();
+            v.exports.disarm();
         }
+        // The thumbnail grid takes the pane: arrows choose, Enter opens.
+        if v.shown {
+            if let Some(g) = &mut v.grid {
+                if g.step(code) {
+                    return true;
+                }
+                match code {
+                    KeyCode::Enter => {
+                        v.open_tile();
+                        self.status = v.data.title(v.current());
+                    }
+                    KeyCode::Esc | KeyCode::Char('w') => v.grid = None,
+                    KeyCode::Char('t') => self.status = v.cycle_labels(),
+                    KeyCode::Char('c') => self.status = v.cycle_colouring(),
+                    KeyCode::Char(
+                        'v' | 'V' | 'm' | ',' | '.' | 'p' | 'f' | 'R' | '+' | '=' | '-' | '_' | '0',
+                    ) => self.status = "Enter opens the figure, esc or w closes the grid".into(),
+                    _ => return false,
+                }
+                return true;
+            }
+        }
+        let x = &mut v.exports;
         // The strip's keys act only while it is on screen.
         let strip = v.shown && x.open;
         if strip {
@@ -2058,13 +2080,38 @@ impl App {
         }
         match code {
             KeyCode::Char('v') => v.next_panel(),
-            KeyCode::Char('V') => v.shown = false,
+            KeyCode::Char('V') => {
+                v.shown = false;
+                v.grid = None;
+            }
             KeyCode::Char(',') if v.shown => v.step_pair(false),
             KeyCode::Char('.') if v.shown => v.step_pair(true),
             // senna view's keys: labels, colouring, layout.
             KeyCode::Char('t') if v.shown => self.status = v.cycle_labels(),
             KeyCode::Char('c') if v.shown => self.status = v.cycle_colouring(),
             KeyCode::Char('m') if v.shown => self.status = v.next_layout(),
+            // senna view's navigation: the grid, zoom and pan.
+            KeyCode::Char('w') if v.shown => {
+                v.open_grid();
+                self.status =
+                    "arrows choose a figure · Enter opens it · esc or w closes the grid".into();
+            }
+            KeyCode::Char('+' | '=') if v.shown => self.status = v.zoom(true),
+            KeyCode::Char('-' | '_') if v.shown => self.status = v.zoom(false),
+            KeyCode::Char('0') if v.shown => self.status = v.reset_view(),
+            // With the strip open the arrows are its own.
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if v.shown && !strip => {
+                let (dx, dy) = match code {
+                    KeyCode::Left => (-1.0, 0.0),
+                    KeyCode::Right => (1.0, 0.0),
+                    KeyCode::Up => (0.0, 1.0),
+                    _ => (0.0, -1.0),
+                };
+                let note = v.pan(dx, dy);
+                if !note.is_empty() {
+                    self.status = note;
+                }
+            }
             KeyCode::Char('p') if v.shown => {
                 self.status = v
                     .export()

@@ -79,7 +79,7 @@ fn help(app: &App) -> &'static str {
         }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
             if app.figures.as_ref().is_some_and(|v| v.shown) {
-                " ? keys · v next figure · V table · t labels · c colour · m layout · , . components · p export · f exports · r run"
+                " ? keys · v next figure · w all · V table · t labels · c colour · m layout · + - 0 zoom · arrows pan · p export · f exports · r run"
             } else {
                 " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · t tree"
             }
@@ -185,7 +185,10 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("c", "colour the cells by pseudotime, cell type, lineage or component"),
             ("m", "the scatter's layout: each layout the run has (PHATE first), then the diffusion map"),
             (", .", "another pair of diffusion components"),
-            ("p", "export the figure as {run}.trajectory.{figure}.svg + .pdf and log it"),
+            ("w", "all figures as thumbnails: arrows choose, enter opens, esc or w closes"),
+            ("+ - 0", "zoom the scatter in / out / show it whole (m and , . also show it whole)"),
+            ("arrows", "pan a zoomed scatter (with the exports strip open, they move in the strip)"),
+            ("p", "export the figure as on screen (zoomed too) as {run}.trajectory.{figure}.svg + .pdf and log it"),
             ("f", "the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete"),
             ("R", "re-read the log and check every export against its files"),
         ],
@@ -1095,6 +1098,9 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
 /// The figure pane: the current figure, and the exports strip when open.
 fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::FigurePane) {
     let focused = app.focus == Focus::Tree;
+    if let Some(g) = &v.grid {
+        return draw_grid(f, area, v, g, focused);
+    }
     let (figure, strip) = if v.exports.open {
         let [a, b] = Layout::vertical([Constraint::Min(6), Constraint::Length(8)]).areas(area);
         (a, Some(b))
@@ -1119,6 +1125,59 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
     }
     if let Some(strip) = strip {
         draw_exports(f, strip, &v.exports, focused);
+    }
+}
+
+/// The thumbnail grid: each figure in a tile, the selected one highlighted.
+fn draw_grid(
+    f: &mut Frame,
+    area: Rect,
+    v: &super::figure_pane::FigurePane,
+    g: &super::figure_pane::Grid,
+    focused: bool,
+) {
+    let block = pane(
+        format!(
+            " figures ({}) · arrows choose · enter opens · esc closes ",
+            g.tiles.len()
+        ),
+        focused,
+    );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let cols = g.cols();
+    let rows = g.tiles.len().div_ceil(cols);
+    let row_areas = Layout::vertical(vec![Constraint::Ratio(1, rows as u32); rows]).split(inner);
+    for (r, row) in row_areas.iter().enumerate() {
+        let cells = Layout::horizontal(vec![Constraint::Ratio(1, cols as u32); cols]).split(*row);
+        for (c, cell) in cells.iter().enumerate() {
+            let i = r * cols + c;
+            let Some(&panel) = g.tiles.get(i) else {
+                continue;
+            };
+            let selected = i == g.sel;
+            let mut tile = Block::bordered().title(format!(" {} ", v.data.title(panel)));
+            if selected {
+                tile = tile
+                    .border_style(Style::default().fg(Color::Cyan))
+                    .title_style(Style::default().add_modifier(Modifier::REVERSED));
+            } else {
+                tile = tile.border_style(Style::default().add_modifier(Modifier::DIM));
+            }
+            let inside = tile.inner(*cell);
+            f.render_widget(tile, *cell);
+            if inside.width < 2 || inside.height < 2 {
+                continue;
+            }
+            match v.tile(i, inside).as_deref() {
+                Some(Ok(p)) => f.render_widget(ratatui_image::Image::new(p), inside),
+                Some(Err(e)) => f.render_widget(
+                    Paragraph::new(e.as_str()).wrap(Wrap { trim: true }).dim(),
+                    inside,
+                ),
+                None => {}
+            }
+        }
     }
 }
 
