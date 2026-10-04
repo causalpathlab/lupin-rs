@@ -552,4 +552,4 @@ pub fn picker(graphics: Graphics) -> Picker {
 
 #[cfg(test)]
 #[path = "tests/figure_pane.rs"]
-mod tests;
+pub(crate) mod tests;

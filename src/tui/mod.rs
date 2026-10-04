@@ -121,15 +121,8 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     args.from = Some(loaded.file.to_string_lossy().into());
     if args.markers.is_empty() {
         // The recorded panel, found again if the run moved; one that is gone
-        // (made on another machine) is picked anew.
-        let recorded = loaded
-            .manifest
-            .annotate
-            .markers
-            .as_deref()
-            .map(|rel| loaded.manifest.data_file(&loaded.dir, rel))
-            .filter(|p| std::path::Path::new(p).is_file());
-        args.markers = match recorded {
+        // is picked anew.
+        args.markers = match crate::annotate_cmd::recorded_markers(&loaded) {
             Some(p) => p.into_boxed_str(),
             // The order view needs no marker panel: open on the run's types.
             None if start_in_order => Default::default(),
@@ -212,7 +205,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     }
 
     let mut terminal = ratatui::init();
-    app.shift_enter = keyboard_enhancement(true);
+    app.shift_enter = push_keys();
     let result = (|| -> Result<()> {
         // Drawn when something changed: a key, a resize, the log, the status
         // or a rescoring starting or ending.
@@ -220,44 +213,36 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         while !app.quit {
             let (logged, status) = (app.log.len(), app.status.clone());
             let rescoring = app.rescoring.is_some();
-            let progress = app.progress.as_ref().map(|p| p.reported_at);
+            let progress = app.child.as_ref().map(|r| r.progress.reported_at);
             app.tick();
             dirty |= app.log.len() != logged
                 || app.status != status
                 || app.rescoring.is_some() != rescoring
-                || app.progress.as_ref().map(|p| p.reported_at) != progress;
+                || app.child.as_ref().map(|r| r.progress.reported_at) != progress;
             if dirty {
                 terminal.draw(|f| ui::draw(f, &app))?;
                 dirty = false;
             }
             if let Some(want) = app.want_file.take() {
                 // The file browser takes the screen, then gives it back.
-                let picked = match want {
+                if app.shift_enter {
+                    pop_keys();
+                }
+                let kind = match want {
                     app::FileWant::Markers => {
                         let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
                         let n = index.as_deref().map_or(0, GeneRows::n_genes);
-                        let want = picker::Want::Markers(index, n);
-                        picker::pick("Pick a marker panel", &loaded.dir, want)?
+                        picker::Want::Markers(index, n)
                     }
-                    app::FileWant::Labels => picker::pick(
-                        "Pick a cell<TAB>type labels file",
-                        &loaded.dir,
-                        picker::Want::Labels,
-                    )?,
-                    app::FileWant::Prior => picker::pick(
-                        "Pick a precedence file (from<TAB>to<TAB>precedes|unrelated)",
-                        &loaded.dir,
-                        picker::Want::Labels,
-                    )?,
-                    app::FileWant::LabelCl => picker::pick(
-                        "Pick a label<TAB>CL:id file",
-                        &loaded.dir,
-                        picker::Want::Labels,
-                    )?,
+                    // Tab-separated text files.
+                    _ => picker::Want::Labels,
                 };
+                let picked = picker::pick(want.title(), &loaded.dir, kind)?;
                 // A fresh terminal redraws every cell on its first draw.
                 terminal = ratatui::init();
-                keyboard_enhancement(app.shift_enter);
+                if app.shift_enter {
+                    push_keys();
+                }
                 match want {
                     app::FileWant::Markers => app.set_markers(picked.as_deref()),
                     app::FileWant::Labels => app.set_labels(picked.as_deref()),
@@ -284,7 +269,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         Ok(())
     })();
     if app.shift_enter {
-        keyboard_enhancement(false);
+        pop_keys();
     }
     ratatui::restore();
     if let Some(r) = &app.round {
@@ -304,20 +289,21 @@ fn run_genes(loaded: &run::Loaded) -> Option<Vec<Box<str>>> {
 }
 
 /// Ask the terminal to tell Shift+Enter from Enter (the kitty keyboard
-/// protocol) when `on` and it can, else undo that; whether it is on.
-fn keyboard_enhancement(on: bool) -> bool {
-    use ratatui::crossterm::event::{
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-    };
-    use ratatui::crossterm::execute;
-    let mut out = std::io::stdout();
-    if !on {
-        return execute!(out, PopKeyboardEnhancementFlags).is_err();
-    }
+/// protocol) when it can; whether it does.
+fn push_keys() -> bool {
+    use ratatui::crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
     let can = ratatui::crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
-    can && execute!(
-        out,
+    can && ratatui::crossterm::execute!(
+        std::io::stdout(),
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )
     .is_ok()
+}
+
+/// Undo [`push_keys`]; called only after it succeeded.
+fn pop_keys() {
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::PopKeyboardEnhancementFlags
+    );
 }

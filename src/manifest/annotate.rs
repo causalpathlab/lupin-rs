@@ -110,7 +110,7 @@ pub fn annotate_by_enrichment(
             }),
         );
     }
-    stages.start(if plan.gene_sets_too { 4 } else { 3 });
+    stages.start(stages.named(crate::annotate::by_enrichment::STAGE_RECORD));
     record(loaded, &args.out, pass, &outputs, "enrichment", used)?;
     stages.finish();
     Ok(())

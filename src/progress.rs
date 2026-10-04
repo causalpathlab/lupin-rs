@@ -12,6 +12,7 @@
 //! variable nothing is written, so batch users see no change.
 
 use std::sync::OnceLock;
+use std::time::Duration;
 
 /// The environment variable that turns progress lines on.
 pub const ENV: &str = "LUPIN_PROGRESS";
@@ -87,6 +88,15 @@ impl Stages {
             .sum()
     }
 
+    /// The stage named `name`; a name the table lacks is a programming
+    /// error.
+    pub fn named(&self, name: &str) -> usize {
+        self.stages
+            .iter()
+            .position(|s| s.0 == name)
+            .unwrap_or_else(|| panic!("no stage {name:?}"))
+    }
+
     /// Stage `i` has started.
     pub fn start(&self, i: usize) {
         self.within(i, 0, 1, None);
@@ -124,6 +134,69 @@ impl Stages {
         if enabled() {
             eprintln!("{}", line(self.total, self.total, self.total, "done"));
         }
+    }
+}
+
+/// What the popup shows: the share done and the time left.
+#[derive(Debug, PartialEq)]
+pub struct Estimate {
+    pub fraction: f64,
+    /// `None` while there is no pace to go on yet.
+    pub left: Option<Duration>,
+    /// The current stage has taken longer than its share: `left` is what
+    /// the later stages should take, and this one's end is unknown.
+    pub over: bool,
+}
+
+/// The share done and the time left `now` into a job whose last report
+/// `r` came at `at`. The pace (time per unit of work) is the one the job
+/// kept up to that report; the current stage is expected to take its
+/// share at that pace, so the time left counts down through it and the
+/// share creeps on; past that, the time left holds at the later stages'
+/// and is marked `over`, rather than growing with every second.
+pub fn estimate(r: &Report, at: Duration, now: Duration) -> Estimate {
+    let share = |w: f64| (w / r.total).clamp(0.0, 1.0);
+    // A pace needs some work done and some time spent on it.
+    let pace = (r.done > 0.0 && at.as_secs_f64() >= 1.0).then(|| at.as_secs_f64() / r.done);
+    let Some(pace) = pace else {
+        return Estimate {
+            fraction: share(r.done),
+            left: None,
+            over: false,
+        };
+    };
+    let here = (r.end - r.done) * pace;
+    let spent = now.saturating_sub(at).as_secs_f64();
+    let later = (r.total - r.end) * pace;
+    let over = spent > here;
+    let into = if here > 0.0 {
+        (spent / here).min(0.95)
+    } else {
+        0.0
+    };
+    Estimate {
+        fraction: share(r.done + (r.end - r.done) * into),
+        left: Some(Duration::from_secs_f64((here - spent).max(0.0) + later)),
+        over,
+    }
+}
+
+/// `ETA 1m10s`, `ETA 40s+` past a stage's share, or `estimating…`.
+pub fn eta_text(e: &Estimate) -> String {
+    match e.left {
+        None => "estimating…".into(),
+        Some(d) if e.over => format!("ETA {}+ (this stage is slower)", duration_text(d)),
+        Some(d) => format!("ETA {}", duration_text(d)),
+    }
+}
+
+/// `45s`, `3m05s`, `1h02m`.
+pub fn duration_text(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m{:02}s", s / 60, s % 60),
+        _ => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
     }
 }
 
@@ -199,5 +272,43 @@ mod tests {
         assert_eq!((r.done, r.end, r.total), (2.0, 4.0, 4.0));
         assert_eq!(r.stage, "two (1 of 3)");
         assert_eq!(read(s.line(1, 3, 3, None)).done, 4.0);
+    }
+
+    #[test]
+    fn the_eta_counts_down_through_a_stage_and_holds_when_it_runs_long() {
+        let s = Duration::from_secs;
+        let report = |done: f64, end: f64| Report {
+            done,
+            end,
+            total: 10.0,
+            stage: "CT1".into(),
+        };
+        // Nothing done yet: no pace.
+        let e = estimate(&report(0.0, 2.0), s(0), s(5));
+        assert_eq!((e.left, e.fraction), (None, 0.0));
+        assert_eq!(eta_text(&e), "estimating…");
+        // 2 units in 4 s: 2 s a unit. A stage of 4 units then 4 more: 16 s.
+        let r = report(2.0, 6.0);
+        let at = s(4);
+        assert_eq!(estimate(&r, at, s(4)).left, Some(s(16)));
+        // Through the stage the time left falls and the share rises.
+        let mid = estimate(&r, at, s(8));
+        assert_eq!(mid.left, Some(s(12)));
+        assert!(mid.fraction > 0.2 && mid.fraction < 0.6);
+        assert!(!mid.over);
+        // Past the stage's share: it holds at the later stages' 8 s, marked.
+        for now in [s(13), s(30), s(300)] {
+            let e = estimate(&r, at, now);
+            assert_eq!(e.left, Some(s(8)), "{now:?}");
+            assert!(e.over);
+            assert!(e.fraction < 0.6, "the share stops short of the stage's end");
+        }
+        assert_eq!(
+            eta_text(&estimate(&r, at, s(30))),
+            "ETA 8s+ (this stage is slower)"
+        );
+        assert_eq!(eta_text(&estimate(&r, at, s(8))), "ETA 12s");
+        assert_eq!(duration_text(s(45)), "45s");
+        assert_eq!(duration_text(s(3725)), "1h02m");
     }
 }

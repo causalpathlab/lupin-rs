@@ -81,10 +81,7 @@ impl PanelTree {
             .chain(sharers.iter().filter(|(_, &n)| n >= 2).map(|(t, _)| *t))
             .collect();
         // How far below the ontology's top each node is, to order ancestors.
-        let rank: BTreeMap<&str, usize> = ids
-            .iter()
-            .map(|id| (*id, terms.ancestors_or_self(id).len()))
-            .collect();
+        let rank: BTreeMap<&str, usize> = ids.iter().map(|id| (*id, terms.depth(id))).collect();
 
         let mut tree = Self::empty(TreeSource::CellOntology, terms.release.clone());
         let index: BTreeMap<&str, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
@@ -265,6 +262,17 @@ impl PanelTree {
     #[must_use]
     pub fn is_folded(&self, i: usize) -> bool {
         self.folded.contains(&i)
+    }
+
+    /// `←` on node `i`, as in a file tree: fold an open branch, else the
+    /// parent to move to.
+    pub fn left(&mut self, i: usize) -> Option<usize> {
+        if self.nodes[i].children.is_empty() || self.is_folded(i) {
+            self.nodes[i].parent
+        } else {
+            self.fold(i, true);
+            None
+        }
     }
 
     /// Hide (`fold`) or show a branching node's subtree.

@@ -154,7 +154,7 @@ fn running(app: &mut App) {
         .arg("30")
         .spawn()
         .unwrap();
-    app.child = Some((child, Instant::now(), Job::Pass));
+    app.child = Some(Running::new(child, Job::Pass));
 }
 
 #[test]
@@ -196,20 +196,28 @@ fn ctrl_c_asks_before_dropping_unsaved_edits() {
 }
 
 #[test]
-fn x_stops_a_pass_only_when_asked_twice_and_never_from_the_genes_pane() {
-    let mut app = app_with_terms(false);
-    running(&mut app);
-    app.focus = Focus::Genes;
-    press(&mut app, KeyCode::Char('x'));
-    press(&mut app, KeyCode::Char('x'));
-    assert!(app.child.is_some(), "x hides genes there");
+fn x_stops_a_pass_only_when_asked_twice_from_any_pane() {
+    for focus in [Focus::Genes, Focus::Clusters] {
+        let mut app = app_with_terms(false);
+        running(&mut app);
+        app.focus = focus;
+        press(&mut app, KeyCode::Char('x'));
+        assert!(app.child.is_some());
+        assert_eq!(app.status, "x again stops it");
+        press(&mut app, KeyCode::Char('x'));
+        assert!(app.child.is_none(), "{focus:?}");
+    }
+}
 
-    app.focus = Focus::Clusters;
+#[test]
+fn h_hides_a_gene_and_x_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with_terms(false);
+    app.data_search = crate::manifest::data_files::SearchPath::new(Some(dir.path()));
     press(&mut app, KeyCode::Char('x'));
-    assert!(app.child.is_some());
-    assert_eq!(app.status, "x again stops it");
-    press(&mut app, KeyCode::Char('x'));
-    assert!(app.child.is_none());
+    assert!(!app.status.starts_with("hiding"), "x hides nothing");
+    press(&mut app, KeyCode::Char('h'));
+    assert!(app.status.starts_with("hiding GENE1"), "{}", app.status);
 }
 
 #[test]
@@ -239,10 +247,7 @@ fn order_app(dir: &std::path::Path, types: &[&str]) -> App {
 }
 
 fn menu(app: &App) -> Option<&super::super::menu::Menu> {
-    match app.prompt.as_ref().map(|p| &p.pending) {
-        Some(Pending::Choose(m)) => Some(m),
-        _ => None,
-    }
+    app.menu.as_ref()
 }
 
 #[test]
@@ -328,8 +333,11 @@ fn the_ontology_beside_the_table_follows_its_selection() {
     let mut app = order_app(dir.path(), &["CT1", "CT2", "CT3"]);
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down);
-    let tree = app.order_tree.as_ref().unwrap();
-    let at = tree.visible()[app.order_tree_sel];
+    let TreeMode::Order(v) = &app.tree_mode else {
+        panic!("the order view")
+    };
+    let tree = &v.tree;
+    let at = tree.visible()[v.tree_sel];
     assert_eq!(tree.label(at), "CT3");
 }
 
@@ -428,52 +436,11 @@ fn in_the_order_view_r_runs_the_trajectory_from_any_pane() {
     let mut app = order_app(dir.path(), &["CT1", "CT2", "CT3"]);
     app.focus = Focus::Clusters;
     press(&mut app, KeyCode::Char('r'));
-    assert!(!app.settings_open, "no cluster settings on an order view");
+    assert!(app.form.is_none(), "no cluster settings on an order view");
     assert!(
         menu(&app).is_some(),
         "the trajectory's own question instead"
     );
-}
-
-#[test]
-fn the_eta_counts_down_through_a_stage_and_holds_when_it_runs_long() {
-    use super::super::app::{duration_text, estimate, eta_text};
-    use crate::progress::Report;
-    use std::time::Duration;
-    let s = Duration::from_secs;
-    let report = |done: f64, end: f64| Report {
-        done,
-        end,
-        total: 10.0,
-        stage: "CT1".into(),
-    };
-    // Nothing done yet: no pace.
-    let e = estimate(&report(0.0, 2.0), s(0), s(5));
-    assert_eq!((e.left, e.fraction), (None, 0.0));
-    assert_eq!(eta_text(&e), "estimating…");
-    // 2 units in 4 s: 2 s a unit. A stage of 4 units then 4 more: 16 s.
-    let r = report(2.0, 6.0);
-    let at = s(4);
-    assert_eq!(estimate(&r, at, s(4)).left, Some(s(16)));
-    // Through the stage the time left falls and the share rises.
-    let mid = estimate(&r, at, s(8));
-    assert_eq!(mid.left, Some(s(12)));
-    assert!(mid.fraction > 0.2 && mid.fraction < 0.6);
-    assert!(!mid.over);
-    // Past the stage's share: it holds at the later stages' 8 s, marked.
-    for now in [s(13), s(30), s(300)] {
-        let e = estimate(&r, at, now);
-        assert_eq!(e.left, Some(s(8)), "{now:?}");
-        assert!(e.over);
-        assert!(e.fraction < 0.6, "the share stops short of the stage's end");
-    }
-    assert_eq!(
-        eta_text(&estimate(&r, at, s(30))),
-        "ETA 8s+ (this stage is slower)"
-    );
-    assert_eq!(eta_text(&estimate(&r, at, s(8))), "ETA 12s");
-    assert_eq!(duration_text(s(45)), "45s");
-    assert_eq!(duration_text(s(3725)), "1h02m");
 }
 
 #[test]
@@ -512,11 +479,14 @@ fn annotating_from_the_labels_menu_opens_the_form_on_the_panel() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = form_app(dir.path());
     app.choose(Action::Annotate);
-    assert!(app.settings_open);
-    let summary = app.form_summary();
+    assert!(app.form.is_some());
+    let summary = app.form_summary().0;
     assert!(summary.contains("run.L1"), "{summary}");
     assert!(summary.contains("then the trajectory"), "{summary}");
-    assert_eq!(app.setting, setting_row(Setting::Markers));
+    assert_eq!(
+        app.form.as_ref().unwrap().row,
+        setting_row(Setting::Markers)
+    );
     assert!(app.child.is_none(), "the form starts nothing on its own");
 }
 
@@ -528,8 +498,8 @@ fn a_in_the_clusters_opens_the_form_and_offers_the_trajectory_after() {
     let mut app = form_app(dir.path());
     app.focus = Focus::Clusters;
     press(&mut app, KeyCode::Char('A'));
-    assert!(app.settings_open);
-    let summary = app.form_summary();
+    assert!(app.form.is_some());
+    let summary = app.form_summary().0;
     assert!(summary.contains("run.L2"), "{summary}");
     assert!(summary.contains("replaces nothing"), "{summary}");
     assert!(
@@ -537,7 +507,7 @@ fn a_in_the_clusters_opens_the_form_and_offers_the_trajectory_after() {
         "{summary}"
     );
     press(&mut app, KeyCode::Esc);
-    assert!(!app.settings_open, "esc closes without running");
+    assert!(app.form.is_none(), "esc closes without running");
     assert!(app.child.is_none());
 }
 
@@ -548,24 +518,24 @@ fn the_form_refuses_to_run_without_a_panel_and_enter_on_it_asks_for_one() {
     let mut app = form_app(dir.path());
     app.focus = Focus::Clusters;
     press(&mut app, KeyCode::Char('A'));
-    app.setting = setting_row(Setting::Run);
+    app.form.as_mut().unwrap().row = setting_row(Setting::Run);
     press(&mut app, KeyCode::Enter);
-    assert!(app.settings_open && app.child.is_none());
-    let note = app.form_note.clone().unwrap_or_default();
+    assert!(app.form.is_some() && app.child.is_none());
+    let note = app.form.as_ref().unwrap().note.clone().unwrap_or_default();
     assert!(note.contains("marker panel"), "{note}");
     assert_eq!(
-        app.setting,
+        app.form.as_ref().unwrap().row,
         setting_row(Setting::Markers),
         "back on the panel row"
     );
     // Enter there asks for a file and starts nothing.
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.want_file, Some(FileWant::Markers));
-    assert!(app.settings_open && app.child.is_none());
+    assert!(app.form.is_some() && app.child.is_none());
     // Enter on a value row only says how to run.
-    app.setting = setting_row(Setting::Knn);
+    app.form.as_mut().unwrap().row = setting_row(Setting::Knn);
     press(&mut app, KeyCode::Enter);
-    assert!(app.settings_open && app.child.is_none());
+    assert!(app.form.is_some() && app.child.is_none());
 }
 
 #[test]
@@ -581,17 +551,17 @@ fn a_pass_that_replaces_a_round_asks_in_the_form_before_it_runs() {
     app.focus = Focus::Clusters;
     press(&mut app, KeyCode::Char('A'));
     assert_eq!(
-        app.setting,
+        app.form.as_ref().unwrap().row,
         setting_row(Setting::Run),
         "a panel: on the run row"
     );
-    assert!(app.form_summary().contains("replaces run.L1.senna.json"));
+    assert!(app.form_summary().0.contains("replaces run.L1.senna.json"));
     press(&mut app, KeyCode::Enter);
     assert!(
-        app.form_confirm && app.child.is_none(),
+        app.form.as_ref().unwrap().confirm && app.child.is_none(),
         "asked, not started"
     );
-    let note = app.form_note.clone().unwrap_or_default();
+    let note = app.form.as_ref().unwrap().note.clone().unwrap_or_default();
     assert!(note.contains("run again to confirm"), "{note}");
 }
 
@@ -600,10 +570,10 @@ fn r_in_annotate_opens_the_same_form_without_a_trajectory() {
     let mut app = app_with_terms(false);
     app.focus = Focus::Clusters;
     press(&mut app, KeyCode::Char('r'));
-    assert!(app.settings_open);
-    assert!(!app.form_summary().contains("trajectory"));
+    assert!(app.form.is_some());
+    assert!(!app.form_summary().0.contains("trajectory"));
     press(&mut app, KeyCode::Char('r'));
-    assert!(!app.settings_open, "r closes it again");
+    assert!(app.form.is_none(), "r closes it again");
 }
 
 #[test]
@@ -615,13 +585,117 @@ fn after_a_pass_from_the_order_view_the_trajectory_is_offered() {
     press(&mut app, KeyCode::Esc);
     // As a run from the form leaves things: flags set, the form closed.
     press(&mut app, KeyCode::Char('A'));
-    app.settings_open = false;
+    app.form = None;
     let mut child = std::process::Command::new("true").spawn().unwrap();
     child.wait().unwrap();
-    app.child = Some((child, Instant::now(), Job::Pass));
+    app.child = Some(Running::new(child, Job::Pass));
     app.tick();
     let m = menu(&app).expect("the offer");
     assert_eq!(m.choices[0].label, "Run the trajectory on the new labels");
     press(&mut app, KeyCode::Char('2'));
     assert!(app.prompt.is_none() && app.status.contains("r runs"));
+}
+
+/// An order view with figures on screen and the ordering column focused.
+fn figures_app(dir: &std::path::Path) -> App {
+    let mut app = order_app(dir, &["CT1", "CT2"]);
+    app.figures = Some(super::super::figure_pane::tests::pane());
+    app.focus = Focus::Order;
+    app
+}
+
+#[test]
+fn in_the_order_view_t_restyles_and_capital_t_leaves() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    press(&mut app, KeyCode::Char('t'));
+    assert!(app.in_order(), "t restyles the labels");
+    assert!(app.status.starts_with("labels"), "{}", app.status);
+    // With the table shown, t only says how.
+    press(&mut app, KeyCode::Char('V'));
+    press(&mut app, KeyCode::Char('t'));
+    assert!(app.in_order());
+    assert!(app.status.contains("T back to the tree"), "{}", app.status);
+    press(&mut app, KeyCode::Char('T'));
+    assert!(!app.in_order(), "T leaves the order view");
+}
+
+#[test]
+fn the_figures_keys_wait_while_the_ontology_column_has_the_focus() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    app.focus = Focus::Tree;
+    let style = format!("{:?}", app.figures.as_ref().unwrap().style);
+    press(&mut app, KeyCode::Char('t'));
+    press(&mut app, KeyCode::Char('c'));
+    press(&mut app, KeyCode::Char('w'));
+    let v = app.figures.as_ref().unwrap();
+    assert_eq!(format!("{:?}", v.style), style, "no restyle");
+    assert!(v.grid.is_none(), "no grid");
+}
+
+#[test]
+fn esc_closes_the_exports_strip_then_the_grid_before_leaving() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    press(&mut app, KeyCode::Char('f'));
+    assert!(app.figures.as_ref().unwrap().exports.open);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.figures.as_ref().unwrap().exports.open);
+    assert_eq!(app.focus, Focus::Order, "only the strip closed");
+    press(&mut app, KeyCode::Char('w'));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.figures.as_ref().unwrap().grid.is_none());
+    assert_eq!(app.focus, Focus::Order, "only the grid closed");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.focus, Focus::Clusters);
+}
+
+#[test]
+fn a_grid_tile_opens_with_its_number_or_space() {
+    use crate::trajectory::figures::Panel;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    press(&mut app, KeyCode::Char('w'));
+    press(&mut app, KeyCode::Char('4'));
+    let v = app.figures.as_ref().unwrap();
+    assert!(v.grid.is_none());
+    assert_eq!(v.current(), Panel::Order);
+    press(&mut app, KeyCode::Char('w'));
+    press(&mut app, KeyCode::Char('9'));
+    assert!(app.status.contains("tile(s)"), "{}", app.status);
+    press(&mut app, KeyCode::Char(' '));
+    assert!(app.figures.as_ref().unwrap().grid.is_none());
+}
+
+#[test]
+fn f_waits_for_the_figures() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    press(&mut app, KeyCode::Char('V'));
+    press(&mut app, KeyCode::Char('f'));
+    assert!(!app.figures.as_ref().unwrap().exports.open);
+    assert!(
+        app.status.starts_with("v shows the figures"),
+        "{}",
+        app.status
+    );
+}
+
+#[test]
+fn a_failed_job_notice_takes_the_key_before_an_open_prompt() {
+    let mut app = app_with_terms(false);
+    app.prompt = Some(Prompt {
+        title: "why?".into(),
+        text: String::new(),
+        pending: Pending::Hide,
+    });
+    app.failed = Some("trajectory failed".into());
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.failed.is_none());
+    assert_eq!(
+        app.prompt.as_ref().unwrap().text,
+        "",
+        "the prompt got nothing"
+    );
 }

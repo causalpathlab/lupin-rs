@@ -5,7 +5,7 @@ use legume_numeric::matrix::dense_mat_io::Mat;
 use ratatui::crossterm::event::KeyCode;
 
 /// Two layouts, a diffusion map and one edge, on placeholder types.
-fn pane() -> FigurePane {
+pub(crate) fn pane() -> FigurePane {
     let n = 30;
     let x: Vec<f32> = (0..n).map(|i| i as f32).collect();
     let y: Vec<f32> = (0..n).map(|i| (i % 5) as f32).collect();

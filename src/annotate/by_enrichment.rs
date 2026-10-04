@@ -238,18 +238,23 @@ fn prepare_with(
 /// An enrichment pass's stages for the TUI's progress popup, weighted by
 /// their rough share of the time; [`PASS_GO`] when GO terms are scored too.
 pub(crate) static PASS: Stages = Stages::new(&[
-    ("reading the data and its clusters", 3.0),
-    ("scoring cell types", 6.0),
-    ("writing outputs", 1.0),
-    ("recording the round", 0.5),
+    (STAGE_READ, 3.0),
+    (STAGE_SCORE, 6.0),
+    (STAGE_WRITE, 1.0),
+    (STAGE_RECORD, 0.5),
 ]);
 pub(crate) static PASS_GO: Stages = Stages::new(&[
-    ("reading the data and its clusters", 3.0),
-    ("scoring cell types", 6.0),
-    ("writing outputs", 1.0),
-    ("scoring GO terms", 4.0),
-    ("recording the round", 0.5),
+    (STAGE_READ, 3.0),
+    (STAGE_SCORE, 6.0),
+    (STAGE_WRITE, 1.0),
+    (STAGE_GO, 4.0),
+    (STAGE_RECORD, 0.5),
 ]);
+pub(crate) const STAGE_READ: &str = "reading the data and its clusters";
+pub(crate) const STAGE_SCORE: &str = "scoring cell types";
+pub(crate) const STAGE_WRITE: &str = "writing outputs";
+pub(crate) const STAGE_GO: &str = "scoring GO terms";
+pub(crate) const STAGE_RECORD: &str = "recording the round";
 
 /// The stages of a pass that scores GO terms too when `go`.
 pub(crate) fn pass_stages(go: bool) -> &'static Stages {
@@ -304,10 +309,10 @@ pub fn run(
         argmax_labels,
         bootstrap: _,
     } = {
-        stages.start(1);
+        stages.start(stages.named(STAGE_SCORE));
         score(args, inputs)?
     };
-    stages.start(2);
+    stages.start(stages.named(STAGE_WRITE));
 
     /////////////
     // Outputs //
@@ -407,7 +412,7 @@ pub fn run(
     // walk: the cell-type outputs above are already written.
     let mut gene_set_outputs = None;
     if plan.gene_sets_too {
-        stages.start(3);
+        stages.start(stages.named(STAGE_GO));
         match gene_set_signature(args, out, inputs, &cluster_names) {
             Ok(paths) => gene_set_outputs = Some(paths),
             Err(e) => log::error!("GO term scoring failed ({e:#}); cell-type outputs are intact"),

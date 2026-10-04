@@ -5,6 +5,7 @@
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::markers::label_key;
 use crate::annotate::panel_tree::PanelTree;
+use ratatui::crossterm::event::KeyCode;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Search hits listed.
@@ -55,6 +56,16 @@ pub enum Scope {
 }
 
 /// The ontology pane's state.
+/// What [`OntologyView::key`] did with a key.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ViewKey {
+    Taken,
+    /// `d`, with no type of the data on a term: nothing to narrow to.
+    NoData,
+    /// Not one of its keys.
+    Other,
+}
+
 pub struct OntologyView {
     pub focus: String,
     pub rows: Vec<Row>,
@@ -120,6 +131,23 @@ impl OntologyView {
 
     /// Between the terms in the data and the whole ontology, the cursor on
     /// the same term; `false` when there is no data to show.
+    /// The keys every ontology view shares: ↑↓ and pages move, → into a
+    /// term (or open a chain), ← up, `/` search, `d` in the data ↔ all.
+    pub fn key(&mut self, cl: &ClTerms, code: KeyCode) -> ViewKey {
+        if super::app::step(&mut self.sel, self.rows.len(), code) {
+            return ViewKey::Taken;
+        }
+        match code {
+            KeyCode::Right => self.enter(cl),
+            KeyCode::Left => self.up(cl),
+            KeyCode::Char('/') => self.typing = Some(String::new()),
+            KeyCode::Char('d') if !self.toggle_scope(cl) => return ViewKey::NoData,
+            KeyCode::Char('d') => {}
+            _ => return ViewKey::Other,
+        }
+        ViewKey::Taken
+    }
+
     pub fn toggle_scope(&mut self, cl: &ClTerms) -> bool {
         let id = self
             .selected()
@@ -255,26 +283,24 @@ pub fn data_rows(cl: &ClTerms, data: &BTreeSet<String>, expanded: &BTreeSet<Stri
     let Some(first) = above.first() else {
         return Vec::new();
     };
-    let mut depth: BTreeMap<String, usize> = BTreeMap::new();
-    let mut depth_of = |id: &str| -> usize {
-        *depth
-            .entry(id.to_string())
-            .or_insert_with(|| cl.ancestors_or_self(id).len())
-    };
+    // Every term above the data with its own ancestors, walked once: a
+    // term's depth is their number.
+    let ancestors: BTreeMap<&str, BTreeSet<String>> = above
+        .iter()
+        .flatten()
+        .map(|t| (t.as_str(), cl.ancestors_or_self(t)))
+        .collect();
+    let depth_of = |id: &str| ancestors.get(id).map_or(0, BTreeSet::len);
     // The lowest common ancestor: the deepest term above every data term.
     let top = first
         .iter()
         .filter(|t| above.iter().all(|a| a.contains(*t)))
         .max_by_key(|t| (depth_of(t), std::cmp::Reverse((*t).clone())))
         .cloned();
-    let nodes: BTreeSet<String> = above
+    let nodes: BTreeSet<String> = ancestors
         .iter()
-        .flatten()
-        .filter(|t| {
-            top.as_ref()
-                .is_none_or(|top| cl.ancestors_or_self(t).contains(top))
-        })
-        .cloned()
+        .filter(|(_, a)| top.as_ref().is_none_or(|top| a.contains(top)))
+        .map(|(t, _)| (*t).to_string())
         .collect();
     let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut roots = Vec::new();

@@ -252,16 +252,20 @@ compared directly:
 
 ## 6. Supervising the prior in the TUI
 
-`lupin trajectory` (also `t` in the annotate TUI's tree pane) adds an
-**order view**: beside the clusters, the run's types on the Cell Ontology,
+`lupin trajectory` (also `t` or `T` in the annotate TUI's tree pane; `T`
+leaves it again) adds an **order view** in three columns: the clusters with
+their genes and cell-type p-values, the ordering (or the figures) in the
+widest middle, and the run's types on the Cell Ontology,
 drawn as annotate's tree pane draws the panel (how many types map to terms
 and how many develops-from links join them above it, the selected type's
 place in the ontology, or that it has none, below), and the precedence table:
 the run's types with their cell counts, the direct edges with their sources,
 and, once a check has run, each edge's verdict. Tab goes clusters, genes,
-ontology, precedence; selecting a type in either column selects it in the
-other, and `o` in the ontology column opens the Cell Ontology there. Below
-150 columns the two share one column, showing whichever has the focus.
+ordering, ontology; selecting a type in the ordering or the ontology selects
+it in the other, and `o` in the ontology column opens the Cell Ontology
+there. Below 150 columns the ordering and the ontology share the middle,
+showing whichever has the focus. Esc goes back to the clusters, closing the
+exports strip, then the grid, first.
 
 The Cell Ontology view (`o`, here and in annotate's tree pane) opens on the
 terms **in the data**: the terms the labels sit on (the order view's types,
@@ -271,7 +275,7 @@ leads on to one term is folded into that term's line (→ opens it, ← folds
 it). `d` switches to the whole ontology around the same term and back. A
 search (`/`) lists the matches in the data's tree, or in the whole ontology
 when none are there, and says so. Mark type A, mark type B, then `>` for "A precedes B" or `-` for
-"unrelated" (`x` already stops a running pass anywhere in the TUI); a short
+"unrelated" (`x` stops a running job from any pane); a short
 reason is asked for, as for other edits. Enter on the reason writes the
 statement to the project layer's `precedence.tsv` at once (no save step);
 annotation rounds (`decisions.jsonl`) are not touched. A new statement about a
@@ -282,9 +286,13 @@ cycle, or when it says `unrelated` about a pair the rest of the prior orders.
 
 **Figures and what was exported.**
 
-The figure panels take the order table's place in the tree pane while they
-are shown (`v` shows them and steps through them, `V` brings the table back);
-space, `>` and `-` do nothing then, since types are marked in the table. The
+The figure panels take the order table's place in the middle column while
+they are shown (`v` shows them and steps through them, `V` brings the table
+back). Their keys act while the ordering column has the focus; the ontology
+column keeps its own. With the figures shown, space and `>` only say that
+types are marked in the table, `-` zooms out, and `t` restyles the labels
+(with the table shown, `t` says so and `T` leaves the order view). `f` and
+`R` belong to the figures too. The
 panels are drawn from the run's trajectory outputs, the same set the bench summary shows:
 
 - **Scatter**: the cells on one of the run's layouts, with the prior's
@@ -320,7 +328,7 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
 - **All figures** (`w`, as senna view's grid): each layout the run has, the
   diffusion map at the pair last shown, the order and the connectivity as
   thumbnails, drawn whole with the labels and colouring on screen. The
-  arrows choose one, Enter opens it in the pane, `p` exports it as its tile
+  arrows choose one, Enter, space or its number (1-9) opens it in the pane, `p` exports it as its tile
   shows it, `f` opens the exports strip, `V` goes back to the order table,
   and esc or `w` closes the grid on the figure it came from. `t` and `c`
   also work there.

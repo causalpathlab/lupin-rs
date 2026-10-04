@@ -28,7 +28,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Left: the clusters and their genes; middle: the ontology and the cell
     // types competing for the selected cluster; right, when the round scored
     // them: the cluster's GO terms.
-    let order = matches!(app.tree_mode, TreeMode::Order(_));
+    let order = app.in_order();
     if order {
         return draw_order_screen(f, app, [header, body, summary, log, keys]);
     }
@@ -61,16 +61,28 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_summary(f, summary, app);
     draw_log(f, log, app);
     f.render_widget(Paragraph::new(help(app)).dim(), keys);
-    if app.settings_open {
-        draw_settings(f, app);
+    draw_overlays(f, app, f.area());
+}
+
+/// The popups, bottom to top in the order `App::key` hands them keys from
+/// the top: the form, the guide, a running job's progress (which takes no
+/// keys but `b` and `x`), a prompt, a menu over `menu_area`, and a failed
+/// job's notice.
+fn draw_overlays(f: &mut Frame, app: &App, menu_area: Rect) {
+    if let Some(form) = &app.form {
+        draw_settings(f, app, form);
     }
     if app.help_open {
         draw_guide(f);
     }
-    if app.prompt.is_some() {
-        draw_prompt(f, app, f.area());
-    }
     draw_progress(f, app);
+    if app.prompt.is_some() {
+        draw_prompt(f, app);
+    }
+    if let Some(m) = &app.menu {
+        draw_menu(f, m, menu_area);
+    }
+    draw_failed(f, app);
 }
 
 /// The trajectory's order view: the clusters on the left, the ordering (or
@@ -103,8 +115,8 @@ fn draw_order_screen(f: &mut Frame, app: &App, [header, body, summary, log, keys
     .areas(left);
     draw_header(f, header, app);
     match app.figures.as_ref().filter(|fig| fig.shown) {
+        _ if !wide && app.focus == Focus::Tree => draw_order_ontology(f, middle, app, v),
         Some(fig) => draw_figures(f, middle, app, fig),
-        None if !wide && app.focus == Focus::Tree => draw_order_ontology(f, middle, app, v),
         None => draw_order(f, middle, app, v),
     }
     if wide {
@@ -116,51 +128,47 @@ fn draw_order_screen(f: &mut Frame, app: &App, [header, body, summary, log, keys
     draw_summary(f, summary, app);
     draw_log(f, log, app);
     f.render_widget(Paragraph::new(help(app)).dim(), keys);
-    if app.settings_open {
-        draw_settings(f, app);
-    }
-    if app.help_open {
-        draw_guide(f);
-    }
-    if app.prompt.is_some() {
-        // A choice leaves the ordering and the ontology in sight: it opens
-        // over the clusters.
-        draw_prompt(f, app, left);
-    }
-    draw_progress(f, app);
+    // A choice leaves the ordering and the ontology in sight: it opens over
+    // the clusters.
+    draw_overlays(f, app, left);
+}
+
+/// The area of a job's popup: centred, 8 rows, at most 72 columns.
+fn job_popup_area(f: &Frame) -> Rect {
+    centered(f.area(), f.area().width.min(72), 8)
+}
+
+/// A failed job's notice, in red with the reason, until a key.
+fn draw_failed(f: &mut Frame, app: &App) {
+    let Some(why) = &app.failed else { return };
+    let area = job_popup_area(f);
+    let block = popup(" failed ".into(), " any key closes ")
+        .border_style(Style::new().fg(Color::LightRed).bg(Color::Indexed(236)));
+    let text = vec![
+        Line::from(why.clone()).bold(),
+        Line::from(""),
+        Line::from("the log below has the details").fg(Color::Indexed(250)),
+    ];
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(text).wrap(Wrap { trim: true }).block(block),
+        area,
+    );
 }
 
 /// The running job's popup: what it is, its stage, a bar, the time so far
-/// and left, and its latest log line; red with the reason once it failed.
+/// and left, and its latest log line.
 fn draw_progress(f: &mut Frame, app: &App) {
-    let [area] = Layout::vertical([Constraint::Length(8)])
-        .flex(Flex::Center)
-        .areas(f.area());
-    let [area] = Layout::horizontal([Constraint::Length(f.area().width.min(72))])
-        .flex(Flex::Center)
-        .areas(area);
-    if let Some(why) = &app.failed {
-        let block = popup(" failed ".into(), " any key closes ")
-            .border_style(Style::new().fg(Color::LightRed).bg(Color::Indexed(236)));
-        let text = vec![
-            Line::from(why.clone()).bold(),
-            Line::from(""),
-            Line::from("the log below has the details").fg(Color::Indexed(250)),
-        ];
-        f.render_widget(Clear, area);
-        f.render_widget(
-            Paragraph::new(text).wrap(Wrap { trim: true }).block(block),
-            area,
-        );
+    if app.progress_hidden || app.failed.is_some() {
         return;
     }
-    if app.progress_hidden {
-        return;
-    }
+    let area = job_popup_area(f);
     let Some((what, elapsed)) = app.running_job() else {
         return;
     };
-    let p = app.progress.clone().unwrap_or_default();
+    let Some(p) = app.child.as_ref().map(|r| &r.progress) else {
+        return;
+    };
     let block = popup(format!(" {what} "), " x stop · b hide ");
     let inner = block.inner(area);
     f.render_widget(Clear, area);
@@ -184,19 +192,21 @@ fn draw_progress(f: &mut Frame, app: &App) {
     f.render_widget(gauge, bar);
     let left = e
         .as_ref()
-        .map_or("estimating…".into(), super::app::eta_text);
+        .map_or("estimating…".into(), crate::progress::eta_text);
     f.render_widget(
         Paragraph::new(format!(
             "elapsed {} · {left}",
-            super::app::duration_text(elapsed)
+            crate::progress::duration_text(elapsed)
         ))
         .style(POPUP),
         times,
     );
     // The message alone, without the logger's `[time LEVEL module]`.
-    let msg = match p.last.strip_prefix('[').and_then(|r| r.split_once("] ")) {
+    // The latest log line: the job's, while it writes.
+    let latest = app.log.last().map_or("", String::as_str);
+    let msg = match latest.strip_prefix('[').and_then(|r| r.split_once("] ")) {
         Some((_, m)) => m.trim_start(),
-        None => p.last.as_str(),
+        None => latest,
     };
     let tail: String = msg.chars().take(last.width as usize).collect();
     f.render_widget(
@@ -208,36 +218,36 @@ fn draw_progress(f: &mut Frame, app: &App) {
 /// The bottom line: where the key guide is, and the pane's main keys.
 fn help(app: &App) -> &'static str {
     match app.focus {
+        Focus::Clusters if app.in_order() => {
+            " ? keys · ↑↓ cluster · 1-9 take · k keep · ] next flagged · A annotate · r run · tab pane · q quit"
+        }
         Focus::Clusters => {
-            " ? keys · ↑↓ cluster · 1-6 take · k keep · ] next flagged · A annotate · tab pane · s save · q quit"
+            " ? keys · ↑↓ cluster · 1-9 take · k keep · ] next flagged · A annotate · tab pane · s save · q quit"
         }
         Focus::Genes => {
-            " ? keys · ↑↓ gene · a add · A add to a type · d drop · x hide · m view · tab pane"
+            " ? keys · ↑↓ gene · a add · A add to a type · d drop · h hide · H hidden · m view · tab pane"
         }
-        Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) && !figures_shown(app) => {
-            if app.order_cl.is_some() {
-                " ? keys · ↑↓ term · → children · ← parents · o back to the run's types · tab clusters"
+        Focus::Tree if app.in_order() => {
+            if matches!(&app.tree_mode, TreeMode::Order(v) if v.ontology.is_some()) {
+                " ? keys · ↑↓ term · → children · ← parents · d in the data / all · / search · o the run's types · T tree · tab clusters"
             } else {
-                " ? keys · ↑↓ type on the ontology · ← → fold · space mark · o full ontology · tab clusters"
+                " ? keys · ↑↓ type on the ontology · ← → fold · space mark · o full ontology · T tree · tab clusters"
             }
         }
-        Focus::Order | Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
-            if figures_shown(app) {
-                " ? keys · v next · w all · V table · t c m labels colour layout · , . [ ] axes · +-0 zoom · ←↑→↓ pan · p export · f exports · R check · r run · esc clusters"
-            } else {
-                " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab ontology · t tree"
-            }
+        Focus::Order if app.figures_shown() => {
+            " ? keys · v next · w all · V table · t c m labels colour layout · , . [ ] axes · +-0 zoom · ←↑→↓ pan · p export · f exports · r run · esc clusters"
         }
-        Focus::Order => " ? keys · tab pane",
+        Focus::Order => {
+            " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab ontology · T tree"
+        }
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Ontology(_)) => {
+            " ? keys · ↑↓ term · → children · ← parents · d in the data / all · / search · o panel · t order"
+        }
         Focus::Tree => {
             " ? keys · ↑↓ node · enter label · space mark · + mixed label · o ontology · / search · t order"
         }
         Focus::Go => " ? keys · ↑↓ term · ← → read a long name · tab pane · esc clusters",
     }
-}
-
-fn figures_shown(app: &App) -> bool {
-    app.figures.as_ref().is_some_and(|v| v.shown)
 }
 
 /// Below this many columns the order view shows the ontology or the
@@ -252,14 +262,13 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("?", "this guide (any key closes it)"),
             (
                 "tab / shift-tab",
-                "next / previous pane: clusters → genes → tree → precedence (order view) → GO terms (when scored)",
+                "next / previous pane: clusters → genes → tree → GO terms (when scored); in the order view clusters → genes → ordering → ontology",
             ),
             ("pgup/dn home/end", "a page / to either end of the pane's list"),
-            ("r", "the annotation form: marker panel, output, clustering and pass settings; ▶ run (or shift+enter) runs the pass (in the order view, r runs the trajectory)"),
-            (
-                "x",
-                "while a pass or save runs: stop it (asks again; in genes, x hides)",
-            ),
+            ("r", "annotate: the annotation form (marker panel, output, settings; ▶ run or shift+enter runs the pass) · order view: run the trajectory; A in the clusters opens the form"),
+            ("x", "while a job runs: stop it (asks again), from any pane"),
+            ("b", "while a job runs: hide or show its progress popup"),
+            ("esc", "back to the clusters from any other pane; closes a prompt, menu, form, the grid or the exports strip first"),
             ("s", "save the edits as the next round, and export"),
             ("e", "export the open round"),
             ("q / ctrl-c", "quit (asks again with unsaved edits)"),
@@ -269,7 +278,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         "clusters",
         &[
             ("↑↓", "select a cluster"),
-            ("1-6", "label it with that candidate"),
+            ("1-9", "label it with that candidate"),
             ("k", "keep its label (✓ = decided)"),
             ("u", "unassign it"),
             ("enter", "find its label in the tree"),
@@ -308,7 +317,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ),
             ("d", "drop from the label's markers"),
             ("⌫", "undo the last marker edit"),
-            ("x / X", "hide the genes / hide by pattern (MT-*)"),
+            ("h / X", "hide the genes / hide by pattern (MT-*)"),
             ("H", "show hidden genes"),
         ],
     ),
@@ -321,7 +330,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
-        "order view (t in the tree pane)",
+        "order view (t or T in the tree pane)",
         &[
             ("↑↓", "a cell type on screen, with its cells"),
             ("space", "mark a type; mark two, first the earlier one (in the table, not the figures)"),
@@ -329,7 +338,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("-", "the two marked types are unrelated (asks why)"),
             ("r", "run lupin trajectory on the labels on screen (asks for the output prefix; when nothing orders the types, asks how)"),
             ("tab", "the Cell Ontology beside the table: ↑↓ selects a type in both, space marks it, o the ontology, d in the data ↔ all"),
-            ("t / esc", "back to the tree / to the clusters"),
+            ("T / esc", "back to the tree / to the clusters (t restyles the figures' labels)"),
             ("", "statements go to the project's precedence.tsv; edges show source and, after a trajectory run, verdict"),
         ],
     ),
@@ -342,12 +351,13 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("m", "the scatter's layout: each layout the run has (PHATE first), then the diffusion map"),
             (", .", "the diffusion map's y axis: the previous or next component"),
             ("[ ]", "the diffusion map's x axis: the previous or next component"),
-            ("w", "all figures as thumbnails: arrows choose, enter opens, p exports the tile, V the table, esc or w closes"),
+            ("w", "all figures as thumbnails: arrows choose, enter, space or 1-9 opens, p exports the tile, f exports, V the table, esc or w closes"),
             ("+ - 0", "zoom the scatter in / out / show it whole (m and , . also show it whole)"),
             ("arrows", "pan a zoomed scatter (with the exports strip open, ↑↓ move in the strip)"),
             ("p", "export the figure as on screen (zoomed too) as {run}.trajectory.{figure}.svg + .pdf and log it"),
-            ("f", "the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete"),
+            ("f", "the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, esc closes"),
             ("R", "re-read the log and check every export against its files"),
+            ("", "keys act on the figures while the ordering column has the focus; p exports figures (senna view: s), s saves the round"),
         ],
     ),
     (
@@ -379,12 +389,7 @@ fn draw_guide(f: &mut Frame) {
         }
     }
     let height = (lines.len() as u16 + 2).min(f.area().height);
-    let [area] = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .areas(f.area());
-    let [area] = Layout::horizontal([Constraint::Length(84)])
-        .flex(Flex::Center)
-        .areas(area);
+    let area = centered(f.area(), 84, height);
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(lines)
@@ -399,13 +404,13 @@ fn draw_guide(f: &mut Frame) {
 const POPUP: Style = Style::new().fg(Color::Indexed(255)).bg(Color::Indexed(236));
 
 /// A popup's frame: a bright border and title over [`POPUP`].
-fn popup(title: String, hint: &'static str) -> Block<'static> {
+fn popup(title: String, hint: impl Into<String>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
         .border_style(Style::new().fg(Color::LightYellow).bg(Color::Indexed(236)))
         .title(Line::from(title).bold())
-        .title_bottom(Line::from(hint).fg(Color::Indexed(250)))
+        .title_bottom(Line::from(hint.into()).fg(Color::Indexed(250)))
         .style(POPUP)
 }
 
@@ -441,7 +446,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     }
     if app.stale {
         spans.push(
-            Span::from(if matches!(app.tree_mode, TreeMode::Order(_)) {
+            Span::from(if app.in_order() {
                 "· settings changed, A in the clusters re-annotates "
             } else {
                 "· settings changed, r to re-run "
@@ -516,42 +521,34 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
 /// The clustering and pass settings, as a popup over the screen.
 /// The annotation form: what running it will do, the marker panel, the
 /// output and the pass settings, a run row, and a line on the selected row.
-fn draw_settings(f: &mut Frame, app: &App) {
+fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
     let width = f.area().width.min(80);
     let inner_w = usize::from(width.saturating_sub(2)).max(1);
-    // Word wrapping can take a row more than the characters alone.
-    let rows_of = |t: &str| {
-        let n = t.chars().count().div_ceil(inner_w).max(1) as u16;
-        n + u16::from(n > 1)
+    let lines = |t: &str| -> Vec<Line<'static>> {
+        wrap(t, inner_w, 6).into_iter().map(Line::from).collect()
     };
-    let summary = app.form_summary();
-    let note = app.form_note.clone().unwrap_or_default();
-    let (sum_h, note_h) = (
-        rows_of(&summary),
-        if note.is_empty() { 0 } else { rows_of(&note) },
+    let (summary, warns) = app.form_summary();
+    let summary = lines(&summary);
+    let note = form.note.as_deref().map(lines).unwrap_or_default();
+    let explain = lines(SETTINGS[form.row].explain());
+    let (sum_h, note_h, explain_h) = (
+        summary.len() as u16,
+        note.len() as u16,
+        explain.len() as u16,
     );
-    let explain = SETTINGS[app.setting].explain();
-    let height = (2 + sum_h + 1 + SETTINGS.len() as u16 + 1 + note_h + rows_of(explain))
-        .min(f.area().height);
-    let [area] = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .areas(f.area());
-    let [area] = Layout::horizontal([Constraint::Length(width)])
-        .flex(Flex::Center)
-        .areas(area);
+    let height =
+        (2 + sum_h + 1 + SETTINGS.len() as u16 + 1 + note_h + explain_h).min(f.area().height);
+    let area = centered(f.area(), width, height);
     let source = if app.fixed_clusters {
         "clusters from the manifest"
     } else {
         "Leiden on the cell embedding"
     };
-    let block = popup(
-        format!(" annotate · {source} "),
-        if app.shift_enter {
-            " ↑↓ row · ←→ change · enter picks or edits · shift+enter or ▶ run runs · esc close "
-        } else {
-            " ↑↓ row · ←→ change · enter picks or edits · enter on ▶ run runs · esc close "
-        },
+    let keys = format!(
+        " ↑↓ row · ←→ change · enter picks or edits · {} runs · esc close ",
+        app.run_keys()
     );
+    let block = popup(format!(" annotate · {source} "), keys);
     let inner = block.inner(area);
     f.render_widget(Clear, area);
     f.render_widget(block, area);
@@ -566,17 +563,8 @@ fn draw_settings(f: &mut Frame, app: &App) {
     .areas(inner);
     let warn = Style::new().fg(Color::Yellow);
     let bad = Style::new().fg(Color::LightRed);
-    let summary_style = if app.pass_effects().is_empty() {
-        POPUP
-    } else {
-        POPUP.patch(warn)
-    };
-    f.render_widget(
-        Paragraph::new(summary)
-            .style(summary_style)
-            .wrap(Wrap { trim: true }),
-        sum_a,
-    );
+    let summary_style = if warns { POPUP.patch(warn) } else { POPUP };
+    f.render_widget(Paragraph::new(summary).style(summary_style), sum_a);
     let rows: Vec<Row> = SETTINGS
         .iter()
         .map(|&s| {
@@ -591,24 +579,17 @@ fn draw_settings(f: &mut Frame, app: &App) {
             }
         })
         .collect();
-    let mut state = TableState::default().with_selected(Some(app.setting));
+    let mut state = TableState::default().with_selected(Some(form.row));
     let t = Table::new(rows, [Constraint::Length(14), Constraint::Min(8)])
         .style(POPUP)
         .row_highlight_style(highlight(true));
     f.render_stateful_widget(t, table_a, &mut state);
     if !note.is_empty() {
-        let style = if app.form_confirm { warn } else { bad };
-        f.render_widget(
-            Paragraph::new(note)
-                .style(POPUP.patch(style))
-                .wrap(Wrap { trim: true }),
-            note_a,
-        );
+        let style = if form.confirm { warn } else { bad };
+        f.render_widget(Paragraph::new(note).style(POPUP.patch(style)), note_a);
     }
     f.render_widget(
-        Paragraph::new(explain)
-            .style(POPUP.fg(Color::Indexed(245)))
-            .wrap(Wrap { trim: true }),
+        Paragraph::new(explain).style(POPUP.fg(Color::Indexed(245))),
         explain_a,
     );
 }
@@ -980,31 +961,15 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
 /// drawn as the tree pane draws the panel: a summary above, the selected
 /// type's place in the ontology below.
 fn draw_order_ontology(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView) {
-    if let (Some(ov), Some(cl)) = (&app.order_cl, &app.cl) {
+    if let (Some(ov), Some(cl)) = (&v.ontology, &app.cl) {
         return draw_ontology(f, area, app, ov, cl);
     }
-    let Some(tree) = &app.order_tree else {
-        return;
-    };
-    let names: Vec<&str> = v.types.iter().map(|(t, _)| t.as_str()).collect();
-    let mapped = app
-        .cl
-        .as_ref()
-        .map_or(0, |cl| cl.map_labels(names.iter().copied()).0.len());
-    let links = v
-        .statements
-        .iter()
-        .filter(|s| {
-            matches!(
-                s.source,
-                crate::trajectory::prior::Source::Cl
-                    | crate::trajectory::prior::Source::ClInherited
-            ) && s.relation == crate::trajectory::prior::Relation::Precedes
-        })
-        .count();
+    let tree = &v.tree;
     let title = format!(
-        " cell ontology · {mapped} of {} types map to terms · {links} develops-from link(s) ",
-        names.len()
+        " cell ontology · {} of {} types map to terms · {} develops-from link(s) ",
+        v.mapped,
+        v.types.len(),
+        v.links
     );
     let bottom = v.selected().map(|t| match tree.node_of(t) {
         Some(i) if tree.nodes[i].cl_id.is_some() => tree
@@ -1020,7 +985,7 @@ fn draw_order_ontology(f: &mut Frame, area: Rect, app: &App, v: &super::order::O
         area,
         app,
         tree,
-        app.order_tree_sel,
+        v.tree_sel,
         app.focus == Focus::Tree,
         title,
         bottom,
@@ -1277,11 +1242,8 @@ fn draw_log(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_prompt(f: &mut Frame, app: &App, screen: Rect) {
+fn draw_prompt(f: &mut Frame, app: &App) {
     let Some(p) = &app.prompt else { return };
-    if let super::app::Pending::Choose(m) = &p.pending {
-        return draw_menu(f, m, screen);
-    }
     // Wider for longer questions (a long gene list), then as tall as the
     // question and the answer need once wrapped.
     let screen = f.area();
@@ -1292,28 +1254,24 @@ fn draw_prompt(f: &mut Frame, app: &App, screen: Rect) {
     let lo = screen.width.min(60);
     let width = want.clamp(lo, (screen.width * 9 / 10).max(lo));
     let inner = width.saturating_sub(2).max(1) as usize;
-    // Word wrapping can take a row more than the characters alone.
-    let rows = |t: &str| {
-        let n = t.chars().count().div_ceil(inner).max(1) as u16;
-        n + u16::from(n > 1)
-    };
-    let height = (rows(question) + 1 + rows(&answer) + 2).min(screen.height);
-    let [area] = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .areas(screen);
-    let [area] = Layout::horizontal([Constraint::Length(width)])
-        .flex(Flex::Center)
-        .areas(area);
-    let lines = vec![
-        Line::from(question.to_string()).bold(),
-        Line::default(),
-        Line::from(answer),
-    ];
+    // The question wraps at words; the answer, typed text, at characters.
+    let mut lines: Vec<Line> = wrap(question, inner, 8)
+        .into_iter()
+        .map(|l| Line::from(l).bold())
+        .collect();
+    lines.push(Line::default());
+    let chars: Vec<char> = answer.chars().collect();
+    lines.extend(
+        chars
+            .chunks(inner)
+            .map(|c| Line::from(c.iter().collect::<String>())),
+    );
+    let height = (lines.len() as u16 + 2).min(screen.height);
+    let area = centered(screen, width, height);
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(lines)
             .style(POPUP)
-            .wrap(Wrap { trim: false })
             .block(popup(String::new(), " enter: ok · esc: cancel ")),
         area,
     );
@@ -1348,12 +1306,7 @@ fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
         );
     }
     let height = (lines.len() as u16 + 2).min(over.height);
-    let [area] = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .areas(over);
-    let [area] = Layout::horizontal([Constraint::Length(width)])
-        .flex(Flex::Center)
-        .areas(area);
+    let area = centered(over, width, height);
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(lines).style(POPUP).block(popup(
@@ -1598,6 +1551,17 @@ fn draw_exports(f: &mut Frame, area: Rect, x: &super::figure_pane::Exports, focu
     .row_highlight_style(highlight(focused));
     let mut state = TableState::default().with_selected(Some(x.sel));
     f.render_stateful_widget(table, area, &mut state);
+}
+
+/// A `w` × `h` area centred in `area` (each at most `area`'s).
+fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    let [r] = Layout::vertical([Constraint::Length(h.min(area.height))])
+        .flex(Flex::Center)
+        .areas(area);
+    let [r] = Layout::horizontal([Constraint::Length(w.min(area.width))])
+        .flex(Flex::Center)
+        .areas(r);
+    r
 }
 
 #[cfg(test)]
