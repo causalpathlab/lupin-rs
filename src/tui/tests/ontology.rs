@@ -177,3 +177,141 @@ fn a_term_with_several_panel_types_is_labelled_the_same_either_way() {
     let b = label(&[("G2", "TC"), ("G1", "T cells"), ("G3", "B cells")]);
     assert_eq!(a, b);
 }
+
+/// top ─ group ─┬─ step one ─ step two ─ kind one (data)
+///              └─ kind two (data)
+/// top ─ elsewhere (not in the data)
+const DATA_OBO: &str = "format-version: 1.2
+
+[Term]
+id: CL:100
+name: top
+
+[Term]
+id: CL:101
+name: group
+is_a: CL:100
+
+[Term]
+id: CL:102
+name: step one
+is_a: CL:101
+
+[Term]
+id: CL:103
+name: step two
+is_a: CL:102
+
+[Term]
+id: CL:104
+name: kind one
+is_a: CL:103
+
+[Term]
+id: CL:105
+name: kind two
+is_a: CL:101
+
+[Term]
+id: CL:106
+name: elsewhere
+is_a: CL:100
+";
+
+fn data_view(focus: &str) -> (ClTerms, OntologyView) {
+    let cl = ClTerms::parse(DATA_OBO, &crate::annotate::cl_rules::shipped());
+    let data = [("CL:104", "CT1", 10), ("CL:105", "CT2", 5)]
+        .iter()
+        .map(|(id, t, n)| ((*id).to_string(), vec![((*t).to_string(), *n)]))
+        .collect();
+    let v = OntologyView::in_data(&cl, data, focus);
+    (cl, v)
+}
+
+fn tree_rows(v: &OntologyView) -> Vec<(&str, usize, Vec<&str>)> {
+    v.rows
+        .iter()
+        .map(|r| {
+            (
+                r.id.as_str(),
+                r.depth,
+                r.chain.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_data_tree_starts_at_the_common_ancestor_and_folds_chains() {
+    let (_, v) = data_view("CL:104");
+    assert_eq!(v.scope, Scope::Data);
+    assert_eq!(
+        tree_rows(&v),
+        [
+            ("CL:101", 0, vec![]),
+            ("CL:105", 1, vec![]),
+            ("CL:104", 1, vec!["CL:102", "CL:103"]),
+        ],
+        "the top and the branch outside the data are dropped; the chain is one line; children by name"
+    );
+    assert_eq!(v.selected().unwrap().id, "CL:104");
+}
+
+#[test]
+fn a_folded_chain_opens_with_right_and_folds_with_left() {
+    let (cl, mut v) = data_view("CL:104");
+    v.enter(&cl);
+    assert_eq!(
+        tree_rows(&v)[2..5],
+        [
+            ("CL:102", 1, vec![]),
+            ("CL:103", 2, vec![]),
+            ("CL:104", 3, vec![])
+        ]
+    );
+    assert_eq!(v.selected().unwrap().id, "CL:104", "the cursor stays");
+    v.up(&cl);
+    assert_eq!(tree_rows(&v)[2], ("CL:104", 1, vec!["CL:102", "CL:103"]));
+    v.up(&cl);
+    assert_eq!(
+        v.selected().unwrap().id,
+        "CL:101",
+        "then up to the parent row"
+    );
+}
+
+#[test]
+fn the_scope_toggles_on_the_same_term() {
+    let (cl, mut v) = data_view("CL:105");
+    assert!(v.toggle_scope(&cl));
+    assert_eq!(v.scope, Scope::All);
+    assert_eq!(v.focus, "CL:105");
+    assert_eq!(v.selected().unwrap().id, "CL:105");
+    assert!(v.toggle_scope(&cl));
+    assert_eq!(v.scope, Scope::Data);
+    assert_eq!(v.selected().unwrap().id, "CL:105");
+    // A term folded into a chain selects the row that folds it.
+    v.toggle_scope(&cl);
+    v.refocus(&cl, "CL:103");
+    v.toggle_scope(&cl);
+    assert_eq!(v.selected().unwrap().id, "CL:104");
+}
+
+#[test]
+fn a_search_keeps_to_the_data_and_leaves_it_when_nothing_there_matches() {
+    let (cl, mut v) = data_view("CL:104");
+    assert!(!v.search(&cl, "step"), "found in the data's tree");
+    assert_eq!(v.scope, Scope::Data);
+    assert_eq!(v.rows.len(), 2);
+    assert!(v.search(&cl, "elsewhere"), "only outside the data");
+    assert_eq!(v.scope, Scope::All);
+    assert_eq!(v.rows[0].id, "CL:106");
+}
+
+#[test]
+fn without_data_the_view_is_the_whole_ontology() {
+    let cl = ClTerms::parse(DATA_OBO, &crate::annotate::cl_rules::shipped());
+    let mut v = OntologyView::in_data(&cl, Default::default(), "CL:101");
+    assert_eq!(v.scope, Scope::All);
+    assert!(!v.toggle_scope(&cl), "nothing to toggle to");
+}

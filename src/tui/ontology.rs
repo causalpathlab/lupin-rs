@@ -5,7 +5,7 @@
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::markers::label_key;
 use crate::annotate::panel_tree::PanelTree;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Search hits listed.
 const HITS: usize = 200;
@@ -17,12 +17,41 @@ pub enum Role {
     Focus,
     Child,
     Hit,
+    /// A term of the tree of the terms in the data.
+    Tree,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub id: String,
     pub role: Role,
+    /// How deep a [`Role::Tree`] row sits.
+    pub depth: usize,
+    /// Terms above a [`Role::Tree`] row folded into its line: each not in
+    /// the data and with only this way down, top first.
+    pub chain: Vec<String>,
+}
+
+impl Row {
+    fn new(id: &str, role: Role) -> Self {
+        Self {
+            id: id.to_string(),
+            role,
+            depth: 0,
+            chain: Vec::new(),
+        }
+    }
+}
+
+/// Which terms the ontology view lists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scope {
+    /// The terms the data's types sit on, under their lowest common
+    /// ancestor, with chains of terms that only lead on folded into one line.
+    #[default]
+    Data,
+    /// The whole ontology, around a term.
+    All,
 }
 
 /// The ontology pane's state.
@@ -34,6 +63,11 @@ pub struct OntologyView {
     pub typing: Option<String>,
     /// The query whose hits are listed, when they are.
     pub query: Option<String>,
+    pub scope: Scope,
+    /// The data's types by the term they sit on, with their cell counts.
+    pub data: BTreeMap<String, Vec<(String, usize)>>,
+    /// Rows whose folded chain is shown term by term.
+    expanded: BTreeSet<String>,
 }
 
 impl OntologyView {
@@ -46,9 +80,62 @@ impl OntologyView {
             sel: 0,
             typing: None,
             query: None,
+            scope: Scope::All,
+            data: BTreeMap::new(),
+            expanded: BTreeSet::new(),
         };
         v.refocus(cl, focus);
         v
+    }
+
+    /// The terms of `data` (term → its types with their cell counts), the
+    /// cursor on `focus` when it is listed; the whole ontology around
+    /// `focus` when there is no data.
+    #[must_use]
+    pub fn in_data(
+        cl: &ClTerms,
+        data: BTreeMap<String, Vec<(String, usize)>>,
+        focus: &str,
+    ) -> Self {
+        let mut v = Self::at(cl, focus);
+        v.data = data;
+        if !v.data.is_empty() {
+            v.scope = Scope::Data;
+            v.show_data(cl, focus);
+        }
+        v
+    }
+
+    /// List the data's tree, the cursor on `id` (or the row folding it in).
+    fn show_data(&mut self, cl: &ClTerms, id: &str) {
+        self.query = None;
+        let terms: BTreeSet<String> = self.data.keys().cloned().collect();
+        self.rows = data_rows(cl, &terms, &self.expanded);
+        self.sel = self
+            .rows
+            .iter()
+            .position(|r| r.id == id || r.chain.iter().any(|c| c == id))
+            .unwrap_or(0);
+    }
+
+    /// Between the terms in the data and the whole ontology, the cursor on
+    /// the same term; `false` when there is no data to show.
+    pub fn toggle_scope(&mut self, cl: &ClTerms) -> bool {
+        let id = self
+            .selected()
+            .map_or_else(|| self.focus.clone(), |r| r.id.clone());
+        match self.scope {
+            Scope::Data => {
+                self.scope = Scope::All;
+                self.refocus(cl, &id);
+            }
+            Scope::All if self.data.is_empty() => return false,
+            Scope::All => {
+                self.scope = Scope::Data;
+                self.show_data(cl, &id);
+            }
+        }
+        true
     }
 
     /// Focus on `id`: its parents, itself and its children, the cursor on it.
@@ -58,35 +145,42 @@ impl OntologyView {
         let mut rows: Vec<Row> = cl
             .parents(id)
             .iter()
-            .map(|p| Row {
-                id: p.clone(),
-                role: Role::Parent,
-            })
+            .map(|p| Row::new(p, Role::Parent))
             .collect();
         self.sel = rows.len();
-        rows.push(Row {
-            id: id.to_string(),
-            role: Role::Focus,
-        });
-        rows.extend(cl.children(id).iter().map(|c| Row {
-            id: c.clone(),
-            role: Role::Child,
-        }));
+        rows.push(Row::new(id, Role::Focus));
+        rows.extend(cl.children(id).iter().map(|c| Row::new(c, Role::Child)));
         self.rows = rows;
     }
 
-    /// List the terms `query` finds.
-    pub fn search(&mut self, cl: &ClTerms, query: &str) {
-        self.rows = cl
-            .search(query, HITS)
-            .into_iter()
-            .map(|id| Row {
-                id,
-                role: Role::Hit,
-            })
-            .collect();
+    /// List the terms `query` finds: in the data's tree when it lists any of
+    /// them, else in the whole ontology (`true`: the view went to it).
+    pub fn search(&mut self, cl: &ClTerms, query: &str) -> bool {
+        let mut hits = cl.search(query, HITS);
+        let mut left_data = false;
+        if self.scope == Scope::Data {
+            let shown: BTreeSet<&str> = self
+                .rows
+                .iter()
+                .flat_map(|r| std::iter::once(&r.id).chain(&r.chain))
+                .map(String::as_str)
+                .collect();
+            let inside: Vec<String> = hits
+                .iter()
+                .filter(|h| shown.contains(h.as_str()))
+                .cloned()
+                .collect();
+            if inside.is_empty() && !hits.is_empty() {
+                self.scope = Scope::All;
+                left_data = true;
+            } else {
+                hits = inside;
+            }
+        }
+        self.rows = hits.iter().map(|id| Row::new(id, Role::Hit)).collect();
         self.sel = 0;
         self.query = Some(query.to_string());
+        left_data
     }
 
     #[must_use]
@@ -94,15 +188,49 @@ impl OntologyView {
         self.rows.get(self.sel)
     }
 
-    /// Descend into the selected row's term.
+    /// Descend into the selected row's term; in the data's tree, show a
+    /// folded chain term by term.
     pub fn enter(&mut self, cl: &ClTerms) {
-        if let Some(id) = self.selected().map(|r| r.id.clone()) {
-            self.refocus(cl, &id);
+        let Some(r) = self.selected().cloned() else {
+            return;
+        };
+        if self.scope == Scope::Data {
+            if self.query.is_none() {
+                if !r.chain.is_empty() {
+                    self.expanded.insert(r.id.clone());
+                    self.show_data(cl, &r.id);
+                }
+                return;
+            }
+            // A hit in the data's tree: back to the tree, on it.
+            return self.show_data(cl, &r.id);
         }
+        self.refocus(cl, &r.id);
     }
 
     /// Up to the focus's first parent; out of a search, back to the focus.
+    /// In the data's tree: fold an unfolded chain again, else up to the
+    /// row's parent.
     pub fn up(&mut self, cl: &ClTerms) {
+        if self.scope == Scope::Data {
+            if self.query.is_some() {
+                let focus = self.focus.clone();
+                return self.show_data(cl, &focus);
+            }
+            let Some(r) = self.selected().cloned() else {
+                return;
+            };
+            if self.expanded.remove(&r.id) {
+                return self.show_data(cl, &r.id);
+            }
+            if let Some(p) = self.rows[..self.sel]
+                .iter()
+                .rposition(|p| p.depth < r.depth)
+            {
+                self.sel = p;
+            }
+            return;
+        }
         if self.query.is_some() {
             let focus = self.focus.clone();
             self.refocus(cl, &focus);
@@ -115,6 +243,95 @@ impl OntologyView {
             }
         }
     }
+}
+
+/// The tree of `data`'s terms: under their lowest common ancestor, each term
+/// below the deepest of its parents in the tree, children by name. A term
+/// not in the data with only one way down is folded into the line of the
+/// term it leads to, unless that term is `expanded`.
+#[must_use]
+pub fn data_rows(cl: &ClTerms, data: &BTreeSet<String>, expanded: &BTreeSet<String>) -> Vec<Row> {
+    let above: Vec<BTreeSet<String>> = data.iter().map(|d| cl.ancestors_or_self(d)).collect();
+    let Some(first) = above.first() else {
+        return Vec::new();
+    };
+    let mut depth: BTreeMap<String, usize> = BTreeMap::new();
+    let mut depth_of = |id: &str| -> usize {
+        *depth
+            .entry(id.to_string())
+            .or_insert_with(|| cl.ancestors_or_self(id).len())
+    };
+    // The lowest common ancestor: the deepest term above every data term.
+    let top = first
+        .iter()
+        .filter(|t| above.iter().all(|a| a.contains(*t)))
+        .max_by_key(|t| (depth_of(t), std::cmp::Reverse((*t).clone())))
+        .cloned();
+    let nodes: BTreeSet<String> = above
+        .iter()
+        .flatten()
+        .filter(|t| {
+            top.as_ref()
+                .is_none_or(|top| cl.ancestors_or_self(t).contains(top))
+        })
+        .cloned()
+        .collect();
+    let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut roots = Vec::new();
+    for n in &nodes {
+        let parent = cl
+            .parents(n)
+            .iter()
+            .filter(|p| nodes.contains(*p))
+            .max_by_key(|p| (depth_of(p), std::cmp::Reverse((*p).clone())));
+        match parent {
+            Some(p) if top.as_deref() != Some(n.as_str()) => {
+                children.entry(p.as_str()).or_default().push(n);
+            }
+            _ => roots.push(n.as_str()),
+        }
+    }
+    let name = |id: &str| cl.name(id).unwrap_or(id).to_lowercase();
+    for kids in children.values_mut() {
+        kids.sort_by_key(|k| name(k));
+    }
+    roots.sort_by_key(|k| name(k));
+    let mut rows = Vec::new();
+    let mut stack: Vec<(&str, usize)> = roots.iter().rev().map(|r| (*r, 0)).collect();
+    while let Some((n, d)) = stack.pop() {
+        // Fold the terms that only lead on, unless the user unfolded them.
+        let (mut chain, mut end) = (Vec::new(), n);
+        if d > 0 {
+            while !data.contains(end) {
+                match children.get(end).map(Vec::as_slice) {
+                    Some([only]) => {
+                        chain.push(end.to_string());
+                        end = only;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        let mut d = d;
+        if expanded.contains(end) {
+            for c in chain.drain(..) {
+                rows.push(Row {
+                    depth: d,
+                    ..Row::new(&c, Role::Tree)
+                });
+                d += 1;
+            }
+        }
+        rows.push(Row {
+            depth: d,
+            chain,
+            ..Row::new(end, Role::Tree)
+        });
+        for k in children.get(end).into_iter().flatten().rev() {
+            stack.push((k, d + 1));
+        }
+    }
+    rows
 }
 
 /// The label a cluster gets from CL term `id`: the panel type sitting on

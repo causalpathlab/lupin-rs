@@ -1,7 +1,7 @@
 //! Drawing the screen from an [`App`].
 
 use super::app::{App, Focus, GeneView, TreeMode, CONTESTED, SETTINGS};
-use super::ontology::{OntologyView, Role};
+use super::ontology::{OntologyView, Role, Scope};
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::celltype_tree::TreeSource;
 use crate::annotate::markers::label_key;
@@ -28,7 +28,18 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Left: the clusters and their genes; middle: the ontology and the cell
     // types competing for the selected cluster; right, when the round scored
     // them: the cluster's GO terms.
-    let (left, right, go) = if app.has_go() {
+    let order = matches!(app.tree_mode, TreeMode::Order(_));
+    let (left, right, go) = if order {
+        // The order view: the clusters, then the ontology beside the
+        // precedence table (or the figures across both).
+        let left = if f.area().width >= ORDER_WIDE { 34 } else { 45 };
+        let [l, r] = Layout::horizontal([
+            Constraint::Percentage(left),
+            Constraint::Percentage(100 - left),
+        ])
+        .areas(body);
+        (l, r, None)
+    } else if app.has_go() {
         let [l, m, g] = Layout::horizontal([
             Constraint::Percentage(30),
             Constraint::Percentage(35),
@@ -64,7 +75,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_guide(f);
     }
     if app.prompt.is_some() {
-        draw_prompt(f, app);
+        // A choice in the order view leaves the ontology and the table in
+        // sight: it opens over the clusters.
+        let over = if order { left } else { f.area() };
+        draw_prompt(f, app, over);
     }
 }
 
@@ -77,19 +91,35 @@ fn help(app: &App) -> &'static str {
         Focus::Genes => {
             " ? keys · ↑↓ gene · a add · A add to a type · d drop · x hide · m view · tab pane"
         }
-        Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
-            if app.figures.as_ref().is_some_and(|v| v.shown) {
-                " ? keys · v next · w all · V table · t c m labels colour layout · , . pair · +-0 zoom · ←↑→↓ pan · p export · f exports · R check · r run · esc clusters"
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) && !figures_shown(app) => {
+            if app.order_cl.is_some() {
+                " ? keys · ↑↓ term · → children · ← parents · o back to the run's types · tab precedence"
             } else {
-                " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · t tree"
+                " ? keys · ↑↓ type on the ontology · ← → fold · space mark · o full ontology · tab precedence"
             }
         }
+        Focus::Order | Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
+            if figures_shown(app) {
+                " ? keys · v next · w all · V table · t c m labels colour layout · , . pair · +-0 zoom · ←↑→↓ pan · p export · f exports · R check · r run · esc clusters"
+            } else {
+                " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab ontology · t tree"
+            }
+        }
+        Focus::Order => " ? keys · tab pane",
         Focus::Tree => {
             " ? keys · ↑↓ node · enter label · space mark · + mixed label · o ontology · / search · t order"
         }
         Focus::Go => " ? keys · ↑↓ term · ← → read a long name · tab pane · esc clusters",
     }
 }
+
+fn figures_shown(app: &App) -> bool {
+    app.figures.as_ref().is_some_and(|v| v.shown)
+}
+
+/// Below this many columns the order view shows the ontology or the
+/// precedence table, whichever has the focus, instead of both.
+const ORDER_WIDE: u16 = 150;
 
 /// Every key, by pane, in a popup (`?`).
 const GUIDE: &[(&str, &[(&str, &str)])] = &[
@@ -99,7 +129,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("?", "this guide (any key closes it)"),
             (
                 "tab / shift-tab",
-                "next / previous pane: clusters → genes → tree → GO terms (when scored)",
+                "next / previous pane: clusters → genes → tree → precedence (order view) → GO terms (when scored)",
             ),
             ("pgup/dn home/end", "a page / to either end of the pane's list"),
             ("r", "cluster & run: Leiden and pass settings, enter runs"),
@@ -129,8 +159,9 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         &[
             ("↑↓", "select a node"),
             ("enter", "label the cluster with it"),
-            ("← →", "fold / unfold (ontology: up / into a term)"),
-            ("o", "panel tree ↔ the full Cell Ontology"),
+            ("← →", "fold / unfold (ontology: up / into a term; in the data: open / fold a chain)"),
+            ("o", "panel tree ↔ the Cell Ontology"),
+            ("d", "Cell Ontology: the terms in the data (the labels, under their common ancestor) ↔ all"),
             (
                 "/",
                 "search the Cell Ontology (names, synonyms, abbreviations)",
@@ -172,7 +203,8 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("space", "mark a type; mark two, first the earlier one (in the table, not the figures)"),
             (">", "the first marked type precedes the second (asks why)"),
             ("-", "the two marked types are unrelated (asks why)"),
-            ("r", "run lupin trajectory on the labels on screen (asks for the output prefix)"),
+            ("r", "run lupin trajectory on the labels on screen (asks for the output prefix; when nothing orders the types, asks how)"),
+            ("tab", "the Cell Ontology beside the table: ↑↓ selects a type in both, space marks it, o the ontology, d in the data ↔ all"),
             ("t / esc", "back to the tree / to the clusters"),
             ("", "statements go to the project's precedence.tsv; edges show source and, after a trajectory run, verdict"),
         ],
@@ -723,26 +755,118 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
         if let Some(fig) = app.figures.as_ref().filter(|fig| fig.shown) {
             return draw_figures(f, area, app, fig);
         }
+        if f.area().width >= ORDER_WIDE {
+            let [cl, table] =
+                Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .areas(area);
+            draw_order_ontology(f, cl, app, v);
+            return draw_order(f, table, app, v);
+        }
+        // Narrow: whichever has the focus.
+        if app.focus == Focus::Tree {
+            return draw_order_ontology(f, area, app, v);
+        }
         return draw_order(f, area, app, v);
     }
     if let (TreeMode::Ontology(v), Some(cl)) = (&app.tree_mode, &app.cl) {
         return draw_ontology(f, area, app, v, cl);
     }
-    let focused = app.focus == Focus::Tree;
+    let title = match (&app.tree.source, &app.tree.release) {
+        (TreeSource::CellOntology, r) => format!(
+            " cell ontology · {} · evidence of the selected cluster ",
+            r.as_deref().unwrap_or("release unknown")
+        ),
+        (TreeSource::MarkerSharing, _) => " cell types, grouped by shared markers ".into(),
+    };
+    draw_panel_tree(
+        f,
+        area,
+        app,
+        &app.tree,
+        app.tree_sel,
+        app.focus == Focus::Tree,
+        title,
+        None,
+    );
+}
+
+/// The order view's types on the Cell Ontology (or the full ontology, `o`),
+/// drawn as the tree pane draws the panel: a summary above, the selected
+/// type's place in the ontology below.
+fn draw_order_ontology(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView) {
+    if let (Some(ov), Some(cl)) = (&app.order_cl, &app.cl) {
+        return draw_ontology(f, area, app, ov, cl);
+    }
+    let Some(tree) = &app.order_tree else {
+        return;
+    };
+    let names: Vec<&str> = v.types.iter().map(|(t, _)| t.as_str()).collect();
+    let mapped = app
+        .cl
+        .as_ref()
+        .map_or(0, |cl| cl.map_labels(names.iter().copied()).0.len());
+    let links = v
+        .statements
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.source,
+                crate::trajectory::prior::Source::Cl
+                    | crate::trajectory::prior::Source::ClInherited
+            ) && s.relation == crate::trajectory::prior::Relation::Precedes
+        })
+        .count();
+    let title = format!(
+        " cell ontology · {mapped} of {} types map to terms · {links} develops-from link(s) ",
+        names.len()
+    );
+    let bottom = v.selected().map(|t| match tree.node_of(t) {
+        Some(i) if tree.nodes[i].cl_id.is_some() => tree
+            .path(i)
+            .iter()
+            .map(|&n| tree.nodes[n].name.clone())
+            .collect::<Vec<_>>()
+            .join(" › "),
+        _ => format!("{t}: no Cell Ontology term (map it with --label-cl)"),
+    });
+    draw_panel_tree(
+        f,
+        area,
+        app,
+        tree,
+        app.order_tree_sel,
+        app.focus == Focus::Tree,
+        title,
+        bottom,
+    );
+}
+
+/// `tree` as the tree pane draws it: each node with the selected cluster's
+/// evidence under it and its CL id; `sel` is the row selected.
+#[allow(clippy::too_many_arguments)]
+fn draw_panel_tree(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    tree: &crate::annotate::panel_tree::PanelTree,
+    sel: usize,
+    focused: bool,
+    title: String,
+    bottom: Option<String>,
+) {
     let c = app.selected();
     let now = app.current_label().map(|l| label_key(&l));
-    let rows: Vec<Row> = app
-        .tree
+    let rows: Vec<Row> = tree
         .visible()
         .into_iter()
         .map(|i| {
-            let n = &app.tree.nodes[i];
-            let glyph = match (n.children.is_empty(), app.tree.is_folded(i)) {
+            let n = &tree.nodes[i];
+            let glyph = match (n.children.is_empty(), tree.is_folded(i)) {
                 (true, _) => "·",
                 (false, true) => "▸",
                 (false, false) => "▾",
             };
-            let under = app.tree.labels_under(i);
+            let under = tree.labels_under(i);
             let share: f32 = c.map_or(0.0, |c| {
                 c.candidates
                     .iter()
@@ -750,8 +874,8 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
                     .map(|c| c.share)
                     .sum()
             });
-            let here = now.as_deref() == Some(app.tree.label(i));
-            let marked = app.tree_marked.iter().any(|m| m == app.tree.label(i));
+            let here = now.as_deref() == Some(tree.label(i));
+            let marked = app.tree_marked.iter().any(|m| m == tree.label(i));
             let name = format!(
                 "{}{}{glyph} {}{}",
                 if marked { "●" } else { " " },
@@ -777,14 +901,7 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             }
         })
         .collect();
-    let title = match (&app.tree.source, &app.tree.release) {
-        (TreeSource::CellOntology, r) => format!(
-            " cell ontology · {} · evidence of the selected cluster ",
-            r.as_deref().unwrap_or("release unknown")
-        ),
-        (TreeSource::MarkerSharing, _) => " cell types, grouped by shared markers ".into(),
-    };
-    let mut state = TableState::default().with_selected(Some(app.tree_sel));
+    let mut state = TableState::default().with_selected(Some(sel));
     let t = Table::new(
         rows,
         [
@@ -793,7 +910,10 @@ fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(12),
         ],
     )
-    .block(pane(title, focused))
+    .block(match bottom {
+        Some(b) => pane(title, focused).title_bottom(Line::from(format!(" {b} ")).cyan()),
+        None => pane(title, focused),
+    })
     .row_highlight_style(highlight(focused));
     f.render_stateful_widget(t, area, &mut state);
 }
@@ -829,8 +949,14 @@ fn draw_ontology(f: &mut Frame, area: Rect, app: &App, v: &OntologyView, cl: &Cl
                 Role::Hit => "⌕",
                 Role::Child if cl.children(&r.id).is_empty() => "·",
                 Role::Child => "▸",
+                Role::Tree if v.data.contains_key(&r.id) => "◆",
+                Role::Tree => "·",
             };
-            let indent = if r.role == Role::Child { "  " } else { "" };
+            let indent = match r.role {
+                Role::Child => "  ".to_string(),
+                Role::Tree => "  ".repeat(r.depth),
+                _ => String::new(),
+            };
             let share: f32 = evidence
                 .iter()
                 .filter(|(_, above)| above.contains(&r.id))
@@ -846,10 +972,21 @@ fn draw_ontology(f: &mut Frame, area: Rect, app: &App, v: &OntologyView, cl: &Cl
                 && app
                     .tree_marked
                     .contains(&super::ontology::term_label(cl, &app.tree, &r.id));
+            let term = |id: &str| cl.name(id).unwrap_or(id).to_string();
+            // A folded chain shows its first term, how many more, then the row's.
+            let chain = match r.chain.as_slice() {
+                [] => String::new(),
+                [one] => format!("{} › ", term(one)),
+                [first, rest @ ..] => format!("{} › … {} › ", term(first), rest.len()),
+            };
+            let in_data = v.data.get(&r.id).map_or(String::new(), |types| {
+                let t: Vec<String> = types.iter().map(|(t, n)| format!("{t} ({n})")).collect();
+                format!("  · {}", t.join(", "))
+            });
             let name = format!(
-                "{}{indent}{glyph} {}{}",
+                "{}{indent}{glyph} {chain}{}{in_data}{}",
                 if marked { "●" } else { " " },
-                cl.name(&r.id).unwrap_or(&r.id),
+                term(&r.id),
                 if here { "  ◀" } else { "" }
             );
             let row = Row::new([
@@ -868,7 +1005,7 @@ fn draw_ontology(f: &mut Frame, area: Rect, app: &App, v: &OntologyView, cl: &Cl
             ]);
             if here {
                 row.bold().cyan()
-            } else if r.role == Role::Focus {
+            } else if r.role == Role::Focus || !in_data.is_empty() {
                 row.bold()
             } else if share > 0.0 || types > 0 {
                 row
@@ -879,7 +1016,18 @@ fn draw_ontology(f: &mut Frame, area: Rect, app: &App, v: &OntologyView, cl: &Cl
         .collect();
     let title = match (&v.typing, &v.query) {
         (Some(t), _) => format!(" search the Cell Ontology: {t}▏ "),
-        (None, Some(q)) => format!(" terms matching {q:?} · ← back "),
+        (None, Some(q)) => format!(
+            " terms matching {q:?}{} · ← back ",
+            if v.scope == Scope::Data {
+                " in the data"
+            } else {
+                ""
+            }
+        ),
+        (None, None) if v.scope == Scope::Data => format!(
+            " cell ontology · in the data ({} terms) · d: all ",
+            v.data.len()
+        ),
         (None, None) => {
             let path: Vec<String> = cl
                 .lineage(&v.focus)
@@ -888,7 +1036,12 @@ fn draw_ontology(f: &mut Frame, area: Rect, app: &App, v: &OntologyView, cl: &Cl
                 .collect();
             let tail = path.len().saturating_sub(4);
             let prefix = if tail > 0 { "… › " } else { "" };
-            format!(" {prefix}{} ", path[tail..].join(" › "))
+            let toggle = if v.data.is_empty() {
+                ""
+            } else {
+                "· d: in the data "
+            };
+            format!(" {prefix}{} {toggle}", path[tail..].join(" › "))
         }
     };
     let mut state = TableState::default().with_selected(Some(v.sel));
@@ -938,19 +1091,16 @@ fn draw_log(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_prompt(f: &mut Frame, app: &App) {
+fn draw_prompt(f: &mut Frame, app: &App, screen: Rect) {
     let Some(p) = &app.prompt else { return };
+    if let super::app::Pending::Choose(m) = &p.pending {
+        return draw_menu(f, m, screen);
+    }
     // Wider for longer questions (a long gene list), then as tall as the
     // question and the answer need once wrapped.
     let screen = f.area();
     let question = p.title.trim();
-    // A choice takes keys, not text: no answer line.
-    let choice = matches!(p.pending, super::app::Pending::TrajectoryLabels);
-    let answer = if choice {
-        String::new()
-    } else {
-        format!("{}▏", p.text)
-    };
+    let answer = format!("{}▏", p.text);
     let want = question.chars().count().max(answer.chars().count()) as u16 + 4;
     // At least 60 columns (or the screen), at most 90% of the screen.
     let lo = screen.width.min(60);
@@ -978,14 +1128,52 @@ fn draw_prompt(f: &mut Frame, app: &App) {
         Paragraph::new(lines)
             .style(POPUP)
             .wrap(Wrap { trim: false })
-            .block(popup(
-                String::new(),
-                if choice {
-                    " enter/l: pick a file · a: annotate · esc: cancel "
-                } else {
-                    " enter: ok · esc: cancel "
-                },
-            )),
+            .block(popup(String::new(), " enter: ok · esc: cancel ")),
+        area,
+    );
+}
+
+/// A choice popup within `over`: the question, the numbered options with
+/// the selected one highlighted, and what choosing it does.
+fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
+    let width = over.width.saturating_sub(2).clamp(20.min(over.width), 100);
+    let inner = width.saturating_sub(2).max(1) as usize;
+    let mut lines: Vec<Line> = wrap(&m.question, inner, 6)
+        .into_iter()
+        .map(|l| Line::from(l).bold())
+        .collect();
+    lines.push(Line::default());
+    // The options, scrolled to keep the selected one in sight.
+    let room = over.height.saturating_sub(12).max(3) as usize;
+    let first = m.sel.saturating_sub(room.saturating_sub(1));
+    for (i, o) in m.choices.iter().enumerate().skip(first).take(room) {
+        let line = Line::from(format!(" {}  {}", o.key, o.label));
+        lines.push(if i == m.sel { line.reversed() } else { line });
+    }
+    if m.choices.len() > first + room {
+        lines.push(Line::from(format!("    … {} more", m.choices.len() - first - room)).dim());
+    }
+    lines.push(Line::default());
+    if let Some(o) = m.choices.get(m.sel) {
+        lines.extend(
+            wrap(&o.detail, inner, 4)
+                .into_iter()
+                .map(|l| Line::from(l).dim()),
+        );
+    }
+    let height = (lines.len() as u16 + 2).min(over.height);
+    let [area] = Layout::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .areas(over);
+    let [area] = Layout::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .areas(area);
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).style(POPUP).block(popup(
+            String::new(),
+            " ↑↓ choose · enter or its key takes it · esc cancels ",
+        )),
         area,
     );
 }
@@ -993,13 +1181,14 @@ fn draw_prompt(f: &mut Frame, app: &App) {
 /// The order view: the types on screen, then the prior's direct edges with
 /// their source and, when a trajectory run recorded them, their verdicts.
 fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView) {
-    let focused = app.focus == Focus::Tree;
+    let focused = app.focus == Focus::Order;
     let mark = |t: &str| {
         app.tree_marked
             .iter()
             .position(|m| m == t)
             .map_or("  ".to_string(), |i| format!("{} ", i + 1))
     };
+    let dim = Style::default().add_modifier(Modifier::DIM);
     let mut rows: Vec<Row> = v
         .types
         .iter()
@@ -1007,59 +1196,61 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
             Row::new(vec![
                 Cell::from(format!("{}{}", mark(t), t)),
                 Cell::from(format!("{n}")),
-                Cell::from(""),
-                Cell::from(""),
             ])
         })
         .collect();
     rows.push(Row::new(vec![Cell::from("")]));
+    // A pair takes the pane's whole width, on two lines when it does not
+    // fit on one, with where it comes from and what the data says below.
+    // Inside the borders, less the cells column and its gap.
+    let width = area.width.saturating_sub(2 + 7 + 1) as usize;
+    let pair = |a: &str, sep: &str, b: &str, detail: String| {
+        let one = format!("  {a} {sep} {b}");
+        let mut lines = if one.chars().count() <= width {
+            vec![Line::from(one)]
+        } else {
+            vec![
+                Line::from(format!("  {a}")),
+                Line::from(format!("    {sep} {b}")),
+            ]
+        };
+        lines.push(Line::from(format!("      {detail}")).style(dim));
+        let h = lines.len() as u16;
+        Row::new(vec![Cell::from(ratatui::text::Text::from(lines))]).height(h)
+    };
     let edges = v.edges();
     rows.push(
-        Row::new(vec![
-            Cell::from(format!("{} direct edge(s)", edges.len())),
-            Cell::from(""),
-            Cell::from("source"),
-            Cell::from("data"),
-        ])
-        .style(Style::default().add_modifier(Modifier::DIM)),
+        Row::new(vec![Cell::from(format!(
+            "{} direct edge(s) · source · data",
+            edges.len()
+        ))])
+        .style(dim),
     );
     for e in &edges {
-        rows.push(Row::new(vec![
-            Cell::from(format!("  {} → {}", e.from, e.to)),
-            Cell::from(""),
-            Cell::from(e.source.clone()),
-            Cell::from(e.data.map_or(String::new(), |d| d.summary())),
-        ]));
+        let data = e
+            .data
+            .map_or(String::new(), |d| format!(" · {}", d.summary()));
+        rows.push(pair(&e.from, "→", &e.to, format!("{}{data}", e.source)));
     }
     for s in v.unrelated() {
-        rows.push(Row::new(vec![
-            Cell::from(format!("  {} ∥ {}", s.from, s.to)),
-            Cell::from(""),
-            Cell::from(s.source.as_str()),
-            Cell::from("unrelated"),
-        ]));
+        rows.push(pair(
+            &s.from,
+            "∥",
+            &s.to,
+            format!("{} · unrelated", s.source.as_str()),
+        ));
     }
     let candidates = v.candidates();
     if !candidates.is_empty() {
         rows.push(
-            Row::new(vec![
-                Cell::from(format!(
-                    "{} pair(s) the data connects but the prior does not order",
-                    candidates.len()
-                )),
-                Cell::from(""),
-                Cell::from(""),
-                Cell::from("data"),
-            ])
-            .style(Style::default().add_modifier(Modifier::DIM)),
+            Row::new(vec![Cell::from(format!(
+                "{} pair(s) the data connects but the prior does not order",
+                candidates.len()
+            ))])
+            .style(dim),
         );
         for d in candidates.iter().take(8) {
-            rows.push(Row::new(vec![
-                Cell::from(format!("  {} — {}", d.a, d.b)),
-                Cell::from(""),
-                Cell::from(""),
-                Cell::from(d.summary()),
-            ]));
+            rows.push(pair(&d.a, "~", &d.b, d.summary()));
         }
     }
     let red = Style::default().fg(Color::Red);
@@ -1077,27 +1268,17 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
         .file
         .as_ref()
         .map_or("nowhere to write".to_string(), |p| p.display().to_string());
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Min(24),
-            Constraint::Length(7),
-            Constraint::Length(14),
-            Constraint::Min(16),
-        ],
-    )
-    .header(
-        Row::new(vec!["type", "cells", "", ""]).style(Style::default().add_modifier(Modifier::DIM)),
-    )
-    .block(pane(format!(" order · {file} "), focused))
-    .row_highlight_style(highlight(focused));
+    let table = Table::new(rows, [Constraint::Fill(1), Constraint::Length(7)])
+        .header(Row::new(vec!["type", "cells"]).style(Style::default().add_modifier(Modifier::DIM)))
+        .block(pane(format!(" order · {file} "), focused))
+        .row_highlight_style(highlight(focused));
     let mut state = TableState::default().with_selected(if focused { Some(v.sel) } else { None });
     f.render_stateful_widget(table, area, &mut state);
 }
 
 /// The figure pane: the current figure, and the exports strip when open.
 fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::FigurePane) {
-    let focused = app.focus == Focus::Tree;
+    let focused = matches!(app.focus, Focus::Order | Focus::Tree);
     if let Some(g) = &v.grid {
         return draw_grid(f, area, v, g, focused);
     }

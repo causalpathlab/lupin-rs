@@ -5,6 +5,7 @@
 //! or none), each with a reason. Genes can be added to a cell type's
 //! markers. Saving writes the edits as the next round.
 
+use super::menu::{numbered, Action, Menu, Outcome};
 use super::round::{decisions, Edit, RoundView};
 use super::runner;
 use crate::annotate::markers::label_key;
@@ -31,6 +32,9 @@ pub enum Focus {
     Clusters,
     Genes,
     Tree,
+    /// The order view's precedence table (the tree pane then shows the
+    /// ontology beside it).
+    Order,
     /// The selected cluster's GO terms, when the round scored them.
     Go,
 }
@@ -193,9 +197,8 @@ pub enum Pending {
     /// Run `lupin trajectory` with the output prefix typed; `replace` is the
     /// prefix whose existing manifest the user has agreed to replace.
     TrajectoryOut { replace: Option<String> },
-    /// A run with no annotation: pick a `cell<TAB>type` labels file (Enter
-    /// or `l`), or annotate it here (`a`). Takes keys, not text.
-    TrajectoryLabels,
+    /// A choice among options (see [`super::menu`]). Takes keys, not text.
+    Choose(super::menu::Menu),
 }
 
 /// A file the main loop picks in the file browser, which takes the screen.
@@ -205,6 +208,10 @@ pub enum FileWant {
     Markers,
     /// A `cell<TAB>type` labels file for a trajectory run.
     Labels,
+    /// A precedence file for a trajectory run (`--prior`).
+    Prior,
+    /// A `label<TAB>CL:id` file mapping the labels to Cell Ontology terms.
+    LabelCl,
 }
 
 /// A one-line prompt for a decision's reason, prefilled.
@@ -298,6 +305,12 @@ pub struct App {
     /// Mixed labels by name.
     pub mixed: super::ontology::Mixed,
     pub tree_sel: usize,
+    /// The order view's types on the Cell Ontology, drawn beside the
+    /// precedence table as the tree pane draws the panel.
+    pub order_tree: Option<PanelTree>,
+    pub order_tree_sel: usize,
+    /// The full ontology in place of `order_tree` (`o`).
+    pub order_cl: Option<super::ontology::OntologyView>,
     pub setting: usize,
     /// The clustering and pass settings popup is open.
     pub settings_open: bool,
@@ -344,6 +357,9 @@ impl App {
             fixed_clusters: false,
             tree,
             tree_mode: TreeMode::Panel,
+            order_tree: None,
+            order_tree_sel: 0,
+            order_cl: None,
             cl: None,
             panel_ancestry: Vec::new(),
             data_search: crate::manifest::data_files::SearchPath::new(None),
@@ -1184,31 +1200,18 @@ impl App {
 
     fn prompt_key(&mut self, k: KeyEvent) {
         let Some(p) = &mut self.prompt else { return };
-        if matches!(p.pending, Pending::TrajectoryLabels) {
-            match k.code {
-                KeyCode::Enter | KeyCode::Char('l') => {
+        if let Pending::Choose(menu) = &mut p.pending {
+            match menu.key(k.code) {
+                Outcome::Open => {}
+                Outcome::Cancel => {
                     self.prompt = None;
-                    self.want_file = Some(FileWant::Labels);
+                    self.trajectory_after_pass = false;
+                    self.status = "no trajectory run started".into();
                 }
-                KeyCode::Char('a') => {
+                Outcome::Chosen(a) => {
                     self.prompt = None;
-                    self.annotate_then_trajectory();
-                    // A pass that replaces a round asks first: keep the
-                    // choice open so `a` again confirms (an `r` would go
-                    // through the order view and drop the arming).
-                    if self.armed == Some(Armed::Run) && self.child.is_none() {
-                        self.prompt = Some(Prompt {
-                            title: format!(
-                                " {} · a again to go on · esc cancel ",
-                                self.status.trim_end_matches(": r again to go on")
-                            ),
-                            text: String::new(),
-                            pending: Pending::TrajectoryLabels,
-                        });
-                    }
+                    self.choose(a);
                 }
-                KeyCode::Esc => self.prompt = None,
-                _ => {}
             }
             return;
         }
@@ -1319,7 +1322,7 @@ impl App {
                         }
                     }
                     // Handled above, key by key.
-                    Pending::TrajectoryLabels => {}
+                    Pending::Choose(_) => {}
                     Pending::Relocate { pdf } => {
                         self.status = match &mut self.figures {
                             Some(v) => v
@@ -1385,15 +1388,28 @@ impl App {
         if self.prompt.is_some() {
             return self.prompt_key(k);
         }
-        if let (TreeMode::Ontology(v), Some(cl)) = (&mut self.tree_mode, &self.cl) {
+        let beside = self.focus == Focus::Tree && matches!(self.tree_mode, TreeMode::Order(_));
+        let view = match &mut self.tree_mode {
+            TreeMode::Ontology(v) => Some(v),
+            TreeMode::Order(_) if beside => self.order_cl.as_mut(),
+            _ => None,
+        };
+        if let (Some(v), Some(cl)) = (view, &self.cl) {
             if let Some(text) = &mut v.typing {
                 match k.code {
                     KeyCode::Esc => v.typing = None,
                     KeyCode::Enter => {
                         let q = std::mem::take(text);
                         v.typing = None;
-                        v.search(cl, &q);
-                        self.status = format!("{} term(s) match {q:?} (←: back)", v.rows.len());
+                        let left = v.search(cl, &q);
+                        self.status = if left {
+                            format!(
+                                "no term in the data matches {q:?}: {} in the whole ontology (←: back)",
+                                v.rows.len()
+                            )
+                        } else {
+                            format!("{} term(s) match {q:?} (←: back)", v.rows.len())
+                        };
                     }
                     KeyCode::Backspace => {
                         text.pop();
@@ -1501,12 +1517,14 @@ impl App {
     }
 
     fn cycle(&self, forward: bool) -> Focus {
-        use Focus::{Clusters, Genes, Go, Tree};
-        let order: &[Focus] = if self.has_go() {
-            &[Clusters, Genes, Tree, Go]
-        } else {
-            &[Clusters, Genes, Tree]
-        };
+        use Focus::{Clusters, Genes, Go, Order, Tree};
+        let mut order = vec![Clusters, Genes, Tree];
+        if matches!(self.tree_mode, TreeMode::Order(_)) {
+            order.push(Order);
+        }
+        if self.has_go() {
+            order.push(Go);
+        }
         let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
         let n = order.len();
         order[if forward {
@@ -1520,10 +1538,10 @@ impl App {
     /// the key to the global bindings. Moving in the pane's list never claims it.
     fn pane_key(&mut self, code: KeyCode) -> bool {
         // The order view's figures take their keys before the tree's.
-        if self.focus == Focus::Tree
-            && matches!(self.tree_mode, TreeMode::Order(_))
-            && self.figure_key(code)
-        {
+        let order = matches!(self.tree_mode, TreeMode::Order(_));
+        let on_figures =
+            self.focus == Focus::Order || (self.focus == Focus::Tree && self.figures_shown());
+        if order && on_figures && self.figure_key(code) {
             return true;
         }
         let move_in = |sel: &mut usize, n: usize| step(sel, n, code);
@@ -1620,6 +1638,18 @@ impl App {
                     _ => return false,
                 }
             }
+            Focus::Order => match code {
+                KeyCode::Char('t') => self.toggle_order(false),
+                KeyCode::Char(' ') => self.toggle_tree_mark(),
+                _ => {
+                    let took = self.order_key(code);
+                    self.sync_tree_to_order();
+                    return took;
+                }
+            },
+            Focus::Tree if matches!(self.tree_mode, TreeMode::Order(_)) => {
+                return self.order_tree_key(code);
+            }
             Focus::Tree if code == KeyCode::Char('t') => self.toggle_order(false),
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
             // A search is of the ontology: open it there.
@@ -1632,9 +1662,6 @@ impl App {
                 }
             }
             Focus::Tree if code == KeyCode::Char(' ') => self.toggle_tree_mark(),
-            Focus::Tree if matches!(self.tree_mode, TreeMode::Order(_)) => {
-                return self.order_key(code);
-            }
             Focus::Tree if code == KeyCode::Char('+') => self.mix_marked(),
             Focus::Tree if matches!(self.tree_mode, TreeMode::Ontology(_)) => {
                 return self.ontology_key(code);
@@ -1670,8 +1697,12 @@ impl App {
         self.tree_marked.clear();
         if matches!(self.tree_mode, TreeMode::Order(_)) {
             self.tree_mode = TreeMode::Panel;
+            if self.focus == Focus::Order {
+                self.focus = Focus::Tree;
+            }
             return;
         }
+        self.focus = Focus::Order;
         if self.figures.is_none() {
             let manifests = self.manifests();
             let refs: Vec<&Path> = manifests.iter().map(PathBuf::as_path).collect();
@@ -1773,11 +1804,10 @@ impl App {
             }
         }
         if !has_labels {
-            self.prompt = Some(Prompt {
-                title: " no annotation yet: enter/l pick a cell<TAB>type labels file · a annotate it here · esc cancel ".into(),
-                text: String::new(),
-                pending: Pending::TrajectoryLabels,
-            });
+            self.ask_labels(None);
+            return;
+        }
+        if self.ask_root() {
             return;
         }
         let text = self
@@ -1797,6 +1827,237 @@ impl App {
             },
             text,
         });
+    }
+
+    /// Show `menu`.
+    fn show(&mut self, menu: Menu) {
+        self.prompt = Some(Prompt {
+            title: String::new(),
+            text: String::new(),
+            pending: Pending::Choose(menu),
+        });
+    }
+
+    /// A run with no labels: annotate it here, or take a labels file;
+    /// `note` heads the question (a pass that asks to be confirmed).
+    fn ask_labels(&mut self, note: Option<String>) {
+        let question = match note {
+            Some(n) => format!("{n}. Choose annotate again to go on."),
+            None => "This run has no cell-type labels yet, and the trajectory needs them. \
+                     Where should they come from?"
+                .into(),
+        };
+        self.show(Menu::new(
+            question,
+            numbered(vec![
+                (
+                    "Annotate this run now".into(),
+                    "pick a marker panel (or use the run's), run an annotation pass, then the trajectory on its labels".into(),
+                    Action::Annotate,
+                ),
+                (
+                    "Use a cell<TAB>type labels file".into(),
+                    "pick the file in the file browser; the trajectory reads its labels".into(),
+                    Action::LabelsFile,
+                ),
+            ]),
+        ));
+    }
+
+    /// When nothing would order the types (no statement makes an edge, and
+    /// no `--root` or `--prior` was given), ask how the order should come
+    /// instead of starting a run that can only fail; `true` when it asked.
+    fn ask_root(&mut self) -> bool {
+        if self.order_given() {
+            return false;
+        }
+        let TreeMode::Order(v) = &self.tree_mode else {
+            return false;
+        };
+        if v.error.is_some() || v.types.is_empty() || !v.edges().is_empty() {
+            return false;
+        }
+        self.ask_order(None);
+        true
+    }
+
+    /// `--root` or `--prior` among the trajectory's options.
+    fn order_given(&self) -> bool {
+        self.trajectory.argv.iter().any(|a| {
+            ["--root", "--prior"]
+                .iter()
+                .any(|f| a == f || a.starts_with(&format!("{f}=")))
+        })
+    }
+
+    /// The menu of ways to give the types an order; `note` heads it.
+    fn ask_order(&mut self, note: Option<&str>) {
+        let TreeMode::Order(v) = &self.tree_mode else {
+            return;
+        };
+        let names: Vec<&str> = v.types.iter().map(|(t, _)| t.as_str()).collect();
+        let why = match &self.cl {
+            Some(cl) => {
+                let (mapped, _) = cl.map_labels(names.iter().copied());
+                match mapped.len() {
+                    0 => format!("none of the {} labels map to Cell Ontology terms", names.len()),
+                    n => format!(
+                        "{n} of {} labels map to Cell Ontology terms, with no develops-from link between them",
+                        names.len()
+                    ),
+                }
+            }
+            None => "no Cell Ontology is at hand".into(),
+        };
+        let question = format!(
+            "{}Nothing orders these types yet ({why}). How should the trajectory get its order?",
+            note.map_or(String::new(), |n| format!("{n}. "))
+        );
+        self.show(Menu::new(
+            question,
+            numbered(vec![
+                (
+                    "Start from one type (--root)".into(),
+                    "choose the type the trajectory starts from; every other type is ordered after it by the data".into(),
+                    Action::PickRoot,
+                ),
+                (
+                    "State the order myself".into(),
+                    "in the order table: space marks two types, > says the first precedes the second, - that they are unrelated; then r".into(),
+                    Action::StateOrder,
+                ),
+                (
+                    "Use a precedence file (--prior)".into(),
+                    "pick a from<TAB>to<TAB>precedes|unrelated file, or an earlier run's trajectory_prior.tsv".into(),
+                    Action::PriorFile,
+                ),
+                (
+                    "Map my labels to Cell Ontology terms (--label-cl)".into(),
+                    "pick a label<TAB>CL:id file; the ontology's develops-from links then order the types".into(),
+                    Action::LabelCl,
+                ),
+            ]),
+        ));
+    }
+
+    /// The menu of types to start from, with their cell counts.
+    fn ask_root_type(&mut self) {
+        let TreeMode::Order(v) = &self.tree_mode else {
+            return;
+        };
+        let items = v
+            .types
+            .iter()
+            .map(|(t, n)| {
+                (
+                    t.clone(),
+                    format!("start from {t} ({n} cells), kept for later runs"),
+                    Action::Root(t.clone()),
+                )
+            })
+            .collect();
+        let mut menu = Menu::new(
+            "Which type does the trajectory start from?",
+            numbered(items),
+        );
+        menu.sel = v.sel.min(menu.choices.len().saturating_sub(1));
+        self.show(menu);
+    }
+
+    /// Do what the chosen option says.
+    pub(super) fn choose(&mut self, action: Action) {
+        match action {
+            Action::PickRoot => self.ask_root_type(),
+            Action::Root(t) => {
+                self.push_log(format!("trajectory root: {t} (kept for later runs)"));
+                self.trajectory.argv.extend(["--root".into(), t]);
+                self.ask_trajectory_out();
+            }
+            Action::StateOrder => {
+                self.focus = Focus::Order;
+                if let Some(f) = &mut self.figures {
+                    f.shown = false;
+                }
+                self.status = "space marks two types, > says the first precedes the second, - that they are unrelated; then r runs".into();
+            }
+            Action::PriorFile => self.want_file = Some(FileWant::Prior),
+            Action::LabelCl => self.want_file = Some(FileWant::LabelCl),
+            Action::LabelsFile => self.want_file = Some(FileWant::Labels),
+            Action::Annotate => {
+                self.annotate_then_trajectory();
+                // A pass that replaces a round asks first; the menu asks
+                // again, and annotate a second time goes on.
+                if self.armed == Some(Armed::Run) && self.child.is_none() {
+                    let note = self
+                        .status
+                        .trim_end_matches(": r again to go on")
+                        .to_string();
+                    self.ask_labels(Some(note));
+                }
+            }
+        }
+    }
+
+    /// Take `path` (picked in the file browser) as the trajectory's
+    /// precedence file, then ask for the output prefix.
+    pub fn set_prior(&mut self, path: Option<&Path>) {
+        let Some(p) = path else {
+            self.status = "no precedence file picked".into();
+            return;
+        };
+        let p = p.to_string_lossy().into_owned();
+        self.push_log(format!("trajectory prior: {p} (kept for later runs)"));
+        self.trajectory.argv.extend(["--prior".into(), p]);
+        self.ask_trajectory_out();
+    }
+
+    /// Take `path` as the labels' Cell Ontology terms: reload the ontology
+    /// with it and the order view; go on to the run when it now orders
+    /// something, else ask again.
+    pub fn set_label_cl(&mut self, path: Option<&Path>) {
+        let Some(p) = path else {
+            self.status = "no label<TAB>CL:id file picked".into();
+            return;
+        };
+        let p = p.to_string_lossy().into_owned();
+        let dir = self.source.parent().map(Path::to_path_buf);
+        let terms = crate::manifest::ontology::load(
+            dir.as_deref(),
+            self.args.obo.as_deref(),
+            Some(&p),
+            crate::manifest::data_files::Fetch::Allowed,
+        )
+        .and_then(crate::manifest::data_files::ClData::into_terms);
+        match terms {
+            Ok(t) => {
+                self.cl = t;
+                if let Some(cl) = &self.cl {
+                    self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
+                }
+                self.args.label_cl = Some(p.clone().into());
+                // One --label-cl: the new file replaces one given before.
+                let argv = std::mem::take(&mut self.trajectory.argv);
+                let mut it = argv.into_iter();
+                while let Some(a) = it.next() {
+                    if a == "--label-cl" {
+                        it.next();
+                    } else if !a.starts_with("--label-cl=") {
+                        self.trajectory.argv.push(a);
+                    }
+                }
+                self.trajectory
+                    .argv
+                    .extend(["--label-cl".into(), p.clone()]);
+                self.push_log(format!("label to Cell Ontology terms: {p}"));
+                self.reload_order();
+                if !self.ask_root() {
+                    self.ask_trajectory_out();
+                } else {
+                    self.ask_order(Some("Still no order from the ontology"));
+                }
+            }
+            Err(e) => self.status = format!("{p}: {e:#}"),
+        }
     }
 
     /// Start `lupin trajectory` from the round on screen (else the run
@@ -1974,7 +2235,129 @@ impl App {
         } else if !v.problems.is_empty() {
             self.status = format!("unreadable precedence file: {}", v.problems.join("; "));
         }
+        let panel: Vec<(String, String)> = v
+            .types
+            .iter()
+            .map(|(t, _)| (String::new(), t.clone()))
+            .collect();
+        self.order_tree = Some(crate::manifest::ontology::panel_tree_on(
+            self.cl.as_ref(),
+            &panel,
+        ));
         self.tree_mode = TreeMode::Order(v);
+        self.sync_tree_to_order();
+    }
+
+    /// Keys of the ontology beside the precedence table: the order view's
+    /// types on the Cell Ontology, or the full ontology (`o`). Moving onto a
+    /// type selects it in the table too.
+    fn order_tree_key(&mut self, code: KeyCode) -> bool {
+        if let (Some(v), Some(cl)) = (&mut self.order_cl, &self.cl) {
+            if step(&mut v.sel, v.rows.len(), code) {
+                return true;
+            }
+            match code {
+                KeyCode::Right => v.enter(cl),
+                KeyCode::Left => v.up(cl),
+                KeyCode::Char('/') => v.typing = Some(String::new()),
+                KeyCode::Char('d') => {
+                    if !v.toggle_scope(cl) {
+                        self.status = "no type of the data sits on a Cell Ontology term".into();
+                    }
+                }
+                KeyCode::Char('o') => self.order_cl = None,
+                KeyCode::Char('t') => self.toggle_order(false),
+                KeyCode::Esc => self.focus = Focus::Clusters,
+                _ => return false,
+            }
+            return true;
+        }
+        let Some(tree) = &mut self.order_tree else {
+            return false;
+        };
+        let visible = tree.visible();
+        if step(&mut self.order_tree_sel, visible.len(), code) {
+            self.sync_order_to_tree();
+            return true;
+        }
+        let at = visible.get(self.order_tree_sel).copied();
+        match (code, at) {
+            (KeyCode::Left, Some(i)) => {
+                if tree.nodes[i].children.is_empty() || tree.is_folded(i) {
+                    // Up to the parent, like a file tree.
+                    if let Some(p) = tree.nodes[i].parent {
+                        if let Some(k) = tree.visible().iter().position(|&j| j == p) {
+                            self.order_tree_sel = k;
+                        }
+                    }
+                } else {
+                    tree.fold(i, true);
+                }
+                self.sync_order_to_tree();
+            }
+            (KeyCode::Right, Some(i)) => tree.fold(i, false),
+            (KeyCode::Char(' '), Some(_)) => {
+                // Only the order view's types can be ordered.
+                if self.sync_order_to_tree() {
+                    self.toggle_tree_mark();
+                } else {
+                    self.status = "not one of the run's types: only they can be ordered".into();
+                }
+            }
+            (KeyCode::Char('o'), at) => {
+                let Some(cl) = &self.cl else {
+                    self.status = "no Cell Ontology at hand (see `lupin data where`)".into();
+                    return true;
+                };
+                let focus = at
+                    .and_then(|i| tree.nodes[i].cl_id.clone())
+                    .filter(|id| cl.has(id))
+                    .unwrap_or_else(|| ROOT_TERM.to_string());
+                let data = self.ontology_data();
+                let Some(cl) = &self.cl else {
+                    return true;
+                };
+                self.order_cl = Some(super::ontology::OntologyView::in_data(cl, data, &focus));
+            }
+            (KeyCode::Char('t'), _) => self.toggle_order(false),
+            (KeyCode::Esc, _) => self.focus = Focus::Clusters,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Select in the precedence table the type selected in the ontology
+    /// beside it; `false` when that node is not one of the table's types.
+    fn sync_order_to_tree(&mut self) -> bool {
+        let (Some(tree), TreeMode::Order(v)) = (&self.order_tree, &mut self.tree_mode) else {
+            return false;
+        };
+        let Some(&i) = tree.visible().get(self.order_tree_sel) else {
+            return false;
+        };
+        let l = label_key(tree.label(i));
+        match v.types.iter().position(|(t, _)| label_key(t) == l) {
+            Some(k) => {
+                v.sel = k;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Select in the ontology beside the table the type selected in the
+    /// precedence table, unfolding the way to it.
+    fn sync_tree_to_order(&mut self) {
+        let (Some(tree), TreeMode::Order(v)) = (&mut self.order_tree, &self.tree_mode) else {
+            return;
+        };
+        let Some(i) = v.selected().and_then(|t| tree.node_of(t)) else {
+            return;
+        };
+        tree.reveal(i);
+        if let Some(k) = tree.visible().iter().position(|&j| j == i) {
+            self.order_tree_sel = k;
+        }
     }
 
     /// Keys of the order view: move, `>` / `-` on two marked types (the
@@ -2185,7 +2568,38 @@ impl App {
             .or_else(from_cluster)
             .filter(|id| cl.has(id))
             .unwrap_or_else(|| ROOT_TERM.to_string());
-        self.tree_mode = TreeMode::Ontology(super::ontology::OntologyView::at(cl, &focus));
+        let data = self.ontology_data();
+        self.tree_mode =
+            TreeMode::Ontology(super::ontology::OntologyView::in_data(cl, data, &focus));
+    }
+
+    /// The types in the data by the Cell Ontology term each sits on, with
+    /// their cells: the order view's types, else the round's labels, else
+    /// the marker panel's types.
+    fn ontology_data(&self) -> std::collections::BTreeMap<String, Vec<(String, usize)>> {
+        let Some(cl) = &self.cl else {
+            return Default::default();
+        };
+        let types: Vec<(String, usize)> = match (&self.tree_mode, &self.round) {
+            (TreeMode::Order(v), _) => v.types.clone(),
+            (_, Some(r)) => r
+                .summary(&self.edits)
+                .into_iter()
+                .filter(|(l, _)| l != UNASSIGNED_LABEL)
+                .collect(),
+            _ => self
+                .tree
+                .typed_terms()
+                .map(|(l, _)| (l.to_string(), 0))
+                .collect(),
+        };
+        let mut data: std::collections::BTreeMap<String, Vec<(String, usize)>> = Default::default();
+        for (t, n) in types {
+            if let Some(id) = super::ontology::term_of(cl, &self.tree, &t).filter(|id| cl.has(id)) {
+                data.entry(id).or_default().push((t, n));
+            }
+        }
+        data
     }
 
     fn ontology_key(&mut self, code: KeyCode) -> bool {
@@ -2197,6 +2611,11 @@ impl App {
             KeyCode::Right => v.enter(cl),
             KeyCode::Left => v.up(cl),
             KeyCode::Char('/') => v.typing = Some(String::new()),
+            KeyCode::Char('d') => {
+                if !v.toggle_scope(cl) {
+                    self.status = "no type of the data sits on a Cell Ontology term".into();
+                }
+            }
             KeyCode::Enter => {
                 if let Some(id) = v.selected().map(|r| r.id.clone()) {
                     self.pick_term(&id);

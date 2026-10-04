@@ -220,3 +220,204 @@ fn a_candidate_number_past_the_list_says_so() {
     assert!(app.edits.is_empty());
     assert!(app.status.contains("0 candidate"), "{}", app.status);
 }
+
+/// An app on the order view of `types`, its project folder in `dir`.
+fn order_app(dir: &std::path::Path, types: &[&str]) -> App {
+    let mut app = app_with_terms(false);
+    // No round: the order view lists the panel's types.
+    app.round = None;
+    app.original = types
+        .iter()
+        .map(|t| ((*t).to_string(), Default::default()))
+        .collect();
+    app.data_search = crate::manifest::data_files::SearchPath::new(Some(dir));
+    app.reload_order();
+    // Labelled from a file, as a run with no round is.
+    app.trajectory.labels = Some("labels.tsv".into());
+    app.focus = Focus::Order;
+    app
+}
+
+fn menu(app: &App) -> Option<&super::super::menu::Menu> {
+    match app.prompt.as_ref().map(|p| &p.pending) {
+        Some(Pending::Choose(m)) => Some(m),
+        _ => None,
+    }
+}
+
+#[test]
+fn with_nothing_to_order_r_asks_how_and_a_root_goes_on_to_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2", "CT3"]);
+    press(&mut app, KeyCode::Char('r'));
+    let m = menu(&app).expect("the order menu");
+    assert_eq!(m.choices.len(), 4);
+    // `1` starts from one type: the types, then Enter on the second.
+    press(&mut app, KeyCode::Char('1'));
+    let m = menu(&app).expect("the root menu");
+    assert_eq!(m.choices[1].label, "CT2");
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(app
+        .trajectory
+        .argv
+        .windows(2)
+        .any(|w| w == ["--root", "CT2"]));
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::TrajectoryOut { .. })
+    ));
+    // The root is kept: the next `r` asks only for the prefix.
+    app.prompt = None;
+    press(&mut app, KeyCode::Char('r'));
+    assert!(menu(&app).is_none());
+}
+
+#[test]
+fn the_order_menu_stays_away_when_something_orders_the_types() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    app.trajectory.argv = vec!["--prior".into(), "p.tsv".into()];
+    press(&mut app, KeyCode::Char('r'));
+    assert!(menu(&app).is_none(), "a --prior file orders them");
+
+    std::fs::create_dir_all(dir.path().join("lupin")).unwrap();
+    std::fs::write(
+        dir.path().join("lupin").join("precedence.tsv"),
+        "CT1\tCT2\tprecedes\n",
+    )
+    .unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    press(&mut app, KeyCode::Char('r'));
+    assert!(menu(&app).is_none(), "a statement orders them");
+}
+
+#[test]
+fn state_the_order_myself_closes_the_menu_on_the_table_and_esc_cancels() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.prompt.is_none());
+    assert!(app.focus == Focus::Order);
+    assert!(app.status.contains("space marks two types"));
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.prompt.is_none());
+    assert!(app.trajectory.argv.is_empty());
+}
+
+#[test]
+fn in_the_order_view_tab_visits_the_ontology_then_the_precedence_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    app.focus = Focus::Clusters;
+    let seen: Vec<Focus> = (0..4)
+        .map(|_| {
+            press(&mut app, KeyCode::Tab);
+            app.focus
+        })
+        .collect();
+    assert!(seen == [Focus::Genes, Focus::Tree, Focus::Order, Focus::Clusters]);
+}
+
+#[test]
+fn the_ontology_beside_the_table_follows_its_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2", "CT3"]);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    let tree = app.order_tree.as_ref().unwrap();
+    let at = tree.visible()[app.order_tree_sel];
+    assert_eq!(tree.label(at), "CT3");
+}
+
+#[test]
+fn with_no_labels_r_asks_where_they_come_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    app.trajectory.labels = None;
+    press(&mut app, KeyCode::Char('r'));
+    let m = menu(&app).expect("the labels menu");
+    assert_eq!(m.choices.len(), 2);
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.prompt.is_none());
+    assert!(app.want_file == Some(FileWant::Labels));
+}
+
+/// top ─ group ─┬─ CT1
+///              └─ CT2
+/// top ─ elsewhere
+const TYPES_OBO: &str = "format-version: 1.2
+
+[Term]
+id: CL:100
+name: top
+
+[Term]
+id: CL:101
+name: group
+is_a: CL:100
+
+[Term]
+id: CL:104
+name: CT1
+is_a: CL:101
+
+[Term]
+id: CL:105
+name: CT2
+is_a: CL:101
+
+[Term]
+id: CL:106
+name: elsewhere
+is_a: CL:100
+";
+
+#[test]
+fn annotates_ontology_view_opens_on_the_rounds_labels_and_toggles_with_d() {
+    use super::super::ontology::Scope;
+    let cl = crate::annotate::celltype_tree::ClTerms::parse(
+        TYPES_OBO,
+        &crate::annotate::cl_rules::shipped(),
+    );
+    let mut app = app_with_terms(false);
+    let panel = [
+        ("GENE1".to_string(), "CT1".to_string()),
+        ("GENE2".to_string(), "CT2".to_string()),
+    ];
+    app.tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &panel);
+    app.cl = Some(cl);
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('o'));
+    let TreeMode::Ontology(v) = &app.tree_mode else {
+        panic!("the ontology view");
+    };
+    assert_eq!(v.scope, Scope::Data);
+    assert_eq!(
+        v.data.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["CL:104"],
+        "the round labels its cluster CT1 only"
+    );
+    // Marking works on the data's tree as on the whole ontology.
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.tree_marked, ["CT1"]);
+    press(&mut app, KeyCode::Char('d'));
+    let TreeMode::Ontology(v) = &app.tree_mode else {
+        panic!("the ontology view");
+    };
+    assert_eq!(v.scope, Scope::All);
+    assert_eq!(v.selected().unwrap().id, "CL:104", "on the same term");
+    // A search still runs.
+    press(&mut app, KeyCode::Char('/'));
+    for c in "elsewhere".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    press(&mut app, KeyCode::Enter);
+    let TreeMode::Ontology(v) = &app.tree_mode else {
+        panic!("the ontology view");
+    };
+    assert_eq!(v.selected().unwrap().id, "CL:106");
+}

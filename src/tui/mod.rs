@@ -12,6 +12,7 @@ mod export;
 mod figure_pane;
 mod gallery;
 mod genes;
+mod menu;
 mod ontology;
 mod order;
 mod picker;
@@ -229,12 +230,24 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                         &loaded.dir,
                         picker::Want::Labels,
                     )?,
+                    app::FileWant::Prior => picker::pick(
+                        "Pick a precedence file (from<TAB>to<TAB>precedes|unrelated)",
+                        &loaded.dir,
+                        picker::Want::Labels,
+                    )?,
+                    app::FileWant::LabelCl => picker::pick(
+                        "Pick a label<TAB>CL:id file",
+                        &loaded.dir,
+                        picker::Want::Labels,
+                    )?,
                 };
                 // A fresh terminal redraws every cell on its first draw.
                 terminal = ratatui::init();
                 match want {
                     app::FileWant::Markers => app.set_markers(picked.as_deref()),
                     app::FileWant::Labels => app.set_labels(picked.as_deref()),
+                    app::FileWant::Prior => app.set_prior(picked.as_deref()),
+                    app::FileWant::LabelCl => app.set_label_cl(picked.as_deref()),
                 }
                 dirty = true;
             }

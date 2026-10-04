@@ -58,10 +58,19 @@ opens the TUI on the order view: a manifest is picked in its file browser
 when `-f` is not given, and `r` runs the trajectory as a child process with
 the options given, asking for the output prefix (the last one used, else the
 next free `{stem}.T{k}`; an existing one is replaced only on a second
-Enter). On a run with no annotation, `r` offers a `cell<TAB>type`
-labels file picked in the file browser (Enter or `l`), or to annotate the
-run first (`a`): the manifest's marker panel, else one picked in the file
-browser, then a pass, then the trajectory on its labels. `lupin annotate` follows the same rule: without `-o` it opens its
+Enter). A run that is already annotated opens with its round in the
+cluster panes. On a run with no annotation, `r` asks where the labels come
+from, in a menu that explains each choice: annotate the run first (the
+manifest's marker panel, else one picked in the file browser, then a pass,
+then the trajectory on its labels), or a `cell<TAB>type` labels file picked
+in the file browser. When nothing orders the types (no statement gives an
+edge, and no `--root` or `--prior`), `r` asks how the order should come
+instead of starting a run that can only fail: start from one type
+(`--root`, picked from the types with their cell counts and kept for later
+runs), state the order in the table, a precedence file (`--prior`), or a
+`label<TAB>CL:id` file (`--label-cl`) so the ontology's develops-from links
+order the types (asked again if they still do not). In every menu ↑↓
+choose, Enter or the option's key takes it, and esc cancels. `lupin annotate` follows the same rule: without `-o` it opens its
 TUI, which asks for the output prefix when the first pass starts (`.L1`
 offered) and lets it be changed in the settings (`r`).
 
@@ -235,9 +244,24 @@ compared directly:
 ## 6. Supervising the prior in the TUI
 
 `lupin trajectory` (also `t` in the annotate TUI's tree pane) adds an
-**order view** in the tree pane: the run's types with their cell counts, the
-direct edges with their sources, and, once a check has run, each edge's
-verdict. Mark type A, mark type B, then `>` for "A precedes B" or `-` for
+**order view**: beside the clusters, the run's types on the Cell Ontology,
+drawn as annotate's tree pane draws the panel (how many types map to terms
+and how many develops-from links join them above it, the selected type's
+place in the ontology, or that it has none, below), and the precedence table:
+the run's types with their cell counts, the direct edges with their sources,
+and, once a check has run, each edge's verdict. Tab goes clusters, genes,
+ontology, precedence; selecting a type in either column selects it in the
+other, and `o` in the ontology column opens the Cell Ontology there. Below
+150 columns the two share one column, showing whichever has the focus.
+
+The Cell Ontology view (`o`, here and in annotate's tree pane) opens on the
+terms **in the data**: the terms the labels sit on (the order view's types,
+else the round's labels, else the panel's types), under their lowest common
+ancestor, each marked with its types and cells; a chain of terms that only
+leads on to one term is folded into that term's line (→ opens it, ← folds
+it). `d` switches to the whole ontology around the same term and back. A
+search (`/`) lists the matches in the data's tree, or in the whole ontology
+when none are there, and says so. Mark type A, mark type B, then `>` for "A precedes B" or `-` for
 "unrelated" (`x` already stops a running pass anywhere in the TUI); a short
 reason is asked for, as for other edits. Enter on the reason writes the
 statement to the project layer's `precedence.tsv` at once (no save step);
