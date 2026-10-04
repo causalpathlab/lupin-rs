@@ -267,6 +267,9 @@ enum Armed {
 }
 
 pub struct App {
+    /// The terminal tells Shift+Enter from Enter (the kitty keyboard
+    /// protocol): Shift+Enter then runs a pass and Enter only edits.
+    pub shift_enter: bool,
     pub args: AnnotateCliArgs,
     /// The run manifest passes start from.
     pub source: PathBuf,
@@ -393,6 +396,7 @@ impl App {
             stale: false,
             armed: None,
             quit: false,
+            shift_enter: false,
             figures: None,
             out_chosen: true,
             trajectory: super::order::TrajectoryRun::default(),
@@ -798,6 +802,13 @@ impl App {
 
     fn start(&mut self) {
         if self.child.is_some() {
+            return;
+        }
+        // A pass needs a marker panel: pick one, and the pass goes on
+        // (set_markers starts it).
+        if self.args.markers.is_empty() {
+            self.status = "a pass needs a marker panel: pick one".into();
+            self.want_file = Some(FileWant::Markers);
             return;
         }
         if !self.out_chosen {
@@ -1431,7 +1442,7 @@ impl App {
         }
         let armed = self.armed.take();
         if self.settings_open {
-            return self.settings_key(k.code, armed);
+            return self.settings_key(k, armed);
         }
         // The focused pane's keys come first (in the genes pane, x hides).
         if self.pane_key(k.code) {
@@ -1439,6 +1450,12 @@ impl App {
         }
         match k.code {
             KeyCode::Char('q') => self.request_quit(armed, "q"),
+            // In the trajectory's view `r` runs the trajectory from any pane;
+            // a pass (the cluster settings) is for a run with no annotation,
+            // offered by that menu.
+            KeyCode::Char('r') if matches!(self.tree_mode, TreeMode::Order(_)) => {
+                self.ask_trajectory_out();
+            }
             KeyCode::Char('r') => self.settings_open = true,
             // Stops a running pass or save, asked twice.
             KeyCode::Char('x') if self.child.is_some() => {
@@ -1493,7 +1510,12 @@ impl App {
     }
 
     /// Keys in the clustering and pass settings popup.
-    fn settings_key(&mut self, code: KeyCode, armed: Option<Armed>) {
+    fn settings_key(&mut self, k: KeyEvent, armed: Option<Armed>) {
+        let code = k.code;
+        // Shift+Enter runs; plain Enter runs only where the terminal cannot
+        // tell the two apart.
+        let run = code == KeyCode::Enter
+            && (k.modifiers.contains(KeyModifiers::SHIFT) || !self.shift_enter);
         match code {
             KeyCode::Esc | KeyCode::Char('r' | 'q') => self.settings_open = false,
             KeyCode::Up | KeyCode::Down => {
@@ -1503,8 +1525,12 @@ impl App {
                 SETTINGS[self.setting].adjust(&mut self.args, code == KeyCode::Right);
                 self.stale = self.round.is_some();
             }
-            KeyCode::Enter if matches!(SETTINGS[self.setting], Setting::Output) => {
-                self.ask_output(false);
+            KeyCode::Enter if !run || matches!(SETTINGS[self.setting], Setting::Output) => {
+                if matches!(SETTINGS[self.setting], Setting::Output) {
+                    self.ask_output(false);
+                } else {
+                    self.status = "shift+enter runs the pass".into();
+                }
             }
             KeyCode::Enter => {
                 self.armed = armed;
@@ -1518,11 +1544,14 @@ impl App {
 
     fn cycle(&self, forward: bool) -> Focus {
         use Focus::{Clusters, Genes, Go, Order, Tree};
-        let mut order = vec![Clusters, Genes, Tree];
-        if matches!(self.tree_mode, TreeMode::Order(_)) {
-            order.push(Order);
-        }
-        if self.has_go() {
+        // The order view's columns, left to right: ontology, ordering,
+        // clusters (genes below them).
+        let mut order = if matches!(self.tree_mode, TreeMode::Order(_)) {
+            vec![Tree, Order, Clusters, Genes]
+        } else {
+            vec![Clusters, Genes, Tree]
+        };
+        if self.has_go() && !matches!(self.tree_mode, TreeMode::Order(_)) {
             order.push(Go);
         }
         let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);

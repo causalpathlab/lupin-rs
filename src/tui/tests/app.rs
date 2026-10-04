@@ -421,3 +421,16 @@ fn annotates_ontology_view_opens_on_the_rounds_labels_and_toggles_with_d() {
     };
     assert_eq!(v.selected().unwrap().id, "CL:106");
 }
+
+#[test]
+fn in_the_order_view_r_runs_the_trajectory_from_any_pane() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2", "CT3"]);
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('r'));
+    assert!(!app.settings_open, "no cluster settings on an order view");
+    assert!(
+        menu(&app).is_some(),
+        "the trajectory's own question instead"
+    );
+}

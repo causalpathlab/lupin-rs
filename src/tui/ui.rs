@@ -29,17 +29,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     // types competing for the selected cluster; right, when the round scored
     // them: the cluster's GO terms.
     let order = matches!(app.tree_mode, TreeMode::Order(_));
-    let (left, right, go) = if order {
-        // The order view: the clusters, then the ontology beside the
-        // precedence table (or the figures across both).
-        let left = if f.area().width >= ORDER_WIDE { 34 } else { 45 };
-        let [l, r] = Layout::horizontal([
-            Constraint::Percentage(left),
-            Constraint::Percentage(100 - left),
-        ])
-        .areas(body);
-        (l, r, None)
-    } else if app.has_go() {
+    if order {
+        return draw_order_screen(f, app, [header, body, summary, log, keys]);
+    }
+    let (left, right, go) = if app.has_go() {
         let [l, m, g] = Layout::horizontal([
             Constraint::Percentage(30),
             Constraint::Percentage(35),
@@ -75,10 +68,58 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_guide(f);
     }
     if app.prompt.is_some() {
-        // A choice in the order view leaves the ontology and the table in
-        // sight: it opens over the clusters.
-        let over = if order { left } else { f.area() };
-        draw_prompt(f, app, over);
+        draw_prompt(f, app, f.area());
+    }
+}
+
+/// The trajectory's order view: the ontology on the left, the ordering in
+/// the middle (the figures across both when shown), the clusters on the
+/// right. Narrow, the ontology and the ordering share the left column,
+/// whichever has the focus.
+fn draw_order_screen(f: &mut Frame, app: &App, [header, body, summary, log, keys]: [Rect; 5]) {
+    let TreeMode::Order(v) = &app.tree_mode else {
+        return;
+    };
+    let wide = f.area().width >= ORDER_WIDE;
+    let [main, right] = Layout::horizontal([
+        Constraint::Percentage(if wide { 68 } else { 58 }),
+        Constraint::Fill(1),
+    ])
+    .areas(body);
+    let [clusters, genes, candidates] = Layout::vertical([
+        Constraint::Min(8),
+        Constraint::Length(12),
+        Constraint::Length(10),
+    ])
+    .areas(right);
+    draw_header(f, header, app);
+    match app.figures.as_ref().filter(|fig| fig.shown) {
+        Some(fig) => draw_figures(f, main, app, fig),
+        None if wide => {
+            let [onto, ordering] =
+                Layout::horizontal([Constraint::Percentage(41), Constraint::Fill(1)]).areas(main);
+            draw_order_ontology(f, onto, app, v);
+            draw_order(f, ordering, app, v);
+        }
+        None if app.focus == Focus::Tree => draw_order_ontology(f, main, app, v),
+        None => draw_order(f, main, app, v),
+    }
+    draw_clusters(f, clusters, app);
+    draw_genes(f, genes, app);
+    draw_candidates(f, candidates, app);
+    draw_summary(f, summary, app);
+    draw_log(f, log, app);
+    f.render_widget(Paragraph::new(help(app)).dim(), keys);
+    if app.settings_open {
+        draw_settings(f, app);
+    }
+    if app.help_open {
+        draw_guide(f);
+    }
+    if app.prompt.is_some() {
+        // A choice leaves the ontology and the ordering in sight: it opens
+        // over the clusters.
+        draw_prompt(f, app, right);
     }
 }
 
@@ -93,16 +134,16 @@ fn help(app: &App) -> &'static str {
         }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) && !figures_shown(app) => {
             if app.order_cl.is_some() {
-                " ? keys · ↑↓ term · → children · ← parents · o back to the run's types · tab precedence"
+                " ? keys · ↑↓ term · → children · ← parents · o back to the run's types · tab ordering"
             } else {
-                " ? keys · ↑↓ type on the ontology · ← → fold · space mark · o full ontology · tab precedence"
+                " ? keys · ↑↓ type on the ontology · ← → fold · space mark · o full ontology · tab ordering"
             }
         }
         Focus::Order | Focus::Tree if matches!(app.tree_mode, TreeMode::Order(_)) => {
             if figures_shown(app) {
                 " ? keys · v next · w all · V table · t c m labels colour layout · , . pair · +-0 zoom · ←↑→↓ pan · p export · f exports · R check · r run · esc clusters"
             } else {
-                " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab ontology · t tree"
+                " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab clusters · t tree"
             }
         }
         Focus::Order => " ? keys · tab pane",
@@ -403,7 +444,11 @@ fn draw_settings(f: &mut Frame, app: &App) {
         .style(POPUP)
         .block(popup(
             format!(" cluster & run · {note} "),
-            " ↑↓ setting · ←→ change · enter run (on output: edit) · esc close ",
+            if app.shift_enter {
+                " ↑↓ setting · ←→ change · shift+enter run · enter edits the output · esc close "
+            } else {
+                " ↑↓ setting · ←→ change · enter run (on output: edit) · esc close "
+            },
         ))
         .row_highlight_style(highlight(true));
     f.render_widget(Clear, area);
@@ -751,23 +796,6 @@ fn wrap(text: &str, width: usize, max: usize) -> Vec<String> {
 }
 
 fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
-    if let TreeMode::Order(v) = &app.tree_mode {
-        if let Some(fig) = app.figures.as_ref().filter(|fig| fig.shown) {
-            return draw_figures(f, area, app, fig);
-        }
-        if f.area().width >= ORDER_WIDE {
-            let [cl, table] =
-                Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-                    .areas(area);
-            draw_order_ontology(f, cl, app, v);
-            return draw_order(f, table, app, v);
-        }
-        // Narrow: whichever has the focus.
-        if app.focus == Focus::Tree {
-            return draw_order_ontology(f, area, app, v);
-        }
-        return draw_order(f, area, app, v);
-    }
     if let (TreeMode::Ontology(v), Some(cl)) = (&app.tree_mode, &app.cl) {
         return draw_ontology(f, area, app, v, cl);
     }

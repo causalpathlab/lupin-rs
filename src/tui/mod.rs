@@ -120,8 +120,17 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     }
     args.from = Some(loaded.file.to_string_lossy().into());
     if args.markers.is_empty() {
-        args.markers = match loaded.manifest.annotate.markers.as_deref() {
-            Some(rel) => resolve(&loaded.dir, rel).into_boxed_str(),
+        // The recorded panel, found again if the run moved; one that is gone
+        // (made on another machine) is picked anew.
+        let recorded = loaded
+            .manifest
+            .annotate
+            .markers
+            .as_deref()
+            .map(|rel| loaded.manifest.data_file(&loaded.dir, rel))
+            .filter(|p| std::path::Path::new(p).is_file());
+        args.markers = match recorded {
+            Some(p) => p.into_boxed_str(),
             // The order view needs no marker panel: open on the run's types.
             None if start_in_order => Default::default(),
             None => {
@@ -198,9 +207,12 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         }
         app.focus = app::Focus::Tree;
         app.toggle_order(true);
+        // The ordering is this view's main job: start there.
+        app.focus = app::Focus::Order;
     }
 
     let mut terminal = ratatui::init();
+    app.shift_enter = keyboard_enhancement(true);
     let result = (|| -> Result<()> {
         // Drawn when something changed: a key, a resize, the log, the status
         // or a rescoring starting or ending.
@@ -243,6 +255,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                 };
                 // A fresh terminal redraws every cell on its first draw.
                 terminal = ratatui::init();
+                keyboard_enhancement(app.shift_enter);
                 match want {
                     app::FileWant::Markers => app.set_markers(picked.as_deref()),
                     app::FileWant::Labels => app.set_labels(picked.as_deref()),
@@ -268,6 +281,9 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         }
         Ok(())
     })();
+    if app.shift_enter {
+        keyboard_enhancement(false);
+    }
     ratatui::restore();
     if let Some(r) = &app.round {
         eprintln!("lupin: latest round {}", r.manifest.display());
@@ -283,4 +299,23 @@ fn run_genes(loaded: &run::Loaded) -> Option<Vec<Box<str>>> {
     let rel = o.dictionary.as_deref().or(o.feature_embedding.as_deref())?;
     // Only the row-name column: the numbers are not needed.
     read_parquet_string_column(&resolve(&loaded.dir, rel), 0).ok()
+}
+
+/// Ask the terminal to tell Shift+Enter from Enter (the kitty keyboard
+/// protocol) when `on` and it can, else undo that; whether it is on.
+fn keyboard_enhancement(on: bool) -> bool {
+    use ratatui::crossterm::event::{
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    };
+    use ratatui::crossterm::execute;
+    let mut out = std::io::stdout();
+    if !on {
+        return execute!(out, PopKeyboardEnhancementFlags).is_err();
+    }
+    let can = ratatui::crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    can && execute!(
+        out,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )
+    .is_ok()
 }
