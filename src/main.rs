@@ -9,6 +9,7 @@ mod gene_text;
 mod manifest;
 mod marker_embedding;
 mod plot;
+mod trajectory;
 mod tui;
 
 use crate::annotate_cmd::{run_annotate, AnnotateCliArgs};
@@ -19,6 +20,7 @@ use describe::{run_describe, DescribeArgs};
 use plot::scatter::{fit_plot, PlotArgs};
 use plot::strand::{fit_plot_strand, PlotStrandArgs};
 use plot::topic::{fit_plot_topic, PlotTopicArgs};
+use trajectory::run::{run_trajectory, TrajectoryArgs};
 
 #[derive(Parser)]
 #[command(
@@ -120,6 +122,11 @@ enum Commands {
     #[command(about = "Print the method write-ups (omit the topic to list them)")]
     Docs(docs::DocsArgs),
     #[command(
+        name = "trajectory",
+        about = "Diffusion pseudotime from a root cell type, and PAGA between types (first cut)"
+    )]
+    Trajectory(TrajectoryArgs),
+    #[command(
         about = "Where lupin's data files (Cell Ontology, matching rules, aliases) come from; fetch them for offline use"
     )]
     Data(manifest::data_files::DataArgs),
@@ -179,6 +186,7 @@ fn main() -> Result<()> {
         Commands::Relabel(c) => manifest::rounds::run_relabel(&c),
         Commands::Ask(c) => manifest::ask::run_ask(&c),
         Commands::Docs(c) => docs::run_docs(&c),
+        Commands::Trajectory(c) => run_trajectory(&c),
         Commands::Data(c) => manifest::data_files::run_data(&c),
         Commands::Plot(c) => fit_plot(&c),
         Commands::PlotTopic(c) => fit_plot_topic(&c),

@@ -765,6 +765,40 @@ impl Loaded {
         })?;
         Ok(resolve(&self.dir, rel))
     }
+
+    /// The geometry table, read and prepared for kNN distances by the run's
+    /// cell space: rows L2-normalised for an embedding (Euclidean distance
+    /// then ranks as cosine), `exp` then column z-scores for `log θ`, column
+    /// z-scores otherwise. This is what annotation's Leiden step feeds its
+    /// kNN graph (legume-numeric `leiden_clustering` applies the same
+    /// normalisation after annotation's `exp`).
+    pub fn prepared_geometry(
+        &self,
+    ) -> anyhow::Result<
+        legume_numeric::matrix::dense_mat_io::MatWithNames<
+            legume_numeric::matrix::dense_mat_io::Mat,
+        >,
+    > {
+        use legume_numeric::matrix::dense_mat_io::{l2_normalize_rows_inplace, Mat};
+        use legume_numeric::matrix::traits::{IoOps, MatOps};
+        let path = self.geometry_latent_path()?;
+        let mut x = Mat::from_parquet_with_row_names(&path, Some(0))
+            .map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?;
+        match self.manifest.kind.cell_space() {
+            CellSpace::Embedding => l2_normalize_rows_inplace(&mut x.mat),
+            CellSpace::LogSimplex => {
+                x.mat.apply(|v| *v = v.exp());
+                x.mat.scale_columns_inplace();
+            }
+            CellSpace::Signed => x.mat.scale_columns_inplace(),
+        }
+        info!(
+            "{} cells × {} dims from {path}",
+            x.rows.len(),
+            x.mat.ncols()
+        );
+        Ok(x)
+    }
 }
 
 impl Loaded {
