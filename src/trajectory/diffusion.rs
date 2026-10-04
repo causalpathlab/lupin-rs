@@ -33,6 +33,7 @@ use legume_numeric::matrix::utils::median;
 use log::warn;
 use nalgebra::DMatrix;
 use nalgebra_sparse::CscMatrix;
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 /// Diffusion components computed, as `tl.diffmap(n_comps=15)`; DPT uses the
@@ -267,10 +268,12 @@ impl DiffusionMap {
                 .map(|(_, c)| c)
                 .collect();
         }
-        pool.iter()
-            .map(|&c| (c, pool.iter().map(|&o| self.distance(c, o)).sum::<f64>()))
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(c, _)| c)
+        // Ties go to the first in the pool, as in a serial scan.
+        pool.par_iter()
+            .enumerate()
+            .map(|(k, &c)| (pool.iter().map(|&o| self.distance(c, o)).sum::<f64>(), k, c))
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+            .map(|(_, _, c)| c)
     }
 
     /// Each cell's DPT distance to the nearest of `roots`.
