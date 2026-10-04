@@ -17,8 +17,12 @@ fn cluster(id: ClusterId, cells: usize, label: Option<&str>) -> ClusterView {
         id,
         cells,
         label: label.map(String::from),
-        candidates: vec![candidate("T", 0.6), candidate("B", 0.3)],
-        shares: vec![("T".into(), 0.6), ("B".into(), 0.3), ("mono".into(), 0.1)],
+        candidates: vec![candidate("CT1", 0.6), candidate("CT2", 0.3)],
+        shares: vec![
+            ("CT1".into(), 0.6),
+            ("CT2".into(), 0.3),
+            ("CT3".into(), 0.1),
+        ],
         genes: Vec::new(),
         terms: Vec::new(),
     }
@@ -28,14 +32,14 @@ fn round() -> RoundView {
     RoundView {
         manifest: PathBuf::new(),
         clusters: vec![
-            cluster(0, 30, Some("T")),
-            cluster(1, 20, Some("B")),
+            cluster(0, 30, Some("CT1")),
+            cluster(1, 20, Some("CT2")),
             cluster(2, 5, None),
         ],
         cell_names: Vec::new(),
         cell_clusters: Vec::new(),
         expression: None,
-        markers: BTreeMap::from([("T".into(), BTreeSet::from(["CD3E".into()]))]),
+        markers: BTreeMap::from([("CT1".into(), BTreeSet::from(["GENE1".into()]))]),
         loose_cells: 1,
         decided: BTreeSet::new(),
         rescorable: false,
@@ -54,25 +58,22 @@ fn relabel(cluster: ClusterId, label: &str) -> Edit {
 fn the_latest_edit_of_a_cluster_is_its_label() {
     let r = round();
     let edits = [
-        relabel(1, "T"),
-        relabel(1, "lymph"),
+        relabel(1, "CT1"),
+        relabel(1, "CT5"),
         relabel(0, UNASSIGNED_LABEL),
     ];
-    assert_eq!(r.label_of(1, &edits).as_deref(), Some("lymph"));
+    assert_eq!(r.label_of(1, &edits).as_deref(), Some("CT5"));
     assert_eq!(r.label_of(0, &edits), None, "unassigned by hand");
     assert_eq!(r.label_of(2, &edits), None);
     assert_eq!(
         r.summary(&edits),
-        [
-            ("lymph".to_string(), 20),
-            (UNASSIGNED_LABEL.to_string(), 36)
-        ]
+        [("CT5".to_string(), 20), (UNASSIGNED_LABEL.to_string(), 36)]
     );
     assert_eq!(
         r.summary(&[]),
         [
-            ("T".to_string(), 30),
-            ("B".to_string(), 20),
+            ("CT1".to_string(), 30),
+            ("CT2".to_string(), 20),
             (UNASSIGNED_LABEL.to_string(), 6)
         ]
     );
@@ -82,21 +83,21 @@ fn the_latest_edit_of_a_cluster_is_its_label() {
 fn edits_become_one_decision_per_cluster_after_the_marker_edits() {
     let r = round();
     let edits = [
-        relabel(1, "T"),
+        relabel(1, "CT1"),
         Edit::Markers {
-            label: "B".into(),
-            genes: vec!["MS4A1".into()],
+            label: "CT2".into(),
+            genes: vec!["GENE4".into()],
             add: true,
             reason: "specific in K1".into(),
         },
-        relabel(1, "lymph"),
+        relabel(1, "CT5"),
     ];
     let d = decisions(&edits, &r, None);
     assert_eq!(d.len(), 2);
     assert_eq!(d[0].action.as_str(), "markers_add");
-    assert_eq!(d[0].features, ["MS4A1"]);
+    assert_eq!(d[0].features, ["GENE4"]);
     assert_eq!(d[1].cluster, [1]);
-    assert_eq!(d[1].label.as_deref(), Some("lymph"));
+    assert_eq!(d[1].label.as_deref(), Some("CT5"));
     assert_eq!(d[1].evidence.len(), 2, "the candidates it was weighed on");
     assert_eq!(d[1].evidence[0]["nes"], 1.0);
     let q = d[1].evidence[0]["q"].as_f64().unwrap();
@@ -119,12 +120,12 @@ fn specific_genes_rank_high_and_exclusive_first() {
 
 #[test]
 fn a_gene_names_the_types_it_marks() {
-    assert_eq!(r_marker(), ["T"]);
+    assert_eq!(r_marker(), ["CT1"]);
 }
 
 fn r_marker() -> Vec<String> {
     round()
-        .marker_of("CD3E")
+        .marker_of("GENE1")
         .into_iter()
         .map(String::from)
         .collect()
@@ -134,19 +135,19 @@ fn r_marker() -> Vec<String> {
 fn a_labels_markers_follow_the_edits_in_order() {
     let r = round();
     let markers = |add: bool, genes: &[&str]| Edit::Markers {
-        label: "T".into(),
+        label: "CT1".into(),
         genes: genes.iter().map(|g| (*g).to_string()).collect(),
         add,
         reason: "why".into(),
     };
     let edits = [
-        markers(true, &["CD2", "CD5"]),
-        markers(false, &["CD3E", "CD5"]),
+        markers(true, &["GENE2", "GENE3"]),
+        markers(false, &["GENE1", "GENE3"]),
     ];
-    assert_eq!(r.markers_of("T", &edits), [("CD2".to_string(), true)]);
+    assert_eq!(r.markers_of("CT1", &edits), [("GENE2".to_string(), true)]);
     let d = decisions(&edits, &r, None);
     assert_eq!(d[1].action.as_str(), "markers_drop");
-    assert_eq!(d[1].features, ["CD3E", "CD5"]);
+    assert_eq!(d[1].features, ["GENE1", "GENE3"]);
 }
 
 #[test]
@@ -173,10 +174,10 @@ fn keeping_a_label_is_a_decision_that_undoes_an_earlier_relabel() {
         cluster: 0,
         reason: "the markers agree".into(),
     };
-    let edits = [relabel(0, "B"), keep.clone()];
+    let edits = [relabel(0, "CT2"), keep.clone()];
     assert_eq!(
         r.label_of(0, &edits).as_deref(),
-        Some("T"),
+        Some("CT1"),
         "back to the round's label"
     );
     assert_eq!(keep.cluster(), Some(0));
@@ -230,9 +231,9 @@ fn adding_a_gene_again_moves_it_from_an_unsaved_addition() {
 #[test]
 fn rescored_scores_replace_a_clusters_and_swap_back() {
     let preview = serde_json::json!({"scores": {"0": [
-        {"label": "HSC", "share": 0.8, "nes": 2.1, "p": 1e-4, "q": 1e-3},
-        {"label": "T", "share": 0.2, "nes": 1.2, "p": 0.01, "q": 0.04},
-        {"label": "B", "share": 0.0, "nes": null, "p": 0.9, "q": 1.0}
+        {"label": "CT4", "share": 0.8, "nes": 2.1, "p": 1e-4, "q": 1e-3},
+        {"label": "CT1", "share": 0.2, "nes": 1.2, "p": 0.01, "q": 0.04},
+        {"label": "CT2", "share": 0.0, "nes": null, "p": 0.9, "q": 1.0}
     ]}});
     let scores = parse_scores(&preview).unwrap();
     let (candidates, shares) = &scores[&0];
@@ -241,7 +242,7 @@ fn rescored_scores_replace_a_clusters_and_swap_back() {
             .iter()
             .map(|c| c.label.as_str())
             .collect::<Vec<_>>(),
-        ["HSC", "T"],
+        ["CT4", "CT1"],
         "a type with no share is no candidate"
     );
     assert_eq!(candidates[0].nes, Some(2.1));
@@ -249,10 +250,10 @@ fn rescored_scores_replace_a_clusters_and_swap_back() {
 
     let mut r = round();
     let old = r.swap_scores(scores);
-    assert_eq!(r.clusters[0].candidates[0].label, "HSC");
-    assert_eq!(r.clusters[1].candidates[0].label, "T", "K1 not rescored");
+    assert_eq!(r.clusters[0].candidates[0].label, "CT4");
+    assert_eq!(r.clusters[1].candidates[0].label, "CT1", "K1 not rescored");
     r.swap_scores(old);
-    assert_eq!(r.clusters[0].candidates[0].label, "T");
+    assert_eq!(r.clusters[0].candidates[0].label, "CT1");
     assert_eq!(r.clusters[0].shares.len(), 3);
     assert!(parse_scores(&serde_json::json!({"scores": null})).is_none());
 }
@@ -282,8 +283,8 @@ fn a_decisions_evidence_is_the_rounds_own_when_rescored_scores_are_shown() {
     let mut r = round();
     let recorded = r.swap_scores(Scores::from([(
         0,
-        (vec![candidate("HSC", 0.9)], vec![("HSC".into(), 0.9)]),
+        (vec![candidate("CT4", 0.9)], vec![("CT4".into(), 0.9)]),
     )]));
-    let d = decisions(&[relabel(0, "T")], &r, Some(&recorded));
-    assert_eq!(d[0].evidence[0]["term"], "T", "the round's own, not HSC");
+    let d = decisions(&[relabel(0, "CT1")], &r, Some(&recorded));
+    assert_eq!(d[0].evidence[0]["term"], "CT1", "the round's own, not CT4");
 }

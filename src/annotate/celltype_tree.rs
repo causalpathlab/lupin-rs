@@ -29,7 +29,7 @@ pub struct ClTerms {
     /// Normalised name or counted synonym → term ids.
     by_name: HashMap<String, BTreeSet<String>>,
     /// The same names by [`word_bag`], for labels whose words come in
-    /// another order (`B cells memory` for `memory B cell`).
+    /// another order (`CT1 cells memory` for `memory CT1 cell`).
     by_words: HashMap<String, BTreeSet<String>>,
     name_of: HashMap<String, String>,
     parents: HashMap<String, Vec<String>>,

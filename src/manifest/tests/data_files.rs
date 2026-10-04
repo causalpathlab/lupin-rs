@@ -47,11 +47,11 @@ fn later_layers_win_and_every_file_read_is_recorded() {
     );
     write(
         root.path().join("share").join(ALIASES),
-        "NK\tCL:1\nMono\tCL:2\n",
+        "CT1\tCL:1\nMono\tCL:2\n",
     );
-    write(root.path().join("run/lupin").join(ALIASES), "NK\tCL:9\n");
+    write(root.path().join("run/lupin").join(ALIASES), "CT1\tCL:9\n");
     let run = root.path().join("run.tsv");
-    write(run.clone(), "Mono\tCL:8\n");
+    write(run.clone(), "CT2\tCL:8\n");
     write(
         root.path().join("cache").join(ONTOLOGY),
         "[Term]\nid: CL:1\nname: x\n",
@@ -67,12 +67,12 @@ fn later_layers_win_and_every_file_read_is_recorded() {
         "keys the user did not set are kept"
     );
     assert_eq!(
-        d.aliases.get("nk"),
+        d.aliases.get("ct1"),
         Some("CL:9"),
         "the project beats the install"
     );
     assert_eq!(
-        d.aliases.get("mono"),
+        d.aliases.get("ct2"),
         Some("CL:8"),
         "the run's file beats all"
     );
@@ -89,11 +89,11 @@ fn later_layers_win_and_every_file_read_is_recorded() {
 fn the_install_copy_is_used_before_the_cache() {
     offline();
     let root = tempfile::tempdir().unwrap();
-    write(root.path().join("share").join(ALIASES), "NK\tCL:1\n");
+    write(root.path().join("share").join(ALIASES), "CT1\tCL:1\n");
     let s = search(root.path());
-    write(s.cached(ALIASES).unwrap(), "NK\tCL:2\n");
+    write(s.cached(ALIASES).unwrap(), "CT1\tCL:2\n");
     let d = ClData::load(search(root.path()), None, None, Fetch::Never).unwrap();
-    assert_eq!(d.aliases.get("NK"), Some("CL:1"));
+    assert_eq!(d.aliases.get("CT1"), Some("CL:1"));
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn a_rescore_reads_exactly_the_files_its_pass_recorded() {
         root.path().join("share").join(RULES),
         r#"{"any_word_order": true}"#,
     );
-    write(root.path().join("share").join(ALIASES), "NK\tCL:1\n");
+    write(root.path().join("share").join(ALIASES), "CT1\tCL:1\n");
     write(
         root.path().join("cache").join(ONTOLOGY),
         "[Term]\nid: CL:1\nname: x\n",
@@ -120,11 +120,11 @@ fn a_rescore_reads_exactly_the_files_its_pass_recorded() {
     let record = pass.record(Some("test"));
 
     // Later, a user file appears: the rescore must not see it.
-    write(root.path().join("user").join(ALIASES), "NK\tCL:7\n");
+    write(root.path().join("user").join(ALIASES), "CT1\tCL:7\n");
     let again = ClData::from_record(&record, search(root.path()))
         .unwrap()
         .unwrap();
-    assert_eq!(again.aliases.get("NK"), Some("CL:1"));
+    assert_eq!(again.aliases.get("CT1"), Some("CL:1"));
     assert!(again.rules.any_word_order);
     assert!(again.ontology.as_ref().unwrap().is_absolute());
 
@@ -144,7 +144,7 @@ fn a_rescore_reads_exactly_the_files_its_pass_recorded() {
 fn a_run_file_is_found_as_given_else_beside_the_run() {
     let root = tempfile::tempdir().unwrap();
     let s = search(root.path());
-    write(root.path().join("run").join("map.tsv"), "NK\tCL:1\n");
+    write(root.path().join("run").join("map.tsv"), "CT1\tCL:1\n");
     assert_eq!(
         s.run_file("map.tsv").unwrap(),
         root.path().join("run").join("map.tsv")

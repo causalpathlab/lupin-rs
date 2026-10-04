@@ -25,8 +25,8 @@ fn the_shipped_rules_reproduce_the_matching_lupin_had() {
         "a plain RELATED synonym does not count"
     );
     assert!(!r.counts("NARROW", &[]));
-    assert_eq!(r.normalise("B Cells"), "b cell");
-    assert_eq!(r.singular("b cells memory"), "b cell memory");
+    assert_eq!(r.normalise("CT1 Cells"), "ct1 cell");
+    assert_eq!(r.singular("ct1 cells memory"), "ct1 cell memory");
     assert_eq!(
         r.singular("class ms"),
         "class ms",

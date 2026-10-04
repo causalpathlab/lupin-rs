@@ -87,22 +87,22 @@ fn obo_terms_keep_names_exact_synonyms_parents_and_release() {
 
 #[test]
 fn labels_match_terms_whose_words_come_in_another_order() {
-    let obo = "[Term]\nid: CL:1\nname: memory B cell\n\n\
-               [Term]\nid: CL:2\nname: gamma-delta T cell\n\n\
-               [Term]\nid: CL:3\nname: cell B memory\nis_obsolete: true\n\n\
-               [Term]\nid: CL:4\nname: alpha beta cell\n\n\
-               [Term]\nid: CL:5\nname: beta alpha cell\n";
+    let obo = "[Term]\nid: CL:1\nname: memory CT1 cell\n\n\
+               [Term]\nid: CL:2\nname: xi-omicron CT2 cell\n\n\
+               [Term]\nid: CL:3\nname: cell CT1 memory\nis_obsolete: true\n\n\
+               [Term]\nid: CL:4\nname: red blue cell\n\n\
+               [Term]\nid: CL:5\nname: blue red cell\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
     let (mapped, unmapped) = t.map_labels([
-        "B cells memory",
-        "Gamma delta T cells",
-        "Alpha beta cells",
-        "Cells alpha beta",
+        "CT1 cells memory",
+        "Xi omicron CT2 cells",
+        "Red blue cells",
+        "Cells red blue",
     ]);
-    assert_eq!(mapped["B cells memory"], "CL:1");
-    assert_eq!(mapped["Gamma delta T cells"], "CL:2", "hyphens are spaces");
-    assert_eq!(mapped["Alpha beta cells"], "CL:4", "an exact name wins");
-    assert_eq!(unmapped, ["Cells alpha beta"], "two terms share its words");
+    assert_eq!(mapped["CT1 cells memory"], "CL:1");
+    assert_eq!(mapped["Xi omicron CT2 cells"], "CL:2", "hyphens are spaces");
+    assert_eq!(mapped["Red blue cells"], "CL:4", "an exact name wins");
+    assert_eq!(unmapped, ["Cells red blue"], "two terms share its words");
 }
 
 #[test]

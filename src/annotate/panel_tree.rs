@@ -213,7 +213,7 @@ impl PanelTree {
     }
 
     /// The label a cluster gets from node `i`: a node that is a panel type
-    /// keeps the panel's label (`T_cells` for CL `T cell`), else its name.
+    /// keeps the panel's label (`CT1_cells` for CL `CT1 cell`), else its name.
     #[must_use]
     pub fn label(&self, i: usize) -> &str {
         let n = &self.nodes[i];
