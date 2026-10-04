@@ -93,8 +93,7 @@ fn a_log_others_can_write_moves_and_deletes_nothing() {
     g.add(&files, "order", "order", &dir.join("run.senna.json"))
         .unwrap();
     let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode(&log_dir), 0o700, "the log's directory is private");
-    assert_eq!(mode(&log_dir.join(LOG)) & 0o077, 0, "so is the log");
+    assert_eq!(mode(&log_dir.join(LOG)) & 0o077, 0, "the log is private");
 
     let open = std::fs::Permissions::from_mode(0o666);
     std::fs::set_permissions(log_dir.join(LOG), open).unwrap();
@@ -102,6 +101,6 @@ fn a_log_others_can_write_moves_and_deletes_nothing() {
     assert!(g.remove(&files[1], true).is_err());
     assert!(g.relocate(&files[1], &dir.join("elsewhere")).is_err());
     assert!(files.iter().all(|f| f.is_file()));
-    // Taking it off the list touches no file and stays allowed.
-    g.remove(&files[1], false).unwrap();
+    // Nor is an entry taken off a log others can write.
+    assert!(g.remove(&files[1], false).is_err());
 }

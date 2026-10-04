@@ -156,16 +156,9 @@ impl Gallery {
 
     /// Write the log: to a temporary file, then into place.
     /// Write the log: to a fresh temporary file (created exclusively, under
-    /// a random name, readable by this user only), then into place. The
-    /// directory is made this user's alone, which deleting or moving files
-    /// on the log's word requires (see [`private`]).
+    /// a random name, readable by this user only), then into place.
     fn save(&self) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700));
-        }
         let mut tmp = tempfile::NamedTempFile::new_in(&self.dir)?;
         serde_json::to_writer_pretty(&mut tmp, &self.entries)?;
         tmp.persist(self.dir.join(LOG))?;
@@ -259,10 +252,12 @@ impl Gallery {
         out
     }
 
-    /// The entry for the PDF `pdf`, after reloading the log: another viewer
-    /// may have changed it since the row on screen was drawn.
+    /// The entry for the PDF `pdf`, from the log as it is now on disk
+    /// (another viewer may have changed it since the row on screen was
+    /// drawn), read only from a log this user alone can write: files are
+    /// deleted or moved on its word.
     fn find(&mut self, pdf: &Path) -> Result<usize> {
-        self.reload();
+        self.entries = read_private(&self.dir.join(LOG))?;
         self.entries
             .iter()
             .position(|e| e.path == pdf)
@@ -274,7 +269,6 @@ impl Gallery {
     pub fn remove(&mut self, pdf: &Path, delete: bool) -> Result<()> {
         let index = self.find(pdf)?;
         if delete {
-            private(&self.dir)?;
             // Only the files that were exported, unchanged, are deleted.
             verify_set(&self.entries[index])?;
         }
@@ -292,7 +286,6 @@ impl Gallery {
     /// replaced, and a failed move puts back the files already moved.
     pub fn relocate(&mut self, pdf: &Path, new_base: &Path) -> Result<()> {
         let index = self.find(pdf)?;
-        private(&self.dir)?;
         let e = &mut self.entries[index];
         verify_set(e)?;
         let targets: Vec<PathBuf> = e
@@ -328,33 +321,29 @@ impl Gallery {
     }
 }
 
-/// The log in `dir` may be acted on — files deleted or moved on its word —
-/// only when it and its directory are this user's and no one else can write
-/// them: a log another user can edit could name any of this user's files.
-#[cfg(unix)]
-fn private(dir: &Path) -> Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    // This process's user, as the owner of a file it has just created.
-    let me = tempfile::NamedTempFile::new_in(dir)?
-        .as_file()
-        .metadata()?
-        .uid();
-    for p in [dir.to_path_buf(), dir.join(LOG)] {
-        let m = std::fs::symlink_metadata(&p)
-            .with_context(|| format!("{} is not there", p.display()))?;
+/// The entries of the log at `log`, read from the file that was opened and
+/// only when that file is this user's and no one else can write it: a log
+/// another user can edit could name any of this user's files. The check is
+/// made on the opened file itself, so a file swapped in after it is not read.
+fn read_private(log: &Path) -> Result<Vec<Entry>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(log).with_context(|| format!("opening {}", log.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let m = f.metadata()?;
+        // This process's user: the owner of a file it has just created.
+        let me = tempfile::tempfile()?.metadata()?.uid();
         ensure!(
-            !m.file_type().is_symlink() && m.uid() == me && m.mode() & 0o022 == 0,
-            "{} is not this user's alone (others can write it, or it is a link): \
-             not deleting or moving files on its word",
-            p.display()
+            m.is_file() && m.uid() == me && m.mode() & 0o022 == 0,
+            "{} is not this user's alone (others can write it): not deleting or moving \
+             files on its word",
+            log.display()
         );
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn private(_: &Path) -> Result<()> {
-    Ok(())
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes)?;
+    serde_json::from_slice(&bytes).with_context(|| format!("reading {}", log.display()))
 }
 
 /// Every file of `e` is the export it was logged as: beside the PDF with the
