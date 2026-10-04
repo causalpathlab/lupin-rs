@@ -23,6 +23,8 @@ pub enum Want {
     Manifest,
     /// A marker panel, scored against the run's genes when they are known.
     Markers(Option<Box<GeneRows>>, usize),
+    /// A `cell<TAB>type` labels table (`.tsv`, `.txt`, `.csv`, or gzipped).
+    Labels,
 }
 
 /// A marker panel's size and how much of it the run has.
@@ -44,8 +46,15 @@ impl Entry {
         match want {
             Want::Manifest => is_manifest(&self.path),
             Want::Markers(..) => self.panel.is_some(),
+            Want::Labels => is_table(&self.path),
         }
     }
+}
+
+fn is_table(p: &Path) -> bool {
+    let n = p.to_string_lossy();
+    let n = n.strip_suffix(".gz").unwrap_or(&n);
+    [".tsv", ".txt", ".csv"].iter().any(|ext| n.ends_with(ext))
 }
 
 struct Picker {

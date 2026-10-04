@@ -210,18 +210,27 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                 terminal.draw(|f| ui::draw(f, &app))?;
                 dirty = false;
             }
-            if std::mem::take(&mut app.want_markers) {
+            if let Some(want) = app.want_file.take() {
                 // The file browser takes the screen, then gives it back.
-                let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
-                let n = index.as_deref().map_or(0, GeneRows::n_genes);
-                let picked = picker::pick(
-                    "Pick a marker panel",
-                    &loaded.dir,
-                    picker::Want::Markers(index, n),
-                )?;
+                let picked = match want {
+                    app::FileWant::Markers => {
+                        let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
+                        let n = index.as_deref().map_or(0, GeneRows::n_genes);
+                        let want = picker::Want::Markers(index, n);
+                        picker::pick("Pick a marker panel", &loaded.dir, want)?
+                    }
+                    app::FileWant::Labels => picker::pick(
+                        "Pick a cell<TAB>type labels file",
+                        &loaded.dir,
+                        picker::Want::Labels,
+                    )?,
+                };
+                // A fresh terminal redraws every cell on its first draw.
                 terminal = ratatui::init();
-                terminal.clear()?;
-                app.set_markers(picked.as_deref());
+                match want {
+                    app::FileWant::Markers => app.set_markers(picked.as_deref()),
+                    app::FileWant::Labels => app.set_labels(picked.as_deref()),
+                }
                 dirty = true;
             }
             if event::poll(Duration::from_millis(150))? {

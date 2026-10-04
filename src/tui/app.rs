@@ -193,9 +193,18 @@ pub enum Pending {
     /// Run `lupin trajectory` with the output prefix typed; `replace` is the
     /// prefix whose existing manifest the user has agreed to replace.
     TrajectoryOut { replace: Option<String> },
-    /// The `cell<TAB>type` file (the text) a trajectory run takes its labels
-    /// from, for a run with no annotation.
+    /// A run with no annotation: pick a `cell<TAB>type` labels file (Enter
+    /// or `l`), or annotate it here (`a`). Takes keys, not text.
     TrajectoryLabels,
+}
+
+/// A file the main loop picks in the file browser, which takes the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileWant {
+    /// A marker panel, to annotate a run that has no annotation.
+    Markers,
+    /// A `cell<TAB>type` labels file for a trajectory run.
+    Labels,
 }
 
 /// A one-line prompt for a decision's reason, prefilled.
@@ -317,9 +326,8 @@ pub struct App {
     pub out_chosen: bool,
     /// How the order view runs `lupin trajectory`.
     pub trajectory: super::order::TrajectoryRun,
-    /// Pick a marker panel (the main loop opens the file browser), to
-    /// annotate a run that has no annotation.
-    pub want_markers: bool,
+    /// A file to pick in the file browser, which the main loop opens.
+    pub want_file: Option<FileWant>,
     /// Once the pass running now is done, run the trajectory.
     trajectory_after_pass: bool,
     /// The terminal's picture protocol, asked for once.
@@ -372,7 +380,7 @@ impl App {
             figures: None,
             out_chosen: true,
             trajectory: super::order::TrajectoryRun::default(),
-            want_markers: false,
+            want_file: None,
             trajectory_after_pass: false,
             picker: None,
         }
@@ -1168,6 +1176,21 @@ impl App {
 
     fn prompt_key(&mut self, k: KeyEvent) {
         let Some(p) = &mut self.prompt else { return };
+        if matches!(p.pending, Pending::TrajectoryLabels) {
+            match k.code {
+                KeyCode::Enter | KeyCode::Char('l') => {
+                    self.prompt = None;
+                    self.want_file = Some(FileWant::Labels);
+                }
+                KeyCode::Char('a') => {
+                    self.prompt = None;
+                    self.annotate_then_trajectory();
+                }
+                KeyCode::Esc => self.prompt = None,
+                _ => {}
+            }
+            return;
+        }
         match k.code {
             KeyCode::Esc => {
                 if matches!(
@@ -1189,7 +1212,7 @@ impl App {
                 }
                 let Some(p) = self.prompt.take() else { return };
                 let reason = p.text.trim().to_string();
-                if reason.is_empty() && !matches!(p.pending, Pending::TrajectoryLabels) {
+                if reason.is_empty() {
                     self.status = "type something, or Esc to cancel".into();
                     self.prompt = Some(p);
                     return;
@@ -1274,17 +1297,8 @@ impl App {
                             self.run_trajectory(&reason, exists);
                         }
                     }
-                    Pending::TrajectoryLabels if reason.is_empty() => {
-                        self.annotate_then_trajectory();
-                    }
-                    Pending::TrajectoryLabels => {
-                        if Path::new(&reason).is_file() {
-                            self.trajectory.labels = Some(reason);
-                            self.ask_trajectory_out();
-                        } else {
-                            self.status = format!("{reason} is not a file");
-                        }
-                    }
+                    // Handled above, key by key.
+                    Pending::TrajectoryLabels => {}
                     Pending::Relocate { pdf } => {
                         self.status = match &mut self.figures {
                             Some(v) => v
@@ -1718,7 +1732,7 @@ impl App {
                 .is_ok_and(|l| l.manifest.annotate.argmax.is_some());
         if !has_labels {
             self.prompt = Some(Prompt {
-                title: " no annotation yet: Enter annotates it (pick a marker panel, run a pass), or type a cell<TAB>type file ".into(),
+                title: " no annotation yet: enter/l pick a cell<TAB>type labels file · a annotate it here · esc cancel ".into(),
                 text: String::new(),
                 pending: Pending::TrajectoryLabels,
             });
@@ -1790,7 +1804,7 @@ impl App {
     fn annotate_then_trajectory(&mut self) {
         self.trajectory_after_pass = true;
         if self.args.markers.is_empty() {
-            self.want_markers = true;
+            self.want_file = Some(FileWant::Markers);
             return;
         }
         self.start();
@@ -1821,6 +1835,18 @@ impl App {
                 self.trajectory_after_pass = false;
                 self.status = format!("{e:#}");
             }
+        }
+    }
+
+    /// Take `path` (picked in the file browser) as the labels of the
+    /// trajectory run, then ask for its output prefix.
+    pub fn set_labels(&mut self, path: Option<&Path>) {
+        match path {
+            Some(p) => {
+                self.trajectory.labels = Some(p.to_string_lossy().into_owned());
+                self.ask_trajectory_out();
+            }
+            None => self.status = "no labels file picked".into(),
         }
     }
 

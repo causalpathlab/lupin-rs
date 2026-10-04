@@ -938,7 +938,13 @@ fn draw_prompt(f: &mut Frame, app: &App) {
     // question and the answer need once wrapped.
     let screen = f.area();
     let question = p.title.trim();
-    let answer = format!("{}▏", p.text);
+    // A choice takes keys, not text: no answer line.
+    let choice = matches!(p.pending, super::app::Pending::TrajectoryLabels);
+    let answer = if choice {
+        String::new()
+    } else {
+        format!("{}▏", p.text)
+    };
     let want = question.chars().count().max(answer.chars().count()) as u16 + 4;
     // At least 60 columns (or the screen), at most 90% of the screen.
     let lo = screen.width.min(60);
@@ -966,7 +972,14 @@ fn draw_prompt(f: &mut Frame, app: &App) {
         Paragraph::new(lines)
             .style(POPUP)
             .wrap(Wrap { trim: false })
-            .block(popup(String::new(), " enter: ok · esc: cancel ")),
+            .block(popup(
+                String::new(),
+                if choice {
+                    " enter/l: pick a file · a: annotate · esc: cancel "
+                } else {
+                    " enter: ok · esc: cancel "
+                },
+            )),
         area,
     );
 }
