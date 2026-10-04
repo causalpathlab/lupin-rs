@@ -79,7 +79,19 @@ instead of starting a run that can only fail: start from one type
 runs), state the order in the table, a precedence file (`--prior`), or a
 `label<TAB>CL:id` file (`--label-cl`) so the ontology's develops-from links
 order the types (asked again if they still do not). In every menu ↑↓
-choose, Enter or the option's key takes it, and esc cancels. `lupin annotate` follows the same rule: without `-o` it opens its
+choose, Enter or the option's key takes it, and esc cancels.
+
+`g`, from any pane, lists the run's family: the run, the annotation rounds
+made from it (`X.L0`, `X.L0.L1`, `X.r2`, …) and the trajectories made from
+those (`X.T1`, …, and any other manifest beside it whose `annotate.source`
+names one of them), each with what it holds and when it changed, the one on
+screen marked ●. Picking a round shows its clusters and gives the order view
+its labels; picking a trajectory shows its figures with the round it was
+made from; picking the run clears the round. Unsaved edits are asked about
+first. Passes then start from the manifest the round shown was made from
+(the run, for a first round), as when the TUI is opened on that round. A
+run with no annotation whose rounds sit beside it says so on opening, and
+the no-labels menu offers to open one. `lupin annotate` follows the same rule: without `-o` it opens its
 TUI, where `r` (or `A` in the clusters pane) opens the same annotation
 form.
 

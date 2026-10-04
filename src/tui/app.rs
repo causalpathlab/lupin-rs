@@ -1438,9 +1438,9 @@ impl App {
         match menu.key(code) {
             Outcome::Open => {}
             Outcome::Cancel => {
-                self.menu = None;
+                let note = self.menu.take().and_then(|m| m.on_cancel);
                 self.after_pass = AfterPass::Nothing;
-                self.status = "no trajectory run started".into();
+                self.status = note.unwrap_or_else(|| "no trajectory run started".into());
             }
             Outcome::Chosen(a) => {
                 self.menu = None;
@@ -1671,6 +1671,10 @@ impl App {
         let armed = self.armed.take();
         if self.form.is_some() {
             return self.settings_key(k);
+        }
+        // `g` lists the run's family from any pane.
+        if k.code == KeyCode::Char('g') {
+            return self.list_runs();
         }
         // `x` stops a running job from any pane, asked twice.
         if k.code == KeyCode::Char('x') {
@@ -2101,21 +2105,32 @@ impl App {
 
     /// A run with no labels: annotate it here, or take a labels file.
     fn ask_labels(&mut self) {
+        let mut items = vec![
+            (
+                "Annotate this run now".into(),
+                "a form asks for the marker panel, the output and the clustering settings; the pass, then the trajectory on its labels".into(),
+                Action::Annotate,
+            ),
+            (
+                "Use a cell<TAB>type labels file".into(),
+                "pick the file in the file browser; the trajectory reads its labels".into(),
+                Action::LabelsFile,
+            ),
+        ];
+        if super::runs::has_rounds(&super::runs::family(&self.source)) {
+            items.insert(
+                0,
+                (
+                    "Open an annotated round of this run".into(),
+                    "the run's rounds are beside it: pick one (g), and the trajectory takes its labels".into(),
+                    Action::ListRuns,
+                ),
+            );
+        }
         self.show(Menu::new(
             "This run has no cell-type labels yet, and the trajectory needs them. \
              Where should they come from?",
-            numbered(vec![
-                (
-                    "Annotate this run now".into(),
-                    "a form asks for the marker panel, the output and the clustering settings; the pass, then the trajectory on its labels".into(),
-                    Action::Annotate,
-                ),
-                (
-                    "Use a cell<TAB>type labels file".into(),
-                    "pick the file in the file browser; the trajectory reads its labels".into(),
-                    Action::LabelsFile,
-                ),
-            ]),
+            numbered(items),
         ));
     }
 
@@ -2243,7 +2258,179 @@ impl App {
             Action::NotNow => {
                 self.status = "r runs the trajectory when you are ready".into();
             }
+            Action::ListRuns => self.list_runs(),
+            Action::OpenRun(p) => self.open_run(&p, false),
+            Action::OpenRunDropping(p) => self.open_run(&p, true),
+            Action::Stay => self.status = "kept the run on screen (s saves the edits)".into(),
         }
+    }
+
+    /// The manifest on screen: the round shown, else the run passes start
+    /// from.
+    pub(super) fn shown_manifest(&self) -> PathBuf {
+        self.round
+            .as_ref()
+            .map_or_else(|| self.source.clone(), |r| r.manifest.clone())
+    }
+
+    /// List the run's family (`g`): the run, its rounds and the
+    /// trajectories made from them, the one on screen marked.
+    pub(super) fn list_runs(&mut self) {
+        if self.child.is_some() {
+            self.status = "wait for the running job, or stop it with x".into();
+            return;
+        }
+        let shown = self.shown_manifest();
+        let members = super::runs::family(&shown);
+        if members.is_empty() {
+            self.status = format!("no run manifests beside {}", shown.display());
+            return;
+        }
+        let at = super::runs::current(&members, &shown);
+        let now = super::gallery::now();
+        let items = members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let mark = if Some(i) == at { "● " } else { "  " };
+                let label = format!(
+                    "{mark}{} · {} · {} · {}",
+                    m.name(),
+                    m.kind.name(),
+                    m.holds,
+                    super::gallery::ago(m.modified, now)
+                );
+                let detail = match m.kind {
+                    super::runs::Kind::Run => {
+                        "the run itself: no clusters on the left until a pass (A); passes start from it"
+                    }
+                    super::runs::Kind::Round => {
+                        "show this round's clusters and labels; the order view takes its labels, and passes start from the run it was made from"
+                    }
+                    super::runs::Kind::Trajectory => {
+                        "show this trajectory's figures with the round it was made from"
+                    }
+                };
+                (label, detail.to_string(), Action::OpenRun(m.path.clone()))
+            })
+            .collect();
+        let mut menu = Menu::new(
+            format!(
+                "The runs of {} (● on screen). Which should the TUI show?",
+                super::runs::stem(&shown)
+            ),
+            numbered(items),
+        );
+        menu.sel = at.unwrap_or(0);
+        menu.on_cancel = Some("kept the run on screen".into());
+        menu.wide = true;
+        self.show(menu);
+    }
+
+    /// Show `path`, a member of the run's family: a round (or a trajectory's
+    /// copy of one) in the cluster panes, a trajectory's figures, the run
+    /// with no round. Passes then start from the manifest the round was
+    /// made from, as when the TUI is opened on it.
+    pub(super) fn open_run(&mut self, path: &Path, drop_edits: bool) {
+        if self.child.is_some() {
+            self.status = "wait for the running job, or stop it with x".into();
+            return;
+        }
+        let name = file_name(path);
+        if !drop_edits && !self.edits.is_empty() {
+            let mut menu = Menu::new(
+                format!(
+                    "{} unsaved edit(s) on the round on screen. Open {name} anyway?",
+                    self.edits.len()
+                ),
+                numbered(vec![
+                    (
+                        format!("Open {name}, dropping the edits"),
+                        "the edits are lost; s first would save them as a new round".into(),
+                        Action::OpenRunDropping(path.to_path_buf()),
+                    ),
+                    (
+                        "Stay".into(),
+                        "keep the round and its edits on screen".into(),
+                        Action::Stay,
+                    ),
+                ]),
+            );
+            menu.on_cancel = Some("kept the run on screen (s saves the edits)".into());
+            return self.show(menu);
+        }
+        let loaded = match crate::manifest::run::load(&path.to_string_lossy()) {
+            Ok(l) => l,
+            Err(e) => {
+                self.status = format!("could not read {name}: {e:#}");
+                return;
+            }
+        };
+        let m = &loaded.manifest;
+        let made_from = |m: &crate::manifest::run::RunManifest, dir: &Path| {
+            m.annotate
+                .source
+                .as_deref()
+                .map(|s| PathBuf::from(crate::manifest::run::resolve(dir, s)))
+                .filter(|p| p.is_file())
+        };
+        let trajectory = m.trajectory.prior.is_some() || m.trajectory.pseudotime.is_some();
+        // Passes start from what a round was made from; a trajectory's copy
+        // names its round, whose own source is the run.
+        let source = match made_from(m, &loaded.dir) {
+            Some(round) if trajectory => crate::manifest::run::load(&round.to_string_lossy())
+                .ok()
+                .and_then(|r| made_from(&r.manifest, &r.dir))
+                .or(Some(round)),
+            other => other,
+        }
+        .unwrap_or_else(|| path.to_path_buf());
+        if m.annotate.argmax.is_some() {
+            self.open(path);
+        } else {
+            self.stop_rescoring();
+            self.recorded = None;
+            self.scored_for.clear();
+            self.round = None;
+            self.edits.clear();
+            self.marked.clear();
+            self.tree_marked.clear();
+            self.cluster_sel = 0;
+            self.gene_sel = 0;
+        }
+        if !crate::manifest::run::same_file(&source, &self.source) {
+            self.source = source;
+            if !self.out_chosen {
+                let stem = crate::manifest::run::derive_out_prefix(&self.source.to_string_lossy());
+                self.args.out = format!("{stem}.L1").into_boxed_str();
+            }
+            self.args.from = Some(self.source.to_string_lossy().into());
+            self.target = annotated_path(&self.source, &self.args.out);
+        }
+        if trajectory {
+            let picker = self.picker().clone();
+            match super::figure_pane::FigurePane::load(&[path], &picker) {
+                Ok(Some(mut v)) => {
+                    v.shown = self.figures.as_ref().is_none_or(|f| f.shown);
+                    self.figures = Some(v);
+                }
+                Ok(None) => {}
+                Err(e) => self.push_log(format!("[WARN] trajectory figures: {e:#}")),
+            }
+        }
+        if self.in_order() {
+            self.reload_order();
+        }
+        self.status = match (&self.round, trajectory) {
+            (Some(r), true) => format!(
+                "{name}: its figures, and its round's {} clusters",
+                r.clusters.len()
+            ),
+            (Some(r), false) => format!("{name}: {} clusters (g lists the runs)", r.clusters.len()),
+            (None, _) => {
+                format!("{name}: the run, no annotation (A annotates it, g lists its rounds)")
+            }
+        };
     }
 
     /// Take `path` (picked in the file browser) as the trajectory's

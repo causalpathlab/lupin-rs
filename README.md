@@ -213,7 +213,9 @@ In the annotate TUI, `o` in the tree pane switches to the Cell Ontology
 itself, opening on the terms in the data (`d` toggles the whole ontology):
 browse a term's parents and children, `/` to search names, synonyms and
 abbreviations, `Enter` to label a cluster with any term. In the genes pane `h`
-hides a gene and `X` hides by pattern; `x` always stops a running job. When the cluster's top
+hides a gene and `X` hides by pattern; `x` always stops a running job. `g`
+lists the run's family (the run, its annotated rounds and its trajectories)
+to switch between them without restarting. When the cluster's top
 candidate has no term, lupin offers to remember the pick in the project's
 `lupin/cl_aliases.tsv`. `?` lists every key.
 

@@ -80,7 +80,8 @@ fn draw_overlays(f: &mut Frame, app: &App, menu_area: Rect) {
         draw_prompt(f, app);
     }
     if let Some(m) = &app.menu {
-        draw_menu(f, m, menu_area);
+        // A list of long rows (the runs) takes the screen's width.
+        draw_menu(f, m, if m.wide { f.area() } else { menu_area });
     }
     draw_failed(f, app);
 }
@@ -219,10 +220,10 @@ fn draw_progress(f: &mut Frame, app: &App) {
 fn help(app: &App) -> &'static str {
     match app.focus {
         Focus::Clusters if app.in_order() => {
-            " ? keys · ↑↓ cluster · 1-9 take · k keep · ] next flagged · A annotate · r run · tab pane · q quit"
+            " ? keys · ↑↓ cluster · 1-9 take · k keep · ] next flagged · A annotate · g runs · r run · tab pane · q quit"
         }
         Focus::Clusters => {
-            " ? keys · ↑↓ cluster · 1-9 take · k keep · ] next flagged · A annotate · tab pane · s save · q quit"
+            " ? keys · ↑↓ cluster · 1-9 take · k keep · ] next flagged · A annotate · g runs · tab pane · s save · q quit"
         }
         Focus::Genes => {
             " ? keys · ↑↓ gene · a add · A add to a type · d drop · h hide · H hidden · m view · tab pane"
@@ -266,6 +267,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ),
             ("pgup/dn home/end", "a page / to either end of the pane's list"),
             ("r", "annotate: the annotation form (marker panel, output, settings; ▶ run or shift+enter runs the pass) · order view: run the trajectory; A in the clusters opens the form"),
+            ("g", "the run's family: the run, its annotated rounds and its trajectories; pick one to show it"),
             ("x", "while a job runs: stop it (asks again), from any pane"),
             ("b", "while a job runs: hide or show its progress popup"),
             ("esc", "back to the clusters from any other pane; closes a prompt, menu, form, the grid or the exports strip first"),
@@ -454,7 +456,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             .yellow(),
         );
     }
-    spans.push(Span::from(format!("· {}", app.source.display())).dim());
+    spans.push(Span::from(format!("· {}", app.shown_manifest().display())).dim());
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 

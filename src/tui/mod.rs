@@ -18,6 +18,7 @@ mod order;
 mod picker;
 mod round;
 mod runner;
+mod runs;
 mod ui;
 
 use crate::annotate::gene_rows::GeneRows;
@@ -202,6 +203,10 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         app.toggle_order(true);
         // The ordering is this view's main job: start there.
         app.focus = app::Focus::Order;
+    }
+    // A run with no annotation whose rounds sit beside it: say where they are.
+    if app.round.is_none() && runs::has_rounds(&runs::family(&loaded.file)) {
+        app.status = "this run has annotated rounds: g lists them".into();
     }
 
     let mut terminal = ratatui::init();

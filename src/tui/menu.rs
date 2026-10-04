@@ -24,6 +24,14 @@ pub enum Action {
     RunTrajectory,
     /// After a pass: leave the trajectory for later.
     NotNow,
+    /// List the run's family: the run, its rounds, its trajectories (`g`).
+    ListRuns,
+    /// Open this member of the run's family.
+    OpenRun(std::path::PathBuf),
+    /// Open it, dropping the unsaved edits.
+    OpenRunDropping(std::path::PathBuf),
+    /// Keep what is on screen.
+    Stay,
 }
 
 pub struct Choice {
@@ -38,6 +46,11 @@ pub struct Menu {
     pub question: String,
     pub choices: Vec<Choice>,
     pub sel: usize,
+    /// The status line when the menu is closed without a choice; the
+    /// trajectory's "nothing started" when unset.
+    pub on_cancel: Option<String>,
+    /// Drawn across the screen, not over the clusters column.
+    pub wide: bool,
 }
 
 /// What a key did to the menu.
@@ -55,6 +68,8 @@ impl Menu {
             question: question.into(),
             choices,
             sel: 0,
+            on_cancel: None,
+            wide: false,
         }
     }
 
