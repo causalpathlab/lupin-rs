@@ -39,32 +39,45 @@ pub enum Focus {
     Go,
 }
 
-/// The settings the screen edits, in the order it lists them.
-#[derive(Clone, Copy)]
+/// The rows of the annotation form, in the order it lists them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Setting {
+    /// The marker panel; Enter picks it in the file browser.
+    Markers,
+    /// The output prefix of passes; Enter edits it.
+    Output,
     Method,
     Knn,
     Resolution,
     NumClusters,
     NumPerm,
     Go,
-    /// The output prefix of passes; Enter edits it.
-    Output,
+    /// Start the pass (Enter here, or Shift+Enter anywhere).
+    Run,
 }
 
-pub const SETTINGS: [Setting; 7] = [
+pub const SETTINGS: [Setting; 9] = [
+    Setting::Markers,
+    Setting::Output,
     Setting::Method,
     Setting::Knn,
     Setting::Resolution,
     Setting::NumClusters,
     Setting::NumPerm,
     Setting::Go,
-    Setting::Output,
+    Setting::Run,
 ];
+
+/// Where `s` sits in [`SETTINGS`].
+pub fn setting_row(s: Setting) -> usize {
+    SETTINGS.iter().position(|&t| t == s).unwrap_or(0)
+}
 
 impl Setting {
     pub fn name(self) -> &'static str {
         match self {
+            Self::Markers => "marker panel",
+            Self::Run => "▶ run",
             Self::Output => "output",
             Self::Method => "method",
             Self::Knn => "knn",
@@ -77,7 +90,13 @@ impl Setting {
 
     pub fn value(self, a: &AnnotateCliArgs) -> String {
         match self {
-            Self::Output => a.out.to_string(),
+            Self::Markers if a.markers.is_empty() => "required: enter picks one".into(),
+            Self::Markers => file_name(Path::new(a.markers.as_ref())),
+            Self::Run => String::new(),
+            // The prefix's name: the directory is the run's, in the summary.
+            Self::Output => Path::new(a.out.as_ref())
+                .file_name()
+                .map_or_else(|| a.out.to_string(), |n| n.to_string_lossy().into_owned()),
             Self::Method => match a.method {
                 AnnotateMethod::Auto => "auto".into(),
                 AnnotateMethod::Enrichment => "enrichment".into(),
@@ -130,7 +149,22 @@ impl Setting {
             Self::NumPerm => a.num_perm = step(a.num_perm, 100, 0),
             // Named gene sets are the command line's; only `--go` toggles.
             Self::Go if a.gaf.is_none() && a.gmt.is_none() => a.go = !a.go,
-            Self::Go | Self::Output => {}
+            Self::Go | Self::Output | Self::Markers | Self::Run => {}
+        }
+    }
+
+    /// One line on what the row sets, for the form's foot.
+    pub fn explain(self) -> &'static str {
+        match self {
+            Self::Markers => "the marker panel the pass scores the clusters' cell types with; enter picks a file",
+            Self::Output => "the prefix the new round is written under; enter edits it",
+            Self::Method => "how clusters get their cell types: enrichment of the panel's markers, projection, or auto",
+            Self::Knn => "neighbours per cell in the clustering graph",
+            Self::Resolution => "Leiden resolution: higher gives more, smaller clusters",
+            Self::NumClusters => "a fixed number of clusters, or auto from the resolution",
+            Self::NumPerm => "permutations for the enrichment null: more is slower and finer",
+            Self::Go => "also score GO terms for each cluster (slower)",
+            Self::Run => "start the pass with these settings",
         }
     }
 }
@@ -191,9 +225,8 @@ pub enum Pending {
     },
     /// Move the export of `pdf` to the base name typed.
     Relocate { pdf: PathBuf },
-    /// The output prefix (the text) for passes; then start one when
-    /// `then_start`.
-    Output { then_start: bool },
+    /// The output prefix (the text) for passes.
+    Output,
     /// Run `lupin trajectory` with the output prefix typed; `replace` is the
     /// prefix whose existing manifest the user has agreed to replace.
     TrajectoryOut { replace: Option<String> },
@@ -204,7 +237,7 @@ pub enum Pending {
 /// A file the main loop picks in the file browser, which takes the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileWant {
-    /// A marker panel, to annotate a run that has no annotation.
+    /// A marker panel, for the annotation form.
     Markers,
     /// A `cell<TAB>type` labels file for a trajectory run.
     Labels,
@@ -343,7 +376,6 @@ impl Rescoring {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Armed {
     Quit,
-    Run,
     Stop,
 }
 
@@ -433,6 +465,15 @@ pub struct App {
     pub want_file: Option<FileWant>,
     /// Once the pass running now is done, run the trajectory.
     trajectory_after_pass: bool,
+    /// Once the pass running now is done, ask whether to run the
+    /// trajectory (a pass started from the order view).
+    offer_trajectory: bool,
+    /// Why the annotation form did not run, or what running it again will
+    /// do (`form_confirm`).
+    pub form_note: Option<String>,
+    /// The form's pass replaces something, and the user has been told: the
+    /// next run goes on.
+    pub form_confirm: bool,
     /// The terminal's picture protocol, asked for once.
     picker: Option<ratatui_image::picker::Picker>,
 }
@@ -489,6 +530,9 @@ impl App {
             trajectory: super::order::TrajectoryRun::default(),
             want_file: None,
             trajectory_after_pass: false,
+            offer_trajectory: false,
+            form_note: None,
+            form_confirm: false,
             picker: None,
             progress: None,
             progress_hidden: false,
@@ -551,6 +595,7 @@ impl App {
                 }
                 let then_trajectory =
                     job == Job::Pass && std::mem::take(&mut self.trajectory_after_pass);
+                let offer = job == Job::Pass && std::mem::take(&mut self.offer_trajectory);
                 // A new pass rewrote the base round: rounds made on the old
                 // one no longer apply.
                 if job == Job::Pass {
@@ -586,12 +631,15 @@ impl App {
                     } else {
                         self.status += " r in the order view runs the trajectory.";
                     }
+                } else if offer && self.prompt.is_none() {
+                    self.offer_trajectory_run();
                 }
             }
             Ok(Some(st)) => {
                 self.child = None;
                 self.progress = None;
                 self.trajectory_after_pass = false;
+                self.offer_trajectory = false;
                 self.status = format!("{} failed ({st}); see the log", job.name());
                 self.failed = Some(self.status.clone());
             }
@@ -930,43 +978,120 @@ impl App {
         });
     }
 
+    /// Open the annotation form: the marker panel, the output and the pass
+    /// settings, run from its last row. `then_trajectory` runs the
+    /// trajectory on the new labels; `offer` asks whether to.
+    pub(super) fn open_form(&mut self, then_trajectory: bool, offer: bool) {
+        if self.child.is_some() {
+            self.status = "wait for the running job, or stop it with x".into();
+            return;
+        }
+        self.trajectory_after_pass = then_trajectory;
+        self.offer_trajectory = offer;
+        (self.form_note, self.form_confirm) = (None, false);
+        // From the trajectory's view a pass writes a new round beside the
+        // run unless one was chosen.
+        if !self.out_chosen && matches!(self.tree_mode, TreeMode::Order(_)) {
+            let out = next_free_round(&self.source);
+            self.target = annotated_path(&self.source, &out);
+            self.args.out = out.into();
+        }
+        self.setting = setting_row(if self.args.markers.is_empty() {
+            Setting::Markers
+        } else {
+            Setting::Run
+        });
+        self.settings_open = true;
+    }
+
+    /// Close the form without running.
+    fn close_form(&mut self) {
+        self.settings_open = false;
+        self.trajectory_after_pass = false;
+        self.offer_trajectory = false;
+        (self.form_note, self.form_confirm) = (None, false);
+    }
+
+    /// What a pass from the form would replace or drop, in words.
+    pub(super) fn pass_effects(&self) -> Vec<String> {
+        let (_, later) = chain_rounds(&self.target);
+        let mut what = Vec::new();
+        if self.target.is_file() {
+            what.push(format!(
+                "replaces {} and its outputs",
+                file_name(&self.target)
+            ));
+        }
+        if !self.edits.is_empty() {
+            what.push(format!("drops {} unsaved edit(s)", self.edits.len()));
+        }
+        if !later.is_empty() {
+            what.push(format!("sets aside {} saved round(s)", later.len()));
+        }
+        what
+    }
+
+    /// The form's first line: what running it will do.
+    pub fn form_summary(&self) -> String {
+        let run = file_name(&self.source);
+        let out = file_name(&self.target);
+        let effects = self.pass_effects();
+        let what = if effects.is_empty() {
+            format!("a new pass on {run} writes {out} and replaces nothing")
+        } else {
+            format!("a new pass on {run} {}", effects.join(", "))
+        };
+        let then = if self.trajectory_after_pass {
+            "; then the trajectory on its labels"
+        } else if self.offer_trajectory {
+            "; then a choice to run the trajectory"
+        } else {
+            ""
+        };
+        format!("{what}{then}")
+    }
+
+    /// Run the form: a marker panel is needed, and a pass that replaces
+    /// something runs on the second asking.
+    fn run_form(&mut self) {
+        if self.child.is_some() {
+            self.form_note = Some("wait for the running job, or stop it with x".into());
+            return;
+        }
+        if self.args.markers.is_empty() {
+            self.form_confirm = false;
+            self.form_note =
+                Some("a pass needs a marker panel: enter on the first row picks one".into());
+            self.setting = setting_row(Setting::Markers);
+            return;
+        }
+        self.out_chosen = true;
+        let effects = self.pass_effects();
+        if !effects.is_empty() && !self.form_confirm {
+            self.form_confirm = true;
+            self.form_note = Some(format!(
+                "this pass {}: run again to confirm",
+                effects.join(", ")
+            ));
+            return;
+        }
+        (self.form_note, self.form_confirm) = (None, false);
+        self.start();
+        if self.child.is_some() {
+            self.settings_open = false;
+        }
+    }
+
+    /// Start a pass with the form's settings.
     fn start(&mut self) {
         if self.child.is_some() {
             return;
         }
-        // A pass needs a marker panel: pick one, and the pass goes on
-        // (set_markers starts it).
         if self.args.markers.is_empty() {
-            self.status = "a pass needs a marker panel: pick one".into();
-            self.want_file = Some(FileWant::Markers);
+            self.status = "a pass needs a marker panel: pick one in the annotation form".into();
             return;
         }
-        if !self.out_chosen {
-            self.ask_output(true);
-            return;
-        }
-        let (_, later) = chain_rounds(&self.target);
         let replaces = self.target.is_file();
-        if (replaces || !self.edits.is_empty() || !later.is_empty())
-            && self.armed != Some(Armed::Run)
-        {
-            self.armed = Some(Armed::Run);
-            let mut what = Vec::new();
-            if replaces {
-                what.push(format!(
-                    "replaces {} and its outputs",
-                    self.target.display()
-                ));
-            }
-            if !self.edits.is_empty() {
-                what.push(format!("drops {} unsaved edit(s)", self.edits.len()));
-            }
-            if !later.is_empty() {
-                what.push(format!("sets aside {} saved round(s)", later.len()));
-            }
-            self.status = format!("a new pass {}: r again to go on", what.join(", "));
-            return;
-        }
         self.push_log(format!(
             "── pass: lupin annotate {}",
             self.args.to_argv().join(" ")
@@ -986,6 +1111,7 @@ impl App {
         match self.child.as_ref().map(|c| c.2.clone()) {
             Some(Job::Pass | Job::Trajectory(_)) => {
                 self.trajectory_after_pass = false;
+                self.offer_trajectory = false;
                 if let Some((mut c, _, _)) = self.child.take() {
                     let _ = c.kill();
                     let _ = c.wait();
@@ -1357,14 +1483,7 @@ impl App {
             return;
         }
         match k.code {
-            KeyCode::Esc => {
-                if matches!(
-                    self.prompt.take().map(|p| p.pending),
-                    Some(Pending::Output { then_start: true })
-                ) {
-                    self.trajectory_after_pass = false;
-                }
-            }
+            KeyCode::Esc => self.prompt = None,
             KeyCode::Enter => {
                 let edits_clusters = matches!(
                     p.pending,
@@ -1436,14 +1555,9 @@ impl App {
                         };
                         self.reload_order();
                     }
-                    Pending::Output { then_start } => {
+                    Pending::Output => {
                         self.set_output(&reason);
-                        if then_start && self.out_chosen && self.args.out.as_ref() == reason {
-                            self.start();
-                            if self.child.is_some() {
-                                self.settings_open = false;
-                            }
-                        }
+                        self.form_confirm = false;
                     }
                     Pending::TrajectoryOut { replace } => {
                         let exists = annotated_path(&self.source, &reason).exists();
@@ -1581,7 +1695,7 @@ impl App {
         }
         let armed = self.armed.take();
         if self.settings_open {
-            return self.settings_key(k, armed);
+            return self.settings_key(k);
         }
         // The focused pane's keys come first (in the genes pane, x hides).
         if self.pane_key(k.code) {
@@ -1595,7 +1709,7 @@ impl App {
             KeyCode::Char('r') if matches!(self.tree_mode, TreeMode::Order(_)) => {
                 self.ask_trajectory_out();
             }
-            KeyCode::Char('r') => self.settings_open = true,
+            KeyCode::Char('r') => self.open_form(false, false),
             // Stops a running pass or save, asked twice.
             KeyCode::Char('x') if self.child.is_some() => {
                 if armed == Some(Armed::Stop) {
@@ -1648,35 +1762,41 @@ impl App {
         }
     }
 
-    /// Keys in the clustering and pass settings popup.
-    fn settings_key(&mut self, k: KeyEvent, armed: Option<Armed>) {
+    /// Keys in the annotation form: ↑↓ move, ←→ change a value, Enter picks
+    /// the panel, edits the output or runs (on `▶ run`); Shift+Enter runs
+    /// from any row where the terminal tells it from Enter.
+    fn settings_key(&mut self, k: KeyEvent) {
         let code = k.code;
-        // Shift+Enter runs; plain Enter runs only where the terminal cannot
-        // tell the two apart.
-        let run = code == KeyCode::Enter
-            && (k.modifiers.contains(KeyModifiers::SHIFT) || !self.shift_enter);
+        let at = SETTINGS[self.setting];
         match code {
-            KeyCode::Esc | KeyCode::Char('r' | 'q') => self.settings_open = false,
-            KeyCode::Up | KeyCode::Down => {
+            KeyCode::Esc | KeyCode::Char('r' | 'q') => self.close_form(),
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown => {
                 step(&mut self.setting, SETTINGS.len(), code);
             }
             KeyCode::Left | KeyCode::Right => {
-                SETTINGS[self.setting].adjust(&mut self.args, code == KeyCode::Right);
+                at.adjust(&mut self.args, code == KeyCode::Right);
                 self.stale = self.round.is_some();
             }
-            KeyCode::Enter if !run || matches!(SETTINGS[self.setting], Setting::Output) => {
-                if matches!(SETTINGS[self.setting], Setting::Output) {
-                    self.ask_output(false);
-                } else {
-                    self.status = "shift+enter runs the pass".into();
+            KeyCode::Enter if self.shift_enter && k.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.run_form();
+            }
+            KeyCode::Enter => match at {
+                Setting::Markers => self.want_file = Some(FileWant::Markers),
+                Setting::Output => self.ask_output(),
+                Setting::Run => self.run_form(),
+                _ => {
+                    self.status = if self.shift_enter {
+                        "shift+enter or enter on ▶ run starts the pass".into()
+                    } else {
+                        "enter on ▶ run (the last row) starts the pass".into()
+                    };
                 }
-            }
-            KeyCode::Enter => {
-                self.armed = armed;
-                self.start();
-                // Closed once running; open while a confirmation is pending.
-                self.settings_open = self.child.is_none();
-            }
+            },
             _ => {}
         }
     }
@@ -1735,6 +1855,12 @@ impl App {
                     KeyCode::Backspace | KeyCode::Delete => self.undo(),
                     KeyCode::Char(']') => self.next_flagged(),
                     KeyCode::Enter => self.jump_to_tree(),
+                    // Annotate again: the form, and from the order view a
+                    // choice to run the trajectory after.
+                    KeyCode::Char('A') => {
+                        let order = matches!(self.tree_mode, TreeMode::Order(_));
+                        self.open_form(false, order);
+                    }
                     _ => return false,
                 }
             }
@@ -1900,13 +2026,12 @@ impl App {
         v
     }
 
-    /// Ask for the output prefix of passes, prefilled with the one in use;
-    /// start a pass once given when `then_start`.
-    fn ask_output(&mut self, then_start: bool) {
+    /// Ask for the output prefix of passes, prefilled with the one in use.
+    fn ask_output(&mut self) {
         self.prompt = Some(Prompt {
             title: " output prefix for this run's rounds: ".into(),
             text: self.args.out.to_string(),
-            pending: Pending::Output { then_start },
+            pending: Pending::Output,
         });
     }
 
@@ -1972,7 +2097,7 @@ impl App {
             }
         }
         if !has_labels {
-            self.ask_labels(None);
+            self.ask_labels();
             return;
         }
         if self.ask_root() {
@@ -2006,21 +2131,15 @@ impl App {
         });
     }
 
-    /// A run with no labels: annotate it here, or take a labels file;
-    /// `note` heads the question (a pass that asks to be confirmed).
-    fn ask_labels(&mut self, note: Option<String>) {
-        let question = match note {
-            Some(n) => format!("{n}. Choose annotate again to go on."),
-            None => "This run has no cell-type labels yet, and the trajectory needs them. \
-                     Where should they come from?"
-                .into(),
-        };
+    /// A run with no labels: annotate it here, or take a labels file.
+    fn ask_labels(&mut self) {
         self.show(Menu::new(
-            question,
+            "This run has no cell-type labels yet, and the trajectory needs them. \
+             Where should they come from?",
             numbered(vec![
                 (
                     "Annotate this run now".into(),
-                    "pick a marker panel (or use the run's), run an annotation pass, then the trajectory on its labels".into(),
+                    "a form asks for the marker panel, the output and the clustering settings; the pass, then the trajectory on its labels".into(),
                     Action::Annotate,
                 ),
                 (
@@ -2151,17 +2270,10 @@ impl App {
             Action::PriorFile => self.want_file = Some(FileWant::Prior),
             Action::LabelCl => self.want_file = Some(FileWant::LabelCl),
             Action::LabelsFile => self.want_file = Some(FileWant::Labels),
-            Action::Annotate => {
-                self.annotate_then_trajectory();
-                // A pass that replaces a round asks first; the menu asks
-                // again, and annotate a second time goes on.
-                if self.armed == Some(Armed::Run) && self.child.is_none() {
-                    let note = self
-                        .status
-                        .trim_end_matches(": r again to go on")
-                        .to_string();
-                    self.ask_labels(Some(note));
-                }
+            Action::Annotate => self.open_form(true, false),
+            Action::RunTrajectory => self.ask_trajectory_out(),
+            Action::NotNow => {
+                self.status = "r runs the trajectory when you are ready".into();
             }
         }
     }
@@ -2270,22 +2382,26 @@ impl App {
             .get_or_insert_with(|| super::figure_pane::picker(graphics))
     }
 
-    /// Annotate the run, then run the trajectory on its labels: the marker
-    /// panel is the manifest's, else picked in the file browser.
-    fn annotate_then_trajectory(&mut self) {
-        self.trajectory_after_pass = true;
-        if self.args.markers.is_empty() {
-            self.want_file = Some(FileWant::Markers);
-            return;
-        }
-        self.start();
+    /// After a pass started from the order view: run the trajectory on the
+    /// new labels, or not now.
+    fn offer_trajectory_run(&mut self) {
+        self.show(Menu::new(
+            "The new round is open. Run the trajectory on its labels?",
+            numbered(vec![
+                (
+                    "Run the trajectory on the new labels".into(),
+                    "asks for the output prefix, then runs lupin trajectory".into(),
+                    Action::RunTrajectory,
+                ),
+                ("Not now".into(), "r runs it later".into(), Action::NotNow),
+            ]),
+        ));
     }
 
-    /// Take `path` as the marker panel (picked in the file browser), then go
-    /// on with the pass a missing annotation asked for.
+    /// Take `path` as the marker panel (picked in the file browser from the
+    /// annotation form, which stays open to run).
     pub fn set_markers(&mut self, path: Option<&Path>) {
         let Some(path) = path else {
-            self.trajectory_after_pass = false;
             self.status = "no marker panel picked".into();
             return;
         };
@@ -2299,13 +2415,12 @@ impl App {
                     self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
                 }
                 self.original = sets;
+                self.status = format!("marker panel: {}", file_name(path));
                 self.args.markers = p.into();
-                self.start();
+                self.form_note = None;
+                self.setting = setting_row(Setting::Run);
             }
-            Err(e) => {
-                self.trajectory_after_pass = false;
-                self.status = format!("{e:#}");
-            }
+            Err(e) => self.status = format!("{e:#}"),
         }
     }
 
@@ -2870,6 +2985,15 @@ pub(super) fn recorded_labels(loaded: &crate::manifest::run::Loaded) -> Option<S
     let rel = settings.get("labels")?.as_str()?;
     let path = crate::manifest::run::resolve(&loaded.dir, rel);
     Path::new(&path).is_file().then_some(path)
+}
+
+/// The first `{stem}.L{k}` (k = 1, 2, …) beside `source` with no round yet.
+fn next_free_round(source: &Path) -> String {
+    let stem = crate::manifest::run::derive_out_prefix(&source.to_string_lossy());
+    (1..)
+        .map(|k| format!("{stem}.L{k}"))
+        .find(|o| !annotated_path(source, o).exists())
+        .expect("some k is free")
 }
 
 /// `X.decisions.jsonl` for round `X.senna.json`: what a save hands relabel.

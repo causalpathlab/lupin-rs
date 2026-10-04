@@ -180,7 +180,7 @@ over the terms within each cluster (`{out}.cluster_term_{nes,p,q_values}.parquet
 Testing every term (some thousands of genes large) takes minutes where the
 cell types take seconds.
 GO terms need `--method enrichment`.
-In the annotate TUI (`lupin annotate` without `-o`), `GO terms` in the settings (`r`) turns `--go` on
+In the annotate TUI (`lupin annotate` without `-o`), `GO terms` in the annotation form (`r`) turns `--go` on
 for the next pass; once a round has terms, a third column lists the selected
 cluster's top terms with their effect, p and q beside its cell types (`tab`
 reaches it).

@@ -1,6 +1,6 @@
 //! Drawing the screen from an [`App`].
 
-use super::app::{App, Focus, GeneView, TreeMode, CONTESTED, SETTINGS};
+use super::app::{App, Focus, GeneView, Setting, TreeMode, CONTESTED, SETTINGS};
 use super::ontology::{OntologyView, Role, Scope};
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::celltype_tree::TreeSource;
@@ -209,7 +209,7 @@ fn draw_progress(f: &mut Frame, app: &App) {
 fn help(app: &App) -> &'static str {
     match app.focus {
         Focus::Clusters => {
-            " ? keys · ↑↓ cluster · 1-6 take · k keep · ] next flagged · tab pane · s save · q quit"
+            " ? keys · ↑↓ cluster · 1-6 take · k keep · ] next flagged · A annotate · tab pane · s save · q quit"
         }
         Focus::Genes => {
             " ? keys · ↑↓ gene · a add · A add to a type · d drop · x hide · m view · tab pane"
@@ -255,7 +255,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
                 "next / previous pane: clusters → genes → tree → precedence (order view) → GO terms (when scored)",
             ),
             ("pgup/dn home/end", "a page / to either end of the pane's list"),
-            ("r", "cluster & run: Leiden and pass settings, enter runs"),
+            ("r", "the annotation form: marker panel, output, clustering and pass settings; ▶ run (or shift+enter) runs the pass (in the order view, r runs the trajectory)"),
             (
                 "x",
                 "while a pass or save runs: stop it (asks again; in genes, x hides)",
@@ -273,6 +273,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("k", "keep its label (✓ = decided)"),
             ("u", "unassign it"),
             ("enter", "find its label in the tree"),
+            ("A", "annotate again: the annotation form; from the order view, then a choice to run the trajectory"),
             ("⌫", "undo its edit"),
             ("]", "next flagged (?) cluster not yet decided"),
         ],
@@ -438,7 +439,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::from(format!("· {} unsaved ", app.edits.len())).yellow());
     }
     if app.stale {
-        spans.push(Span::from("· settings changed, r to re-run ").yellow());
+        spans.push(
+            Span::from(if matches!(app.tree_mode, TreeMode::Order(_)) {
+                "· settings changed, A in the clusters re-annotates "
+            } else {
+                "· settings changed, r to re-run "
+            })
+            .yellow(),
+        );
     }
     spans.push(Span::from(format!("· {}", app.source.display())).dim());
     f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -505,36 +513,103 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// The clustering and pass settings, as a popup over the screen.
+/// The annotation form: what running it will do, the marker panel, the
+/// output and the pass settings, a run row, and a line on the selected row.
 fn draw_settings(f: &mut Frame, app: &App) {
-    let [area] = Layout::vertical([Constraint::Length(SETTINGS.len() as u16 + 4)])
+    let width = f.area().width.min(80);
+    let inner_w = usize::from(width.saturating_sub(2)).max(1);
+    // Word wrapping can take a row more than the characters alone.
+    let rows_of = |t: &str| {
+        let n = t.chars().count().div_ceil(inner_w).max(1) as u16;
+        n + u16::from(n > 1)
+    };
+    let summary = app.form_summary();
+    let note = app.form_note.clone().unwrap_or_default();
+    let (sum_h, note_h) = (
+        rows_of(&summary),
+        if note.is_empty() { 0 } else { rows_of(&note) },
+    );
+    let explain = SETTINGS[app.setting].explain();
+    let height = (2 + sum_h + 1 + SETTINGS.len() as u16 + 1 + note_h + rows_of(explain))
+        .min(f.area().height);
+    let [area] = Layout::vertical([Constraint::Length(height)])
         .flex(Flex::Center)
         .areas(f.area());
-    let [area] = Layout::horizontal([Constraint::Length(64)])
+    let [area] = Layout::horizontal([Constraint::Length(width)])
         .flex(Flex::Center)
         .areas(area);
-    let rows: Vec<Row> = SETTINGS
-        .iter()
-        .map(|s| Row::new([s.name().to_string(), s.value(&app.args)]))
-        .collect();
-    let note = if app.fixed_clusters {
+    let source = if app.fixed_clusters {
         "clusters from the manifest"
     } else {
         "Leiden on the cell embedding"
     };
+    let block = popup(
+        format!(" annotate · {source} "),
+        if app.shift_enter {
+            " ↑↓ row · ←→ change · enter picks or edits · shift+enter or ▶ run runs · esc close "
+        } else {
+            " ↑↓ row · ←→ change · enter picks or edits · enter on ▶ run runs · esc close "
+        },
+    );
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let [sum_a, _, table_a, _, note_a, explain_a] = Layout::vertical([
+        Constraint::Length(sum_h),
+        Constraint::Length(1),
+        Constraint::Length(SETTINGS.len() as u16),
+        Constraint::Length(1),
+        Constraint::Length(note_h),
+        Constraint::Min(1),
+    ])
+    .areas(inner);
+    let warn = Style::new().fg(Color::Yellow);
+    let bad = Style::new().fg(Color::LightRed);
+    let summary_style = if app.pass_effects().is_empty() {
+        POPUP
+    } else {
+        POPUP.patch(warn)
+    };
+    f.render_widget(
+        Paragraph::new(summary)
+            .style(summary_style)
+            .wrap(Wrap { trim: true }),
+        sum_a,
+    );
+    let rows: Vec<Row> = SETTINGS
+        .iter()
+        .map(|&s| {
+            let value = Cell::from(s.value(&app.args));
+            match s {
+                Setting::Markers if app.args.markers.is_empty() => {
+                    Row::new([Cell::from(s.name()), value.style(bad)])
+                }
+                Setting::Run => Row::new([Cell::from(s.name())])
+                    .style(Style::new().fg(Color::LightGreen).bold()),
+                _ => Row::new([Cell::from(s.name()), value]),
+            }
+        })
+        .collect();
     let mut state = TableState::default().with_selected(Some(app.setting));
     let t = Table::new(rows, [Constraint::Length(14), Constraint::Min(8)])
         .style(POPUP)
-        .block(popup(
-            format!(" cluster & run · {note} "),
-            if app.shift_enter {
-                " ↑↓ setting · ←→ change · shift+enter run · enter edits the output · esc close "
-            } else {
-                " ↑↓ setting · ←→ change · enter run (on output: edit) · esc close "
-            },
-        ))
         .row_highlight_style(highlight(true));
-    f.render_widget(Clear, area);
-    f.render_stateful_widget(t, area, &mut state);
+    f.render_stateful_widget(t, table_a, &mut state);
+    if !note.is_empty() {
+        let style = if app.form_confirm { warn } else { bad };
+        f.render_widget(
+            Paragraph::new(note)
+                .style(POPUP.patch(style))
+                .wrap(Wrap { trim: true }),
+            note_a,
+        );
+    }
+    f.render_widget(
+        Paragraph::new(explain)
+            .style(POPUP.fg(Color::Indexed(245)))
+            .wrap(Wrap { trim: true }),
+        explain_a,
+    );
 }
 
 /// `v` to `digits` places, `—` when unknown.

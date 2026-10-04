@@ -20,6 +20,10 @@ pub enum Action {
     Annotate,
     /// Pick a `cell<TAB>type` labels file.
     LabelsFile,
+    /// After a pass: run the trajectory on the new labels.
+    RunTrajectory,
+    /// After a pass: leave the trajectory for later.
+    NotNow,
 }
 
 pub struct Choice {

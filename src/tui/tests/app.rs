@@ -495,3 +495,133 @@ fn b_hides_the_running_job_and_brings_it_back() {
     press(&mut app, KeyCode::Char('b'));
     assert!(!app.progress_hidden);
 }
+
+/// An order view on `{dir}/run.senna.json` with no output chosen yet.
+fn form_app(dir: &std::path::Path) -> App {
+    let mut app = order_app(dir, &["CT1", "CT2"]);
+    app.source = dir.join("run.senna.json");
+    app.out_chosen = false;
+    app.args.markers = Default::default();
+    app
+}
+
+#[test]
+fn annotating_from_the_labels_menu_opens_the_form_on_the_panel() {
+    use super::super::app::{setting_row, Setting};
+    use super::super::menu::Action;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = form_app(dir.path());
+    app.choose(Action::Annotate);
+    assert!(app.settings_open);
+    let summary = app.form_summary();
+    assert!(summary.contains("run.L1"), "{summary}");
+    assert!(summary.contains("then the trajectory"), "{summary}");
+    assert_eq!(app.setting, setting_row(Setting::Markers));
+    assert!(app.child.is_none(), "the form starts nothing on its own");
+}
+
+#[test]
+fn a_in_the_clusters_opens_the_form_and_offers_the_trajectory_after() {
+    let dir = tempfile::tempdir().unwrap();
+    // The first round is taken: the form offers the next free one.
+    std::fs::write(dir.path().join("run.L1.senna.json"), "{}").unwrap();
+    let mut app = form_app(dir.path());
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('A'));
+    assert!(app.settings_open);
+    let summary = app.form_summary();
+    assert!(summary.contains("run.L2"), "{summary}");
+    assert!(summary.contains("replaces nothing"), "{summary}");
+    assert!(
+        summary.contains("a choice to run the trajectory"),
+        "{summary}"
+    );
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.settings_open, "esc closes without running");
+    assert!(app.child.is_none());
+}
+
+#[test]
+fn the_form_refuses_to_run_without_a_panel_and_enter_on_it_asks_for_one() {
+    use super::super::app::{setting_row, FileWant, Setting};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = form_app(dir.path());
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('A'));
+    app.setting = setting_row(Setting::Run);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.settings_open && app.child.is_none());
+    let note = app.form_note.clone().unwrap_or_default();
+    assert!(note.contains("marker panel"), "{note}");
+    assert_eq!(
+        app.setting,
+        setting_row(Setting::Markers),
+        "back on the panel row"
+    );
+    // Enter there asks for a file and starts nothing.
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.want_file, Some(FileWant::Markers));
+    assert!(app.settings_open && app.child.is_none());
+    // Enter on a value row only says how to run.
+    app.setting = setting_row(Setting::Knn);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.settings_open && app.child.is_none());
+}
+
+#[test]
+fn a_pass_that_replaces_a_round_asks_in_the_form_before_it_runs() {
+    use super::super::app::{setting_row, Setting};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = form_app(dir.path());
+    app.args.markers = "panel.tsv".into();
+    app.out_chosen = true;
+    app.args.out = dir.path().join("run.L1").to_string_lossy().into();
+    app.target = dir.path().join("run.L1.senna.json");
+    std::fs::write(&app.target, "{}").unwrap();
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('A'));
+    assert_eq!(
+        app.setting,
+        setting_row(Setting::Run),
+        "a panel: on the run row"
+    );
+    assert!(app.form_summary().contains("replaces run.L1.senna.json"));
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        app.form_confirm && app.child.is_none(),
+        "asked, not started"
+    );
+    let note = app.form_note.clone().unwrap_or_default();
+    assert!(note.contains("run again to confirm"), "{note}");
+}
+
+#[test]
+fn r_in_annotate_opens_the_same_form_without_a_trajectory() {
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('r'));
+    assert!(app.settings_open);
+    assert!(!app.form_summary().contains("trajectory"));
+    press(&mut app, KeyCode::Char('r'));
+    assert!(!app.settings_open, "r closes it again");
+}
+
+#[test]
+fn after_a_pass_from_the_order_view_the_trajectory_is_offered() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = form_app(dir.path());
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('A'));
+    press(&mut app, KeyCode::Esc);
+    // As a run from the form leaves things: flags set, the form closed.
+    press(&mut app, KeyCode::Char('A'));
+    app.settings_open = false;
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    child.wait().unwrap();
+    app.child = Some((child, Instant::now(), Job::Pass));
+    app.tick();
+    let m = menu(&app).expect("the offer");
+    assert_eq!(m.choices[0].label, "Run the trajectory on the new labels");
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.prompt.is_none() && app.status.contains("r runs"));
+}

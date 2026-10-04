@@ -60,10 +60,19 @@ the options given, asking for the output prefix (the last one used, else the
 next free `{stem}.T{k}`; an existing one is replaced only on a second
 Enter). A run that is already annotated opens with its round in the
 cluster panes. On a run with no annotation, `r` asks where the labels come
-from, in a menu that explains each choice: annotate the run first (the
-manifest's marker panel, else one picked in the file browser, then a pass,
-then the trajectory on its labels), or a `cell<TAB>type` labels file picked
-in the file browser. When nothing orders the types (no statement gives an
+from, in a menu that explains each choice: annotate the run first, or a
+`cell<TAB>type` labels file picked in the file browser. Annotating opens
+the **annotation form**, which asks for what a pass needs before it starts:
+the marker panel (the manifest's when it can be found, else required, Enter
+picks it in the file browser), the output prefix (the next free
+`{stem}.L{k}`), the method and the clustering and permutation settings. Its
+first line says what running it will do (which round it writes, or what it
+replaces, and that the trajectory follows); the last row, `▶ run`, starts
+the pass (Shift+Enter does too where the terminal tells it from Enter). A
+pass with no panel is refused with the reason in the form, and one that
+replaces a round asks to be run again there. `A` in the clusters pane
+re-annotates an annotated run through the same form; after that pass the new
+round opens and a menu offers the trajectory on its labels. When nothing orders the types (no statement gives an
 edge, and no `--root` or `--prior`), `r` asks how the order should come
 instead of starting a run that can only fail: start from one type
 (`--root`, picked from the types with their cell counts and kept for later
@@ -71,8 +80,8 @@ runs), state the order in the table, a precedence file (`--prior`), or a
 `label<TAB>CL:id` file (`--label-cl`) so the ontology's develops-from links
 order the types (asked again if they still do not). In every menu ↑↓
 choose, Enter or the option's key takes it, and esc cancels. `lupin annotate` follows the same rule: without `-o` it opens its
-TUI, which asks for the output prefix when the first pass starts (`.L1`
-offered) and lets it be changed in the settings (`r`).
+TUI, where `r` (or `A` in the clusters pane) opens the same annotation
+form.
 
 - **Labels** are the given round's `annotate.argmax`, so curation in later
   rounds (merges, relabels) is what the trajectory sees; `--labels` names
