@@ -180,29 +180,41 @@ over the terms within each cluster (`{out}.cluster_term_{nes,p,q_values}.parquet
 Testing every term (some thousands of genes large) takes minutes where the
 cell types take seconds.
 GO terms need `--method enrichment`.
-In the annotate TUI (`lupin annotate` without `-o`), `GO terms` in the settings (`r`) turns `--go` on
+In the annotate TUI (`lupin annotate` without `-o`), `GO terms` in the annotation form (`r`) turns `--go` on
 for the next pass; once a round has terms, a third column lists the selected
 cluster's top terms with their effect, p and q beside its cell types (`tab`
 reaches it).
 
 ## Cell Ontology data
 
-lupin places panel labels on the Cell Ontology using three data files, kept out
+lupin places panel labels on the Cell Ontology with two data files, kept out
 of the binary so they can be updated and amended without rebuilding:
 
 | file | what |
 |---|---|
 | `cl-basic.obo` | the Cell Ontology (downloaded once, then cached) |
 | `cl_matching.json` | matching rules: which synonyms count (abbreviations such as CT1 for its full name), plurals, word order, which ontology subsets are classes |
-| `cl_aliases.tsv` | curated `label<TAB>CL:id<TAB>note` mappings for names matching cannot settle (Azimuth's `CD14 Mono`, `Prog Mk`, …) |
 
-Each is looked up in layers, later ones winning (rules key by key, aliases row
-by row): the install's `share/lupin/` (or `LUPIN_DATA_DIR`) or the source's
-`data/`, else a cache filled by download; your `~/.config/lupin/`
-(`LUPIN_CONFIG_DIR`); a project `lupin/` folder beside the run manifest; and
-`--label-cl` / `--obo` for one run. Without a rules file, matching is literal
-(names and exact synonyms). Each pass records the files and ontology release it
-used under `annotate.settings.enrichment.cell_ontology`.
+Each is looked up in layers, later ones winning (rules key by key): the
+install's `share/lupin/` (or `LUPIN_DATA_DIR`) or the source's `data/`, else a
+cache filled by download; your `~/.config/lupin/` (`LUPIN_CONFIG_DIR`); a
+project `lupin/` folder beside the run manifest; and `--obo` for one run.
+Without a rules file, matching is literal (names and exact synonyms).
+
+Labels that matching cannot settle are mapped by **aliases**,
+`label<TAB>CL:id<TAB>note` rows, kept as data rather than code. They are
+read row by row, later layers winning:
+
+1. the shared abbreviations, `data/cl_aliases.tsv` in this repository,
+   downloaded from the release's tag and cached (`lupin data fetch`); not
+   packaged with the crate, and skipped offline when nothing is cached;
+2. the panel's sidecar, `x.cl.tsv` beside a panel `x.tsv.gz`;
+3. `cl_aliases.tsv` in `~/.config/lupin/`, then in the project's `lupin/`;
+4. `--label-cl` for one run.
+
+To change a shared row, map the label in any later layer. Each pass records
+the files and ontology release it used under
+`annotate.settings.enrichment.cell_ontology`.
 
 ```sh
 lupin data where -f run.senna.json   # which file each layer contributes
@@ -210,14 +222,18 @@ lupin data fetch                     # cache everything (GO files too), for offl
 ```
 
 In the annotate TUI, `o` in the tree pane switches to the Cell Ontology
-itself: browse a term's parents and children, `/` to search names, synonyms and
-abbreviations, `Enter` to label a cluster with any term. When the cluster's top
-candidate has no term, lupin offers to remember the pick in the project's
-`lupin/cl_aliases.tsv`. `?` lists every key.
+itself, opening on the terms in the data (`d` toggles the whole ontology):
+browse a term's parents and children, `/` to search names, synonyms and
+abbreviations, `Enter` to label a cluster with any term. In the genes pane `h`
+hides a gene and `X` hides by pattern; `x` always stops a running job. `g`
+lists the run's family (the run, its annotated rounds and its trajectories)
+to switch between them without restarting. When the cluster's top
+candidate has no term, lupin offers to remember the pick in the panel's
+sidecar (else the project's `lupin/cl_aliases.tsv`). `?` lists every key.
 
 What you curate in the TUI is kept as plain files in `lupin/` beside the run
 manifest (read after `~/.config/lupin/`, which holds the same names for every
-project): `cl_aliases.tsv` (label → CL term), `hidden_genes.txt` (genes or `*`
+project): `cl_aliases.tsv` (label → CL term, after the panel's sidecar), `hidden_genes.txt` (genes or `*`
 patterns such as `MT-*` kept out of the specific-genes view) and
 `mixed_labels.tsv` (a name for a mixed label, e.g. `CT1 mix<TAB>CT2<TAB>CT3`, given
 to a cluster the evidence cannot split).

@@ -12,6 +12,7 @@ mod export;
 mod figure_pane;
 mod gallery;
 mod genes;
+mod menu;
 mod ontology;
 mod order;
 mod picker;
@@ -119,8 +120,10 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     }
     args.from = Some(loaded.file.to_string_lossy().into());
     if args.markers.is_empty() {
-        args.markers = match loaded.manifest.annotate.markers.as_deref() {
-            Some(rel) => resolve(&loaded.dir, rel).into_boxed_str(),
+        // The recorded panel, found again if the run moved; one that is gone
+        // is picked anew.
+        args.markers = match crate::annotate_cmd::recorded_markers(&loaded) {
+            Some(p) => p.into_boxed_str(),
             // The order view needs no marker panel: open on the run's types.
             None if start_in_order => Default::default(),
             None => {
@@ -134,12 +137,19 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
             }
         };
     }
-    // Without `-o`, the run's prefix one level down is offered when the
-    // first pass starts; reopening the same run picks up its rounds.
+    // Passes start from the manifest opened. Without `-o`, annotate offers
+    // its first round (`.L1`), so reopening the run picks its rounds up
+    // again; the trajectory's view offers the next free round under it,
+    // never an existing one.
     let out_chosen = !args.out.is_empty();
     if !out_chosen {
-        let stem = run::derive_out_prefix(&loaded.file.to_string_lossy());
-        args.out = format!("{stem}.L1").into_boxed_str();
+        args.out = if start_in_order {
+            crate::manifest::family::pass_origin(&loaded.file).1
+        } else {
+            let stem = run::derive_out_prefix(&loaded.file.to_string_lossy());
+            crate::manifest::family::Tag::Round.name(&stem, 1)
+        }
+        .into_boxed_str();
     }
 
     eprintln!("lupin: placing the panel on the Cell Ontology…");
@@ -159,6 +169,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     };
     let data = crate::manifest::ontology::load(
         Some(&loaded.dir),
+        &args.markers,
         args.obo.as_deref(),
         args.label_cl.as_deref(),
         crate::manifest::data_files::Fetch::Allowed,
@@ -190,11 +201,23 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         app.open(&latest);
     }
     if start_in_order {
+        // A run that is already annotated shows its round in the cluster
+        // panes; the trajectory then reads the same labels.
+        if loaded.manifest.annotate.argmax.is_some() {
+            app.open(&loaded.file);
+        }
         app.focus = app::Focus::Tree;
         app.toggle_order(true);
+        // The ordering is this view's main job: start there.
+        app.focus = app::Focus::Order;
+    }
+    // A run with no annotation whose rounds sit beside it: say where they are.
+    if app.round.is_none() && crate::manifest::family::has_round(&loaded.file) {
+        app.status = "this run has annotated rounds: g lists them".into();
     }
 
     let mut terminal = ratatui::init();
+    app.shift_enter = push_keys();
     let result = (|| -> Result<()> {
         // Drawn when something changed: a key, a resize, the log, the status
         // or a rescoring starting or ending.
@@ -202,38 +225,49 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         while !app.quit {
             let (logged, status) = (app.log.len(), app.status.clone());
             let rescoring = app.rescoring.is_some();
+            let progress = app.child.as_ref().map(|r| r.progress.reported_at);
             app.tick();
             dirty |= app.log.len() != logged
                 || app.status != status
-                || app.rescoring.is_some() != rescoring;
+                || app.rescoring.is_some() != rescoring
+                || app.child.as_ref().map(|r| r.progress.reported_at) != progress;
             if dirty {
                 terminal.draw(|f| ui::draw(f, &app))?;
                 dirty = false;
             }
             if let Some(want) = app.want_file.take() {
                 // The file browser takes the screen, then gives it back.
-                let picked = match want {
+                if app.shift_enter {
+                    pop_keys();
+                }
+                let kind = match want {
                     app::FileWant::Markers => {
                         let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
                         let n = index.as_deref().map_or(0, GeneRows::n_genes);
-                        let want = picker::Want::Markers(index, n);
-                        picker::pick("Pick a marker panel", &loaded.dir, want)?
+                        picker::Want::Markers(index, n)
                     }
-                    app::FileWant::Labels => picker::pick(
-                        "Pick a cell<TAB>type labels file",
-                        &loaded.dir,
-                        picker::Want::Labels,
-                    )?,
+                    // Tab-separated text files.
+                    _ => picker::Want::Labels,
                 };
+                let picked = picker::pick(want.title(), &loaded.dir, kind)?;
                 // A fresh terminal redraws every cell on its first draw.
                 terminal = ratatui::init();
+                if app.shift_enter {
+                    push_keys();
+                }
                 match want {
                     app::FileWant::Markers => app.set_markers(picked.as_deref()),
                     app::FileWant::Labels => app.set_labels(picked.as_deref()),
+                    app::FileWant::Prior => app.set_prior(picked.as_deref()),
+                    app::FileWant::LabelCl => app.set_label_cl(picked.as_deref()),
                 }
                 dirty = true;
             }
-            if event::poll(Duration::from_millis(150))? {
+            // Every event already waiting is handled before the next draw, so
+            // a held key draws only where it ends.
+            let mut wait = Duration::from_millis(150);
+            while !app.quit && app.want_file.is_none() && event::poll(wait)? {
+                wait = Duration::ZERO;
                 match event::read()? {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {
                         app.key(k);
@@ -246,6 +280,9 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         }
         Ok(())
     })();
+    if app.shift_enter {
+        pop_keys();
+    }
     ratatui::restore();
     if let Some(r) = &app.round {
         eprintln!("lupin: latest round {}", r.manifest.display());
@@ -261,4 +298,24 @@ fn run_genes(loaded: &run::Loaded) -> Option<Vec<Box<str>>> {
     let rel = o.dictionary.as_deref().or(o.feature_embedding.as_deref())?;
     // Only the row-name column: the numbers are not needed.
     read_parquet_string_column(&resolve(&loaded.dir, rel), 0).ok()
+}
+
+/// Ask the terminal to tell Shift+Enter from Enter (the kitty keyboard
+/// protocol) when it can; whether it does.
+fn push_keys() -> bool {
+    use ratatui::crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+    let can = ratatui::crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    can && ratatui::crossterm::execute!(
+        std::io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )
+    .is_ok()
+}
+
+/// Undo [`push_keys`]; called only after it succeeded.
+fn pop_keys() {
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::PopKeyboardEnhancementFlags
+    );
 }

@@ -108,7 +108,7 @@ fn pass_cl_data(source: &Loaded, args: &AnnotateArgs) -> Result<ClData> {
         }
     }
     ClData::load(
-        search(),
+        search().with_panel(&args.markers),
         args.obo.as_deref(),
         args.label_cl.as_deref(),
         Fetch::Never,

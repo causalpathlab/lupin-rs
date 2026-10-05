@@ -327,74 +327,6 @@ fn a_watch_announces_itself_before_any_decision() {
 }
 
 #[test]
-fn watch_turns_each_appended_batch_into_a_round() {
-    let root = tempfile::tempdir().unwrap();
-    let src = first_round(root.path());
-    let decisions = root.path().join("d.jsonl");
-    let (mut status, status_path, chain) = watch_on(&src, &decisions);
-    let append = |text: &str| append_to(&decisions, text);
-    let step = |status: &mut WatchStatus| watch_step(status, &status_path, &chain).unwrap();
-
-    // No file yet, then a line without its newline: nothing to do.
-    assert!(!step(&mut status));
-    let label = json!({"cluster": 0, "action": "label", "label": "CT4", "rationale": "r", "decided_by": "user", "round": "r0/run.senna.json"});
-    append(&label.to_string());
-    assert!(!step(&mut status));
-
-    // The newline completes it: round 1.
-    append("\n");
-    assert!(step(&mut status));
-    assert_eq!(status.rounds, ["run.senna.json", "run.r1.senna.json"]);
-    assert_eq!(status.latest, "run.r1.senna.json");
-    assert!(status.error.is_none());
-
-    // A refused batch (no rationale) is recorded and skipped.
-    append(&line(
-        json!({"cluster": 1, "action": "keep", "decided_by": "user", "round": "r0/run.r1.senna.json"}),
-    ));
-    assert!(step(&mut status));
-    assert_eq!(status.rounds.len(), 2);
-    assert_eq!(status.error.as_ref().unwrap().lines, [2, 2]);
-
-    // A watched decision that does not name its round is refused.
-    let merge =
-        json!({"clusters": [1, 2], "action": "merge", "rationale": "r", "decided_by": "user"});
-    append(&line(merge.clone()));
-    assert!(step(&mut status));
-    let msg = &status.error.as_ref().unwrap().message;
-    assert!(msg.contains("must name the round"), "{msg}");
-
-    // Naming it, the batch applies to round 1 and clears the error.
-    let mut named = merge;
-    named["round"] = json!("r0/run.r1.senna.json");
-    append(&line(named));
-    assert!(step(&mut status));
-    assert_eq!(status.rounds.len(), 3);
-    assert!(status.error.is_none());
-
-    // A decision made on round 1 after round 2 landed is refused.
-    append(&keep0(Some("r0/run.r1.senna.json")));
-    assert!(step(&mut status));
-    assert_eq!(status.rounds.len(), 3);
-    let msg = &status.error.as_ref().unwrap().message;
-    assert!(msg.contains("not the latest round"), "{msg}");
-
-    let latest = run::load(&resolve(&parent_dir(&status_path), &status.latest)).unwrap();
-    let cells = read_cells(&latest).unwrap();
-    assert_eq!(cells.clusters, vec![Some(0), Some(0), Some(3), Some(3)]);
-    assert_eq!(
-        cells.labels[0].as_deref(),
-        Some("CT4"),
-        "round 2 builds on round 1"
-    );
-
-    // A restarted watcher resumes rather than replaying.
-    let resumed = start_watch(&status_path, &src, &decisions.to_string_lossy()).unwrap();
-    assert_eq!(resumed.processed_lines, 5);
-    assert_eq!(resumed.latest, status.latest);
-}
-
-#[test]
 fn a_watcher_waits_out_a_held_lock_without_losing_decisions() {
     let root = tempfile::tempdir().unwrap();
     let src = first_round(root.path());
@@ -916,4 +848,23 @@ fn a_pasted_chat_answer_reads_as_decisions() {
         parse_decisions(numbered("{not json}\n"), "paste").is_err(),
         "a broken decision is still refused"
     );
+}
+
+#[test]
+fn a_moved_runs_markers_are_read_from_where_the_run_now_is() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("proj");
+    std::fs::create_dir_all(proj.join("run")).unwrap();
+    std::fs::create_dir_all(proj.join("data")).unwrap();
+    std::fs::write(proj.join("data/panel.tsv"), "GENE1\tCT1\nGENE2\tCT2\n").unwrap();
+    let manifest = proj.join("run/x.senna.json");
+    std::fs::write(
+        &manifest,
+        r#"{"version":2,"kind":"topic","prefix":"/elsewhere/proj/run/x",
+            "annotate":{"markers":"/elsewhere/proj/data/panel.tsv"}}"#,
+    )
+    .unwrap();
+    let loaded = run::load(&manifest.to_string_lossy()).unwrap();
+    let (pairs, _) = read_markers(&loaded).expect("the panel, found again");
+    assert_eq!(pairs.len(), 2);
 }

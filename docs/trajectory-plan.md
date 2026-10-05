@@ -58,12 +58,47 @@ opens the TUI on the order view: a manifest is picked in its file browser
 when `-f` is not given, and `r` runs the trajectory as a child process with
 the options given, asking for the output prefix (the last one used, else the
 next free `{stem}.T{k}`; an existing one is replaced only on a second
-Enter). On a run with no annotation, `r` offers a `cell<TAB>type`
-labels file picked in the file browser (Enter or `l`), or to annotate the
-run first (`a`): the manifest's marker panel, else one picked in the file
-browser, then a pass, then the trajectory on its labels. `lupin annotate` follows the same rule: without `-o` it opens its
-TUI, which asks for the output prefix when the first pass starts (`.L1`
-offered) and lets it be changed in the settings (`r`).
+Enter). A run that is already annotated opens with its round in the
+cluster panes. On a run with no annotation, `r` asks where the labels come
+from, in a menu that explains each choice: annotate the run first, or a
+`cell<TAB>type` labels file picked in the file browser. Annotating opens
+the **annotation form**, which asks for what a pass needs before it starts:
+the marker panel (the manifest's when it can be found, else required, Enter
+picks it in the file browser), the output prefix (the next free
+`{stem}.L{k}`), the method and the clustering and permutation settings. Its
+first line says what running it will do (which round it writes, or what it
+replaces, and that the trajectory follows); the last row, `▶ run`, starts
+the pass (Shift+Enter does too where the terminal tells it from Enter). A
+pass with no panel is refused with the reason in the form, and one that
+replaces a round asks to be run again there. `A` in the clusters pane
+re-annotates an annotated run through the same form; after that pass the new
+round opens and a menu offers the trajectory on its labels. When nothing orders the types (no statement gives an
+edge, and no `--root` or `--prior`), `r` asks how the order should come
+instead of starting a run that can only fail: start from one type
+(`--root`, picked from the types with their cell counts and kept for later
+runs), state the order in the table, a precedence file (`--prior`), or a
+`label<TAB>CL:id` file (`--label-cl`) so the ontology's develops-from links
+order the types (asked again if they still do not). In every menu ↑↓
+choose, Enter or the option's key takes it, and esc cancels.
+
+`g`, from any pane, lists the run's family: the run, the annotation rounds
+made from it (`X.L0`, `X.L0.L1`, `X.r2`, …) and the trajectories made from
+those (`X.T1`, …, and any other manifest beside it whose `annotate.source`
+names one of them), each with what it holds and when it changed, the one on
+screen marked ●. Picking a round shows its clusters and gives the order view
+its labels; picking a trajectory shows its figures with the round it was
+made from; picking the run clears the round. Unsaved edits are asked about
+first. The family may mix senna, lupin and pinto manifests (a pinto run
+and its `.lupin.json` rounds list together).
+
+Passes start from the manifest shown (the run, a round or a trajectory's
+copy, as opened or picked with `g`), whichever way it was reached; the
+trajectory's view offers the next free `.L{k}` under it as the output, never
+an existing round. A run with no annotation whose rounds sit beside it says
+so on opening, and the no-labels menu offers to open one. `lupin annotate`
+follows the same rule: without `-o` it opens its TUI, where `r` (or `A` in
+the clusters pane) opens the same annotation form, offering `.L1` so that
+reopening a run picks its rounds up again.
 
 - **Labels** are the given round's `annotate.argmax`, so curation in later
   rounds (merges, relabels) is what the trajectory sees; `--labels` names
@@ -99,11 +134,11 @@ run's types.
    ancestor of B (CL coverage is sparse: CT3 may have no `develops_from` of
    its own). Inherited statements are tagged `cl-inherited`.
 2. **`precedence.tsv`**, `from<TAB>to<TAB>relation<TAB>note` with `relation`
-   `precedes` or `unrelated`. It is a data file like `cl_aliases.tsv`, found
+   `precedes` or `unrelated`. It is a data file like the project's `cl_aliases.tsv`, found
    along the same search path: the user's config, then the project's `lupin/`
    directory beside the run, then a file named by `--prior` for this run only
    (a named file that does not exist is an error, not a warning). The TUI
-   (§6) appends to the project layer, as remembered aliases are.
+   (§6) appends to the project layer.
 
 **Combining.** Statements are about a pair of types. A later layer's
 statement about {A, B} replaces every earlier statement about that pair,
@@ -234,11 +269,30 @@ compared directly:
 
 ## 6. Supervising the prior in the TUI
 
-`lupin trajectory` (also `t` in the annotate TUI's tree pane) adds an
-**order view** in the tree pane: the run's types with their cell counts, the
-direct edges with their sources, and, once a check has run, each edge's
-verdict. Mark type A, mark type B, then `>` for "A precedes B" or `-` for
-"unrelated" (`x` already stops a running pass anywhere in the TUI); a short
+`lupin trajectory` (also `t` or `T` in the annotate TUI's tree pane; `T`
+leaves it again) adds an **order view** in three columns: the clusters with
+their genes and cell-type p-values, the ordering (or the figures) in the
+widest middle, and the run's types on the Cell Ontology,
+drawn as annotate's tree pane draws the panel (how many types map to terms
+and how many develops-from links join them above it, the selected type's
+place in the ontology, or that it has none, below), and the precedence table:
+the run's types with their cell counts, the direct edges with their sources,
+and, once a check has run, each edge's verdict. Tab goes clusters, genes,
+ordering, ontology; selecting a type in the ordering or the ontology selects
+it in the other, and `o` in the ontology column opens the Cell Ontology
+there. Below 150 columns the ordering and the ontology share the middle,
+showing whichever has the focus. Esc goes back to the clusters, closing the
+exports strip, then the grid, first.
+
+The Cell Ontology view (`o`, here and in annotate's tree pane) opens on the
+terms **in the data**: the terms the labels sit on (the order view's types,
+else the round's labels, else the panel's types), under their lowest common
+ancestor, each marked with its types and cells; a chain of terms that only
+leads on to one term is folded into that term's line (→ opens it, ← folds
+it). `d` switches to the whole ontology around the same term and back. A
+search (`/`) lists the matches in the data's tree, or in the whole ontology
+when none are there, and says so. Mark type A, mark type B, then `>` for "A precedes B" or `-` for
+"unrelated" (`x` stops a running job from any pane); a short
 reason is asked for, as for other edits. Enter on the reason writes the
 statement to the project layer's `precedence.tsv` at once (no save step);
 annotation rounds (`decisions.jsonl`) are not touched. A new statement about a
@@ -249,24 +303,52 @@ cycle, or when it says `unrelated` about a pair the rest of the prior orders.
 
 **Figures and what was exported.**
 
-The figure panels take the order table's place in the tree pane while they
-are shown (`v` shows them and steps through them, `V` brings the table back);
-space, `>` and `-` do nothing then, since types are marked in the table. The
+The figure panels take the order table's place in the middle column while
+they are shown (`v` shows them and steps through them, `V` brings the table
+back). Their keys act while the ordering column has the focus; the ontology
+column keeps its own. With the figures shown, space and `>` only say that
+types are marked in the table, `-` zooms out, and `t` restyles the labels
+(with the table shown, `t` says so and `T` leaves the order view). `f` and
+`R` belong to the figures too. The
 panels are drawn from the run's trajectory outputs, the same set the bench summary shows:
 
-- **Layout**: the run's layout coloured by pseudotime, the prior's direct
-  edges as arrows between type medians (supported edges solid, the rest
-  faded). senna's PHATE (`senna layout phate`, Moon et al. 2019, in
-  legume-numeric's `matrix::layout`) is drawn when the run has one
-  (`layout.methods.phate`), being made to show trajectories; else the run's
-  current layout. lupin reads the layout and never writes one.
-- **Diffusion map**: cells on two diffusion components (`,`/`.` change the
-  pair), coloured by pseudotime.
+- **Scatter**: the cells on one of the run's layouts, with the prior's
+  direct edges as arrows between type medians (supported edges solid, the
+  rest faded), or on two diffusion components (`,`/`.` step the y axis, `[`/`]` the x axis).
+  `m` steps through the coordinates: senna's PHATE first when the run has
+  one (`senna layout phate`, Moon et al. 2019, in legume-numeric's
+  `matrix::layout`; `layout.methods.phate`), being made to show
+  trajectories, then the current layout, then the other layouts the
+  manifest records, then the diffusion map. lupin reads layouts and never
+  writes one. As in senna view, `t` steps the cell-type labels at each
+  type's median through small, medium (the default), large, largest and
+  off, and `c` colours the cells by pseudotime, cell type, lineage (a
+  type on one lineage only) or component, the last two only when there are
+  several; cells without a value are grey, and a categorical colouring has
+  a legend (no more than half the figure high, none in a thumbnail). Every
+  group gets its own colour: legume-plot's palette while it lasts, then
+  hues a golden angle apart. Unassigned cells get no label.
+  `+`/`=` and `-`/`_` zoom the scatter in and out about its centre in
+  steps of ×√2 (up to ×64, and back out to whole exactly), the
+  arrows pan it (with the exports strip open, ↑ and ↓ move in the strip
+  and ← → still pan), and `0` shows it whole again, as in senna view. The figure is
+  drawn again from the data at the part on screen, so points and labels stay
+  sharp; a label sits at the median of its type's cells on screen, and a
+  type with none there has no label. A new layout (`m`), diffusion pair or
+  figure (`v`, or opened from the grid) starts whole. The order and
+  connectivity panels do not zoom.
 - **Order by type**: median pseudotime and middle half per type, in order of
   the median.
 - **Connectivity**: PAGA connectivity between the node types as a Hinton
   diagram (box area ∝ connectivity; legume-plot's `render_hinton`), ordered by
   pseudotime, pairs the prior orders in ink.
+- **All figures** (`w`, as senna view's grid): each layout the run has, the
+  diffusion map at the pair last shown, the order and the connectivity as
+  thumbnails, drawn whole with the labels and colouring on screen. The
+  arrows choose one, Enter, space or its number (1-9) opens it in the pane, `p` exports it as its tile
+  shows it, `f` opens the exports strip, `V` goes back to the order table,
+  and esc or `w` closes the grid on the figure it came from. `t` and `c`
+  also work there.
 - The direct prior edges with their connectivity, order agreement and verdict
   are in the order view's table, so an edit there shows its effect after the
   next run.
@@ -277,8 +359,10 @@ Images are drawn as senna view draws them, so both viewers behave alike:
 back to half-blocks.
 
 **Export.** `p` on a panel writes it through legume-plot's `write_figure` as
-SVG and PDF, 7 in wide at 200 dpi. An export is a set of files sharing one
-base name, handled as a unit: the name `{out}.trajectory.{panel}` moves to
+SVG and PDF, 7 in wide at 200 dpi, with the labels, colouring, layout and
+zoom on screen; the log notes a zoomed export. An export is a set of files sharing one base name, handled as a
+unit: the name `{out}.trajectory.{panel}` (`layout_phate`, `layout_umap`, …
+for a layout) moves to
 `-2`, `-3` … while any file of the set exists.
 
 **What was exported.** Each export is listed in `./.lupin-view/saved.json` in
@@ -289,10 +373,10 @@ renamed into place, and a list that cannot be read is set aside as
 `saved.json.bad` and reported, never treated as empty. Each entry records the
 panel, the manifest it came from, and each file's absolute path, size,
 modification time and content hash. A strip in the TUI (`f`) shows the list;
-an entry can be moved (`m`; nothing is replaced, and a failed move is undone),
+an entry can be moved (`M`; nothing is replaced, and a failed move is undone),
 removed from the list (`d`), or removed with its files (`D`, which deletes
 only on a second `D` on the same export). Exporting (`p`), deleting (`D`) and
-moving (`m`) act on the log only when it and its directory are this user's
+moving (`M`) act on the log only when it and its directory are this user's
 alone: writable by no one else and not links (lupin creates them so); saving
 over a log others can write is refused. Files are moved or deleted only when
 they are still the export that was logged: beside the PDF, with the same base

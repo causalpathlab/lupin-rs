@@ -305,10 +305,15 @@ pub fn write_summary(loaded: &mut Loaded, out_prefix: &str) -> Result<BTreeMap<C
 fn read_markers(loaded: &Loaded) -> Result<(Vec<(String, String)>, MarkerHistory)> {
     let a = &loaded.manifest.annotate;
     let pairs = match a.markers.as_deref().filter(|m| !m.is_empty()) {
-        Some(rel) => crate::annotate::markers::read_marker_pairs(&resolve(&loaded.dir, rel))?
-            .into_iter()
-            .map(|(g, t)| (g.into_string(), t.into_string()))
-            .collect(),
+        // Found again if the run moved; else where it was, for the error.
+        Some(rel) => crate::annotate::markers::read_marker_pairs(
+            &loaded
+                .recorded(rel)
+                .unwrap_or_else(|| resolve(&loaded.dir, rel)),
+        )?
+        .into_iter()
+        .map(|(g, t)| (g.into_string(), t.into_string()))
+        .collect(),
         None => Vec::new(),
     };
     let history = match a.marker_history.as_deref() {
@@ -524,7 +529,7 @@ impl Chain {
     }
 
     fn round_prefix(&self, k: usize) -> String {
-        format!("{}.r{k}", self.prefix)
+        super::family::Tag::Chain.name(&self.prefix, k)
     }
 
     /// Every round manifest on disk after the base, in order. Found by
@@ -629,12 +634,7 @@ fn ensure_latest(made_on: &Path, latest: &Path) -> Result<()> {
 
 /// `X.rK` as `(X, K)`.
 fn split_round(stem: &str) -> Option<(&str, usize)> {
-    let (prefix, k) = stem.rsplit_once(".r")?;
-    let k = k
-        .parse()
-        .ok()
-        .filter(|_| k.bytes().all(|b| b.is_ascii_digit()))?;
-    Some((prefix, k))
+    super::family::Tag::Chain.parse(stem)
 }
 
 /// The chain's lock, released when dropped (the OS releases it too if the

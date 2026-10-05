@@ -1,6 +1,6 @@
 //! How panel labels meet the Cell Ontology, as data: the matching rules
-//! (`cl_matching.json`) and the curated label → term aliases
-//! (`cl_aliases.tsv`). Nothing here is decided in code: without a rules file
+//! (`cl_matching.json`) and the label → term aliases a marker panel carries
+//! (its sidecar, or a `cl_aliases.tsv`). Nothing here is decided in code: without a rules file
 //! matching is literal (a term's name or exact synonym, as written), and every
 //! heuristic (plurals, word order, abbreviations) comes from a file. Finding
 //! and layering the files is [`crate::manifest::data_files`]'s job.

@@ -29,7 +29,7 @@ pub struct ClTerms {
     /// Normalised name or counted synonym → term ids.
     by_name: HashMap<String, BTreeSet<String>>,
     /// The same names by [`word_bag`], for labels whose words come in
-    /// another order (`B cells memory` for `memory B cell`).
+    /// another order (`CT1 cells memory` for `memory CT1 cell`).
     by_words: HashMap<String, BTreeSet<String>>,
     name_of: HashMap<String, String>,
     parents: HashMap<String, Vec<String>>,
@@ -234,6 +234,19 @@ impl ClTerms {
         self
     }
 
+    /// Layer an alias table (`label<TAB>CL:id` rows, read from `source`)
+    /// over the aliases, as a run's `--label-cl` is; how many rows it took.
+    pub fn add_aliases(&mut self, text: &str, source: &str) -> usize {
+        self.aliases.add_tsv(text, source)
+    }
+
+    /// How far below the ontology's top `id` is: its ancestors, itself
+    /// included.
+    #[must_use]
+    pub fn depth(&self, id: &str) -> usize {
+        self.ancestors_or_self(id).len()
+    }
+
     /// Whether `id` is a term of the ontology.
     #[must_use]
     pub fn has(&self, id: &str) -> bool {
@@ -396,10 +409,7 @@ impl TypeTree {
                 *sharers.entry(t.as_str()).or_default() += 1;
             }
         }
-        let depth: HashMap<&str, usize> = sharers
-            .keys()
-            .map(|t| (*t, terms.ancestors_or_self(t).len()))
-            .collect();
+        let depth: HashMap<&str, usize> = sharers.keys().map(|t| (*t, terms.depth(t))).collect();
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (label, a) in &ancestry {
             let node = a

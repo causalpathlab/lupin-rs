@@ -5,6 +5,8 @@
 //! or none), each with a reason. Genes can be added to a cell type's
 //! markers. Saving writes the edits as the next round.
 
+use super::menu::{numbered, Action, Menu, Outcome};
+use super::ontology::ViewKey;
 use super::round::{decisions, Edit, RoundView};
 use super::runner;
 use crate::annotate::markers::label_key;
@@ -19,48 +21,85 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Log lines kept for the log pane.
 const LOG_KEEP: usize = 1000;
 /// A cluster whose top candidate has less of its evidence than this is flagged.
 pub const CONTESTED: f32 = 0.5;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// The annotation form's state: the selected row, and why it did not run
+/// or what running it again will do (`confirm`: the user has been told the
+/// pass replaces something, and the next run goes on).
+#[derive(Debug, Default)]
+pub struct Form {
+    pub row: usize,
+    pub note: Option<String>,
+    pub confirm: bool,
+}
+
+/// What follows a pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AfterPass {
+    #[default]
+    Nothing,
+    /// Run the trajectory on the new labels.
+    Run,
+    /// Ask whether to (a pass started from the order view).
+    Offer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Focus {
     Clusters,
     Genes,
     Tree,
+    /// The order view's precedence table (the tree pane then shows the
+    /// ontology beside it).
+    Order,
     /// The selected cluster's GO terms, when the round scored them.
     Go,
 }
 
-/// The settings the screen edits, in the order it lists them.
-#[derive(Clone, Copy)]
+/// The rows of the annotation form, in the order it lists them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Setting {
+    /// The marker panel; Enter picks it in the file browser.
+    Markers,
+    /// The output prefix of passes; Enter edits it.
+    Output,
     Method,
     Knn,
     Resolution,
     NumClusters,
     NumPerm,
     Go,
-    /// The output prefix of passes; Enter edits it.
-    Output,
+    /// Start the pass (Enter here, or Shift+Enter anywhere).
+    Run,
 }
 
-pub const SETTINGS: [Setting; 7] = [
+pub const SETTINGS: [Setting; 9] = [
+    Setting::Markers,
+    Setting::Output,
     Setting::Method,
     Setting::Knn,
     Setting::Resolution,
     Setting::NumClusters,
     Setting::NumPerm,
     Setting::Go,
-    Setting::Output,
+    Setting::Run,
 ];
+
+/// Where `s` sits in [`SETTINGS`].
+pub fn setting_row(s: Setting) -> usize {
+    SETTINGS.iter().position(|&t| t == s).unwrap_or(0)
+}
 
 impl Setting {
     pub fn name(self) -> &'static str {
         match self {
+            Self::Markers => "marker panel",
+            Self::Run => "▶ run",
             Self::Output => "output",
             Self::Method => "method",
             Self::Knn => "knn",
@@ -73,7 +112,13 @@ impl Setting {
 
     pub fn value(self, a: &AnnotateCliArgs) -> String {
         match self {
-            Self::Output => a.out.to_string(),
+            Self::Markers if a.markers.is_empty() => "required: enter picks one".into(),
+            Self::Markers => file_name(Path::new(a.markers.as_ref())),
+            Self::Run => String::new(),
+            // The prefix's name: the directory is the run's, in the summary.
+            Self::Output => Path::new(a.out.as_ref())
+                .file_name()
+                .map_or_else(|| a.out.to_string(), |n| n.to_string_lossy().into_owned()),
             Self::Method => match a.method {
                 AnnotateMethod::Auto => "auto".into(),
                 AnnotateMethod::Enrichment => "enrichment".into(),
@@ -126,7 +171,22 @@ impl Setting {
             Self::NumPerm => a.num_perm = step(a.num_perm, 100, 0),
             // Named gene sets are the command line's; only `--go` toggles.
             Self::Go if a.gaf.is_none() && a.gmt.is_none() => a.go = !a.go,
-            Self::Go | Self::Output => {}
+            Self::Go | Self::Output | Self::Markers | Self::Run => {}
+        }
+    }
+
+    /// One line on what the row sets, for the form's foot.
+    pub fn explain(self) -> &'static str {
+        match self {
+            Self::Markers => "the marker panel the pass scores the clusters' cell types with; enter picks a file",
+            Self::Output => "the prefix the new round is written under; enter edits it",
+            Self::Method => "how clusters get their cell types: enrichment of the panel's markers, projection, or auto",
+            Self::Knn => "neighbours per cell in the clustering graph",
+            Self::Resolution => "Leiden resolution: higher gives more, smaller clusters",
+            Self::NumClusters => "a fixed number of clusters, or auto from the resolution",
+            Self::NumPerm => "permutations for the enrichment null: more is slower and finer",
+            Self::Go => "also score GO terms for each cluster (slower)",
+            Self::Run => "start the pass with these settings",
         }
     }
 }
@@ -138,7 +198,7 @@ pub enum TreeMode {
     /// The Cell Ontology around a term.
     Ontology(super::ontology::OntologyView),
     /// Which cell types precede which: the prior `lupin trajectory` builds.
-    Order(super::order::OrderView),
+    Order(Box<super::order::OrderView>),
 }
 
 /// What the genes pane lists.
@@ -187,24 +247,36 @@ pub enum Pending {
     },
     /// Move the export of `pdf` to the base name typed.
     Relocate { pdf: PathBuf },
-    /// The output prefix (the text) for passes; then start one when
-    /// `then_start`.
-    Output { then_start: bool },
+    /// The output prefix (the text) for passes.
+    Output,
     /// Run `lupin trajectory` with the output prefix typed; `replace` is the
     /// prefix whose existing manifest the user has agreed to replace.
     TrajectoryOut { replace: Option<String> },
-    /// A run with no annotation: pick a `cell<TAB>type` labels file (Enter
-    /// or `l`), or annotate it here (`a`). Takes keys, not text.
-    TrajectoryLabels,
 }
 
 /// A file the main loop picks in the file browser, which takes the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileWant {
-    /// A marker panel, to annotate a run that has no annotation.
+    /// A marker panel, for the annotation form.
     Markers,
     /// A `cell<TAB>type` labels file for a trajectory run.
     Labels,
+    /// A precedence file for a trajectory run (`--prior`).
+    Prior,
+    /// A `label<TAB>CL:id` file mapping the labels to Cell Ontology terms.
+    LabelCl,
+}
+
+impl FileWant {
+    /// The file browser's title.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Markers => "Pick a marker panel",
+            Self::Labels => "Pick a cell<TAB>type labels file",
+            Self::Prior => "Pick a precedence file (from<TAB>to<TAB>precedes|unrelated)",
+            Self::LabelCl => "Pick a label<TAB>CL:id file",
+        }
+    }
 }
 
 /// A one-line prompt for a decision's reason, prefilled.
@@ -212,6 +284,22 @@ pub struct Prompt {
     pub title: String,
     pub text: String,
     pub pending: Pending,
+}
+
+/// A running job's progress: the latest `@progress` line and log line.
+#[derive(Default, Clone)]
+pub struct JobProgress {
+    pub report: Option<crate::progress::Report>,
+    /// The job's time when `report` came.
+    pub reported_at: Duration,
+}
+
+impl JobProgress {
+    /// The estimate `elapsed` into the job.
+    pub fn estimate(&self, elapsed: Duration) -> Option<crate::progress::Estimate> {
+        let r = self.report.as_ref()?;
+        Some(crate::progress::estimate(r, self.reported_at, elapsed))
+    }
 }
 
 /// What a child process is doing.
@@ -255,11 +343,37 @@ impl Rescoring {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Armed {
     Quit,
-    Run,
     Stop,
 }
 
+/// A job the TUI started, with the progress it reports.
+pub struct Running {
+    pub child: Child,
+    pub started: Instant,
+    pub job: Job,
+    /// As its `@progress` lines report it.
+    pub progress: JobProgress,
+}
+
+impl Running {
+    pub fn new(child: Child, job: Job) -> Self {
+        Self {
+            child,
+            started: Instant::now(),
+            job,
+            progress: JobProgress::default(),
+        }
+    }
+}
+
 pub struct App {
+    /// The progress popup is hidden (`b`); the status line keeps the gist.
+    pub progress_hidden: bool,
+    /// A job that failed: its popup stays, red, until a key.
+    pub failed: Option<String>,
+    /// The terminal tells Shift+Enter from Enter (the kitty keyboard
+    /// protocol): Shift+Enter then runs a pass and Enter only edits.
+    pub shift_enter: bool,
     pub args: AnnotateCliArgs,
     /// The run manifest passes start from.
     pub source: PathBuf,
@@ -298,16 +412,19 @@ pub struct App {
     /// Mixed labels by name.
     pub mixed: super::ontology::Mixed,
     pub tree_sel: usize,
-    pub setting: usize,
-    /// The clustering and pass settings popup is open.
-    pub settings_open: bool,
+    /// The order view's types on the Cell Ontology, drawn beside the
+    /// precedence table as the tree pane draws the panel.
+    /// The annotation form, while it is open.
+    pub form: Option<Form>,
     /// The key guide is open.
     pub help_open: bool,
     pub prompt: Option<Prompt>,
+    /// A choice among options (see [`super::menu`]), which takes keys.
+    pub menu: Option<super::menu::Menu>,
     pub log: Vec<String>,
     log_tx: Sender<String>,
     log_rx: Receiver<String>,
-    pub child: Option<(Child, Instant, Job)>,
+    pub child: Option<Running>,
     /// A preview rescoring the round against the marker edits, running.
     pub rescoring: Option<Rescoring>,
     /// The marker edits the scores on screen reflect (none: the round's own).
@@ -328,8 +445,8 @@ pub struct App {
     pub trajectory: super::order::TrajectoryRun,
     /// A file to pick in the file browser, which the main loop opens.
     pub want_file: Option<FileWant>,
-    /// Once the pass running now is done, run the trajectory.
-    trajectory_after_pass: bool,
+    /// What follows the pass running now (or the form about to start one).
+    after_pass: AfterPass,
     /// The terminal's picture protocol, asked for once.
     picker: Option<ratatui_image::picker::Picker>,
 }
@@ -362,10 +479,10 @@ impl App {
             tree_marked: Vec::new(),
             mixed: super::ontology::Mixed::default(),
             tree_sel: 0,
-            setting: 0,
-            settings_open: false,
+            form: None,
             help_open: false,
             prompt: None,
+            menu: None,
             log: Vec::new(),
             log_tx,
             log_rx,
@@ -377,12 +494,15 @@ impl App {
             stale: false,
             armed: None,
             quit: false,
+            shift_enter: false,
             figures: None,
             out_chosen: true,
             trajectory: super::order::TrajectoryRun::default(),
             want_file: None,
-            trajectory_after_pass: false,
+            after_pass: AfterPass::Nothing,
             picker: None,
+            progress_hidden: false,
+            failed: None,
         }
     }
 
@@ -396,26 +516,49 @@ impl App {
     /// Take in finished work: new log lines, and a pass that has ended.
     pub fn tick(&mut self) {
         while let Ok(line) = self.log_rx.try_recv() {
+            // A running job's progress lines feed the popup, not the log.
+            if let Some(report) = crate::progress::parse(&line) {
+                if let Some(r) = &mut self.child {
+                    let at = r.started.elapsed();
+                    (r.progress.report, r.progress.reported_at) = (Some(report), at);
+                }
+                continue;
+            }
             self.push_log(line);
         }
         for line in super::drain_own_log() {
             self.push_log(line);
         }
         self.keep_scores_current();
-        let Some((child, started, job)) = &mut self.child else {
+        let Some(r) = &mut self.child else {
             return;
         };
-        let (secs, job) = (started.elapsed().as_secs(), job.clone());
-        match child.try_wait() {
-            Ok(None) => self.status = format!("{}… {secs}s  (x: stop)", job.name()),
+        let (secs, job) = (r.started.elapsed().as_secs(), r.job.clone());
+        match r.child.try_wait() {
+            Ok(None) => {
+                let elapsed = r.started.elapsed();
+                self.status = match r.progress.estimate(elapsed) {
+                    Some(e) if self.progress_hidden => format!(
+                        "{} {:.0}% · {} · b shows  (x: stop)",
+                        job.name(),
+                        100.0 * e.fraction,
+                        crate::progress::eta_text(&e)
+                    ),
+                    _ => format!("{}… {secs}s  (x: stop)", job.name()),
+                };
+            }
             Ok(Some(st)) if st.success() => {
                 self.child = None;
                 if let Job::Trajectory(m) = job {
                     self.trajectory_done(&m, secs);
                     return;
                 }
-                let then_trajectory =
-                    job == Job::Pass && std::mem::take(&mut self.trajectory_after_pass);
+                let after = std::mem::take(&mut self.after_pass);
+                let after = if job == Job::Pass {
+                    after
+                } else {
+                    AfterPass::Nothing
+                };
                 // A new pass rewrote the base round: rounds made on the old
                 // one no longer apply.
                 if job == Job::Pass {
@@ -431,7 +574,7 @@ impl App {
                     _ => Vec::new(),
                 };
                 self.open(&latest);
-                if matches!(self.tree_mode, TreeMode::Order(_)) {
+                if self.in_order() {
                     self.reload_order();
                 }
                 let kept = later.len();
@@ -445,25 +588,37 @@ impl App {
                     _ => format!("pass done in {secs}s"),
                 };
                 self.status = format!("{done}. {}", self.status);
-                if then_trajectory {
-                    if self.prompt.is_none() {
-                        self.ask_trajectory_out();
-                    } else {
-                        self.status += " r in the order view runs the trajectory.";
-                    }
+                match after {
+                    AfterPass::Run if !self.asking() => self.ask_trajectory_out(),
+                    AfterPass::Run => self.status += " r in the order view runs the trajectory.",
+                    AfterPass::Offer if !self.asking() => self.offer_trajectory_run(),
+                    _ => {}
                 }
             }
             Ok(Some(st)) => {
                 self.child = None;
-                self.trajectory_after_pass = false;
+                self.after_pass = AfterPass::Nothing;
                 self.status = format!("{} failed ({st}); see the log", job.name());
+                self.failed = Some(self.status.clone());
             }
             Err(e) => {
                 self.child = None;
-                self.trajectory_after_pass = false;
+                self.after_pass = AfterPass::Nothing;
                 self.status = format!("lost the {}: {e}", job.name());
+                self.failed = Some(self.status.clone());
             }
         }
+    }
+
+    /// The running job for its popup: what it is and how long it has run.
+    pub fn running_job(&self) -> Option<(String, std::time::Duration)> {
+        let Running { started, job, .. } = self.child.as_ref()?;
+        let what = match job {
+            Job::Pass => format!("pass → {}", file_name(&self.target)),
+            Job::Save(n) => format!("saving {n} edit(s)"),
+            Job::Trajectory(m) => format!("trajectory → {}", file_name(m)),
+        };
+        Some((what, started.elapsed()))
     }
 
     /// Show round `manifest`, dropping unsaved edits.
@@ -476,19 +631,25 @@ impl App {
                     file_name(manifest),
                     r.clusters.len()
                 );
-                self.stop_rescoring();
-                self.recorded = None;
-                self.scored_for.clear();
-                self.round = Some(r);
-                self.edits.clear();
-                self.marked.clear();
-                self.tree_marked.clear();
-                self.gene_sel = 0;
-                self.stale = false;
-                self.cluster_sel = self.cluster_sel.min(self.n_clusters().saturating_sub(1));
+                self.set_round(Some(r));
             }
             Err(e) => self.status = format!("could not read {}: {e:#}", manifest.display()),
         }
+    }
+
+    /// Put `r` on screen (or none), dropping what belonged to the round
+    /// shown before: edits, marks, scores and the stale note.
+    fn set_round(&mut self, r: Option<RoundView>) {
+        self.stop_rescoring();
+        self.recorded = None;
+        self.scored_for.clear();
+        self.round = r;
+        self.edits.clear();
+        self.marked.clear();
+        self.tree_marked.clear();
+        self.gene_sel = 0;
+        self.stale = false;
+        self.cluster_sel = self.cluster_sel.min(self.n_clusters().saturating_sub(1));
     }
 
     /// The unsaved marker edits, in order.
@@ -609,8 +770,27 @@ impl App {
     }
 
     /// Whether the order view shows its figures in place of the table.
-    fn figures_shown(&self) -> bool {
+    pub(super) fn figures_shown(&self) -> bool {
         self.figures.as_ref().is_some_and(|f| f.shown)
+    }
+
+    /// The keys that start a pass from the form, in words.
+    pub(super) fn run_keys(&self) -> &'static str {
+        if self.shift_enter {
+            "shift+enter or enter on ▶ run"
+        } else {
+            "enter on ▶ run (the last row)"
+        }
+    }
+
+    /// A prompt or menu waits for an answer.
+    pub(super) fn asking(&self) -> bool {
+        self.prompt.is_some() || self.menu.is_some()
+    }
+
+    /// The trajectory's order view is up (the tree pane shows it).
+    pub(super) fn in_order(&self) -> bool {
+        matches!(self.tree_mode, TreeMode::Order(_))
     }
 
     fn n_clusters(&self) -> usize {
@@ -780,43 +960,119 @@ impl App {
         });
     }
 
-    fn start(&mut self) {
+    /// Open the annotation form: the marker panel, the output and the pass
+    /// settings, run from its last row; `after` follows the pass.
+    pub(super) fn open_form(&mut self, after: AfterPass) {
         if self.child.is_some() {
+            self.status = "wait for the running job, or stop it with x".into();
             return;
         }
-        if !self.out_chosen {
-            self.ask_output(true);
-            return;
+        self.after_pass = after;
+        // From the trajectory's view a pass writes a new round beside the
+        // run unless one was chosen.
+        if !self.out_chosen && self.in_order() {
+            let (_, out) = crate::manifest::family::pass_origin(&self.source);
+            self.target = annotated_path(&self.source, &out);
+            self.args.out = out.into();
         }
+        self.form = Some(Form {
+            row: setting_row(if self.args.markers.is_empty() {
+                Setting::Markers
+            } else {
+                Setting::Run
+            }),
+            ..Form::default()
+        });
+    }
+
+    /// Close the form without running.
+    fn close_form(&mut self) {
+        self.form = None;
+        self.after_pass = AfterPass::Nothing;
+    }
+
+    /// What a pass from the form would replace or drop, in words.
+    pub(super) fn pass_effects(&self) -> Vec<String> {
         let (_, later) = chain_rounds(&self.target);
-        let replaces = self.target.is_file();
-        if (replaces || !self.edits.is_empty() || !later.is_empty())
-            && self.armed != Some(Armed::Run)
-        {
-            self.armed = Some(Armed::Run);
-            let mut what = Vec::new();
-            if replaces {
-                what.push(format!(
-                    "replaces {} and its outputs",
-                    self.target.display()
-                ));
-            }
-            if !self.edits.is_empty() {
-                what.push(format!("drops {} unsaved edit(s)", self.edits.len()));
-            }
-            if !later.is_empty() {
-                what.push(format!("sets aside {} saved round(s)", later.len()));
-            }
-            self.status = format!("a new pass {}: r again to go on", what.join(", "));
+        let mut what = Vec::new();
+        if self.target.is_file() {
+            what.push(format!(
+                "replaces {} and its outputs",
+                file_name(&self.target)
+            ));
+        }
+        if !self.edits.is_empty() {
+            what.push(format!("drops {} unsaved edit(s)", self.edits.len()));
+        }
+        if !later.is_empty() {
+            what.push(format!("sets aside {} saved round(s)", later.len()));
+        }
+        what
+    }
+
+    /// The form's first line: what running it will do, and whether that
+    /// replaces or drops anything.
+    pub fn form_summary(&self) -> (String, bool) {
+        let run = file_name(&self.source);
+        let out = file_name(&self.target);
+        let effects = self.pass_effects();
+        let warns = !effects.is_empty();
+        let what = if effects.is_empty() {
+            format!("a new pass on {run} writes {out} and replaces nothing")
+        } else {
+            format!("a new pass on {run} {}", effects.join(", "))
+        };
+        let then = match self.after_pass {
+            AfterPass::Run => "; then the trajectory on its labels",
+            AfterPass::Offer => "; then a choice to run the trajectory",
+            AfterPass::Nothing => "",
+        };
+        (format!("{what}{then}"), warns)
+    }
+
+    /// Run the form: a marker panel is needed, and a pass that replaces
+    /// something runs on the second asking.
+    fn run_form(&mut self) {
+        let busy = self.child.is_some();
+        let no_panel = self.args.markers.is_empty();
+        let effects = self.pass_effects();
+        let Some(form) = &mut self.form else { return };
+        if busy {
+            form.note = Some("wait for the running job, or stop it with x".into());
             return;
         }
+        if no_panel {
+            form.confirm = false;
+            form.note =
+                Some("a pass needs a marker panel: enter on the first row picks one".into());
+            form.row = setting_row(Setting::Markers);
+            return;
+        }
+        self.out_chosen = true;
+        if !effects.is_empty() && !form.confirm {
+            form.confirm = true;
+            form.note = Some(format!(
+                "this pass {}: run again to confirm",
+                effects.join(", ")
+            ));
+            return;
+        }
+        self.start();
+        if self.child.is_some() {
+            self.form = None;
+        }
+    }
+
+    /// Start a pass with the form's settings (`run_form` has checked them).
+    fn start(&mut self) {
+        let replaces = self.target.is_file();
         self.push_log(format!(
             "── pass: lupin annotate {}",
             self.args.to_argv().join(" ")
         ));
         match runner::spawn_pass(&self.args, replaces, self.log_tx.clone()) {
             Ok(c) => {
-                self.child = Some((c, Instant::now(), Job::Pass));
+                self.child = Some(Running::new(c, Job::Pass));
                 self.status = "running…".into();
             }
             Err(e) => self.status = format!("{e:#}"),
@@ -826,12 +1082,12 @@ impl App {
     /// Stop a running pass or trajectory. A save is not stopped midway,
     /// which could leave a round half-written: it finishes on its own.
     fn stop(&mut self) {
-        match self.child.as_ref().map(|c| c.2.clone()) {
+        match self.child.as_ref().map(|r| r.job.clone()) {
             Some(Job::Pass | Job::Trajectory(_)) => {
-                self.trajectory_after_pass = false;
-                if let Some((mut c, _, _)) = self.child.take() {
-                    let _ = c.kill();
-                    let _ = c.wait();
+                self.after_pass = AfterPass::Nothing;
+                if let Some(mut r) = self.child.take() {
+                    let _ = r.child.kill();
+                    let _ = r.child.wait();
                     self.status = "stopped".into();
                 }
             }
@@ -843,7 +1099,7 @@ impl App {
     /// How many of the edits a running save is writing: those stay as they
     /// are until it is done.
     fn saving(&self) -> usize {
-        match self.child.as_ref().map(|c| c.2.clone()) {
+        match self.child.as_ref().map(|r| r.job.clone()) {
             Some(Job::Save(n)) => n.min(self.edits.len()),
             _ => 0,
         }
@@ -851,7 +1107,7 @@ impl App {
 
     /// Whether a pass is running, which is about to replace the clusters.
     fn pass_running(&self) -> bool {
-        self.child.as_ref().is_some_and(|c| c.2 == Job::Pass)
+        self.child.as_ref().is_some_and(|r| r.job == Job::Pass)
     }
 
     fn save(&mut self) {
@@ -884,7 +1140,7 @@ impl App {
                     round.manifest.display(),
                     file.display()
                 ));
-                self.child = Some((c, Instant::now(), Job::Save(self.edits.len())));
+                self.child = Some(Running::new(c, Job::Save(self.edits.len())));
                 self.status = "saving…".into();
             }
             Err(e) => self.status = format!("save failed: {e:#}"),
@@ -1182,45 +1438,28 @@ impl App {
         });
     }
 
+    /// Keys of the open menu: move, take an option, or cancel.
+    fn menu_key(&mut self, code: KeyCode) {
+        let Some(menu) = &mut self.menu else { return };
+        match menu.key(code) {
+            Outcome::Open => {}
+            Outcome::Cancel => {
+                let note = self.menu.take().map(|m| m.on_cancel).unwrap_or_default();
+                // Nothing follows a pass the menu was asked about.
+                self.after_pass = AfterPass::Nothing;
+                self.status = note;
+            }
+            Outcome::Chosen(a) => {
+                self.menu = None;
+                self.choose(a);
+            }
+        }
+    }
+
     fn prompt_key(&mut self, k: KeyEvent) {
         let Some(p) = &mut self.prompt else { return };
-        if matches!(p.pending, Pending::TrajectoryLabels) {
-            match k.code {
-                KeyCode::Enter | KeyCode::Char('l') => {
-                    self.prompt = None;
-                    self.want_file = Some(FileWant::Labels);
-                }
-                KeyCode::Char('a') => {
-                    self.prompt = None;
-                    self.annotate_then_trajectory();
-                    // A pass that replaces a round asks first: keep the
-                    // choice open so `a` again confirms (an `r` would go
-                    // through the order view and drop the arming).
-                    if self.armed == Some(Armed::Run) && self.child.is_none() {
-                        self.prompt = Some(Prompt {
-                            title: format!(
-                                " {} · a again to go on · esc cancel ",
-                                self.status.trim_end_matches(": r again to go on")
-                            ),
-                            text: String::new(),
-                            pending: Pending::TrajectoryLabels,
-                        });
-                    }
-                }
-                KeyCode::Esc => self.prompt = None,
-                _ => {}
-            }
-            return;
-        }
         match k.code {
-            KeyCode::Esc => {
-                if matches!(
-                    self.prompt.take().map(|p| p.pending),
-                    Some(Pending::Output { then_start: true })
-                ) {
-                    self.trajectory_after_pass = false;
-                }
-            }
+            KeyCode::Esc => self.prompt = None,
             KeyCode::Enter => {
                 let edits_clusters = matches!(
                     p.pending,
@@ -1250,10 +1489,9 @@ impl App {
                             reason,
                         });
                         self.focus = Focus::Clusters;
-                        if let (Some((alias, id)), Some(file)) = (
-                            remember,
-                            self.data_search.amend(crate::manifest::data_files::ALIASES),
-                        ) {
+                        if let (Some((alias, id)), Some(file)) =
+                            (remember, self.data_search.alias_target())
+                        {
                             self.prompt = Some(Prompt {
                                 title: format!(
                                     " remember {alias} → {id} in {}? enter: yes (the text is the note) · esc: no ",
@@ -1292,13 +1530,10 @@ impl App {
                         };
                         self.reload_order();
                     }
-                    Pending::Output { then_start } => {
+                    Pending::Output => {
                         self.set_output(&reason);
-                        if then_start && self.out_chosen && self.args.out.as_ref() == reason {
-                            self.start();
-                            if self.child.is_some() {
-                                self.settings_open = false;
-                            }
+                        if let Some(f) = &mut self.form {
+                            f.confirm = false;
                         }
                     }
                     Pending::TrajectoryOut { replace } => {
@@ -1319,7 +1554,6 @@ impl App {
                         }
                     }
                     // Handled above, key by key.
-                    Pending::TrajectoryLabels => {}
                     Pending::Relocate { pdf } => {
                         self.status = match &mut self.figures {
                             Some(v) => v
@@ -1382,18 +1616,40 @@ impl App {
             let armed = self.armed.take();
             return self.request_quit(armed, "ctrl-c");
         }
+        // The popups take keys from the top down, as `ui::draw_overlays`
+        // stacks them: a failed job's notice goes with any key, which does
+        // nothing else; then a prompt or menu.
+        if self.failed.take().is_some() {
+            return;
+        }
+        if self.menu.is_some() {
+            return self.menu_key(k.code);
+        }
         if self.prompt.is_some() {
             return self.prompt_key(k);
         }
-        if let (TreeMode::Ontology(v), Some(cl)) = (&mut self.tree_mode, &self.cl) {
+        let beside = self.focus == Focus::Tree && self.in_order();
+        let view = match &mut self.tree_mode {
+            TreeMode::Ontology(v) => Some(v),
+            TreeMode::Order(v) if beside => v.ontology.as_mut(),
+            _ => None,
+        };
+        if let (Some(v), Some(cl)) = (view, &self.cl) {
             if let Some(text) = &mut v.typing {
                 match k.code {
                     KeyCode::Esc => v.typing = None,
                     KeyCode::Enter => {
                         let q = std::mem::take(text);
                         v.typing = None;
-                        v.search(cl, &q);
-                        self.status = format!("{} term(s) match {q:?} (←: back)", v.rows.len());
+                        let left = v.search(cl, &q);
+                        self.status = if left {
+                            format!(
+                                "no term in the data matches {q:?}: {} in the whole ontology (←: back)",
+                                v.rows.len()
+                            )
+                        } else {
+                            format!("{} term(s) match {q:?} (←: back)", v.rows.len())
+                        };
                     }
                     KeyCode::Backspace => {
                         text.pop();
@@ -1403,6 +1659,11 @@ impl App {
                 }
                 return;
             }
+        }
+        // `b` hides the running job's popup, or brings it back.
+        if k.code == KeyCode::Char('b') && self.child.is_some() {
+            self.progress_hidden = !self.progress_hidden;
+            return;
         }
         if self.help_open {
             // Any key closes the guide.
@@ -1414,18 +1675,16 @@ impl App {
             return;
         }
         let armed = self.armed.take();
-        if self.settings_open {
-            return self.settings_key(k.code, armed);
+        if self.form.is_some() {
+            return self.settings_key(k);
         }
-        // The focused pane's keys come first (in the genes pane, x hides).
-        if self.pane_key(k.code) {
-            return;
+        // `g` lists the run's family from any pane.
+        if k.code == KeyCode::Char('g') {
+            return self.list_runs();
         }
-        match k.code {
-            KeyCode::Char('q') => self.request_quit(armed, "q"),
-            KeyCode::Char('r') => self.settings_open = true,
-            // Stops a running pass or save, asked twice.
-            KeyCode::Char('x') if self.child.is_some() => {
+        // `x` stops a running job from any pane, asked twice.
+        if k.code == KeyCode::Char('x') {
+            if self.child.is_some() {
                 if armed == Some(Armed::Stop) {
                     self.stop();
                 } else {
@@ -1433,6 +1692,21 @@ impl App {
                     self.status = "x again stops it".into();
                 }
             }
+            return;
+        }
+        // The focused pane's keys come first.
+        if self.pane_key(k.code) {
+            return;
+        }
+        match k.code {
+            KeyCode::Char('q') => self.request_quit(armed, "q"),
+            // In the trajectory's view `r` runs the trajectory from any pane;
+            // a pass (the cluster settings) is for a run with no annotation,
+            // offered by that menu.
+            KeyCode::Char('r') if self.in_order() => {
+                self.ask_trajectory_out();
+            }
+            KeyCode::Char('r') => self.open_form(AfterPass::Nothing),
             KeyCode::Char('s') => self.save(),
             KeyCode::Char('e') => {
                 self.status = if self.edits.is_empty() {
@@ -1450,7 +1724,7 @@ impl App {
     /// Quit on `key` (`q` or `ctrl-c`), asking again first while a pass runs
     /// or edits are unsaved; never during a save.
     fn request_quit(&mut self, armed: Option<Armed>, key: &str) {
-        let busy = self.child.as_ref().map(|c| c.2.clone());
+        let busy = self.child.as_ref().map(|r| r.job.clone());
         let unsaved = match self.edits.len() {
             0 => String::new(),
             n => format!(" and {n} unsaved edit(s)"),
@@ -1476,37 +1750,52 @@ impl App {
         }
     }
 
-    /// Keys in the clustering and pass settings popup.
-    fn settings_key(&mut self, code: KeyCode, armed: Option<Armed>) {
+    /// Keys in the annotation form: ↑↓ move, ←→ change a value, Enter picks
+    /// the panel, edits the output or runs (on `▶ run`); Shift+Enter runs
+    /// from any row where the terminal tells it from Enter.
+    fn settings_key(&mut self, k: KeyEvent) {
+        let code = k.code;
+        let Some(form) = &mut self.form else { return };
+        let at = SETTINGS[form.row];
         match code {
-            KeyCode::Esc | KeyCode::Char('r' | 'q') => self.settings_open = false,
-            KeyCode::Up | KeyCode::Down => {
-                step(&mut self.setting, SETTINGS.len(), code);
+            KeyCode::Esc | KeyCode::Char('r' | 'q') => self.close_form(),
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown => {
+                step(&mut form.row, SETTINGS.len(), code);
             }
             KeyCode::Left | KeyCode::Right => {
-                SETTINGS[self.setting].adjust(&mut self.args, code == KeyCode::Right);
+                at.adjust(&mut self.args, code == KeyCode::Right);
                 self.stale = self.round.is_some();
             }
-            KeyCode::Enter if matches!(SETTINGS[self.setting], Setting::Output) => {
-                self.ask_output(false);
+            KeyCode::Enter if self.shift_enter && k.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.run_form();
             }
-            KeyCode::Enter => {
-                self.armed = armed;
-                self.start();
-                // Closed once running; open while a confirmation is pending.
-                self.settings_open = self.child.is_none();
-            }
+            KeyCode::Enter => match at {
+                Setting::Markers => self.want_file = Some(FileWant::Markers),
+                Setting::Output => self.ask_output(),
+                Setting::Run => self.run_form(),
+                _ => self.status = format!("{} starts the pass", self.run_keys()),
+            },
             _ => {}
         }
     }
 
     fn cycle(&self, forward: bool) -> Focus {
-        use Focus::{Clusters, Genes, Go, Tree};
-        let order: &[Focus] = if self.has_go() {
-            &[Clusters, Genes, Tree, Go]
+        use Focus::{Clusters, Genes, Go, Order, Tree};
+        // The order view's columns, left to right: clusters (genes below
+        // them), ordering, ontology.
+        let mut order = if self.in_order() {
+            vec![Clusters, Genes, Order, Tree]
         } else {
-            &[Clusters, Genes, Tree]
+            vec![Clusters, Genes, Tree]
         };
+        if self.has_go() && !self.in_order() {
+            order.push(Go);
+        }
         let i = order.iter().position(|f| *f == self.focus).unwrap_or(0);
         let n = order.len();
         order[if forward {
@@ -1519,6 +1808,11 @@ impl App {
     /// The focused pane's binding for `code`, if it has one: `false` leaves
     /// the key to the global bindings. Moving in the pane's list never claims it.
     fn pane_key(&mut self, code: KeyCode) -> bool {
+        // The ordering column's figures take their keys before its table's;
+        // the ontology column keeps its own.
+        if self.in_order() && self.focus == Focus::Order && self.figure_key(code) {
+            return true;
+        }
         let move_in = |sel: &mut usize, n: usize| step(sel, n, code);
         match self.focus {
             Focus::Clusters => {
@@ -1542,6 +1836,16 @@ impl App {
                     KeyCode::Backspace | KeyCode::Delete => self.undo(),
                     KeyCode::Char(']') => self.next_flagged(),
                     KeyCode::Enter => self.jump_to_tree(),
+                    // Annotate again: the form, and from the order view a
+                    // choice to run the trajectory after.
+                    KeyCode::Char('A') => {
+                        let order = self.in_order();
+                        self.open_form(if order {
+                            AfterPass::Offer
+                        } else {
+                            AfterPass::Nothing
+                        });
+                    }
                     _ => return false,
                 }
             }
@@ -1561,7 +1865,7 @@ impl App {
                     }
                     KeyCode::Char('a') => self.ask_markers(true),
                     KeyCode::Char('A') => self.ask_marker_type(true),
-                    KeyCode::Char('x') => {
+                    KeyCode::Char('h') => {
                         let genes = self.chosen_genes();
                         for g in genes {
                             self.hide(&g);
@@ -1613,7 +1917,21 @@ impl App {
                     _ => return false,
                 }
             }
-            Focus::Tree if code == KeyCode::Char('t') => self.toggle_order(false),
+            Focus::Order => match code {
+                KeyCode::Char('T') => self.toggle_order(false),
+                // `t` restyles the figures' labels (taken above when shown).
+                KeyCode::Char('t') => self.status = "v figures · T back to the tree".into(),
+                KeyCode::Char(' ') => self.toggle_tree_mark(),
+                _ => {
+                    let took = self.order_key(code);
+                    self.sync_tree_to_order();
+                    return took;
+                }
+            },
+            Focus::Tree if self.in_order() => {
+                return self.order_tree_key(code);
+            }
+            Focus::Tree if matches!(code, KeyCode::Char('t' | 'T')) => self.toggle_order(false),
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
             // A search is of the ontology: open it there.
             Focus::Tree
@@ -1624,16 +1942,7 @@ impl App {
                     v.typing = Some(String::new());
                 }
             }
-            Focus::Tree if code == KeyCode::Char(' ') => {
-                if matches!(self.tree_mode, TreeMode::Order(_)) && self.figures_shown() {
-                    self.status = "V shows the order table to mark types".into();
-                } else {
-                    self.toggle_tree_mark();
-                }
-            }
-            Focus::Tree if matches!(self.tree_mode, TreeMode::Order(_)) => {
-                return self.order_key(code);
-            }
+            Focus::Tree if code == KeyCode::Char(' ') => self.toggle_tree_mark(),
             Focus::Tree if code == KeyCode::Char('+') => self.mix_marked(),
             Focus::Tree if matches!(self.tree_mode, TreeMode::Ontology(_)) => {
                 return self.ontology_key(code);
@@ -1645,13 +1954,8 @@ impl App {
                 match (code, at) {
                     (KeyCode::Enter, Some(i)) => self.pick_node(i),
                     (KeyCode::Left, Some(i)) => {
-                        if self.tree.nodes[i].children.is_empty() || self.tree.is_folded(i) {
-                            // Up to the parent, like a file tree.
-                            if let Some(p) = self.tree.nodes[i].parent {
-                                self.select_node(p);
-                            }
-                        } else {
-                            self.tree.fold(i, true);
+                        if let Some(p) = self.tree.left(i) {
+                            self.select_node(p);
                         }
                     }
                     (KeyCode::Right, Some(i)) => self.tree.fold(i, false),
@@ -1667,10 +1971,14 @@ impl App {
     /// back; `show_figures` opens on the figures (`lupin trajectory`).
     pub(super) fn toggle_order(&mut self, show_figures: bool) {
         self.tree_marked.clear();
-        if matches!(self.tree_mode, TreeMode::Order(_)) {
+        if self.in_order() {
             self.tree_mode = TreeMode::Panel;
+            if self.focus == Focus::Order {
+                self.focus = Focus::Tree;
+            }
             return;
         }
+        self.focus = Focus::Order;
         if self.figures.is_none() {
             let manifests = self.manifests();
             let refs: Vec<&Path> = manifests.iter().map(PathBuf::as_path).collect();
@@ -1700,13 +2008,12 @@ impl App {
         v
     }
 
-    /// Ask for the output prefix of passes, prefilled with the one in use;
-    /// start a pass once given when `then_start`.
-    fn ask_output(&mut self, then_start: bool) {
+    /// Ask for the output prefix of passes, prefilled with the one in use.
+    fn ask_output(&mut self) {
         self.prompt = Some(Prompt {
             title: " output prefix for this run's rounds: ".into(),
             text: self.args.out.to_string(),
-            pending: Pending::Output { then_start },
+            pending: Pending::Output,
         });
     }
 
@@ -1772,11 +2079,10 @@ impl App {
             }
         }
         if !has_labels {
-            self.prompt = Some(Prompt {
-                title: " no annotation yet: enter/l pick a cell<TAB>type labels file · a annotate it here · esc cancel ".into(),
-                text: String::new(),
-                pending: Pending::TrajectoryLabels,
-            });
+            self.ask_labels();
+            return;
+        }
+        if self.ask_root() {
             return;
         }
         let text = self
@@ -1796,6 +2102,381 @@ impl App {
             },
             text,
         });
+    }
+
+    /// Show `menu`.
+    fn show(&mut self, menu: Menu) {
+        self.menu = Some(menu);
+    }
+
+    /// A run with no labels: annotate it here, or take a labels file.
+    fn ask_labels(&mut self) {
+        let mut items = vec![
+            (
+                "Annotate this run now".into(),
+                "a form asks for the marker panel, the output and the clustering settings; the pass, then the trajectory on its labels".into(),
+                Action::Annotate,
+            ),
+            (
+                "Use a cell<TAB>type labels file".into(),
+                "pick the file in the file browser; the trajectory reads its labels".into(),
+                Action::LabelsFile,
+            ),
+        ];
+        if crate::manifest::family::has_round(&self.source) {
+            items.insert(
+                0,
+                (
+                    "Open an annotated round of this run".into(),
+                    "the run's rounds are beside it: pick one (g), and the trajectory takes its labels".into(),
+                    Action::ListRuns,
+                ),
+            );
+        }
+        self.show(Menu::new(
+            "This run has no cell-type labels yet, and the trajectory needs them. \
+             Where should they come from?",
+            numbered(items),
+            NOT_STARTED,
+        ));
+    }
+
+    /// When nothing would order the types (no statement makes an edge, and
+    /// no `--root` or `--prior` was given), ask how the order should come
+    /// instead of starting a run that can only fail; `true` when it asked.
+    fn ask_root(&mut self) -> bool {
+        if self.order_given() {
+            return false;
+        }
+        let TreeMode::Order(v) = &self.tree_mode else {
+            return false;
+        };
+        if v.error.is_some() || v.types.is_empty() || !v.edges().is_empty() {
+            return false;
+        }
+        self.ask_order(None);
+        true
+    }
+
+    /// `--root` or `--prior` among the trajectory's options.
+    fn order_given(&self) -> bool {
+        self.trajectory.argv.iter().any(|a| {
+            ["--root", "--prior"]
+                .iter()
+                .any(|f| a == f || a.starts_with(&format!("{f}=")))
+        })
+    }
+
+    /// The menu of ways to give the types an order; `note` heads it.
+    fn ask_order(&mut self, note: Option<&str>) {
+        let TreeMode::Order(v) = &self.tree_mode else {
+            return;
+        };
+        let names: Vec<&str> = v.types.iter().map(|(t, _)| t.as_str()).collect();
+        let why = match &self.cl {
+            Some(cl) => {
+                let (mapped, _) = cl.map_labels(names.iter().copied());
+                match mapped.len() {
+                    0 => format!("none of the {} labels map to Cell Ontology terms", names.len()),
+                    n => format!(
+                        "{n} of {} labels map to Cell Ontology terms, with no develops-from link between them",
+                        names.len()
+                    ),
+                }
+            }
+            None => "no Cell Ontology is at hand".into(),
+        };
+        let question = format!(
+            "{}Nothing orders these types yet ({why}). How should the trajectory get its order?",
+            note.map_or(String::new(), |n| format!("{n}. "))
+        );
+        self.show(Menu::new(
+            question,
+            numbered(vec![
+                (
+                    "Start from one type (--root)".into(),
+                    "choose the type the trajectory starts from; every other type is ordered after it by the data".into(),
+                    Action::PickRoot,
+                ),
+                (
+                    "State the order myself".into(),
+                    "in the order table: space marks two types, > says the first precedes the second, - that they are unrelated; then r".into(),
+                    Action::StateOrder,
+                ),
+                (
+                    "Use a precedence file (--prior)".into(),
+                    "pick a from<TAB>to<TAB>precedes|unrelated file, or an earlier run's trajectory_prior.tsv".into(),
+                    Action::PriorFile,
+                ),
+                (
+                    "Map my labels to Cell Ontology terms (--label-cl)".into(),
+                    "pick a label<TAB>CL:id file; the ontology's develops-from links then order the types".into(),
+                    Action::LabelCl,
+                ),
+            ]),
+            NOT_STARTED,
+        ));
+    }
+
+    /// The menu of types to start from, with their cell counts.
+    fn ask_root_type(&mut self) {
+        let TreeMode::Order(v) = &self.tree_mode else {
+            return;
+        };
+        let items = v
+            .types
+            .iter()
+            .map(|(t, n)| {
+                (
+                    t.clone(),
+                    format!("start from {t} ({n} cells), kept for later runs"),
+                    Action::Root(t.clone()),
+                )
+            })
+            .collect();
+        let mut menu = Menu::new(
+            "Which type does the trajectory start from?",
+            numbered(items),
+            NOT_STARTED,
+        );
+        menu.sel = v.sel.min(menu.choices.len().saturating_sub(1));
+        self.show(menu);
+    }
+
+    /// Do what the chosen option says.
+    pub(super) fn choose(&mut self, action: Action) {
+        match action {
+            Action::PickRoot => self.ask_root_type(),
+            Action::Root(t) => {
+                self.push_log(format!("trajectory root: {t} (kept for later runs)"));
+                self.trajectory.argv.extend(["--root".into(), t]);
+                self.ask_trajectory_out();
+            }
+            Action::StateOrder => {
+                self.focus = Focus::Order;
+                if let Some(f) = &mut self.figures {
+                    f.shown = false;
+                }
+                self.status = "space marks two types, > says the first precedes the second, - that they are unrelated; then r runs".into();
+            }
+            Action::PriorFile => self.want_file = Some(FileWant::Prior),
+            Action::LabelCl => self.want_file = Some(FileWant::LabelCl),
+            Action::LabelsFile => self.want_file = Some(FileWant::Labels),
+            Action::Annotate => self.open_form(AfterPass::Run),
+            Action::RunTrajectory => self.ask_trajectory_out(),
+            Action::NotNow => {
+                self.status = "r runs the trajectory when you are ready".into();
+            }
+            Action::ListRuns => self.list_runs(),
+            Action::OpenRun { pick, drop_edits } => self.open_run(pick, drop_edits),
+        }
+    }
+
+    /// The manifest on screen: the round shown, else the run passes start
+    /// from.
+    pub(super) fn shown_manifest(&self) -> PathBuf {
+        self.round
+            .as_ref()
+            .map_or_else(|| self.source.clone(), |r| r.manifest.clone())
+    }
+
+    /// List the run's family (`g`): the run, its rounds and the
+    /// trajectories made from them, the one on screen marked.
+    pub(super) fn list_runs(&mut self) {
+        use crate::manifest::family;
+        if self.child.is_some() {
+            self.status = "wait for the running job, or stop it with x".into();
+            return;
+        }
+        let shown = self.shown_manifest();
+        let members = family::family(&shown);
+        if members.is_empty() {
+            self.status = format!("no run manifests beside {}", shown.display());
+            return;
+        }
+        let at = family::current(&members, &shown);
+        let now = super::gallery::now();
+        let items = members
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let mark = if Some(i) == at { "● " } else { "  " };
+                let label = format!(
+                    "{mark}{} · {} · {} · {}",
+                    m.name(),
+                    m.pick.kind.name(),
+                    m.holds,
+                    super::gallery::ago(m.modified, now)
+                );
+                let detail = m.pick.kind.detail().to_string();
+                let action = Action::OpenRun {
+                    pick: m.pick,
+                    drop_edits: false,
+                };
+                (label, detail, action)
+            })
+            .collect();
+        let mut menu = Menu::new(
+            format!(
+                "The runs of {} (● on screen). Which should the TUI show?",
+                family::stem(&shown)
+            ),
+            numbered(items),
+            "kept the run on screen",
+        );
+        menu.sel = at.unwrap_or(0);
+        menu.wide = true;
+        self.show(menu);
+    }
+
+    /// Show `pick`, a member of the run's family: a round (or a
+    /// trajectory's copy of one) in the cluster panes, a trajectory's
+    /// figures, the run with no round. Passes then start from it, as when
+    /// the TUI is opened on it.
+    pub(super) fn open_run(&mut self, pick: crate::manifest::family::Pick, drop_edits: bool) {
+        use crate::manifest::family::{pass_origin, Kind};
+        if self.child.is_some() {
+            self.status = "wait for the running job, or stop it with x".into();
+            return;
+        }
+        let path = pick.path.as_path();
+        let name = file_name(path);
+        if !drop_edits && !self.edits.is_empty() {
+            let detail =
+                "the edits are lost; esc keeps them, and s first saves them as a new round";
+            let n = self.edits.len();
+            return self.show(Menu::new(
+                format!("{n} unsaved edit(s) on the round on screen. Open {name} anyway?"),
+                numbered(vec![(
+                    format!("Open {name}, dropping the edits"),
+                    detail.into(),
+                    Action::OpenRun {
+                        pick: pick.clone(),
+                        drop_edits: true,
+                    },
+                )]),
+                "kept the run on screen (s saves the edits)",
+            ));
+        }
+        if pick.labelled {
+            self.open(path);
+        } else {
+            self.set_round(None);
+        }
+        if !crate::manifest::run::same_file(path, &self.source) {
+            let (source, out) = pass_origin(path);
+            self.source = source;
+            if !self.out_chosen {
+                self.args.out = out.into_boxed_str();
+            }
+            self.args.from = Some(self.source.to_string_lossy().into());
+            self.target = annotated_path(&self.source, &self.args.out);
+        }
+        let trajectory = pick.kind == Kind::Trajectory;
+        if trajectory {
+            let picker = self.picker().clone();
+            match super::figure_pane::FigurePane::load(&[path], &picker) {
+                Ok(Some(mut v)) => {
+                    v.shown = self.figures.as_ref().is_none_or(|f| f.shown);
+                    self.figures = Some(v);
+                }
+                Ok(None) => {}
+                Err(e) => self.push_log(format!("[WARN] trajectory figures: {e:#}")),
+            }
+        }
+        if self.in_order() {
+            // The order view's edges follow the trajectory now shown.
+            self.rebuild_order(true);
+        }
+        self.status = match (&self.round, trajectory) {
+            (Some(r), true) => format!(
+                "{name}: its figures, and its round's {} clusters",
+                r.clusters.len()
+            ),
+            (Some(r), false) => format!("{name}: {} clusters (g lists the runs)", r.clusters.len()),
+            (None, true) => format!("{name}: its figures; it carries no round (g lists the runs)"),
+            (None, false) => {
+                format!("{name}: the run, no annotation (A annotates it, g lists its rounds)")
+            }
+        };
+    }
+
+    /// Take `path` (picked in the file browser) as the trajectory's
+    /// precedence file, then ask for the output prefix.
+    pub fn set_prior(&mut self, path: Option<&Path>) {
+        let Some(p) = path else {
+            self.status = "no precedence file picked".into();
+            return;
+        };
+        let p = p.to_string_lossy().into_owned();
+        self.push_log(format!("trajectory prior: {p} (kept for later runs)"));
+        self.trajectory.argv.extend(["--prior".into(), p]);
+        self.ask_trajectory_out();
+    }
+
+    /// Take `path` as the labels' Cell Ontology terms: reload the ontology
+    /// with it and the order view; go on to the run when it now orders
+    /// something, else ask again.
+    pub fn set_label_cl(&mut self, path: Option<&Path>) {
+        let Some(p) = path else {
+            self.status = "no label<TAB>CL:id file picked".into();
+            return;
+        };
+        let p = p.to_string_lossy().into_owned();
+        // The first map layers over the ontology at hand; a second one
+        // replaces the first, so everything is read again.
+        let layer = self.cl.is_some() && self.args.label_cl.is_none();
+        let terms = if layer {
+            std::fs::read_to_string(&p)
+                .map_err(anyhow::Error::from)
+                .map(|text| {
+                    let mut cl = self.cl.take();
+                    if let Some(cl) = &mut cl {
+                        cl.add_aliases(&text, &p);
+                    }
+                    cl
+                })
+        } else {
+            let dir = self.source.parent().map(Path::to_path_buf);
+            crate::manifest::ontology::load(
+                dir.as_deref(),
+                &self.args.markers,
+                self.args.obo.as_deref(),
+                Some(&p),
+                crate::manifest::data_files::Fetch::Allowed,
+            )
+            .and_then(crate::manifest::data_files::ClData::into_terms)
+        };
+        match terms {
+            Ok(t) => {
+                self.cl = t;
+                if let Some(cl) = &self.cl {
+                    self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
+                }
+                self.args.label_cl = Some(p.clone().into());
+                // One --label-cl: the new file replaces one given before.
+                let argv = std::mem::take(&mut self.trajectory.argv);
+                let mut it = argv.into_iter();
+                while let Some(a) = it.next() {
+                    if a == "--label-cl" {
+                        it.next();
+                    } else if !a.starts_with("--label-cl=") {
+                        self.trajectory.argv.push(a);
+                    }
+                }
+                self.trajectory
+                    .argv
+                    .extend(["--label-cl".into(), p.clone()]);
+                self.push_log(format!("label to Cell Ontology terms: {p}"));
+                self.reload_order();
+                if !self.ask_root() {
+                    self.ask_trajectory_out();
+                } else {
+                    self.ask_order(Some("Still no order from the ontology"));
+                }
+            }
+            Err(e) => self.status = format!("{p}: {e:#}"),
+        }
     }
 
     /// Start `lupin trajectory` from the round on screen (else the run
@@ -1824,7 +2505,7 @@ impl App {
         match runner::spawn_trajectory(&argv, self.log_tx.clone()) {
             Ok(c) => {
                 let manifest = annotated_path(&from, out);
-                self.child = Some((c, Instant::now(), Job::Trajectory(manifest)));
+                self.child = Some(Running::new(c, Job::Trajectory(manifest)));
                 self.trajectory.out = Some(out.into());
                 self.status = "running the trajectory…".into();
             }
@@ -1840,22 +2521,27 @@ impl App {
             .get_or_insert_with(|| super::figure_pane::picker(graphics))
     }
 
-    /// Annotate the run, then run the trajectory on its labels: the marker
-    /// panel is the manifest's, else picked in the file browser.
-    fn annotate_then_trajectory(&mut self) {
-        self.trajectory_after_pass = true;
-        if self.args.markers.is_empty() {
-            self.want_file = Some(FileWant::Markers);
-            return;
-        }
-        self.start();
+    /// After a pass started from the order view: run the trajectory on the
+    /// new labels, or not now.
+    fn offer_trajectory_run(&mut self) {
+        self.show(Menu::new(
+            "The new round is open. Run the trajectory on its labels?",
+            numbered(vec![
+                (
+                    "Run the trajectory on the new labels".into(),
+                    "asks for the output prefix, then runs lupin trajectory".into(),
+                    Action::RunTrajectory,
+                ),
+                ("Not now".into(), "r runs it later".into(), Action::NotNow),
+            ]),
+            "r runs the trajectory when you are ready",
+        ));
     }
 
-    /// Take `path` as the marker panel (picked in the file browser), then go
-    /// on with the pass a missing annotation asked for.
+    /// Take `path` as the marker panel (picked in the file browser from the
+    /// annotation form, which stays open to run).
     pub fn set_markers(&mut self, path: Option<&Path>) {
         let Some(path) = path else {
-            self.trajectory_after_pass = false;
             self.status = "no marker panel picked".into();
             return;
         };
@@ -1869,13 +2555,14 @@ impl App {
                     self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
                 }
                 self.original = sets;
+                self.status = format!("marker panel: {}", file_name(path));
                 self.args.markers = p.into();
-                self.start();
+                if let Some(f) = &mut self.form {
+                    f.note = None;
+                    f.row = setting_row(Setting::Run);
+                }
             }
-            Err(e) => {
-                self.trajectory_after_pass = false;
-                self.status = format!("{e:#}");
-            }
+            Err(e) => self.status = format!("{e:#}"),
         }
     }
 
@@ -1911,7 +2598,7 @@ impl App {
         if let Some(f) = &mut self.figures {
             f.shown = true;
         }
-        if matches!(self.tree_mode, TreeMode::Order(_)) {
+        if self.in_order() {
             self.reload_order();
         }
         self.status = format!("trajectory done in {secs}s: {}", manifest.display());
@@ -1947,19 +2634,28 @@ impl App {
     /// The trajectory run's edges are kept from the view on screen (or the
     /// figures), so only the precedence files are read again.
     fn reload_order(&mut self) {
-        let (sel, edges) = match std::mem::replace(&mut self.tree_mode, TreeMode::Panel) {
-            TreeMode::Order(v) => (v.sel, v.edges),
-            _ => (
-                0,
-                match &self.figures {
-                    Some(f) => f.data.edges.clone(),
-                    None => {
-                        let manifests = self.manifests();
-                        let refs: Vec<&Path> = manifests.iter().map(PathBuf::as_path).collect();
-                        super::order::run_edges(&refs)
-                    }
-                },
-            ),
+        self.rebuild_order(false);
+    }
+
+    /// The edges of the trajectory shown: the figures', else the manifests'.
+    fn shown_edges(&self) -> Vec<crate::trajectory::edges::EdgeRow> {
+        match &self.figures {
+            Some(f) => f.data.edges.clone(),
+            None => {
+                let manifests = self.manifests();
+                let refs: Vec<&Path> = manifests.iter().map(PathBuf::as_path).collect();
+                super::order::run_edges(&refs)
+            }
+        }
+    }
+
+    /// [`Self::reload_order`]; with `new_edges` (the manifest shown changed)
+    /// the edges are those of the trajectory now shown, not the view's.
+    fn rebuild_order(&mut self, new_edges: bool) {
+        let (sel, edges, ontology) = match std::mem::replace(&mut self.tree_mode, TreeMode::Panel) {
+            TreeMode::Order(v) if !new_edges => (v.sel, v.edges, v.ontology),
+            TreeMode::Order(v) => (v.sel, self.shown_edges(), v.ontology),
+            _ => (0, self.shown_edges(), None),
         };
         let mut v = super::order::OrderView::load(
             self.order_types(),
@@ -1973,15 +2669,108 @@ impl App {
         } else if !v.problems.is_empty() {
             self.status = format!("unreadable precedence file: {}", v.problems.join("; "));
         }
-        self.tree_mode = TreeMode::Order(v);
+        v.ontology = ontology;
+        self.tree_mode = TreeMode::Order(Box::new(v));
+        self.sync_tree_to_order();
     }
 
-    /// Keys of the order view: move, `>` / `-` on two marked types, and the
-    /// figure pane's keys.
-    fn order_key(&mut self, code: KeyCode) -> bool {
-        if self.figure_key(code) {
+    /// Keys of the ontology beside the precedence table: the order view's
+    /// types on the Cell Ontology, or the full ontology (`o`). Moving onto a
+    /// type selects it in the table too.
+    fn order_tree_key(&mut self, code: KeyCode) -> bool {
+        let (TreeMode::Order(v), Some(cl)) = (&mut self.tree_mode, &self.cl) else {
+            return false;
+        };
+        if let Some(ov) = &mut v.ontology {
+            match ov.key(cl, code) {
+                ViewKey::Taken => {}
+                ViewKey::NoData => {
+                    self.status = "no type of the data sits on a Cell Ontology term".into();
+                }
+                ViewKey::Other => match code {
+                    KeyCode::Char('o') => v.ontology = None,
+                    KeyCode::Char('T') => self.toggle_order(false),
+                    KeyCode::Esc => self.focus = Focus::Clusters,
+                    _ => return false,
+                },
+            }
             return true;
         }
+        let visible = v.tree.visible();
+        if step(&mut v.tree_sel, visible.len(), code) {
+            self.sync_order_to_tree();
+            return true;
+        }
+        let at = visible.get(v.tree_sel).copied();
+        match (code, at) {
+            (KeyCode::Left, Some(i)) => {
+                if let Some(p) = v.tree.left(i) {
+                    if let Some(k) = v.tree.visible().iter().position(|&j| j == p) {
+                        v.tree_sel = k;
+                    }
+                }
+                self.sync_order_to_tree();
+            }
+            (KeyCode::Right, Some(i)) => v.tree.fold(i, false),
+            (KeyCode::Char(' '), Some(_)) => {
+                // Only the order view's types can be ordered.
+                if self.sync_order_to_tree() {
+                    self.toggle_tree_mark();
+                } else {
+                    self.status = "not one of the run's types: only they can be ordered".into();
+                }
+            }
+            (KeyCode::Char('o'), at) => {
+                let term = at.and_then(|i| v.tree.nodes[i].cl_id.clone());
+                let view = self.ontology_at(term);
+                if let TreeMode::Order(v) = &mut self.tree_mode {
+                    v.ontology = view;
+                }
+            }
+            (KeyCode::Char('T'), _) => self.toggle_order(false),
+            (KeyCode::Esc, _) => self.focus = Focus::Clusters,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Select in the precedence table the type selected in the ontology
+    /// beside it; `false` when that node is not one of the table's types.
+    fn sync_order_to_tree(&mut self) -> bool {
+        let TreeMode::Order(v) = &mut self.tree_mode else {
+            return false;
+        };
+        let Some(&i) = v.tree.visible().get(v.tree_sel) else {
+            return false;
+        };
+        let l = label_key(v.tree.label(i));
+        match v.types.iter().position(|(t, _)| label_key(t) == l) {
+            Some(k) => {
+                v.sel = k;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Select in the ontology beside the table the type selected in the
+    /// precedence table, unfolding the way to it.
+    fn sync_tree_to_order(&mut self) {
+        let TreeMode::Order(v) = &mut self.tree_mode else {
+            return;
+        };
+        let Some(i) = v.selected().and_then(|t| v.tree.node_of(t)) else {
+            return;
+        };
+        v.tree.reveal(i);
+        if let Some(k) = v.tree.visible().iter().position(|&j| j == i) {
+            v.tree_sel = k;
+        }
+    }
+
+    /// Keys of the order view: move, `>` / `-` on two marked types (the
+    /// figure pane's keys come first, in `pane_key`).
+    fn order_key(&mut self, code: KeyCode) -> bool {
         let shown = self.figures_shown();
         let TreeMode::Order(v) = &mut self.tree_mode else {
             return false;
@@ -2038,11 +2827,53 @@ impl App {
             }
             return false;
         };
-        let x = &mut v.exports;
         if code != KeyCode::Char('D') {
-            x.disarm();
+            v.exports.disarm();
         }
-        // The strip's keys act only while it is on screen.
+        // The thumbnail grid is modal: arrows choose, Enter opens, p exports
+        // the tile chosen, and only the app's own keys (quit, run, stop,
+        // save, export the round, panes) go by.
+        if let Some(g) = &mut v.grid {
+            if g.step(code) {
+                return true;
+            }
+            // As in senna view, space or a tile's number opens it too.
+            if let KeyCode::Char(c @ '1'..='9') = code {
+                let k = c as usize - '1' as usize;
+                if k >= g.tiles.len() {
+                    self.status = format!("{} tile(s)", g.tiles.len());
+                    return true;
+                }
+                g.sel = k;
+            }
+            match code {
+                KeyCode::Enter | KeyCode::Char(' ' | '1'..='9') => {
+                    v.open_tile();
+                    self.status = v.title(v.current());
+                }
+                KeyCode::Esc | KeyCode::Char('w') => v.grid = None,
+                KeyCode::Char('V') => {
+                    v.grid = None;
+                    v.shown = false;
+                }
+                KeyCode::Char('t') => self.status = v.style.cycle_labels(),
+                KeyCode::Char('c') => self.status = v.style.cycle_colouring(&v.data.colourings()),
+                KeyCode::Char('p') => {
+                    self.status = v
+                        .export()
+                        .unwrap_or_else(|e| format!("export failed: {e:#}"));
+                }
+                KeyCode::Char('f') => v.exports.open = !v.exports.open,
+                KeyCode::Char(c) if !"qrxse".contains(c) => {
+                    self.status = GRID_KEYS.into();
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        let x = &mut v.exports;
+        // The strip's keys act only while it is on screen; the arrows it
+        // does not take pan.
         let strip = v.shown && x.open;
         if strip {
             let rows = x.rows();
@@ -2051,10 +2882,51 @@ impl App {
             }
         }
         match code {
+            // Esc closes the exports strip before it leaves the pane.
+            KeyCode::Esc if strip => x.open = false,
+            // The strip and its check belong to the figures.
+            KeyCode::Char('f' | 'R') if !v.shown => {
+                self.status = "v shows the figures, then f lists their exports".into();
+            }
             KeyCode::Char('v') => v.next_panel(),
-            KeyCode::Char('V') => v.shown = false,
-            KeyCode::Char(',') if v.shown => v.step_pair(false),
-            KeyCode::Char('.') if v.shown => v.step_pair(true),
+            KeyCode::Char('V') => {
+                v.shown = false;
+                v.grid = None;
+            }
+            KeyCode::Char(',') if v.shown => v.step_pair(false, false),
+            KeyCode::Char('.') if v.shown => v.step_pair(true, false),
+            KeyCode::Char('[') if v.shown => v.step_pair(false, true),
+            KeyCode::Char(']') if v.shown => v.step_pair(true, true),
+            // senna view's keys: labels, colouring, layout.
+            KeyCode::Char('t') if v.shown => self.status = v.style.cycle_labels(),
+            KeyCode::Char('c') if v.shown => {
+                self.status = v.style.cycle_colouring(&v.data.colourings());
+            }
+            // The table is hidden behind the figures: its marks wait for `V`.
+            KeyCode::Char(' ') if v.shown => {
+                self.status = "V shows the order table to mark types".into();
+            }
+            KeyCode::Char('m') if v.shown => self.status = v.next_layout(),
+            // senna view's navigation: the grid, zoom and pan.
+            KeyCode::Char('w') if v.shown => {
+                v.open_grid();
+                self.status = GRID_KEYS.into();
+            }
+            KeyCode::Char('+' | '=') if v.shown => self.status = v.zoom(true),
+            KeyCode::Char('-' | '_') if v.shown => self.status = v.zoom(false),
+            KeyCode::Char('0') if v.shown => self.status = v.reset_view(),
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if v.shown => {
+                let (dx, dy) = match code {
+                    KeyCode::Left => (-1.0, 0.0),
+                    KeyCode::Right => (1.0, 0.0),
+                    KeyCode::Up => (0.0, 1.0),
+                    _ => (0.0, -1.0),
+                };
+                let note = v.pan(dx, dy);
+                if !note.is_empty() {
+                    self.status = note;
+                }
+            }
             KeyCode::Char('p') if v.shown => {
                 self.status = v
                     .export()
@@ -2084,7 +2956,7 @@ impl App {
                 };
                 return true;
             }
-            KeyCode::Char('m') if strip => {
+            KeyCode::Char('M') if strip => {
                 if let Some(e) = x.gallery.entries.get(x.sel) {
                     self.prompt = Some(Prompt {
                         title: " move the export to (base name, no extension): ".into(),
@@ -2107,32 +2979,77 @@ impl App {
             self.tree_mode = TreeMode::Panel;
             return;
         }
-        let Some(cl) = &self.cl else {
-            self.status = "no Cell Ontology at hand (see `lupin data where`)".into();
-            return;
-        };
         let from_node = self
             .tree
             .visible()
             .get(self.tree_sel)
             .and_then(|&i| self.tree.nodes[i].cl_id.clone());
-        let from_cluster = || super::ontology::term_of(cl, &self.tree, &self.label_or_top()?);
-        let focus = from_node
-            .or_else(from_cluster)
+        let from_cluster = self
+            .cl
+            .as_ref()
+            .and_then(|cl| super::ontology::term_of(cl, &self.tree, &self.label_or_top()?));
+        if let Some(v) = self.ontology_at(from_node.or(from_cluster)) {
+            self.tree_mode = TreeMode::Ontology(v);
+        }
+    }
+
+    /// The Cell Ontology view, "in the data", opened on `term` (else the
+    /// root); `None`, said in the status, without an ontology at hand.
+    fn ontology_at(&mut self, term: Option<String>) -> Option<super::ontology::OntologyView> {
+        let Some(cl) = &self.cl else {
+            self.status = "no Cell Ontology at hand (see `lupin data where`)".into();
+            return None;
+        };
+        let focus = term
             .filter(|id| cl.has(id))
             .unwrap_or_else(|| ROOT_TERM.to_string());
-        self.tree_mode = TreeMode::Ontology(super::ontology::OntologyView::at(cl, &focus));
+        let data = self.ontology_data();
+        let cl = self.cl.as_ref()?;
+        Some(super::ontology::OntologyView::in_data(cl, data, &focus))
+    }
+
+    /// The types in the data by the Cell Ontology term each sits on, with
+    /// their cells: the order view's types, else the round's labels, else
+    /// the marker panel's types.
+    fn ontology_data(&self) -> std::collections::BTreeMap<String, Vec<(String, usize)>> {
+        let Some(cl) = &self.cl else {
+            return Default::default();
+        };
+        let types: Vec<(String, usize)> = match (&self.tree_mode, &self.round) {
+            (TreeMode::Order(v), _) => v.types.clone(),
+            (_, Some(r)) => r
+                .summary(&self.edits)
+                .into_iter()
+                .filter(|(l, _)| l != UNASSIGNED_LABEL)
+                .collect(),
+            _ => self
+                .tree
+                .typed_terms()
+                .map(|(l, _)| (l.to_string(), 0))
+                .collect(),
+        };
+        let mut data: std::collections::BTreeMap<String, Vec<(String, usize)>> = Default::default();
+        for (t, n) in types {
+            if let Some(id) = super::ontology::term_of(cl, &self.tree, &t).filter(|id| cl.has(id)) {
+                data.entry(id).or_default().push((t, n));
+            }
+        }
+        data
     }
 
     fn ontology_key(&mut self, code: KeyCode) -> bool {
         let (TreeMode::Ontology(v), Some(cl)) = (&mut self.tree_mode, &self.cl) else {
             return false;
         };
-        step(&mut v.sel, v.rows.len(), code);
+        match v.key(cl, code) {
+            ViewKey::Taken => return true,
+            ViewKey::NoData => {
+                self.status = "no type of the data sits on a Cell Ontology term".into();
+                return true;
+            }
+            ViewKey::Other => {}
+        }
         match code {
-            KeyCode::Right => v.enter(cl),
-            KeyCode::Left => v.up(cl),
-            KeyCode::Char('/') => v.typing = Some(String::new()),
             KeyCode::Enter => {
                 if let Some(id) = v.selected().map(|r| r.id.clone()) {
                     self.pick_term(&id);
@@ -2198,23 +3115,28 @@ impl App {
 /// stopping it could leave a round half-written.
 impl Drop for App {
     fn drop(&mut self) {
-        if let Some((mut c, _, job)) = self.child.take() {
-            if !matches!(job, Job::Save(_)) {
-                let _ = c.kill();
+        if let Some(mut r) = self.child.take() {
+            if !matches!(r.job, Job::Save(_)) {
+                let _ = r.child.kill();
             }
-            let _ = c.wait();
+            let _ = r.child.wait();
         }
         self.stop_rescoring();
     }
 }
 
+/// The status line when a trajectory menu is closed without a choice.
+const NOT_STARTED: &str = "no trajectory run started";
+
+/// What the thumbnail grid's keys do.
+const GRID_KEYS: &str =
+    "arrows choose · Enter, space or 1-9 opens · p exports it · f exports · t c restyle · V table · esc or w closes";
+
 /// The labels file a trajectory run on `loaded` recorded in its settings,
 /// resolved against the manifest's directory, when it is still there.
 pub(super) fn recorded_labels(loaded: &crate::manifest::run::Loaded) -> Option<String> {
     let settings = loaded.manifest.trajectory.settings.as_ref()?;
-    let rel = settings.get("labels")?.as_str()?;
-    let path = crate::manifest::run::resolve(&loaded.dir, rel);
-    Path::new(&path).is_file().then_some(path)
+    loaded.recorded(settings.get("labels")?.as_str()?)
 }
 
 /// `X.decisions.jsonl` for round `X.senna.json`: what a save hands relabel.
@@ -2252,12 +3174,7 @@ fn evidence(c: &super::round::Candidate) -> String {
     s
 }
 
-pub(super) fn file_name(p: &Path) -> String {
-    p.file_name().map_or_else(
-        || p.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    )
-}
+pub(super) use crate::manifest::family::file_name;
 
 /// Rows a page key moves.
 const PAGE: usize = 10;

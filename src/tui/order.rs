@@ -4,8 +4,9 @@
 //! unrelated; the statement goes to the project's `precedence.tsv`.
 
 use crate::annotate::celltype_tree::ClTerms;
+use crate::annotate::panel_tree::PanelTree;
 use crate::manifest::data_files::{append_row, SearchPath, PRECEDENCE};
-use crate::manifest::run::{annotated_path, derive_out_prefix, load, resolve};
+use crate::manifest::run::{load, resolve};
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
 use crate::trajectory::prior::{self, Prior, Relation, Source, Statement};
 use std::path::{Path, PathBuf};
@@ -22,11 +23,7 @@ pub struct TrajectoryRun {
 
 /// The first `{stem}.T{k}` (k = 1, 2, …) beside `source` with no manifest yet.
 pub fn default_out(source: &Path) -> String {
-    let stem = derive_out_prefix(&source.to_string_lossy());
-    (1..)
-        .map(|k| format!("{stem}.T{k}"))
-        .find(|o| !annotated_path(source, o).exists())
-        .expect("some name is free")
+    crate::manifest::family::Tag::Trajectory.next_free(source)
 }
 
 /// A direct edge of the prior as the table shows it.
@@ -56,6 +53,16 @@ pub struct OrderView {
     pub sel: usize,
     /// Where a statement is written: the project's `precedence.tsv`.
     pub file: Option<PathBuf>,
+    /// The types on the Cell Ontology, as annotate's tree pane draws them,
+    /// and the row selected in it.
+    pub tree: PanelTree,
+    pub tree_sel: usize,
+    /// The full ontology in place of `tree` (`o`).
+    pub ontology: Option<super::ontology::OntologyView>,
+    /// How many types map to a term, and the ontology's develops-from
+    /// links among them.
+    pub mapped: usize,
+    pub links: usize,
 }
 
 impl OrderView {
@@ -78,7 +85,24 @@ impl OrderView {
             Ok(p) => (Some(p), None),
             Err(e) => (None, Some(e.to_string())),
         };
+        let panel: Vec<(String, String)> = types
+            .iter()
+            .map(|(t, _)| (String::new(), t.clone()))
+            .collect();
+        let mapped = cl.map_or(0, |cl| cl.map_labels(refs.iter().copied()).0.len());
+        let links = statements
+            .iter()
+            .filter(|s| {
+                matches!(s.source, Source::Cl | Source::ClInherited)
+                    && s.relation == Relation::Precedes
+            })
+            .count();
         Self {
+            tree: crate::manifest::ontology::panel_tree_on(cl, &panel),
+            tree_sel: 0,
+            ontology: None,
+            mapped,
+            links,
             types,
             statements,
             prior,

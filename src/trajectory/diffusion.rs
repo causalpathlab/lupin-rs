@@ -33,6 +33,7 @@ use legume_numeric::matrix::utils::median;
 use log::warn;
 use nalgebra::DMatrix;
 use nalgebra_sparse::CscMatrix;
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 /// Diffusion components computed, as `tl.diffmap(n_comps=15)`; DPT uses the
@@ -267,10 +268,12 @@ impl DiffusionMap {
                 .map(|(_, c)| c)
                 .collect();
         }
-        pool.iter()
-            .map(|&c| (c, pool.iter().map(|&o| self.distance(c, o)).sum::<f64>()))
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(c, _)| c)
+        // Ties go to the first in the pool, as in a serial scan.
+        pool.par_iter()
+            .enumerate()
+            .map(|(k, &c)| (pool.iter().map(|&o| self.distance(c, o)).sum::<f64>(), k, c))
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+            .map(|(_, _, c)| c)
     }
 
     /// Each cell's DPT distance to the nearest of `roots`.
@@ -384,6 +387,16 @@ fn transition_eigenpairs(s: &CscMatrix<f64>, n_dcs: usize) -> Result<(Vec<f32>, 
                 DMatrix::from_columns(&pairs.iter().map(|&(_, c)| u.column(c)).collect::<Vec<_>>());
             return Ok((evals, evecs));
         }
+        // Another try: say so on the progress popup, halfway through the
+        // stage at most.
+        let tries = (MAX_POWER_ITERS / EIGEN_ARGS.power_iters).ilog2() as usize + 1;
+        let tried = (args.power_iters / EIGEN_ARGS.power_iters).ilog2() as usize + 1;
+        super::run::STAGES.within(
+            super::run::STAGE_DIFFUSION,
+            tried,
+            2 * tries,
+            Some(&format!("{} power iterations", 2 * args.power_iters)),
+        );
         ensure!(
             args.power_iters < MAX_POWER_ITERS,
             "diffusion components did not converge (residual {worst:.2e} after {} power \

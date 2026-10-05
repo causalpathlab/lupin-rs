@@ -15,11 +15,17 @@ use std::path::Path;
 /// specific layer; `fetch` says whether what is missing may be downloaded.
 pub fn load(
     run_dir: Option<&Path>,
+    panel: &str,
     obo: Option<&str>,
     label_cl: Option<&str>,
     fetch: Fetch,
 ) -> Result<ClData> {
-    ClData::load(SearchPath::new(run_dir), obo, label_cl, fetch)
+    ClData::load(
+        SearchPath::new(run_dir).with_panel(panel),
+        obo,
+        label_cl,
+        fetch,
+    )
 }
 
 /// The coarse level over `panel`: on the Cell Ontology when there is one and

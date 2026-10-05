@@ -63,7 +63,7 @@ pub fn spawn_preview(
         decisions.to_string_lossy().into_owned(),
         "--preview".into(),
     ];
-    let mut child = start(&argv, log, Stdio::piped())?;
+    let mut child = start(&argv, log, Stdio::piped(), false)?;
     let mut stdout = child.stdout.take().context("no stdout from the child")?;
     let (tx, rx) = channel();
     std::thread::spawn(move || {
@@ -76,14 +76,21 @@ pub fn spawn_preview(
 }
 
 /// Start this `lupin` with `argv`, its stderr sent to `log` line by line.
+/// It reports its progress there too, as `@progress` lines (see
+/// [`crate::progress`]), for the popup.
 fn spawn(argv: &[String], log: Sender<String>) -> Result<Child> {
-    start(argv, log, Stdio::null())
+    start(argv, log, Stdio::null(), true)
 }
 
-/// [`spawn`], with the child's stdout as `stdout`.
-fn start(argv: &[String], log: Sender<String>, stdout: Stdio) -> Result<Child> {
+/// [`spawn`], with the child's stdout as `stdout`; `progress` asks it for
+/// `@progress` lines.
+fn start(argv: &[String], log: Sender<String>, stdout: Stdio, progress: bool) -> Result<Child> {
     let exe = std::env::current_exe().context("locating the lupin executable")?;
-    let mut child = Command::new(exe)
+    let mut cmd = Command::new(exe);
+    if progress {
+        cmd.env(crate::progress::ENV, "1");
+    }
+    let mut child = cmd
         .args(argv)
         .env("RUST_LOG", "info")
         .stdin(Stdio::null())

@@ -56,12 +56,7 @@ impl FileRecord {
     }
 }
 
-fn mtime_of(m: &std::fs::Metadata) -> u64 {
-    m.modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_secs())
-}
+use crate::manifest::family::mtime_of;
 
 /// One export: the PDF's path, what and when, and its trace.
 #[derive(Clone, Debug, Serialize, Deserialize)]

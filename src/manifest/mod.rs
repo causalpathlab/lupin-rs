@@ -5,6 +5,7 @@
 pub mod annotate;
 pub mod ask;
 pub mod data_files;
+pub mod family;
 pub mod first_round;
 pub mod ontology;
 pub mod pinto;
