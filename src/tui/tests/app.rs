@@ -528,8 +528,15 @@ fn the_form_refuses_to_run_without_a_panel_and_enter_on_it_asks_for_one() {
         setting_row(Setting::Markers),
         "back on the panel row"
     );
-    // Enter there asks for a file and starts nothing.
+    // Enter there asks where the panel comes from; a file is picked in the
+    // file browser, and nothing starts.
     press(&mut app, KeyCode::Enter);
+    if crate::manifest::panels::names().is_empty() {
+        assert!(app.menu.is_none(), "no bundled panels: the file browser");
+    } else {
+        assert!(app.menu.is_some(), "a file or a bundled panel");
+        press(&mut app, KeyCode::Char('1'));
+    }
     assert_eq!(app.want_file, Some(FileWant::Markers));
     assert!(app.form.is_some() && app.child.is_none());
     // Enter on a value row only says how to run.
@@ -826,5 +833,34 @@ fn switching_runs_gives_the_order_view_the_edges_of_what_is_shown() {
     assert!(
         !v.edges.iter().any(|e| e.is_pair("CT8", "CT9")),
         "the earlier trajectory's edges are gone"
+    );
+}
+
+#[test]
+#[cfg(feature = "panels")]
+fn a_bundled_panel_chosen_in_the_form_becomes_its_marker_panel() {
+    use super::super::app::{setting_row, Setting};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = form_app(dir.path());
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('A'));
+    app.form.as_mut().unwrap().row = setting_row(Setting::Markers);
+    press(&mut app, KeyCode::Enter);
+    let m = app.menu.as_ref().expect("the panel's source");
+    let k = m
+        .choices
+        .iter()
+        .find(|c| c.label.ends_with("example"))
+        .expect("the bundled example")
+        .key;
+    press(&mut app, KeyCode::Char(k));
+    assert!(
+        app.args.markers.ends_with("example.tsv"),
+        "{}",
+        app.args.markers
+    );
+    assert!(
+        app.form.is_some() && app.child.is_none(),
+        "back to the form"
     );
 }

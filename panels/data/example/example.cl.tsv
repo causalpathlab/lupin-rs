@@ -1,0 +1,4 @@
+# Labels of the example panel mapped to Cell Ontology terms.
+# Columns: label, CL id, note.
+CT1	CL:9000001	placeholder term
+CT2	CL:9000002	placeholder term

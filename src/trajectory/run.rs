@@ -398,8 +398,11 @@ fn gather_statements(
 ) -> Result<Vec<Vec<Statement>>> {
     let mut layers: Vec<Vec<Statement>> = Vec::new();
     if !args.prior_only {
+        // The run's marker panel, for its alias sidecar.
+        let panel = crate::annotate_cmd::recorded_markers(loaded).unwrap_or_default();
         let data = crate::manifest::ontology::load(
             Some(&loaded.dir),
+            &panel,
             args.obo.as_deref(),
             args.label_cl.as_deref(),
             Fetch::Allowed,

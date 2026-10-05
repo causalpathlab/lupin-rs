@@ -26,6 +26,10 @@ pub enum Action {
     NotNow,
     /// List the run's family: the run, its rounds, its trajectories (`g`).
     ListRuns,
+    /// Pick the marker panel's file in the file browser.
+    MarkerFile,
+    /// Use this bundled panel (`panel:<name>`) as the marker panel.
+    Bundled(String),
     /// Show this member of the run's family; with `drop_edits`, even over
     /// unsaved edits.
     OpenRun {

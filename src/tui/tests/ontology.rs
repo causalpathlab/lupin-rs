@@ -133,6 +133,7 @@ fn only_a_listed_mix_is_a_mix() {
         cache: None,
         user: None,
         project: Some(root.path().join("lupin")),
+        panel: None,
     };
     let mut m = Mixed::load(&search).unwrap();
     // A `+` is part of many panel names: never read as a mix.

@@ -134,11 +134,11 @@ run's types.
    ancestor of B (CL coverage is sparse: CT3 may have no `develops_from` of
    its own). Inherited statements are tagged `cl-inherited`.
 2. **`precedence.tsv`**, `from<TAB>to<TAB>relation<TAB>note` with `relation`
-   `precedes` or `unrelated`. It is a data file like `cl_aliases.tsv`, found
+   `precedes` or `unrelated`. It is a data file like the project's `cl_aliases.tsv`, found
    along the same search path: the user's config, then the project's `lupin/`
    directory beside the run, then a file named by `--prior` for this run only
    (a named file that does not exist is an error, not a warning). The TUI
-   (§6) appends to the project layer, as remembered aliases are.
+   (§6) appends to the project layer.
 
 **Combining.** Statements are about a pair of types. A later layer's
 statement about {A, B} replaces every earlier statement about that pair,

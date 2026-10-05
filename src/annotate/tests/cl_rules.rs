@@ -65,17 +65,16 @@ fn aliases_layer_and_compare_as_labels() {
     assert_eq!(a.len(), 2);
     // As `--label-cl` maps have been written: commas, a header, an NA row.
     let n = a.add_tsv(
-        "cell_type,cl_id\nCD4 T,CL:0000624\nDoublet\tNA\nbroken line\n",
+        "cell_type,cl_id\nCT1 x,CL:9000001\nCT9\tNA\nbroken line\n",
         "x",
     );
     assert_eq!(n, 1, "only the CL pair is taken");
-    assert_eq!(a.get("cd4_t"), Some("CL:0000624"));
+    assert_eq!(a.get("ct1_x"), Some("CL:9000001"));
 }
 
 #[test]
-fn the_shipped_aliases_parse() {
-    let mut a = Aliases::default();
-    let n = a.add_tsv(include_str!("../../../data/cl_aliases.tsv"), "shipped");
-    assert!(n > 10);
-    assert_eq!(a.get("CD14 Mono"), Some("CL:0001054"));
+fn no_alias_table_ships_with_lupin() {
+    // Label aliases are data about a marker panel: they travel with it.
+    let data = concat!(env!("CARGO_MANIFEST_DIR"), "/data");
+    assert!(!std::path::Path::new(data).join("cl_aliases.tsv").exists());
 }

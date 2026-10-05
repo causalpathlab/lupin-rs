@@ -1,21 +1,24 @@
 //! lupin's data files, kept out of the binary: the Cell Ontology
-//! (`cl-basic.obo`), the matching rules (`cl_matching.json`) and the curated
-//! aliases (`cl_aliases.tsv`). Each is found on a search path and can be
-//! amended without rebuilding:
+//! (`cl-basic.obo`) and the matching rules (`cl_matching.json`). Each is found
+//! on a search path and can be amended without rebuilding:
 //!
 //! 1. **base**: the install's `share/lupin/` (`LUPIN_DATA_DIR` overrides),
 //!    else the `data/` of the source this binary was built from (a checkout,
 //!    or the crate `cargo install` unpacked) while it is still there, else
-//!    the user cache, filled by download (the rules and aliases from this
-//!    release's tag of the repository, the ontology from the rules'
-//!    `ontology_url`) unless `LUPIN_OFFLINE` is set;
+//!    the user cache, filled by download (the rules from this release's tag
+//!    of the repository, the ontology from the rules' `ontology_url`) unless
+//!    `LUPIN_OFFLINE` is set;
 //! 2. **user**: `~/.config/lupin/` (`LUPIN_CONFIG_DIR` overrides);
 //! 3. **project**: `lupin/` beside the run manifest;
 //! 4. **run**: a file named on the command line (`--label-cl`, `--obo`).
 //!
-//! Rules layer key by key, aliases row by row, later layers winning; the
-//! ontology is the most specific one found. [`ClData::sources`] says which
-//! files were read, for the run's record.
+//! Label aliases (`label<TAB>CL:id<TAB>note`, for labels name matching
+//! cannot settle) are data about a marker panel, not about lupin: none ship
+//! with it. They are read from the panel's sidecar (`x.tsv.gz` →
+//! `x.cl.tsv`, see [`sidecar_of`]), then the user's and the project's
+//! `cl_aliases.tsv`, then `--label-cl`, row by row, later layers winning.
+//! Rules layer key by key; the ontology is the most specific one found.
+//! [`ClData::record`] says which files were read, for the run's record.
 //!
 //! The Gene Ontology (`go-basic.obo`), which names the terms of a GO pass, and
 //! a species' GO annotations (`goa_human.gaf.gz`, ...) are found the same way
@@ -58,6 +61,22 @@ pub struct SearchPath {
     pub cache: Option<PathBuf>,
     pub user: Option<PathBuf>,
     pub project: Option<PathBuf>,
+    /// The marker panel's alias sidecar ([`sidecar_of`]), whether or not it
+    /// exists yet.
+    pub panel: Option<PathBuf>,
+}
+
+/// The alias sidecar of marker panel `panel`: its table extensions
+/// (`.gz`, then `.tsv`, `.txt` or `.csv`) replaced by `.cl.tsv`, beside it.
+#[must_use]
+pub fn sidecar_of(panel: &Path) -> Option<PathBuf> {
+    let name = panel.file_name()?.to_str()?;
+    let base = name.strip_suffix(".gz").unwrap_or(name);
+    let base = [".tsv", ".txt", ".csv"]
+        .iter()
+        .find_map(|e| base.strip_suffix(e))
+        .unwrap_or(base);
+    (!base.is_empty()).then(|| panel.with_file_name(format!("{base}.cl.tsv")))
 }
 
 impl SearchPath {
@@ -74,6 +93,7 @@ impl SearchPath {
                 cache: None,
                 user: None,
                 project,
+                panel: None,
             };
         }
         let env_dir = |k: &str| std::env::var_os(k).map(PathBuf::from);
@@ -93,7 +113,51 @@ impl SearchPath {
             cache,
             user,
             project,
+            panel: None,
         }
+    }
+
+    /// The search path with marker panel `panel`'s sidecar as the first
+    /// alias layer; an empty name leaves it without one.
+    #[must_use]
+    pub fn with_panel(mut self, panel: &str) -> Self {
+        self.panel = (!panel.is_empty())
+            .then(|| sidecar_of(Path::new(panel)))
+            .flatten();
+        self
+    }
+
+    /// The alias files, least specific first: the panel's sidecar, then the
+    /// user's and the project's `cl_aliases.tsv`, those that exist.
+    #[must_use]
+    pub fn alias_layers(&self) -> Vec<PathBuf> {
+        [&self.panel]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .chain(
+                [&self.user, &self.project]
+                    .into_iter()
+                    .flatten()
+                    .map(|d| d.join(ALIASES)),
+            )
+            .filter(|p| p.is_file())
+            .collect()
+    }
+
+    /// Where a label's alias chosen in the TUI is written: the panel's
+    /// sidecar when its directory takes a new file, else the project's
+    /// (else the user's) `cl_aliases.tsv`.
+    #[must_use]
+    pub fn alias_target(&self) -> Option<PathBuf> {
+        let writable = |p: &Path| {
+            p.parent()
+                .is_some_and(|d| d.metadata().is_ok_and(|m| !m.permissions().readonly()))
+        };
+        self.panel
+            .clone()
+            .filter(|p| writable(p))
+            .or_else(|| self.amend(ALIASES))
     }
 
     /// Where the cache keeps `name`: an ontology whatever the release, the
@@ -232,7 +296,7 @@ impl ClData {
                  Cell Ontology literally, by name and exact synonym only"
             );
         }
-        let mut alias_files = search.layers(ALIASES, online);
+        let mut alias_files = search.alias_layers();
         alias_files.extend(run_aliases.and_then(|f| search.run_file(f)));
         let ontology = match explicit_obo {
             Some(f) => search.run_file(f),
@@ -504,7 +568,7 @@ pub enum DataCmd {
         #[arg(long, short = 'f')]
         from: Option<Box<str>>,
     },
-    /// Download this release's rules and aliases, the Cell Ontology, the Gene
+    /// Download this release's matching rules, the Cell Ontology, the Gene
     /// Ontology and the human and mouse GO annotations into the cache (for
     /// machines that will run offline)
     Fetch {
@@ -533,10 +597,13 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
             show("project", search.project.clone());
             println!();
             let gafs = [Species::Human, Species::Mouse].map(Species::gaf_file);
-            for name in [RULES, ALIASES, ONTOLOGY, GO_ONTOLOGY]
-                .into_iter()
-                .chain(gafs)
-            {
+            println!(
+                "aliases   the panel's sidecar (x.tsv.gz → x.cl.tsv), then user and project {ALIASES}, then --label-cl"
+            );
+            for p in search.alias_layers() {
+                println!("  {}", p.display());
+            }
+            for name in [RULES, ONTOLOGY, GO_ONTOLOGY].into_iter().chain(gafs) {
                 let found = search.layers(name, false);
                 println!("{name}:");
                 if found.is_empty() {
@@ -558,7 +625,8 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
         }
         DataCmd::Fetch { force } => {
             let search = SearchPath::new(None);
-            for name in [RULES, ALIASES] {
+            {
+                let name = RULES;
                 let to = search.cached(name).context("no cache directory")?;
                 if *force || !to.is_file() {
                     fetch_into(name, &to, None)?;

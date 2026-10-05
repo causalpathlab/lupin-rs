@@ -8,6 +8,7 @@ pub mod data_files;
 pub mod family;
 pub mod first_round;
 pub mod ontology;
+pub mod panels;
 pub mod pinto;
 pub mod recalibrate;
 pub mod rounds;
