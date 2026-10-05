@@ -202,22 +202,19 @@ project `lupin/` folder beside the run manifest; and `--obo` for one run.
 Without a rules file, matching is literal (names and exact synonyms).
 
 Labels that matching cannot settle are mapped by **aliases**,
-`label<TAB>CL:id<TAB>note` rows. lupin ships none: aliases describe a marker
-panel's labels, so they travel with the panel. They are read, row by row and
-later layers winning, from the panel's sidecar (`x.tsv.gz` → `x.cl.tsv`
-beside it), then `cl_aliases.tsv` in `~/.config/lupin/` and in the project's
-`lupin/`, then `--label-cl` for one run. Each pass records the files and
-ontology release it used under `annotate.settings.enrichment.cell_ontology`.
+`label<TAB>CL:id<TAB>note` rows, kept as data rather than code. They are
+read row by row, later layers winning:
 
-## Bundled marker panels
+1. the shared abbreviations, `data/cl_aliases.tsv` in this repository,
+   downloaded from the release's tag and cached (`lupin data fetch`); not
+   packaged with the crate, and skipped offline when nothing is cached;
+2. the panel's sidecar, `x.cl.tsv` beside a panel `x.tsv.gz`;
+3. `cl_aliases.tsv` in `~/.config/lupin/`, then in the project's `lupin/`;
+4. `--label-cl` for one run.
 
-Marker panels can ship as data in the `lupin-panels` crate (`panels/` in this
-repository), each with its table, its Cell Ontology sidecar and a README on
-its source and licence. Name one with `--markers panel:<name>`; the TUI's
-annotation form offers them beside picking a file. lupin writes the panel into
-its cache as ordinary files and the run records the panel's name and the
-crate's version. `panels/README.md` describes the format and how to add a
-panel.
+To change a shared row, map the label in any later layer. Each pass records
+the files and ontology release it used under
+`annotate.settings.enrichment.cell_ontology`.
 
 ```sh
 lupin data where -f run.senna.json   # which file each layer contributes

@@ -1775,7 +1775,7 @@ impl App {
                 self.run_form();
             }
             KeyCode::Enter => match at {
-                Setting::Markers => self.ask_marker_source(),
+                Setting::Markers => self.want_file = Some(FileWant::Markers),
                 Setting::Output => self.ask_output(),
                 Setting::Run => self.run_form(),
                 _ => self.status = format!("{} starts the pass", self.run_keys()),
@@ -2262,14 +2262,6 @@ impl App {
             Action::PriorFile => self.want_file = Some(FileWant::Prior),
             Action::LabelCl => self.want_file = Some(FileWant::LabelCl),
             Action::LabelsFile => self.want_file = Some(FileWant::Labels),
-            Action::MarkerFile => self.want_file = Some(FileWant::Markers),
-            Action::Bundled(name) => {
-                let named = format!("{}{name}", crate::manifest::panels::PREFIX);
-                match crate::manifest::panels::resolve(&named) {
-                    Ok((path, _)) => self.set_markers(Some(Path::new(&path))),
-                    Err(e) => self.status = format!("{e:#}"),
-                }
-            }
             Action::Annotate => self.open_form(AfterPass::Run),
             Action::RunTrajectory => self.ask_trajectory_out(),
             Action::NotNow => {
@@ -2548,35 +2540,6 @@ impl App {
 
     /// Take `path` as the marker panel (picked in the file browser from the
     /// annotation form, which stays open to run).
-    /// Where the marker panel comes from: a file, or one of the bundled
-    /// panels when this lupin has any.
-    fn ask_marker_source(&mut self) {
-        let bundled = crate::manifest::panels::names();
-        if bundled.is_empty() {
-            self.want_file = Some(FileWant::Markers);
-            return;
-        }
-        let mut items = vec![(
-            "A file".to_string(),
-            "a gene<TAB>cell type table picked in the file browser".to_string(),
-            Action::MarkerFile,
-        )];
-        items.extend(bundled.into_iter().map(|n| {
-            (
-                format!("Bundled panel {n}"),
-                format!(
-                    "panel:{n}, from the lupin-panels crate; its README says where it comes from"
-                ),
-                Action::Bundled(n.to_string()),
-            )
-        }));
-        self.menu = Some(Menu::new(
-            "Which marker panel should the pass use?",
-            super::menu::numbered(items),
-            "no marker panel picked",
-        ));
-    }
-
     pub fn set_markers(&mut self, path: Option<&Path>) {
         let Some(path) = path else {
             self.status = "no marker panel picked".into();

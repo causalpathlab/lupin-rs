@@ -240,7 +240,6 @@ fn record(
             // Stored like every other path here, relative to the manifest,
             // so it still resolves when read from another directory.
             a.markers = Some(crate::manifest::run::rel_to_manifest(dir, markers));
-            a.panel = super::panels::bundled_of(Path::new(markers));
             a.argmax = rel(&out.argmax);
             a.annotation = rel(&out.annotation);
             a.cluster_celltype_q = rel(&out.cluster_celltype_q);

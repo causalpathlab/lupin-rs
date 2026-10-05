@@ -137,10 +137,6 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
             }
         };
     }
-    // A bundled panel (`panel:<name>`) becomes files in the cache.
-    args.markers = crate::manifest::panels::resolve(&args.markers)?
-        .0
-        .into_boxed_str();
     // Passes start from the manifest opened. Without `-o`, annotate offers
     // its first round (`.L1`), so reopening the run picks its rounds up
     // again; the trajectory's view offers the next free round under it,

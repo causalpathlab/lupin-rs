@@ -71,10 +71,3 @@ fn aliases_layer_and_compare_as_labels() {
     assert_eq!(n, 1, "only the CL pair is taken");
     assert_eq!(a.get("ct1_x"), Some("CL:9000001"));
 }
-
-#[test]
-fn no_alias_table_ships_with_lupin() {
-    // Label aliases are data about a marker panel: they travel with it.
-    let data = concat!(env!("CARGO_MANIFEST_DIR"), "/data");
-    assert!(!std::path::Path::new(data).join("cl_aliases.tsv").exists());
-}

@@ -13,10 +13,13 @@
 //! 4. **run**: a file named on the command line (`--label-cl`, `--obo`).
 //!
 //! Label aliases (`label<TAB>CL:id<TAB>note`, for labels name matching
-//! cannot settle) are data about a marker panel, not about lupin: none ship
-//! with it. They are read from the panel's sidecar (`x.tsv.gz` →
-//! `x.cl.tsv`, see [`sidecar_of`]), then the user's and the project's
-//! `cl_aliases.tsv`, then `--label-cl`, row by row, later layers winning.
+//! cannot settle) are data, kept out of the code: a shared abbreviation
+//! table (`cl_aliases.tsv`, found as the base layer above: downloaded from
+//! this release's tag of the repository and cached, never packaged), then
+//! the panel's sidecar (`x.tsv.gz` → `x.cl.tsv`, see [`sidecar_of`]), then
+//! the user's and the project's `cl_aliases.tsv`, then `--label-cl`, row by
+//! row, later layers winning. Offline with nothing cached there is no shared
+//! layer, which is said once and is not an error.
 //! Rules layer key by key; the ontology is the most specific one found.
 //! [`ClData::record`] says which files were read, for the run's record.
 //!
@@ -127,14 +130,15 @@ impl SearchPath {
         self
     }
 
-    /// The alias files, least specific first: the panel's sidecar, then the
-    /// user's and the project's `cl_aliases.tsv`, those that exist.
+    /// The alias files, least specific first: the shared abbreviation table
+    /// (this release's `cl_aliases.tsv`, downloaded when `download` says so),
+    /// then the panel's sidecar, then the user's and the project's
+    /// `cl_aliases.tsv`, those that exist.
     #[must_use]
-    pub fn alias_layers(&self) -> Vec<PathBuf> {
-        [&self.panel]
+    pub fn alias_layers(&self, download: bool) -> Vec<PathBuf> {
+        self.base(ALIASES, download)
             .into_iter()
-            .flatten()
-            .cloned()
+            .chain(self.panel.iter().cloned())
             .chain(
                 [&self.user, &self.project]
                     .into_iter()
@@ -176,22 +180,7 @@ impl SearchPath {
     /// layer is the install's copy, else the cache's, downloaded when
     /// `download` says so.
     fn layers(&self, name: &str, download: bool) -> Vec<PathBuf> {
-        let mut out = Vec::new();
-        let shipped = [&self.install, &self.source]
-            .into_iter()
-            .flatten()
-            .map(|d| d.join(name))
-            .find(|p| p.is_file());
-        match shipped {
-            Some(p) => out.push(p),
-            None => {
-                if let Some(p) = self.cached(name) {
-                    if p.is_file() || (download && fetch_into(name, &p, None).is_ok()) {
-                        out.push(p);
-                    }
-                }
-            }
-        }
+        let mut out: Vec<PathBuf> = self.base(name, download).into_iter().collect();
         out.extend(
             [&self.user, &self.project]
                 .into_iter()
@@ -200,6 +189,21 @@ impl SearchPath {
                 .filter(|p| p.is_file()),
         );
         out
+    }
+
+    /// The base layer's `name`: the install's or the source's copy, else the
+    /// cache's, downloaded when `download` says so; `None` when there is none
+    /// (offline with nothing cached).
+    fn base(&self, name: &str, download: bool) -> Option<PathBuf> {
+        let shipped = [&self.install, &self.source]
+            .into_iter()
+            .flatten()
+            .map(|d| d.join(name))
+            .find(|p| p.is_file());
+        shipped.or_else(|| {
+            let p = self.cached(name)?;
+            (p.is_file() || (download && fetch_into(name, &p, None).is_ok())).then_some(p)
+        })
     }
 
     /// A file named on the command line: as given, else beside the run
@@ -296,7 +300,12 @@ impl ClData {
                  Cell Ontology literally, by name and exact synonym only"
             );
         }
-        let mut alias_files = search.alias_layers();
+        let mut alias_files = search.alias_layers(online);
+        if search.base(ALIASES, false).is_none() {
+            info!(
+                "no shared {ALIASES} (offline, nothing cached): labels match by name, the panel's sidecar and your own alias files"
+            );
+        }
         alias_files.extend(run_aliases.and_then(|f| search.run_file(f)));
         let ontology = match explicit_obo {
             Some(f) => search.run_file(f),
@@ -568,7 +577,7 @@ pub enum DataCmd {
         #[arg(long, short = 'f')]
         from: Option<Box<str>>,
     },
-    /// Download this release's matching rules, the Cell Ontology, the Gene
+    /// Download this release's matching rules and shared abbreviations, the Cell Ontology, the Gene
     /// Ontology and the human and mouse GO annotations into the cache (for
     /// machines that will run offline)
     Fetch {
@@ -598,9 +607,9 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
             println!();
             let gafs = [Species::Human, Species::Mouse].map(Species::gaf_file);
             println!(
-                "aliases   the panel's sidecar (x.tsv.gz → x.cl.tsv), then user and project {ALIASES}, then --label-cl"
+                "aliases   the shared {ALIASES} (downloaded), then the panel's sidecar (x.tsv.gz → x.cl.tsv), then user and project {ALIASES}, then --label-cl"
             );
-            for p in search.alias_layers() {
+            for p in search.alias_layers(false) {
                 println!("  {}", p.display());
             }
             for name in [RULES, ONTOLOGY, GO_ONTOLOGY].into_iter().chain(gafs) {
@@ -625,8 +634,7 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
         }
         DataCmd::Fetch { force } => {
             let search = SearchPath::new(None);
-            {
-                let name = RULES;
+            for name in [RULES, ALIASES] {
                 let to = search.cached(name).context("no cache directory")?;
                 if *force || !to.is_file() {
                     fetch_into(name, &to, None)?;

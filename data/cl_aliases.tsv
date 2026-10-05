@@ -1,0 +1,35 @@
+# Shared abbreviations: marker-panel labels mapped to Cell Ontology terms,
+# where name matching cannot (or should not) decide. Checked against
+# cl-basic.obo 2026-06-08. Not packaged with lupin: it is downloaded from
+# this release's tag of the repository and cached (`lupin data fetch`).
+# Layered lowest: this file, then the panel's sidecar (x.tsv.gz -> x.cl.tsv),
+# then ~/.config/lupin/cl_aliases.tsv, then <run dir>/lupin/cl_aliases.tsv,
+# then --label-cl; later files win, row by row. To override a row, map the
+# label in any of those; with LUPIN_OFFLINE set and nothing cached, this
+# layer is skipped.
+# Columns: label, CL id, note. Labels compare as lupin labels do (case,
+# spaces, commas and underscores do not matter).
+label	cl_id	note
+HSPC	CL:0008001	hematopoietic precursor cell (umbrella)
+Prog Mk	CL:0000553	megakaryocyte progenitor cell
+Early Eryth	CL:0000765	erythroblast (coarser than the label)
+Late Eryth	CL:0000765	erythroblast (coarser than the label)
+pro B	CL:0000826	pro-B cell
+pre B	CL:0000817	precursor B cell
+transitional B	CL:0000818	transitional stage B cell
+Naive B	CL:0000788	naive B cell
+Memory B	CL:0000787	memory B cell
+Plasma	CL:0000786	plasma cell
+NK	CL:0000623	natural killer cell
+NK CD56bright	CL:0000938	CD16-negative, CD56-bright natural killer cell, human
+ILC	CL:0001065	innate lymphoid cell
+CD4 T	CL:0000624	CD4-positive, alpha-beta T cell
+CD8 T	CL:0000625	CD8-positive, alpha-beta T cell
+CD4 Naive	CL:0000895	naive thymus-derived CD4-positive, alpha-beta T cell
+CD8 Naive	CL:0000900	naive thymus-derived CD8-positive, alpha-beta T cell
+Mono	CL:0000576	monocyte
+CD14 Mono	CL:0001054	CD14-positive monocyte
+CD16 Mono	CL:0002396	CD14-low, CD16-positive monocyte
+DC	CL:0000451	dendritic cell
+cDC2	CL:0002399	CD1c-positive myeloid dendritic cell
+Stromal	CL:0000499	stromal cell

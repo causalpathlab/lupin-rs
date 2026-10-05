@@ -52,7 +52,7 @@ pub struct AnnotateCliArgs {
         long,
         short = 'm',
         default_value = "",
-        help = "Marker TSV (`gene<TAB>celltype`), or `panel:<name>` for a bundled panel; defaults to the round's `annotate.markers`. Omit for ontology-only follow-up on enrichment output"
+        help = "Marker TSV (`gene<TAB>celltype`); defaults to the round's `annotate.markers`. Omit for ontology-only follow-up on enrichment output"
     )]
     pub markers: Box<str>,
 
@@ -260,10 +260,6 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         .map(crate::manifest::run::load)
         .transpose()?;
     let mut args = args.clone();
-    // A bundled panel (`panel:<name>`) becomes files in the cache.
-    args.markers = crate::manifest::panels::resolve(&args.markers)?
-        .0
-        .into_boxed_str();
 
     // A round carries its marker panel (revised by `relabel`); use it when
     // no other source of labels is given.
@@ -387,18 +383,7 @@ fn round_markers(args: &AnnotateCliArgs, loaded: &crate::manifest::run::Loaded) 
 /// The marker panel `loaded` recorded, found again if the run moved (a path
 /// from another machine is looked up by its tail); `None` when it is gone.
 pub(crate) fn recorded_markers(loaded: &crate::manifest::run::Loaded) -> Option<String> {
-    let a = &loaded.manifest.annotate;
-    loaded.recorded(a.markers.as_deref()?).or_else(|| {
-        // A bundled panel cleared from the cache is written out again.
-        let b = a.panel.as_ref()?;
-        let (path, _) = crate::manifest::panels::resolve(&format!(
-            "{}{}",
-            crate::manifest::panels::PREFIX,
-            b.name
-        ))
-        .ok()?;
-        Some(path)
-    })
+    loaded.recorded(loaded.manifest.annotate.markers.as_deref()?)
 }
 
 /// Settle a GO pass's ontology: `--go-obo`, else (in a pass without markers,

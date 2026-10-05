@@ -50,8 +50,12 @@ fn later_layers_win_and_every_file_read_is_recorded() {
         root.path().join("panels/x.cl.tsv"),
         "CT1\tCL:1\nCT3\tCL:2\n",
     );
-    // A table in the install is not read: no aliases ship with lupin.
-    write(root.path().join("share").join(ALIASES), "CT4\tCL:3\n");
+    // The shared table (here the install's copy) is the lowest layer: its
+    // CT3 row is overridden by the sidecar, its CT4 row stands.
+    write(
+        root.path().join("share").join(ALIASES),
+        "CT4\tCL:3\nCT3\tCL:5\n",
+    );
     write(root.path().join("run/lupin").join(ALIASES), "CT1\tCL:9\n");
     let run = root.path().join("run.tsv");
     write(run.clone(), "CT2\tCL:8\n");
@@ -74,15 +78,31 @@ fn later_layers_win_and_every_file_read_is_recorded() {
         Some("CL:9"),
         "the project beats the panel's sidecar"
     );
-    assert_eq!(d.aliases.get("ct3"), Some("CL:2"), "the sidecar is read");
-    assert_eq!(d.aliases.get("ct4"), None, "nothing from the install");
+    assert_eq!(
+        d.aliases.get("ct3"),
+        Some("CL:2"),
+        "the sidecar beats the shared table"
+    );
+    assert_eq!(
+        d.aliases.get("ct4"),
+        Some("CL:3"),
+        "the shared table is read"
+    );
     assert_eq!(
         d.aliases.get("ct2"),
         Some("CL:8"),
         "the run's file beats all"
     );
     assert_eq!(d.rule_files.len(), 2);
-    assert_eq!(d.alias_files.len(), 3, "sidecar, project and the run's own");
+    assert_eq!(
+        d.alias_files.len(),
+        4,
+        "shared, sidecar, project and the run's own"
+    );
+    assert!(
+        d.alias_files[0].ends_with(ALIASES),
+        "the shared table first"
+    );
     assert!(d.ontology.as_ref().unwrap().ends_with(ONTOLOGY));
     assert_eq!(
         d.search.amend(ALIASES).unwrap(),
@@ -252,5 +272,33 @@ fn go_annotations_are_found_beside_the_run_and_cached_across_releases() {
     assert_eq!(
         s.cached(Species::Mouse.gaf_file()).unwrap(),
         root.path().join("cache").join(Species::Mouse.gaf_file())
+    );
+}
+
+#[test]
+fn a_cached_shared_table_is_read_and_offline_without_one_is_fine() {
+    offline();
+    let root = tempfile::tempdir().unwrap();
+    let s = search(root.path());
+    // Offline, nothing cached: no shared layer and no error.
+    write(root.path().join("panels/x.cl.tsv"), "CT1\tCL:1\n");
+    let d = ClData::load(search(root.path()), None, None, Fetch::Allowed).unwrap();
+    assert_eq!(d.alias_files, [root.path().join("panels/x.cl.tsv")]);
+    // A table cached for this release is the shared layer, below the
+    // project's file.
+    write(s.cached(ALIASES).unwrap(), "CT2\tCL:2\nCT5\tCL:4\n");
+    write(root.path().join("run/lupin").join(ALIASES), "CT2\tCL:6\n");
+    let d = ClData::load(search(root.path()), None, None, Fetch::Never).unwrap();
+    assert_eq!(d.aliases.get("ct5"), Some("CL:4"));
+    assert_eq!(d.aliases.get("ct2"), Some("CL:6"), "the project wins");
+}
+
+#[test]
+fn the_shared_table_is_published_at_the_release_tag_and_not_packaged() {
+    assert!(release_url(ALIASES).ends_with("/data/cl_aliases.tsv"));
+    let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+    assert!(
+        manifest.contains("\"data/cl_aliases.tsv\""),
+        "excluded from the crate: it is downloaded"
     );
 }

@@ -266,10 +266,6 @@ pub struct RunAnnotate {
     /// Input marker TSV (provenance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markers: Option<String>,
-    /// The bundled panel `markers` was written from (`--markers
-    /// panel:<name>`): its name and the lupin-panels version.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub panel: Option<super::panels::Bundled>,
     /// The manifest this one was copied from when annotate wrote it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,

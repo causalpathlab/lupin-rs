@@ -16,6 +16,8 @@ exclude = [
     "**/.DS_Store",
     "lupin-README.md.bak",
     "dev/**",
+    # Downloaded at run time, not packaged: the shared abbreviations.
+    "data/cl_aliases.tsv",
 ]
 
 [[bin]]
@@ -23,9 +25,7 @@ name = "lupin"
 path = "src/main.rs"
 
 [features]
-default = ["panels"]
-# Marker panels bundled as data (`--markers panel:<name>`).
-panels = ["dep:lupin-panels"]
+default = []
 hdf5 = ["data-beans/hdf5"]
 cuda = [
     "candle-core/cuda",
@@ -57,9 +57,6 @@ tempfile = "3"
 nalgebra = "0.34"
 nalgebra-sparse = "0.11"
 
-# Marker panels, as data in their own crate
-lupin-panels = { version = "0.1.0", path = "panels", optional = true }
-
 # Published legume stack
 data-beans = { version = "0.7.5", features = ["aux", "alg"] }
 enrichment = { version = "0.4.1", package = "legume-enrichment" }
@@ -86,6 +83,3 @@ ratatui-image = { version = "11.1", default-features = false, features = ["cross
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
-
-[workspace]
-members = [".", "panels"]
