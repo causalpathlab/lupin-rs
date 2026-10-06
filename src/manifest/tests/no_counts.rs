@@ -191,3 +191,16 @@ fn cached_clusters_are_what_was_asked_only_when_the_runs_file_matches_them() {
     write_clusters(&own.to_string_lossy(), &cells, &other).unwrap();
     assert!(!asks_for(&args, &loaded, &cells, &cached), "one cell moved");
 }
+
+#[test]
+fn a_dictionary_of_weights_is_normalised_and_one_of_logs_exponentiated() {
+    let weights = Mat::from_row_slice(2, 1, &[1.0, 3.0]);
+    let logs = Mat::from_row_slice(2, 1, &[0.25f32.ln(), 0.75f32.ln()]);
+    for d in [weights, logs] {
+        let b = gene_distributions(&d);
+        assert!(
+            (b[(0, 0)] - 0.25).abs() < 1e-6 && (b[(1, 0)] - 0.75).abs() < 1e-6,
+            "{b}"
+        );
+    }
+}

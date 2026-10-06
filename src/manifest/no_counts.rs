@@ -229,22 +229,41 @@ impl Decoder {
 }
 
 /// The decoder of `loaded`'s kind, with the latent and dictionary it decodes
-/// (manifest-relative), when the run wrote both.
+/// (manifest-relative), when the run wrote both. A topic kind's β is its
+/// empirical dictionary when it wrote one: per gene, from the counts, where
+/// the model's own β is per gene module, split evenly over its genes when
+/// the run coarsened them. A `vae`'s is its decoder's loadings.
 fn decoder_of(loaded: &Loaded) -> Option<(Decoder, &str, &str)> {
     let o = &loaded.manifest.outputs;
     let latent = o.latent.as_deref()?;
-    let dict = o
-        .softmax_dictionary
-        .as_deref()
-        .or(o.dictionary.as_deref())?;
-    let d = match loaded.manifest.kind {
-        RunKind::Topic | RunKind::Itopic | RunKind::JointTopic | RunKind::MaskedVae => {
-            Decoder::Mixture
-        }
-        RunKind::Vae => Decoder::Softmax,
+    let model = o.softmax_dictionary.as_deref().or(o.dictionary.as_deref());
+    let (d, dict) = match loaded.manifest.kind {
+        RunKind::Topic | RunKind::Itopic | RunKind::JointTopic | RunKind::MaskedVae => (
+            Decoder::Mixture,
+            o.dictionary_empirical.as_deref().or(model)?,
+        ),
+        RunKind::Vae => (Decoder::Softmax, model?),
         _ => return None,
     };
     Some((d, latent, dict))
+}
+
+/// Each column of `dict` as a distribution over the genes: weights (the
+/// empirical dictionary) normalised, log weights (the model's `log β`)
+/// exponentiated first.
+fn gene_distributions(dict: &Mat) -> Mat {
+    if dict.iter().all(|&v| v >= 0.0) {
+        let mut beta = dict.clone();
+        for mut col in beta.column_iter_mut() {
+            let total = col.sum();
+            if total > 0.0 {
+                col /= total;
+            }
+        }
+        beta
+    } else {
+        dict.normalize_exp_logits_columns()
+    }
 }
 
 /// The run's expected expression per cluster and batch, from its decoder.
@@ -278,7 +297,7 @@ fn from_decoder(args: &AnnotateArgs, loaded: &Loaded) -> Result<Expression> {
     };
     let (gene_sum_kg, sum_pg) = match decoder {
         Decoder::Mixture => {
-            let beta = dict.mat.normalize_exp_logits_columns();
+            let beta = gene_distributions(&dict.mat);
             let (tk, tp) = theta_sums(&latent.mat, &groups);
             (expected(&beta, &tk), expected(&beta, &tp))
         }
@@ -306,7 +325,12 @@ fn from_decoder(args: &AnnotateArgs, loaded: &Loaded) -> Result<Expression> {
         gene_sum_kg,
         pb_gene_gp,
         gene_weights,
-        source: json!({ "from": "decoder", "kind": m.kind.as_str(), "depth": NOMINAL_DEPTH }),
+        source: json!({
+            "from": "decoder",
+            "kind": m.kind.as_str(),
+            "dictionary": dict_rel,
+            "depth": NOMINAL_DEPTH,
+        }),
     })
 }
 
