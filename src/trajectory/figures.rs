@@ -277,6 +277,13 @@ pub(crate) struct TrajectoryData {
     pub(crate) edges: Vec<EdgeRow>,
     /// Each colouring's cell colours and legend, made on first use.
     pub(crate) colours: [OnceLock<CellColours>; 4],
+    /// Every cell, grey first, then by pseudotime: the draw order, made on
+    /// first use.
+    pub(crate) by_pseudotime: OnceLock<Vec<usize>>,
+    /// The share of the cells a diffusion component is spread over below
+    /// which the run left it out of pseudotime; the figure opens on the
+    /// first pair it kept.
+    pub(crate) dc_min_share: f32,
     /// Each scatter's type medians over all its cells, made on first use.
     pub(crate) medians: Mutex<Vec<(Panel, Arc<Medians>)>>,
 }
@@ -332,8 +339,7 @@ impl TrajectoryData {
                 Err(e) => log::warn!("layout {path}: {e:#}"),
             }
         }
-        let methods: Vec<Option<String>> = all.iter().map(|l| l.method.clone()).collect();
-        let layout_hint = layout_hint(&methods, &run);
+        let layout_hint = layout_hint(all.iter().map(|l| l.method.as_deref()), &run);
         if let Some(h) = &layout_hint {
             log::warn!("{h}");
         }
@@ -350,6 +356,13 @@ impl TrajectoryData {
             diffusion,
             layouts: all,
             layout_hint,
+            // What the run left out with; runs from before it was recorded
+            // kept every component, but open on the spread ones all the same.
+            dc_min_share: t
+                .settings
+                .as_ref()
+                .and_then(|s| s.get("dc_min_share")?.as_f64())
+                .map_or(super::diffusion::DC_MIN_SHARE, |v| v as f32),
             edges,
             ..Self::default()
         }))
@@ -396,7 +409,7 @@ impl TrajectoryData {
             .map(|k| Panel::Layout { k })
             .collect();
         if let Some(d) = self.diffusion.as_ref().filter(|d| d.ncols() >= 3) {
-            out.push(first_spread_pair(d));
+            out.push(first_spread_pair(d, self.dc_min_share));
         }
         out
     }
@@ -572,7 +585,7 @@ impl TrajectoryData {
         };
         let shown: Vec<usize> = finite.iter().copied().filter(inside).collect();
         let (colour_of, legend) = self.cell_colours(style.colouring);
-        let order = self.draw_order(&shown, style.colouring);
+        let order = self.draw_order(&shown, style.colouring, colour_of);
         let pts: Vec<(f32, f32)> = order
             .iter()
             .map(|&i| to_pixel((x[i], y[i]), &bounds, ext))
@@ -633,25 +646,37 @@ impl TrajectoryData {
         Ok(Figure { svg, w, h })
     }
 
-    /// Each cell's colour in `colouring` and its legend, made once.
     /// The order `cells` are drawn in, later over earlier: grey cells first,
     /// so coloured ones draw over them; by pseudotime, low to high, so the
     /// few late cells are not buried under the many early ones.
-    fn draw_order(&self, cells: &[usize], colouring: Colouring) -> Vec<usize> {
-        let (colour_of, _) = self.cell_colours(colouring);
-        let mut order = cells.to_vec();
-        match colouring {
-            Colouring::Pseudotime => {
-                let t = |i: usize| self.pseudotime[i];
-                order.sort_by(|&a, &b| {
-                    (t(a).is_finite().cmp(&t(b).is_finite())).then(t(a).total_cmp(&t(b)))
-                });
-            }
-            _ => order.sort_by_key(|&i| colour_of[i].is_some()),
+    fn draw_order(
+        &self,
+        cells: &[usize],
+        colouring: Colouring,
+        colour_of: &[Option<Rgb>],
+    ) -> Vec<usize> {
+        if colouring != Colouring::Pseudotime {
+            let mut order = cells.to_vec();
+            order.sort_by_key(|&i| colour_of[i].is_some());
+            return order;
         }
-        order
+        // Every cell sorted once; each figure keeps the cells it shows.
+        let all = self.by_pseudotime.get_or_init(|| {
+            let t = &self.pseudotime;
+            let mut all: Vec<usize> = (0..t.len()).collect();
+            all.sort_by(|&a, &b| {
+                (t[a].is_finite().cmp(&t[b].is_finite())).then(t[a].total_cmp(&t[b]))
+            });
+            all
+        });
+        let mut shown = vec![false; self.pseudotime.len()];
+        for &i in cells {
+            shown[i] = true;
+        }
+        all.iter().copied().filter(|&i| shown[i]).collect()
     }
 
+    /// Each cell's colour in `colouring` and its legend, made once.
     fn cell_colours(&self, colouring: Colouring) -> &CellColours {
         self.colours[colouring.slot()].get_or_init(|| match colouring {
             Colouring::Pseudotime => (
@@ -889,11 +914,6 @@ fn bounds_of(x: &[f32], y: &[f32], idx: &[usize]) -> DataBounds {
     DataBounds::from_minmax(x0, x1, y0, y1)
 }
 
-/// The layouts to draw pseudotime on, best first: senna's PHATE (`senna
-/// layout phate`, recorded under `layout.methods.phate`), as PHATE is built
-/// to show trajectories, then the run's current layout, then the other
-/// layouts it records. Each with its method's name, when known, and its
-/// manifest-relative path.
 /// The layouts senna makes that the trajectory's figures look for.
 pub(crate) const WANTED_LAYOUTS: [&str; 2] = ["umap", "phate"];
 
@@ -917,20 +937,8 @@ pub(crate) fn layouts_along(
     };
     add(manifest, dir);
     let mut run = file.to_path_buf();
-    let mut source = manifest.annotate.source.as_deref().map(|s| resolve(dir, s));
-    // A chain of rounds is short; the bound stops a cycle.
-    for _ in 0..32 {
-        let Some(src) = source.take() else { break };
-        let Ok(l) = crate::manifest::run::load(&src) else {
-            break;
-        };
+    for l in crate::manifest::run::source_chain(manifest, dir) {
         add(&l.manifest, &l.dir);
-        source = l
-            .manifest
-            .annotate
-            .source
-            .as_deref()
-            .map(|s| resolve(&l.dir, s));
         run = l.file;
     }
     out.sort_by_key(|(m, _)| m.as_deref() != Some("phate"));
@@ -939,10 +947,14 @@ pub(crate) fn layouts_along(
 
 /// What to run for the [`WANTED_LAYOUTS`] missing from `found` (the
 /// layouts' methods), on `run`.
-pub(crate) fn layout_hint(found: &[Option<String>], run: &Path) -> Option<String> {
+pub(crate) fn layout_hint<'a>(
+    found: impl IntoIterator<Item = Option<&'a str>>,
+    run: &Path,
+) -> Option<String> {
+    let found: Vec<Option<&str>> = found.into_iter().collect();
     let missing: Vec<&str> = WANTED_LAYOUTS
         .into_iter()
-        .filter(|w| !found.iter().any(|m| m.as_deref() == Some(*w)))
+        .filter(|w| !found.contains(&Some(*w)))
         .collect();
     if missing.is_empty() {
         return None;
@@ -961,6 +973,11 @@ pub(crate) fn layout_hint(found: &[Option<String>], run: &Path) -> Option<String
     ))
 }
 
+/// The layouts to draw pseudotime on, best first: senna's PHATE (`senna
+/// layout phate`, recorded under `layout.methods.phate`), as PHATE is built
+/// to show trajectories, then the run's current layout, then the other
+/// layouts it records. Each with its method's name, when known, and its
+/// manifest-relative path.
 fn layouts(manifest: &RunManifest) -> Vec<(Option<String>, String)> {
     let l = &manifest.layout;
     let methods = l.extra.get("methods").and_then(|m| m.as_object());
@@ -1274,15 +1291,15 @@ pub(crate) fn render(fig: &Figure) -> Result<image::RgbaImage> {
     image::RgbaImage::from_raw(fig.w, fig.h, rgba).context("the figure's pixels")
 }
 
-/// The first two diffusion components after the trivial one that are spread
-/// over the cells ([`DC_MIN_SHARE`]): the components of a barely attached
-/// group show that group against a line of every other cell. DC1 × DC2 when
-/// fewer than two are.
-fn first_spread_pair(d: &Mat) -> Panel {
-    use super::diffusion::{participation, DC_MIN_SHARE};
+/// The first two diffusion components after the trivial one spread over at
+/// least `min_share` of the cells, as the run kept them: the components of a
+/// barely attached group show that group against a line of every other cell.
+/// DC1 × DC2 when fewer than two are.
+fn first_spread_pair(d: &Mat, min_share: f32) -> Panel {
+    use super::diffusion::participation;
     let spread: Vec<usize> = (1..d.ncols())
         .filter(|&j| {
-            participation(d.column(j).iter().map(|&v| f64::from(v))) >= f64::from(DC_MIN_SHARE)
+            participation(d.column(j).iter().map(|&v| f64::from(v))) >= f64::from(min_share)
         })
         .take(2)
         .collect();

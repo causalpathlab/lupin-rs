@@ -282,16 +282,8 @@ impl Picker {
     pub fn key(&mut self, code: KeyCode) -> Step {
         self.note = None;
         let at = self.state.selected().unwrap_or(0);
-        let (n, at_entry) = {
-            let shown = self.shown();
-            let e = shown.get(at);
-            (
-                shown.len(),
-                e.map(|e| (e.dir, e.path.clone(), e.panel.as_ref().map(|x| x.types))),
-            )
-        };
         let mut sel = at;
-        if super::app::step(&mut sel, n, code) {
+        if super::app::step(&mut sel, self.shown().len(), code) {
             self.state.select(Some(sel));
             return Step::Stay;
         }
@@ -311,7 +303,11 @@ impl Picker {
                 self.all = !self.all;
                 self.state.select(Some(0));
             }
-            KeyCode::Enter | KeyCode::Right => match at_entry {
+            KeyCode::Enter | KeyCode::Right => match self
+                .shown()
+                .get(at)
+                .map(|e| (e.dir, e.path.clone(), e.panel.as_ref().map(|x| x.types)))
+            {
                 None => {}
                 Some((true, dir, _)) => self.open(dir),
                 Some((false, _, Some(types))) if types < 2 => {

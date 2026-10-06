@@ -14,19 +14,19 @@
 
 use super::annotate::{panel_inputs, resolve_clusters};
 use super::family::family;
+use super::recalibrate::{complete_cache, read_cache};
 use super::rounds::read_clusters;
 use super::run::{self, resolve, Loaded, RunKind};
 use crate::annotate::aggregate::weighted_mean_profile;
 use crate::annotate::args::AnnotateArgs;
 use crate::annotate::inputs::EnrichmentInputs;
-use crate::annotate::rounds::parse_cluster_id;
 use anyhow::{Context, Result};
 use legume_numeric::matrix::dense_mat_io::{read_mat, Mat};
-use legume_numeric::matrix::traits::IoOps;
+use legume_numeric::matrix::traits::{IoOps, MatOps};
 use log::{info, warn};
 use rayon::prelude::*;
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Counts per cell the decoder's expected proportions are scaled to, so the
 /// gene sums read like counts.
@@ -48,29 +48,62 @@ struct Expression {
     source: serde_json::Value,
 }
 
-/// [`EnrichmentInputs`] for a run whose count files `missing` are not here.
+/// Where a pass on a run gets its cluster expression.
+pub enum Source {
+    /// The raw counts are here.
+    Counts,
+    /// Missing: the cache this manifest's pass wrote.
+    Cache(Box<Loaded>),
+    /// Missing, with no cache: the decoder of the run's kind.
+    Decoder(Decoder),
+    /// Missing, and nothing stands in.
+    Nothing,
+}
+
+/// Where a pass on `loaded` gets its cluster expression.
+pub fn source(loaded: &Loaded) -> Source {
+    if missing_counts(loaded).is_empty() {
+        return Source::Counts;
+    }
+    if let Some(src) = newest_cache(loaded) {
+        return Source::Cache(Box::new(src));
+    }
+    match decoder_of(loaded) {
+        Some((d, _, _)) => Source::Decoder(d),
+        None => Source::Nothing,
+    }
+}
+
+/// The run's count files that are not here.
+fn missing_counts(loaded: &Loaded) -> Vec<String> {
+    let mut files = loaded.manifest.data_inputs(&loaded.dir);
+    files.retain(|f| !Path::new(f).exists());
+    files
+}
+
+/// [`EnrichmentInputs`] from `source`, a stand-in for the counts
+/// [`self::source`] chose.
 pub(super) fn inputs(
     args: &AnnotateArgs,
     loaded: &Loaded,
     data: Option<&super::data_files::ClData>,
-    missing: &[&str],
+    source: Source,
 ) -> Result<EnrichmentInputs> {
+    let missing = missing_counts(loaded);
+    let first = missing.first().map_or("", String::as_str);
     warn!(
-        "{} of the run's count file(s) are not here (first: {}); the cluster expression comes from what the run left beside it",
-        missing.len(),
-        missing[0]
+        "{} of the run's count file(s) are not here (first: {first}); the cluster expression comes from what the run left beside it",
+        missing.len()
     );
-    let e = match from_cache(args, loaded)? {
-        Some(e) => e,
-        None => from_decoder(args, loaded)?.with_context(|| {
-            format!(
-                "the run's raw counts are not here ({} file(s) missing, first {}), no earlier pass \
-                 cached its cluster sums beside it, and a {} run has no decoder to read expression from",
-                missing.len(),
-                missing[0],
-                loaded.manifest.kind.as_str()
-            )
-        })?,
+    let e = match source {
+        Source::Cache(src) => from_cache(args, loaded, &src)?,
+        Source::Decoder(_) => from_decoder(args, loaded)?,
+        Source::Counts | Source::Nothing => anyhow::bail!(
+            "the run's raw counts are not here ({} file(s) missing, first {first}), no earlier pass \
+             cached its cluster sums beside it, and a {} run has no decoder to read expression from",
+            missing.len(),
+            loaded.manifest.kind.as_str()
+        ),
     };
     anyhow::ensure!(
         e.n_clusters >= 2,
@@ -99,89 +132,21 @@ pub(super) fn inputs(
     })
 }
 
-/// The run's manifest first, then the rest of its family.
-fn family_manifests(loaded: &Loaded) -> Vec<PathBuf> {
-    let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
-    };
-    let mut out = vec![loaded.file.clone()];
-    for m in family(&loaded.file) {
-        if !out.iter().any(|p| same(p, &m.pick.path)) {
-            out.push(m.pick.path);
-        }
-    }
-    out
-}
-
-/// Where a pass on a run gets its cluster expression.
-pub enum Source {
-    /// The raw counts are here.
-    Counts,
-    /// Missing: an earlier pass's cache, this manifest's.
-    Cache(PathBuf),
-    /// Missing, with no cache: the decoder of a run of this kind.
-    Decoder(&'static str),
-    /// Missing, and nothing stands in.
-    Nothing,
-}
-
-/// Where a pass on `loaded` gets its cluster expression.
-pub fn source(loaded: &Loaded) -> Source {
-    let files = loaded.manifest.data_inputs(&loaded.dir);
-    if files.iter().all(|f| Path::new(f).exists()) {
-        return Source::Counts;
-    }
-    if let Some(src) = newest_cache(loaded) {
-        return Source::Cache(src.file);
-    }
-    match decoder_of(loaded) {
-        Some(Decoder::Mixture) => Source::Decoder("β · θ̄"),
-        Some(Decoder::Softmax) => Source::Decoder("mean softmax(z·W + b)"),
-        None => Source::Nothing,
-    }
-}
-
 /// The newest manifest in the run's family whose pass cached its
 /// statistics, with every cached file here.
 fn newest_cache(loaded: &Loaded) -> Option<Loaded> {
-    let mut found: Vec<(std::time::SystemTime, Loaded)> = family_manifests(loaded)
+    let mut members = family(&loaded.file);
+    members.sort_by_key(|m| std::cmp::Reverse(m.modified));
+    members
         .into_iter()
-        .filter_map(|p| run::load(&p.to_string_lossy()).ok())
-        .filter(|src| {
-            let a = &src.manifest.annotate;
-            let (Some(c), Some(ids)) = (&a.stats_cache, &a.expression_clusters) else {
-                return false;
-            };
-            [
-                &c.gene_sum,
-                &c.gene_weight,
-                &c.batch_profile,
-                &c.cell_batch,
-                ids,
-            ]
-            .iter()
-            .all(|r| Path::new(&resolve(&src.dir, r)).is_file())
-        })
-        .map(|src| {
-            let t = src.file.metadata().and_then(|m| m.modified());
-            (t.unwrap_or(std::time::UNIX_EPOCH), src)
-        })
-        .collect();
-    found.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
-    found.into_iter().next().map(|(_, src)| src)
+        .filter_map(|m| run::load(&m.pick.path.to_string_lossy()).ok())
+        .find(|src| complete_cache(src).is_some())
 }
 
-/// The newest cached statistics in the run's family, with their clusters.
-fn from_cache(args: &AnnotateArgs, loaded: &Loaded) -> Result<Option<Expression>> {
-    let Some(src) = newest_cache(loaded) else {
-        return Ok(None);
-    };
-    let a = &src.manifest.annotate;
-    let (Some(cache), Some(ids_rel)) = (&a.stats_cache, &a.expression_clusters) else {
-        return Ok(None);
-    };
-    let at = |rel: &str| resolve(&src.dir, rel);
+/// The cached statistics `src`'s pass wrote, with its clusters.
+fn from_cache(args: &AnnotateArgs, loaded: &Loaded, src: &Loaded) -> Result<Expression> {
+    let (cache, ids_rel) = complete_cache(src)
+        .with_context(|| format!("{}: its cache is gone", src.file.display()))?;
     if args.clusters.is_some() || loaded.manifest.cluster.clusters.is_none() {
         warn!(
             "without the counts the pass keeps the clusters {} summed; the clustering asked for is not used",
@@ -190,7 +155,7 @@ fn from_cache(args: &AnnotateArgs, loaded: &Loaded) -> Result<Option<Expression>
     }
 
     // The cached clusters, numbered 0.. in id order.
-    let (cell_names, ids) = read_clusters(&at(ids_rel))?;
+    let (cell_names, ids) = read_clusters(&resolve(&src.dir, ids_rel))?;
     let mut order: Vec<u32> = ids.iter().flatten().copied().collect();
     order.sort_unstable();
     order.dedup();
@@ -200,59 +165,31 @@ fn from_cache(args: &AnnotateArgs, loaded: &Loaded) -> Result<Option<Expression>
         .map(|id| id.and_then(slot).unwrap_or(usize::MAX))
         .collect();
     let k = order.len();
-
-    let sums = read_mat(&at(&cache.gene_sum))?;
-    let g = sums.rows.len();
-    let mut gene_sum_kg = vec![0f64; g * k];
-    for (j, col) in sums.cols.iter().enumerate() {
-        let Some(dest) = parse_cluster_id(col).and_then(slot) else {
-            continue;
-        };
-        for i in 0..g {
-            gene_sum_kg[dest * g + i] = f64::from(sums.mat[(i, j)]);
-        }
-    }
-    let weights = read_mat(&at(&cache.gene_weight))?;
-    anyhow::ensure!(
-        weights.rows == sums.rows,
-        "{}: its genes are not the gene sums'",
-        cache.gene_weight
-    );
-    let gene_weights: Vec<f32> = (0..g).map(|i| weights.mat[(i, 0)]).collect();
-    let pb = read_mat(&at(&cache.batch_profile))?;
-    let (batch_cells, batch_ids) = read_clusters(&at(&cache.cell_batch))?;
-    let batch_of: std::collections::HashMap<&str, usize> = batch_cells
-        .iter()
-        .zip(&batch_ids)
-        .filter_map(|(n, b)| b.map(|b| (n.as_ref(), b as usize)))
-        .collect();
-    let batch_labels = cell_names
-        .iter()
-        .map(|n| batch_of.get(n.as_ref()).copied().unwrap_or(0))
-        .collect();
+    let stats = read_cache(src, cache, slot, k, &cell_names)?;
     info!(
         "cluster expression: the gene sums {} cached over its {k} clusters",
         src.file.display()
     );
-    Ok(Some(Expression {
-        gene_names: sums.rows,
+    Ok(Expression {
+        gene_names: stats.gene_names,
         cell_names,
         cluster_labels,
         n_clusters: k,
-        batch_labels,
-        n_batches: pb.mat.ncols(),
-        gene_sum_kg,
-        pb_gene_gp: pb.mat,
-        gene_weights,
+        batch_labels: stats.batch_labels,
+        n_batches: stats.pb_gene_gp.ncols(),
+        gene_sum_kg: stats.gene_sum_kg,
+        pb_gene_gp: stats.pb_gene_gp,
+        gene_weights: stats.gene_weights,
         source: json!({
             "from": "cache",
             "manifest": src.file.file_name().map(|n| n.to_string_lossy().into_owned()),
         }),
-    }))
+    })
 }
 
 /// How a run's decoder turns a cell's latent row into a gene distribution.
-enum Decoder {
+#[derive(Clone, Copy)]
+pub enum Decoder {
     /// `π = β · θ`: `θ = softmax(latent)` over the topics (`log θ` or raw
     /// `z`), `β` a gene distribution per topic.
     Mixture,
@@ -260,33 +197,40 @@ enum Decoder {
     Softmax,
 }
 
-/// The decoder of `loaded`'s kind, when it wrote a latent and a dictionary.
-fn decoder_of(loaded: &Loaded) -> Option<Decoder> {
-    let o = &loaded.manifest.outputs;
-    o.latent.as_ref()?;
-    o.softmax_dictionary.as_ref().or(o.dictionary.as_ref())?;
-    match loaded.manifest.kind {
-        RunKind::Topic | RunKind::Itopic | RunKind::JointTopic | RunKind::MaskedVae => {
-            Some(Decoder::Mixture)
+impl Decoder {
+    /// What it averages over a cluster's cells, in symbols.
+    pub fn formula(self) -> &'static str {
+        match self {
+            Self::Mixture => "β · θ̄",
+            Self::Softmax => "mean softmax(z·W + b)",
         }
-        RunKind::Vae => Some(Decoder::Softmax),
-        _ => None,
     }
 }
 
+/// The decoder of `loaded`'s kind, with the latent and dictionary it decodes
+/// (manifest-relative), when the run wrote both.
+fn decoder_of(loaded: &Loaded) -> Option<(Decoder, &str, &str)> {
+    let o = &loaded.manifest.outputs;
+    let latent = o.latent.as_deref()?;
+    let dict = o
+        .softmax_dictionary
+        .as_deref()
+        .or(o.dictionary.as_deref())?;
+    let d = match loaded.manifest.kind {
+        RunKind::Topic | RunKind::Itopic | RunKind::JointTopic | RunKind::MaskedVae => {
+            Decoder::Mixture
+        }
+        RunKind::Vae => Decoder::Softmax,
+        _ => return None,
+    };
+    Some((d, latent, dict))
+}
+
 /// The run's expected expression per cluster and batch, from its decoder.
-fn from_decoder(args: &AnnotateArgs, loaded: &Loaded) -> Result<Option<Expression>> {
+fn from_decoder(args: &AnnotateArgs, loaded: &Loaded) -> Result<Expression> {
     let m = &loaded.manifest;
-    let Some(decoder) = decoder_of(loaded) else {
-        return Ok(None);
-    };
-    let o = &m.outputs;
-    let (Some(latent_rel), Some(dict_rel)) = (
-        o.latent.as_deref(),
-        o.softmax_dictionary.as_deref().or(o.dictionary.as_deref()),
-    ) else {
-        return Ok(None);
-    };
+    let (decoder, latent_rel, dict_rel) =
+        decoder_of(loaded).context("the run has no decoder to read expression from")?;
     let at = |rel: &str| resolve(&loaded.dir, rel);
     let latent = Mat::from_parquet_with_row_names(&at(latent_rel), Some(0))
         .map_err(|e| anyhow::anyhow!("reading {latent_rel}: {e}"))?;
@@ -311,9 +255,9 @@ fn from_decoder(args: &AnnotateArgs, loaded: &Loaded) -> Result<Option<Expressio
         batches: &batch_labels,
         n_batches,
     };
-    let (sum_kg, sum_pg) = match decoder {
+    let (gene_sum_kg, sum_pg) = match decoder {
         Decoder::Mixture => {
-            let beta = softmax_columns(&dict.mat);
+            let beta = dict.mat.normalize_exp_logits_columns();
             let (tk, tp) = theta_sums(&latent.mat, &groups);
             (expected(&beta, &tk), expected(&beta, &tp))
         }
@@ -321,17 +265,17 @@ fn from_decoder(args: &AnnotateArgs, loaded: &Loaded) -> Result<Option<Expressio
             let (features, gene_of) = vae_features(loaded, &dict.rows, &dict.mat)?;
             let bias = vae_bias(loaded, features.nrows())?;
             let (fk, fp) = decoded_sums(&latent.mat, &features, &bias, &groups);
-            (to_genes(&fk, &gene_of), to_genes(&fp, &gene_of))
+            let d = features.nrows();
+            (to_genes(&fk, d, &gene_of), to_genes(&fp, d, &gene_of))
         }
     };
-    let gene_sum_kg = sum_kg;
     let gene_weights = fisher_weights(loaded, &dict.rows);
     let pb_gene_gp = weighted_mean_profile(&sum_pg, n_batches, g, &gene_weights);
     info!(
         "cluster expression: the {} decoder's expected expression at each cluster's cells (no counts)",
         m.kind.as_str()
     );
-    Ok(Some(Expression {
+    Ok(Expression {
         gene_names: dict.rows,
         cell_names,
         cluster_labels,
@@ -342,7 +286,7 @@ fn from_decoder(args: &AnnotateArgs, loaded: &Loaded) -> Result<Option<Expressio
         pb_gene_gp,
         gene_weights,
         source: json!({ "from": "decoder", "kind": m.kind.as_str(), "depth": NOMINAL_DEPTH }),
-    }))
+    })
 }
 
 /// Cells per cluster (and per batch) the `vae` decoder is run at: their
@@ -360,36 +304,33 @@ struct Groups<'a> {
 /// `θ = softmax(latent row)` summed over each cluster's and batch's cells:
 /// `K × k` and `K × p`.
 fn theta_sums(latent: &Mat, groups: &Groups) -> (Mat, Mat) {
-    let n_topics = latent.ncols();
+    let theta = latent.transpose().normalize_exp_logits_columns();
+    let n_topics = theta.nrows();
     let mut tk = Mat::zeros(n_topics, groups.k);
     let mut tp = Mat::zeros(n_topics, groups.n_batches);
-    for (n, row) in latent.row_iter().enumerate() {
-        let z: Vec<f32> = row.iter().copied().collect();
-        for (t, th) in softmax(&z).into_iter().enumerate() {
-            if groups.clusters[n] < groups.k {
-                tk[(t, groups.clusters[n])] += th as f32;
-            }
-            tp[(t, groups.batches[n])] += th as f32;
+    for (n, col) in theta.column_iter().enumerate() {
+        if groups.clusters[n] < groups.k {
+            let mut c = tk.column_mut(groups.clusters[n]);
+            c += &col;
         }
+        let mut p = tp.column_mut(groups.batches[n]);
+        p += &col;
     }
     (tk, tp)
 }
 
-/// `β · θsums` (`g × K` by `K × groups`) as row-major `groups · g`, at
-/// [`NOMINAL_DEPTH`] counts per cell.
+/// `β · θsums` (`g × K` by `K × groups`) as row-major `groups · g` (a
+/// column-major matrix's own order), at [`NOMINAL_DEPTH`] counts per cell.
 fn expected(beta: &Mat, theta_sums: &Mat) -> Vec<f64> {
-    let e = beta * theta_sums;
-    e.column_iter()
-        .flat_map(|c| {
-            c.iter()
-                .map(|&v| NOMINAL_DEPTH * f64::from(v))
-                .collect::<Vec<_>>()
-        })
+    (beta * theta_sums)
+        .iter()
+        .map(|&v| NOMINAL_DEPTH * f64::from(v))
         .collect()
 }
 
-/// Up to [`DECODED_CELLS`] of each group's cells, evenly spaced.
-fn spaced(labels: &[usize], n_groups: usize) -> Vec<Vec<usize>> {
+/// Up to [`DECODED_CELLS`] of each group's cells, evenly spaced, and how many
+/// cells each group has.
+fn spaced(labels: &[usize], n_groups: usize) -> Vec<(Vec<usize>, usize)> {
     let mut members = vec![Vec::new(); n_groups];
     for (n, &l) in labels.iter().enumerate() {
         if l < n_groups {
@@ -400,13 +341,15 @@ fn spaced(labels: &[usize], n_groups: usize) -> Vec<Vec<usize>> {
         .into_iter()
         .map(|m| {
             let take = m.len().min(DECODED_CELLS);
-            (0..take).map(|i| m[i * m.len() / take]).collect()
+            ((0..take).map(|i| m[i * m.len() / take]).collect(), m.len())
         })
         .collect()
 }
 
 /// `softmax_d(z·W + b)` over each cluster's and batch's cells, as sums over
-/// all their cells (`groups · d`), estimated from [`spaced`] cells.
+/// all their cells (`groups · d`), estimated from [`spaced`] cells: every
+/// group's chunks are decoded in parallel, a chunk's cells as the columns of
+/// one matrix.
 fn decoded_sums(
     latent: &Mat,
     features: &Mat,
@@ -414,75 +357,64 @@ fn decoded_sums(
     groups: &Groups,
 ) -> (Vec<f64>, Vec<f64>) {
     let d = features.nrows();
-    let sums = |labels: &[usize], n_groups: usize| -> Vec<f64> {
-        let picked = spaced(labels, n_groups);
-        let size = |c: usize| labels.iter().filter(|&&l| l == c).count() as f64;
-        let wt = features.transpose();
-        let mut out = vec![0f64; n_groups * d];
-        for (c, cells) in picked.iter().enumerate() {
-            if cells.is_empty() {
-                continue;
+    let bias = Mat::from_column_slice(d, 1, bias);
+    let picked: Vec<(bool, usize, Vec<usize>, usize)> = spaced(groups.clusters, groups.k)
+        .into_iter()
+        .enumerate()
+        .map(|(c, (cells, n))| (true, c, cells, n))
+        .chain(
+            spaced(groups.batches, groups.n_batches)
+                .into_iter()
+                .enumerate()
+                .map(|(c, (cells, n))| (false, c, cells, n)),
+        )
+        .collect();
+    let tasks: Vec<(usize, &[usize])> = picked
+        .iter()
+        .enumerate()
+        .flat_map(|(t, (_, _, cells, _))| cells.chunks(256).map(move |ch| (t, ch)))
+        .collect();
+    let partial: Vec<(usize, Vec<f64>)> = tasks
+        .par_iter()
+        .map(|&(t, chunk)| {
+            let z = Mat::from_fn(latent.ncols(), chunk.len(), |k, r| latent[(chunk[r], k)]);
+            let mut logits = features * z;
+            for mut col in logits.column_iter_mut() {
+                col += &bias.column(0);
             }
-            let row_sum = cells
-                .par_chunks(256)
-                .map(|chunk| {
-                    let z = Mat::from_fn(chunk.len(), latent.ncols(), |r, t| latent[(chunk[r], t)]);
-                    let logits = &z * &wt;
-                    let mut acc = vec![0f64; d];
-                    for row in logits.row_iter() {
-                        let l: Vec<f32> = row.iter().zip(bias).map(|(v, b)| v + b).collect();
-                        acc.iter_mut().zip(softmax(&l)).for_each(|(a, p)| *a += p);
-                    }
-                    acc
-                })
-                .reduce(
-                    || vec![0f64; d],
-                    |mut a, b| {
-                        a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
-                        a
-                    },
-                );
-            let scale = NOMINAL_DEPTH * size(c) / cells.len() as f64;
-            for (o, v) in out[c * d..][..d].iter_mut().zip(row_sum) {
-                *o = v * scale;
+            logits.normalize_exp_logits_columns_inplace();
+            let mut acc = vec![0f64; d];
+            for col in logits.column_iter() {
+                acc.iter_mut()
+                    .zip(col.iter())
+                    .for_each(|(a, &p)| *a += f64::from(p));
             }
+            (t, acc)
+        })
+        .collect();
+    let mut out_k = vec![0f64; groups.k * d];
+    let mut out_p = vec![0f64; groups.n_batches * d];
+    for (t, acc) in partial {
+        let (is_cluster, c, cells, n) = &picked[t];
+        let out = if *is_cluster { &mut out_k } else { &mut out_p };
+        let scale = NOMINAL_DEPTH * *n as f64 / cells.len() as f64;
+        for (o, v) in out[c * d..][..d].iter_mut().zip(acc) {
+            *o += v * scale;
         }
-        out
-    };
-    (
-        sums(groups.clusters, groups.k),
-        sums(groups.batches, groups.n_batches),
-    )
+    }
+    (out_k, out_p)
 }
 
 /// Feature sums (`groups · d`) to gene sums (`groups · g`) by each gene's
 /// feature and share of it.
-fn to_genes(sum: &[f64], gene_of: &[(usize, f64)]) -> Vec<f64> {
+fn to_genes(sum: &[f64], d: usize, gene_of: &[(usize, f64)]) -> Vec<f64> {
     let g = gene_of.len();
-    let d = gene_of.iter().map(|&(f, _)| f + 1).max().unwrap_or(0);
     let groups = sum.len().checked_div(d).unwrap_or(0);
     let mut out = vec![0f64; groups * g];
     for c in 0..groups {
         for (i, &(f, share)) in gene_of.iter().enumerate() {
             out[c * g + i] = sum[c * d + f] * share;
         }
-    }
-    out
-}
-
-fn softmax(x: &[f32]) -> Vec<f64> {
-    let max = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let e: Vec<f64> = x.iter().map(|&v| f64::from(v - max).exp()).collect();
-    let s: f64 = e.iter().sum();
-    e.into_iter().map(|v| v / s).collect()
-}
-
-/// Each column of `m` (log weights or logits over genes) as a distribution.
-fn softmax_columns(m: &Mat) -> Mat {
-    let mut out = m.clone();
-    for mut col in out.column_iter_mut() {
-        let p = softmax(col.as_slice());
-        col.iter_mut().zip(p).for_each(|(c, v)| *c = v as f32);
     }
     out
 }
@@ -578,16 +510,17 @@ fn vae_bias(loaded: &Loaded, d: usize) -> Result<Vec<f32>> {
 /// the cells in the latent's order; else the `@sample` the cell names carry;
 /// else one batch.
 fn batch_labels(loaded: &Loaded, cells: &[Box<str>]) -> (Vec<usize>, usize) {
+    use legume_numeric::matrix::common_io::read_lines;
     let files = loaded.manifest.data_batches(&loaded.dir);
-    let from_files: Option<Vec<Box<str>>> = (!files.is_empty())
-        .then(|| {
-            files
-                .iter()
-                .map(|f| legume_numeric::matrix::common_io::read_lines(f).ok())
-                .collect::<Option<Vec<_>>>()
-        })
-        .flatten()
-        .map(|v| v.into_iter().flatten().collect());
+    let from_files: Option<Vec<Box<str>>> = if files.is_empty() {
+        None
+    } else {
+        files
+            .iter()
+            .map(|f| read_lines(f).ok())
+            .collect::<Option<Vec<_>>>()
+            .map(|v| v.concat())
+    };
     let labels: Vec<&str> = match &from_files {
         Some(l) if l.len() == cells.len() => l.iter().map(AsRef::as_ref).collect(),
         _ => cells

@@ -10,9 +10,13 @@ fn spaced_takes_at_most_the_cap_evenly_and_skips_unassigned_cells() {
     let mut labels = vec![0usize; 3 * DECODED_CELLS];
     labels.extend([1, usize::MAX, 1]);
     let picked = spaced(&labels, 2);
-    assert_eq!(picked[0].len(), DECODED_CELLS);
-    assert_eq!(picked[0][1] - picked[0][0], 3, "every third cell");
-    assert_eq!(picked[1], vec![3 * DECODED_CELLS, 3 * DECODED_CELLS + 2]);
+    assert_eq!(picked[0].0.len(), DECODED_CELLS);
+    assert_eq!(picked[0].1, 3 * DECODED_CELLS, "the group's whole size");
+    assert_eq!(picked[0].0[1] - picked[0].0[0], 3, "every third cell");
+    assert_eq!(
+        picked[1],
+        (vec![3 * DECODED_CELLS, 3 * DECODED_CELLS + 2], 2)
+    );
 }
 
 #[test]
@@ -21,7 +25,7 @@ fn a_modules_sum_goes_to_its_genes_by_their_shares() {
     let sum = [10.0, 4.0, 20.0, 8.0];
     let gene_of = [(0, 0.25), (0, 0.75), (1, 1.0)];
     assert_eq!(
-        to_genes(&sum, &gene_of),
+        to_genes(&sum, 2, &gene_of),
         vec![2.5, 7.5, 4.0, 5.0, 15.0, 8.0]
     );
 }
@@ -118,11 +122,14 @@ fn without_counts_a_cached_round_gives_its_clusters_and_sums() {
     let root = tempfile::tempdir().unwrap();
     let (loaded, gene_sum_kg) = run_with_cached_round(root.path());
     assert!(
-        matches!(source(&loaded), Source::Cache(m) if m.ends_with("run.L1.senna.json")),
+        matches!(source(&loaded), Source::Cache(src) if src.file.ends_with("run.L1.senna.json")),
         "the round's cache stands in"
     );
     let args = crate::annotate_cmd::default_enrichment_args("x");
-    let e = from_cache(&args, &loaded).unwrap().expect("a cache");
+    let Source::Cache(src) = source(&loaded) else {
+        panic!("a cache")
+    };
+    let e = from_cache(&args, &loaded, &src).unwrap();
     assert_eq!(e.n_clusters, 2);
     assert_eq!(e.cluster_labels, vec![0, 0, 1, usize::MAX]);
     assert_eq!(e.gene_sum_kg, gene_sum_kg, "ids 3, 7 land in slots 0, 1");

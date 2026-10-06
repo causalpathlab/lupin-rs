@@ -553,6 +553,21 @@ pub fn parent_dir(p: &Path) -> PathBuf {
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
+/// The runs `manifest` (in `dir`) was made from, along `annotate.source`,
+/// nearest first; the walk stops at a run it cannot read, and its bound at a
+/// cycle.
+pub fn source_chain(manifest: &RunManifest, dir: &Path) -> Vec<Loaded> {
+    let next = |m: &RunManifest, d: &Path| m.annotate.source.as_deref().map(|s| resolve(d, s));
+    let mut out: Vec<Loaded> = Vec::new();
+    let mut source = next(manifest, dir);
+    while let Some(src) = source.take().filter(|_| out.len() < 32) {
+        let Ok(l) = load(&src) else { break };
+        source = next(&l.manifest, &l.dir);
+        out.push(l);
+    }
+    out
+}
+
 /// Whether two paths name the same file. Paths that cannot be resolved (a
 /// file not written yet) are compared as written.
 #[must_use]

@@ -396,7 +396,7 @@ fn cells_draw_grey_first_then_by_pseudotime_low_to_high() {
     let mut t = data();
     t.pseudotime = vec![0.9, f32::NAN, 0.1, 0.5];
     t.types.truncate(4);
-    let order = t.draw_order(&[0, 1, 2, 3], Colouring::Pseudotime);
+    let order = t.draw_order(&[0, 1, 2, 3], Colouring::Pseudotime, &[]);
     assert_eq!(order, vec![1, 2, 3, 0]);
 }
 
@@ -432,15 +432,14 @@ fn layouts_come_from_the_run_a_round_was_made_from_too() {
 #[test]
 fn a_missing_umap_or_phate_names_the_senna_command() {
     let run = Path::new("/x/r.senna.json");
-    let has =
-        |m: &[&str]| -> Vec<Option<String>> { m.iter().map(|s| Some(s.to_string())).collect() };
-    assert_eq!(layout_hint(&has(&["phate", "umap"]), run), None);
-    let one = layout_hint(&has(&["umap"]), run).unwrap();
+    let has = |m: &[&'static str]| m.iter().map(|&s| Some(s)).collect::<Vec<_>>();
+    assert_eq!(layout_hint(has(&["phate", "umap"]), run), None);
+    let one = layout_hint(has(&["umap"]), run).unwrap();
     assert!(
         one.contains("no PHATE") && one.contains("`senna layout phate --from r.senna.json`"),
         "{one}"
     );
-    let both = layout_hint(&[], run).unwrap();
+    let both = layout_hint([], run).unwrap();
     assert!(
         both.contains("no UMAP or PHATE") && both.contains("senna layout {umap|phate}"),
         "{both}"

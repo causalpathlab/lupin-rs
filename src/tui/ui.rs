@@ -99,18 +99,13 @@ fn draw_browser(f: &mut Frame, b: &super::picker::Picker) {
         over.height.saturating_sub(4).min(30),
     );
     let (hint, note) = b.hint("esc cancel");
-    let hint = Line::from(hint).fg(if note {
-        Color::LightYellow
+    let hint = Line::from(hint);
+    let hint = if note {
+        hint.fg(Color::LightYellow)
     } else {
-        Color::Indexed(250)
-    });
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Thick)
-        .border_style(Style::new().fg(Color::LightYellow).bg(Color::Indexed(236)))
-        .title(Line::from(format!(" {} ", b.title())).bold())
-        .title_bottom(hint)
-        .style(POPUP);
+        hint
+    };
+    let block = popup(format!(" {} ", b.title()), hint);
     let inner = block.inner(area);
     f.render_widget(Clear, area);
     f.render_widget(block, area);
@@ -446,14 +441,21 @@ fn draw_guide(f: &mut Frame) {
 /// whatever the terminal's theme.
 const POPUP: Style = Style::new().fg(Color::Indexed(255)).bg(Color::Indexed(236));
 
-/// A popup's frame: a bright border and title over [`POPUP`].
-fn popup(title: String, hint: impl Into<String>) -> Block<'static> {
+/// A popup's frame: a bright border and title over [`POPUP`], and a hint
+/// along the bottom (dim unless styled).
+fn popup(title: String, hint: impl Into<Line<'static>>) -> Block<'static> {
+    let hint: Line = hint.into();
+    let hint = if hint.style.fg.is_none() {
+        hint.fg(Color::Indexed(250))
+    } else {
+        hint
+    };
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
         .border_style(Style::new().fg(Color::LightYellow).bg(Color::Indexed(236)))
         .title(Line::from(title).bold())
-        .title_bottom(Line::from(hint.into()).fg(Color::Indexed(250)))
+        .title_bottom(hint)
         .style(POPUP)
 }
 

@@ -160,23 +160,18 @@ impl OrderView {
     /// Pairs the trajectory run found connected but the prior does not
     /// order, strongest first.
     pub fn candidates(&self) -> Vec<&EdgeRow> {
-        let mut out: Vec<&EdgeRow> = self
-            .edges
-            .iter()
-            .filter(|e| e.verdict == Some(Verdict::Candidate))
-            .collect();
-        out.sort_by(|p, q| q.connectivity.total_cmp(&p.connectivity));
-        out
+        self.with_verdict(Verdict::Candidate)
     }
 
     /// Edges the trajectory run added to place node types the prior left
     /// without one, strongest first.
     pub fn inferred(&self) -> Vec<&EdgeRow> {
-        let mut out: Vec<&EdgeRow> = self
-            .edges
-            .iter()
-            .filter(|e| e.verdict == Some(Verdict::Inferred))
-            .collect();
+        self.with_verdict(Verdict::Inferred)
+    }
+
+    /// The run's pairs with verdict `v`, strongest first.
+    fn with_verdict(&self, v: Verdict) -> Vec<&EdgeRow> {
+        let mut out: Vec<&EdgeRow> = self.edges.iter().filter(|e| e.verdict == Some(v)).collect();
         out.sort_by(|p, q| q.connectivity.total_cmp(&p.connectivity));
         out
     }

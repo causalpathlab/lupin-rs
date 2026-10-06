@@ -15,6 +15,7 @@ use crate::manifest::run::{
 use crate::progress::Stages;
 use anyhow::{bail, Context, Result};
 use clap::Args;
+use data_beans::alg::union_find::UnionFind;
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dense_mat_io::{axis_id_names, Mat};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
@@ -204,7 +205,7 @@ impl Inputs {
     }
 }
 
-/// A direct prior edge with its data verdict.
+/// A direct prior edge, or one the run inferred, with its data verdict.
 #[derive(Debug, Clone)]
 struct EdgeCheck {
     pub(crate) from: usize,
@@ -244,9 +245,6 @@ struct Ordering {
     /// Node types in order of median pseudotime: `(median, type)`; a type no
     /// root reaches has an infinite median.
     pub(crate) order: Vec<(f32, usize)>,
-    /// Edges added to place node types the prior leaves without one, from
-    /// the earlier type to the later by median pseudotime.
-    pub(crate) inferred: Vec<(usize, usize)>,
 }
 
 /// With both `--from` and `--out`, the run; otherwise the TUI, which asks for
@@ -314,7 +312,17 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     let mut t = check(&inputs, &nb, prior, args.min_connectivity);
     report_check(&inputs, &t);
     if !args.check_only {
-        t.ordering = Some(order(&inputs, &nb, &t.prior, &t.connectivity, args)?);
+        let (ordering, inferred) = order(&inputs, &nb, &t.prior, &t.connectivity, args)?;
+        t.ordering = Some(ordering);
+        // The inferred edges join the prior's, to be measured and written
+        // as they are.
+        t.edges
+            .extend(inferred.into_iter().map(|(from, to)| EdgeCheck {
+                from,
+                to,
+                verdict: Verdict::Inferred,
+                order_agreement: f32::NAN,
+            }));
         agreement(&mut t);
         report_order(&inputs, &t);
     }
@@ -323,8 +331,7 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     record(&loaded, &manifest_out, &written, args)?;
     STAGES.finish();
     let (found, run) = super::figures::layouts_along(&loaded.manifest, &loaded.dir, &loaded.file);
-    let methods: Vec<Option<String>> = found.into_iter().map(|(m, _)| m).collect();
-    if let Some(h) = super::figures::layout_hint(&methods, &run) {
+    if let Some(h) = super::figures::layout_hint(found.iter().map(|(m, _)| m.as_deref()), &run) {
         warn!("{h}");
     }
     info!(
@@ -559,7 +566,7 @@ fn order(
     prior: &Prior,
     conn: &DMatrix<f64>,
     args: &TrajectoryArgs,
-) -> Result<Ordering> {
+) -> Result<(Ordering, Vec<(usize, usize)>)> {
     STAGES.start(STAGE_DIFFUSION);
     let map = DiffusionMap::new(
         nb,
@@ -656,26 +663,26 @@ fn order(
             by_type[g].push(pt);
         }
     }
-    let mut order: Vec<(f32, usize)> = (0..inputs.names.len())
-        .filter(|&g| inputs.is_node[g])
-        .map(|g| {
-            let m = if by_type[g].is_empty() {
+    let medians: Vec<f32> = by_type
+        .iter()
+        .map(|t| {
+            if t.is_empty() {
                 f32::INFINITY
             } else {
-                median(&by_type[g])
-            };
-            (m, g)
+                median(t)
+            }
         })
+        .collect();
+    let mut order: Vec<(f32, usize)> = (0..inputs.names.len())
+        .filter(|&g| inputs.is_node[g])
+        .map(|g| (medians[g], g))
         .collect();
     order.sort_by(|p, q| p.0.total_cmp(&q.0));
     // With no prior to say which way, an inferred edge runs from the earlier
     // type to the later by median pseudotime.
-    let median_of = |g: usize| (!by_type[g].is_empty()).then(|| median(&by_type[g]));
     for e in &mut inferred {
-        if let (Some(a), Some(b)) = (median_of(e.0), median_of(e.1)) {
-            if b < a {
-                *e = (e.1, e.0);
-            }
+        if medians[e.1] < medians[e.0] {
+            *e = (e.1, e.0);
         }
         info!(
             "inferred edge {} → {} (connectivity {:.3}), by median pseudotime",
@@ -684,7 +691,7 @@ fn order(
             conn[(e.0, e.1)]
         );
     }
-    Ok(Ordering {
+    let ordering = Ordering {
         map,
         pseudotime,
         component,
@@ -692,8 +699,8 @@ fn order(
         type_weights,
         by_type,
         order,
-        inferred,
-    })
+    };
+    Ok((ordering, inferred))
 }
 
 /// The prior completed by connectivity: the node types it leaves without an
@@ -709,35 +716,10 @@ pub(crate) fn hosts(
 ) -> (Vec<Option<usize>>, Vec<(usize, usize)>) {
     let types = is_node.len();
     let nodes: Vec<usize> = (0..types).filter(|&g| is_node[g]).collect();
-    // Union-find over the types; a set is anchored when a prior component
-    // holds it.
-    let mut parent: Vec<usize> = (0..types).collect();
-    fn find(parent: &mut [usize], g: usize) -> usize {
-        let mut r = g;
-        while parent[r] != r {
-            r = parent[r];
-        }
-        let mut g = g;
-        while parent[g] != r {
-            let next = parent[g];
-            parent[g] = r;
-            g = next;
-        }
-        r
-    }
-    let mut anchor: Vec<Option<usize>> = (0..types).map(|g| component[g]).collect();
-    for &g in &nodes {
-        if let Some(c) = component[g] {
-            // Every type of a component in one set, under its first type.
-            let first = nodes
-                .iter()
-                .copied()
-                .find(|&h| component[h] == Some(c))
-                .unwrap_or(g);
-            let (r, f) = (find(&mut parent, g), find(&mut parent, first));
-            parent[r] = f;
-        }
-    }
+    // Union-find over the types; a set is anchored when it holds a placed
+    // type, and two anchored sets never join.
+    let mut sets = UnionFind::new(types);
+    let mut anchor: Vec<Option<usize>> = component.to_vec();
     let mut pairs: Vec<(usize, usize)> = nodes
         .iter()
         .flat_map(|&a| nodes.iter().map(move |&b| (a, b)))
@@ -747,12 +729,12 @@ pub(crate) fn hosts(
     pairs.sort_by(|&(a, b), &(c, d)| conn[(c, d)].total_cmp(&conn[(a, b)]));
     let mut tree: Vec<(usize, usize)> = Vec::new();
     for (a, b) in pairs {
-        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        let (ra, rb) = (sets.find(a), sets.find(b));
         if ra == rb || (anchor[ra].is_some() && anchor[rb].is_some()) {
             continue;
         }
-        parent[rb] = ra;
-        anchor[ra] = anchor[ra].or(anchor[rb]);
+        let r = sets.union(a, b);
+        anchor[r] = anchor[ra].or(anchor[rb]);
         tree.push((a, b));
     }
     // Walk the inferred edges out from the placed types: each type reached
@@ -809,7 +791,7 @@ fn report_order(inputs: &Inputs, t: &Trajectory) {
             inputs.cells_of[g].len()
         );
     }
-    info!("order agreement of the prior's edges:");
+    info!("order agreement of the edges:");
     for e in &t.edges {
         info!(
             "  {} → {}: {:.2} ({})",
@@ -867,23 +849,6 @@ fn write_edges(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<String> {
         .flat_map(|e| [((e.from, e.to), e), ((e.to, e.from), e)])
         .collect();
     let candidate: BTreeSet<(usize, usize)> = t.candidates.iter().copied().collect();
-    let inferred: BTreeMap<(usize, usize), (usize, usize)> = t
-        .ordering
-        .iter()
-        .flat_map(|o| &o.inferred)
-        .flat_map(|&(a, b)| [((a, b), (a, b)), ((b, a), (a, b))])
-        .collect();
-    let agreement_of = |from: usize, to: usize| -> f32 {
-        let Some(o) = &t.ordering else {
-            return f32::NAN;
-        };
-        let (f, g) = (&o.by_type[from], &o.by_type[to]);
-        if f.is_empty() || g.is_empty() {
-            return f32::NAN;
-        }
-        let m = median(f);
-        g.iter().filter(|&&p| p > m).count() as f32 / g.len() as f32
-    };
     let nodes: Vec<usize> = (0..inputs.names.len())
         .filter(|&g| inputs.is_node[g])
         .collect();
@@ -891,28 +856,18 @@ fn write_edges(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<String> {
     for (i, &p) in nodes.iter().enumerate() {
         for &q in &nodes[i + 1..] {
             let edge = edge_at.get(&(p, q)).copied();
-            let added = inferred.get(&(p, q)).copied();
-            let (from, to) = match (edge, added) {
-                (Some(e), _) => (e.from, e.to),
-                (None, Some(fq)) => fq,
-                (None, None) => (p, q),
-            };
+            let (from, to) = edge.map_or((p, q), |e| (e.from, e.to));
             rows.push(EdgeRow {
                 a: inputs.names[from].clone(),
                 b: inputs.names[to].clone(),
                 connectivity: t.connectivity[(p, q)] as f32,
-                in_prior: edge.is_some(),
+                in_prior: edge.is_some_and(|e| e.verdict != Verdict::Inferred),
                 verdict: match edge {
                     Some(e) => Some(e.verdict),
-                    None if added.is_some() => Some(Verdict::Inferred),
                     None if candidate.contains(&(p, q)) => Some(Verdict::Candidate),
                     None => None,
                 },
-                order_agreement: match (edge, added) {
-                    (Some(e), _) => e.order_agreement,
-                    (None, Some(_)) => agreement_of(from, to),
-                    (None, None) => f32::NAN,
-                },
+                order_agreement: edge.map_or(f32::NAN, |e| e.order_agreement),
             });
         }
     }

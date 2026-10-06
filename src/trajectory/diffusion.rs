@@ -53,7 +53,7 @@ pub(crate) const DC_MIN_SHARE: f32 = 0.02;
 
 /// The share of the cells the vector `u` is spread over: its participation
 /// ratio `(Σ u²)² / (n Σ u⁴)`, 1 when even over every cell, `1/n` on one.
-pub(crate) fn participation(u: impl Iterator<Item = f64> + Clone) -> f64 {
+pub(crate) fn participation(u: impl Iterator<Item = f64>) -> f64 {
     let (n, s2, s4) = u.fold((0usize, 0f64, 0f64), |(n, a, b), v| {
         let v2 = v * v;
         (n + 1, a + v2, b + v2 * v2)

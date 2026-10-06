@@ -263,13 +263,14 @@ fn expression_note(source: &Path) -> Option<String> {
     let loaded = crate::manifest::run::load(&source.to_string_lossy()).ok()?;
     Some(match no_counts::source(&loaded) {
         Source::Counts => return None,
-        Source::Cache(m) => format!(
+        Source::Cache(src) => format!(
             "The raw counts are not here: it scores the clusters {} cached and their gene sums, whatever the clustering rows say",
-            file_name(&m)
+            file_name(&src.file)
         ),
-        Source::Decoder(how) => format!(
-            "The raw counts are not here and no pass cached its sums: it scores the {} decoder's expected expression ({how}), a rough stand-in",
-            loaded.manifest.kind.as_str()
+        Source::Decoder(d) => format!(
+            "The raw counts are not here and no pass cached its sums: it scores the {} decoder's expected expression ({}), a rough stand-in",
+            loaded.manifest.kind.as_str(),
+            d.formula()
         ),
         Source::Nothing => format!(
             "The raw counts are not here, no pass cached its sums, and a {} run has no decoder to stand in: the pass will fail",

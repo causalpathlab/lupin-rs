@@ -393,16 +393,11 @@ pub(super) fn load_enrichment_inputs(
         "manifest.data.input is empty; cannot re-open raw counts for cluster aggregation"
     );
 
-    let load = raw_counts_load(manifest, manifest_dir)?;
-    let missing: Vec<&str> = load
-        .data_files
-        .iter()
-        .map(AsRef::as_ref)
-        .filter(|f: &&str| !Path::new(f).exists())
-        .collect();
-    if !missing.is_empty() {
-        return super::no_counts::inputs(args, loaded, data, &missing);
+    match super::no_counts::source(loaded) {
+        super::no_counts::Source::Counts => {}
+        other => return super::no_counts::inputs(args, loaded, data, other),
     }
+    let load = raw_counts_load(manifest, manifest_dir)?;
     info!("Re-opening raw counts: {} file(s)", load.data_files.len());
     let SparseDataWithBatch {
         data: data_vec,
