@@ -83,7 +83,13 @@ pub fn annotate_by_enrichment(
         .collect();
     rounds::write_clusters(&clusters_path, &inputs.cell_names, &ids)?;
     outputs.clusters = Some(clusters_path);
-    if !plan.ontology_mode {
+    // The decoder's expected expression is no count sum: a later pass or
+    // rescoring must not take it for one.
+    let from_decoder = inputs
+        .expression_source
+        .as_ref()
+        .is_some_and(|e| e["from"] == "decoder");
+    if !plan.ontology_mode && !from_decoder {
         outputs.stats_cache = Some(crate::manifest::recalibrate::write_cache(
             &args.out, &inputs,
         )?);
@@ -423,7 +429,7 @@ pub(super) fn load_enrichment_inputs(
 
     let panel = panel_inputs(args, loaded, data, &gene_names)?;
 
-    let nb_fisher = nb_fisher_weights(&loaded.run_prefix(), data_vec, &gene_names)?;
+    let nb_fisher = nb_fisher_weights(&loaded.model_prefix(), data_vec, &gene_names)?;
     let (profile_gk, pb_gene_gp, gene_sum_kg) = aggregate_expression(
         data_vec,
         &cluster_labels,

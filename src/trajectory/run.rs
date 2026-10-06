@@ -475,7 +475,7 @@ fn report_prior(inputs: &Inputs, prior: &Prior) {
         .collect();
     if !loose.is_empty() {
         warn!(
-            "{} node type(s) have no prior edge; they join it along the strongest connectivity: {}",
+            "{} node type(s) have no prior edge: {}",
             loose.len(),
             loose.join(", ")
         );
@@ -602,6 +602,17 @@ fn order(
     // The node types the prior leaves without an edge join it along the
     // strongest connectivity.
     let (host, mut inferred) = hosts(&inputs.is_node, &prior.component, conn);
+    let unplaced: Vec<&str> = (0..inputs.names.len())
+        .filter(|&g| inputs.is_node[g] && prior.component[g].is_none() && host[g].is_none())
+        .map(|g| inputs.names[g].as_ref())
+        .collect();
+    if !unplaced.is_empty() {
+        warn!(
+            "{} node type(s) without a prior edge connect to no lineage and get no pseudotime: {}",
+            unplaced.len(),
+            unplaced.join(", ")
+        );
+    }
     // A node type's cell belongs to its type's (or host's) component; any
     // other cell to the component whose root is nearest.
     let component: Vec<Option<usize>> = (0..n)
@@ -632,7 +643,11 @@ fn order(
         .map(|d| {
             d.sort_by(f64::total_cmp);
             let at = ((d.len() as f64 - 1.0) * PSEUDOTIME_TOP).round() as usize;
-            d.get(at).copied().unwrap_or(0.0)
+            // Nearly every cell at the root: the farthest one sets the scale.
+            match d.get(at) {
+                Some(&q) if q > 0.0 => q,
+                _ => d.last().copied().unwrap_or(0.0),
+            }
         })
         .collect();
     let pseudotime: Vec<f32> = (0..n)

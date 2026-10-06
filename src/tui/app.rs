@@ -476,6 +476,8 @@ pub struct App {
     after_pass: AfterPass,
     /// The terminal's picture protocol, asked for once.
     picker: Option<ratatui_image::picker::Picker>,
+    /// [`expression_note`] for a run, kept until a pass writes a new round.
+    expression_notes: Option<(PathBuf, Option<String>)>,
 }
 
 impl App {
@@ -529,6 +531,7 @@ impl App {
             browser: None,
             after_pass: AfterPass::Nothing,
             picker: None,
+            expression_notes: None,
             progress_hidden: false,
             failed: None,
         }
@@ -588,8 +591,9 @@ impl App {
                     AfterPass::Nothing
                 };
                 // A new pass rewrote the base round: rounds made on the old
-                // one no longer apply.
+                // one no longer apply, and it may have cached new statistics.
                 if job == Job::Pass {
+                    self.expression_notes = None;
                     if let Err(e) = crate::manifest::rounds::supersede_later(&self.target) {
                         self.push_log(format!("could not set the old rounds aside: {e:#}"));
                     }
@@ -1009,9 +1013,22 @@ impl App {
             } else {
                 Setting::Run
             }),
-            expression: expression_note(&self.source),
+            expression: self.expression_note(),
             ..Form::default()
         });
+    }
+
+    /// Where a pass on the run gets its expression, in words, asked once per
+    /// run: the answer reads the run's family.
+    fn expression_note(&mut self) -> Option<String> {
+        match &self.expression_notes {
+            Some((run, note)) if *run == self.source => note.clone(),
+            _ => {
+                let note = expression_note(&self.source);
+                self.expression_notes = Some((self.source.clone(), note.clone()));
+                note
+            }
+        }
     }
 
     /// Close the form without running.

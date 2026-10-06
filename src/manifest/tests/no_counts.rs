@@ -151,3 +151,43 @@ fn without_counts_or_cache_a_run_with_no_decoder_has_nothing() {
     let loaded = run::load(&file.to_string_lossy()).unwrap();
     assert!(matches!(source(&loaded), Source::Nothing));
 }
+
+#[test]
+fn a_rounds_manifest_finds_the_models_files_under_the_training_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("run.L0.senna.json");
+    std::fs::write(
+        &file,
+        r#"{"version": 2, "kind": "vae", "prefix": "/elsewhere/run",
+            "outputs": {"dictionary": "run.dictionary.parquet"}}"#,
+    )
+    .unwrap();
+    let loaded = run::load(&file.to_string_lossy()).unwrap();
+    assert!(loaded.run_prefix().ends_with("run.L0"));
+    assert_eq!(
+        loaded.model_prefix(),
+        root.path().join("run").to_string_lossy()
+    );
+}
+
+#[test]
+fn cached_clusters_are_what_was_asked_only_when_the_runs_file_matches_them() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut loaded, _) = run_with_cached_round(root.path());
+    let cells: Vec<Box<str>> = ["c0", "c1", "c2", "c3"].map(Into::into).to_vec();
+    let cached = [Some(3), Some(3), Some(7), None];
+    let args = crate::annotate_cmd::default_enrichment_args("x");
+    assert!(
+        !asks_for(&args, &loaded, &cells, &cached),
+        "Leiden was asked for"
+    );
+
+    let own = root.path().join("own.parquet");
+    write_clusters(&own.to_string_lossy(), &cells, &cached).unwrap();
+    loaded.manifest.cluster.clusters = Some("own.parquet".into());
+    assert!(asks_for(&args, &loaded, &cells, &cached));
+
+    let other = [Some(3), Some(7), Some(7), None];
+    write_clusters(&own.to_string_lossy(), &cells, &other).unwrap();
+    assert!(!asks_for(&args, &loaded, &cells, &cached), "one cell moved");
+}

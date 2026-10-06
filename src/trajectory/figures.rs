@@ -339,10 +339,8 @@ impl TrajectoryData {
                 Err(e) => log::warn!("layout {path}: {e:#}"),
             }
         }
+        // Shown on `m`; a run says it once, when it ends.
         let layout_hint = layout_hint(all.iter().map(|l| l.method.as_deref()), &run);
-        if let Some(h) = &layout_hint {
-            log::warn!("{h}");
-        }
         let edges = match t.edges.as_deref() {
             Some(rel) => edges::read(&at(rel))?,
             None => Vec::new(),

@@ -98,12 +98,13 @@ pub(super) fn inputs(
     let e = match source {
         Source::Cache(src) => from_cache(args, loaded, &src)?,
         Source::Decoder(_) => from_decoder(args, loaded)?,
-        Source::Counts | Source::Nothing => anyhow::bail!(
+        Source::Nothing => anyhow::bail!(
             "the run's raw counts are not here ({} file(s) missing, first {first}), no earlier pass \
              cached its cluster sums beside it, and a {} run has no decoder to read expression from",
             missing.len(),
             loaded.manifest.kind.as_str()
         ),
+        Source::Counts => anyhow::bail!("the run's raw counts are here: read them instead"),
     };
     anyhow::ensure!(
         e.n_clusters >= 2,
@@ -147,15 +148,14 @@ fn newest_cache(loaded: &Loaded) -> Option<Loaded> {
 fn from_cache(args: &AnnotateArgs, loaded: &Loaded, src: &Loaded) -> Result<Expression> {
     let (cache, ids_rel) = complete_cache(src)
         .with_context(|| format!("{}: its cache is gone", src.file.display()))?;
-    if args.clusters.is_some() || loaded.manifest.cluster.clusters.is_none() {
+    // The cached clusters, numbered 0.. in id order.
+    let (cell_names, ids) = read_clusters(&resolve(&src.dir, ids_rel))?;
+    if !asks_for(args, loaded, &cell_names, &ids) {
         warn!(
-            "without the counts the pass keeps the clusters {} summed; the clustering asked for is not used",
+            "without the counts the pass keeps the clusters {} summed, not the clustering asked for",
             src.file.display()
         );
     }
-
-    // The cached clusters, numbered 0.. in id order.
-    let (cell_names, ids) = read_clusters(&resolve(&src.dir, ids_rel))?;
     let mut order: Vec<u32> = ids.iter().flatten().copied().collect();
     order.sort_unstable();
     order.dedup();
@@ -185,6 +185,27 @@ fn from_cache(args: &AnnotateArgs, loaded: &Loaded, src: &Loaded) -> Result<Expr
             "manifest": src.file.file_name().map(|n| n.to_string_lossy().into_owned()),
         }),
     })
+}
+
+/// Whether the cached clusters `ids` (of `cells`) are the ones the pass was
+/// asked for: the run's own cluster file, with no `--clusters`. Leiden (no
+/// cluster file) or a file that assigns any cell otherwise is not.
+fn asks_for(args: &AnnotateArgs, loaded: &Loaded, cells: &[Box<str>], ids: &[Option<u32>]) -> bool {
+    let Some(rel) = loaded.manifest.cluster.clusters.as_deref() else {
+        return false;
+    };
+    if args.clusters.is_some() {
+        return false;
+    }
+    let Ok((names, own)) = read_clusters(&resolve(&loaded.dir, rel)) else {
+        return false;
+    };
+    let own: std::collections::HashMap<&str, Option<u32>> =
+        names.iter().map(AsRef::as_ref).zip(own).collect();
+    cells
+        .iter()
+        .zip(ids)
+        .all(|(c, id)| own.get(c.as_ref()).is_some_and(|o| o == id))
 }
 
 /// How a run's decoder turns a cell's latent row into a gene distribution.
@@ -429,7 +450,7 @@ fn vae_features(
     genes: &[Box<str>],
     dict: &Mat,
 ) -> Result<(Mat, Vec<(usize, f64)>)> {
-    let prefix = loaded.run_prefix();
+    let prefix = loaded.model_prefix();
     let g = genes.len();
     let modules = std::fs::read_to_string(format!("{prefix}.coarsening.json"))
         .ok()
@@ -494,7 +515,7 @@ fn vae_bias(loaded: &Loaded, d: usize) -> Result<Vec<f32>> {
         .get("model")
         .and_then(|v| v.as_str())
         .map(|r| resolve(&loaded.dir, r))
-        .unwrap_or_else(|| format!("{}.safetensors", loaded.run_prefix()));
+        .unwrap_or_else(|| format!("{}.safetensors", loaded.model_prefix()));
     let tensors = candle_core::safetensors::load(&path, &candle_core::Device::Cpu)
         .with_context(|| format!("reading the vae decoder {path}"))?;
     let bias = tensors
@@ -534,7 +555,7 @@ fn batch_labels(loaded: &Loaded, cells: &[Box<str>]) -> (Vec<usize>, usize) {
 /// NB-Fisher weights cached at training, when they cover these genes; else
 /// equal weights.
 fn fisher_weights(loaded: &Loaded, genes: &[Box<str>]) -> Vec<f32> {
-    match data_beans::alg::gene_weighting::load_fisher_weights(&loaded.run_prefix()) {
+    match data_beans::alg::gene_weighting::load_fisher_weights(&loaded.model_prefix()) {
         Ok(Some((names, w))) if names == genes => w,
         _ => {
             info!("no cached NB-Fisher weights for these genes: equal weights");
