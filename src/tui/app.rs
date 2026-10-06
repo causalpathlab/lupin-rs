@@ -254,7 +254,7 @@ pub enum Pending {
     TrajectoryOut { replace: Option<String> },
 }
 
-/// A file the main loop picks in the file browser, which takes the screen.
+/// A file the main loop opens the file browser for, in a popup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileWant {
     /// A marker panel, for the annotation form.
@@ -445,6 +445,8 @@ pub struct App {
     pub trajectory: super::order::TrajectoryRun,
     /// A file to pick in the file browser, which the main loop opens.
     pub want_file: Option<FileWant>,
+    /// The file browser, open in a popup over the form or menu that asked.
+    pub browser: Option<(FileWant, super::picker::Picker)>,
     /// What follows the pass running now (or the form about to start one).
     after_pass: AfterPass,
     /// The terminal's picture protocol, asked for once.
@@ -499,6 +501,7 @@ impl App {
             out_chosen: true,
             trajectory: super::order::TrajectoryRun::default(),
             want_file: None,
+            browser: None,
             after_pass: AfterPass::Nothing,
             picker: None,
             progress_hidden: false,
@@ -1622,6 +1625,9 @@ impl App {
         if self.failed.take().is_some() {
             return;
         }
+        if self.browser.is_some() {
+            return self.browser_key(k.code);
+        }
         if self.menu.is_some() {
             return self.menu_key(k.code);
         }
@@ -2536,6 +2542,28 @@ impl App {
             ]),
             "r runs the trajectory when you are ready",
         ));
+    }
+
+    /// A key for the file browser; a choice or a cancel closes it and goes
+    /// to what asked for the file.
+    fn browser_key(&mut self, code: KeyCode) {
+        let Some((want, b)) = &mut self.browser else {
+            return;
+        };
+        let want = *want;
+        let picked = match b.key(code) {
+            super::picker::Step::Stay => return,
+            super::picker::Step::Chosen(p) => Some(p),
+            super::picker::Step::Cancelled => None,
+        };
+        self.browser = None;
+        let picked = picked.as_deref();
+        match want {
+            FileWant::Markers => self.set_markers(picked),
+            FileWant::Labels => self.set_labels(picked),
+            FileWant::Prior => self.set_prior(picked),
+            FileWant::LabelCl => self.set_label_cl(picked),
+        }
     }
 
     /// Take `path` as the marker panel (picked in the file browser from the

@@ -83,7 +83,48 @@ fn draw_overlays(f: &mut Frame, app: &App, menu_area: Rect) {
         // A list of long rows (the runs) takes the screen's width.
         draw_menu(f, m, if m.wide { f.area() } else { menu_area });
     }
+    if let Some((_, b)) = &app.browser {
+        draw_browser(f, b);
+    }
     draw_failed(f, app);
+}
+
+/// The file browser, in a popup over the form or menu that asked for a file:
+/// the directory on top, its entries below.
+fn draw_browser(f: &mut Frame, b: &super::picker::Picker) {
+    let over = f.area();
+    let area = centered(
+        over,
+        over.width.saturating_sub(4).min(100),
+        over.height.saturating_sub(4).min(30),
+    );
+    let (hint, note) = b.hint("esc cancel");
+    let hint = Line::from(hint).fg(if note {
+        Color::LightYellow
+    } else {
+        Color::Indexed(250)
+    });
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::new().fg(Color::LightYellow).bg(Color::Indexed(236)))
+        .title(Line::from(format!(" {} ", b.title())).bold())
+        .title_bottom(hint)
+        .style(POPUP);
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let [dir, _, list] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .areas(inner);
+    f.render_widget(
+        Paragraph::new(b.dir().display().to_string()).style(POPUP.fg(Color::Indexed(245))),
+        dir,
+    );
+    b.draw_list(f, list);
 }
 
 /// The trajectory's order view: the clusters on the left, the ordering (or
