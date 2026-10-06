@@ -390,3 +390,12 @@ fn either_axis_of_the_diffusion_map_steps_and_skips_the_other() {
     assert_eq!(t.next_pair(2, 3, true, true), (4, 3));
     assert_eq!(t.next_pair(1, 3, false, true), (4, 3));
 }
+
+#[test]
+fn cells_draw_grey_first_then_by_pseudotime_low_to_high() {
+    let mut t = data();
+    t.pseudotime = vec![0.9, f32::NAN, 0.1, 0.5];
+    t.types.truncate(4);
+    let order = t.draw_order(&[0, 1, 2, 3], Colouring::Pseudotime);
+    assert_eq!(order, vec![1, 2, 3, 0]);
+}

@@ -557,9 +557,7 @@ impl TrajectoryData {
         };
         let shown: Vec<usize> = finite.iter().copied().filter(inside).collect();
         let (colour_of, legend) = self.cell_colours(style.colouring);
-        // Grey cells first, so coloured ones draw over them.
-        let mut order = shown.clone();
-        order.sort_by_key(|&i| colour_of[i].is_some());
+        let order = self.draw_order(&shown, style.colouring);
         let pts: Vec<(f32, f32)> = order
             .iter()
             .map(|&i| to_pixel((x[i], y[i]), &bounds, ext))
@@ -621,6 +619,24 @@ impl TrajectoryData {
     }
 
     /// Each cell's colour in `colouring` and its legend, made once.
+    /// The order `cells` are drawn in, later over earlier: grey cells first,
+    /// so coloured ones draw over them; by pseudotime, low to high, so the
+    /// few late cells are not buried under the many early ones.
+    fn draw_order(&self, cells: &[usize], colouring: Colouring) -> Vec<usize> {
+        let (colour_of, _) = self.cell_colours(colouring);
+        let mut order = cells.to_vec();
+        match colouring {
+            Colouring::Pseudotime => {
+                let t = |i: usize| self.pseudotime[i];
+                order.sort_by(|&a, &b| {
+                    (t(a).is_finite().cmp(&t(b).is_finite())).then(t(a).total_cmp(&t(b)))
+                });
+            }
+            _ => order.sort_by_key(|&i| colour_of[i].is_some()),
+        }
+        order
+    }
+
     fn cell_colours(&self, colouring: Colouring) -> &CellColours {
         self.colours[colouring.slot()].get_or_init(|| match colouring {
             Colouring::Pseudotime => (
