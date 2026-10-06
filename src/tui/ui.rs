@@ -1422,6 +1422,19 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
             format!("{} · unrelated", s.source.as_str()),
         ));
     }
+    let inferred = v.inferred();
+    if !inferred.is_empty() {
+        rows.push(
+            Row::new(vec![Cell::from(format!(
+                "{} edge(s) the run inferred for types the prior leaves out",
+                inferred.len()
+            ))])
+            .style(dim),
+        );
+        for d in &inferred {
+            rows.push(pair(&d.a, "⇢", &d.b, d.summary()));
+        }
+    }
     let candidates = v.candidates();
     if !candidates.is_empty() {
         rows.push(

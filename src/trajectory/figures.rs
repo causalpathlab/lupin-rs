@@ -28,6 +28,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// Cells no root reaches, pairs outside the prior, and the frame.
 const GREY: Rgb = (190, 190, 190);
 const INK: Rgb = (40, 40, 40);
+/// An inferred edge's arrow: the data's edge, not the prior's.
+const INFERRED: Rgb = (115, 115, 115);
 /// Entries a categorical legend lists before `+k more`.
 const LEGEND_MAX: usize = 20;
 /// Figure width in inches and dots per inch for an export.
@@ -691,26 +693,32 @@ impl TrajectoryData {
     ) -> Result<Vec<TopicLayer>> {
         let mut strong = Vec::new();
         let mut weak = Vec::new();
-        for e in self.edges.iter().filter(|e| e.in_prior) {
+        let mut inferred = Vec::new();
+        let drawn = |e: &&EdgeRow| e.in_prior || e.verdict == Some(Verdict::Inferred);
+        for e in self.edges.iter().filter(drawn) {
             if let (Some(&a), Some(&b)) = (medians.get(&e.a), medians.get(&e.b)) {
                 let seg = (to_pixel(a, bounds, ext), to_pixel(b, bounds, ext));
-                if e.verdict == Some(Verdict::Supported) {
-                    strong.push(seg);
-                } else {
-                    weak.push(seg);
+                match e.verdict {
+                    Some(Verdict::Supported) => strong.push(seg),
+                    Some(Verdict::Inferred) => inferred.push(seg),
+                    _ => weak.push(seg),
                 }
             }
         }
         let stroke = radius * 1.2;
         let mut layers = Vec::new();
-        for (segs, alpha) in [(strong, 0.9), (weak, 0.3)] {
+        for (segs, colour, alpha) in [
+            (strong, INK, 0.9),
+            (weak, INK, 0.3),
+            (inferred, INFERRED, 0.9),
+        ] {
             if !segs.is_empty() {
                 layers.push(raster_layer(rasterize_arrow_layer_png(
                     &segs,
                     ext,
                     stroke,
                     stroke * 5.0,
-                    INK,
+                    colour,
                     alpha,
                 )?));
             }

@@ -169,6 +169,18 @@ impl OrderView {
         out
     }
 
+    /// Edges the trajectory run added to place node types the prior left
+    /// without one, strongest first.
+    pub fn inferred(&self) -> Vec<&EdgeRow> {
+        let mut out: Vec<&EdgeRow> = self
+            .edges
+            .iter()
+            .filter(|e| e.verdict == Some(Verdict::Inferred))
+            .collect();
+        out.sort_by(|p, q| q.connectivity.total_cmp(&p.connectivity));
+        out
+    }
+
     /// The `unrelated` statements, which show no edge.
     pub fn unrelated(&self) -> Vec<&Statement> {
         self.statements
