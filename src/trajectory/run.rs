@@ -322,6 +322,11 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     let written = write(&inputs, &t, out)?;
     record(&loaded, &manifest_out, &written, args)?;
     STAGES.finish();
+    let (found, run) = super::figures::layouts_along(&loaded.manifest, &loaded.dir, &loaded.file);
+    let methods: Vec<Option<String>> = found.into_iter().map(|(m, _)| m).collect();
+    if let Some(h) = super::figures::layout_hint(&methods, &run) {
+        warn!("{h}");
+    }
     info!(
         "wrote {}",
         written.values().cloned().collect::<Vec<_>>().join(", ")

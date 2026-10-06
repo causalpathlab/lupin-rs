@@ -399,3 +399,50 @@ fn cells_draw_grey_first_then_by_pseudotime_low_to_high() {
     let order = t.draw_order(&[0, 1, 2, 3], Colouring::Pseudotime);
     assert_eq!(order, vec![1, 2, 3, 0]);
 }
+
+#[test]
+fn layouts_come_from_the_run_a_round_was_made_from_too() {
+    let root = tempfile::tempdir().unwrap();
+    let at = |n: &str| root.path().join(n);
+    std::fs::write(
+        at("r.senna.json"),
+        r#"{"version": 2, "kind": "topic", "prefix": "r", "layout": {"cell_coords": "r.umap.parquet",
+            "current": "umap", "methods": {"umap": {"cell_coords": "r.umap.parquet"},
+            "phate": {"cell_coords": "r.phate.parquet"}}}}"#,
+    )
+    .unwrap();
+    // A round made before PHATE was added: it copied only the UMAP.
+    std::fs::write(
+        at("r.L1.senna.json"),
+        r#"{"version": 2, "kind": "topic", "prefix": "r", "annotate": {"source": "r.senna.json"},
+            "layout": {"cell_coords": "r.umap.parquet", "current": "umap"}}"#,
+    )
+    .unwrap();
+    let l = crate::manifest::run::load(&at("r.L1.senna.json").to_string_lossy()).unwrap();
+    let (found, run) = layouts_along(&l.manifest, &l.dir, &l.file);
+    let methods: Vec<Option<&str>> = found.iter().map(|(m, _)| m.as_deref()).collect();
+    assert_eq!(methods, vec![Some("phate"), Some("umap")]);
+    assert!(found[0].1.ends_with("r.phate.parquet"));
+    assert!(
+        run.ends_with("r.senna.json"),
+        "senna layout goes on the run"
+    );
+}
+
+#[test]
+fn a_missing_umap_or_phate_names_the_senna_command() {
+    let run = Path::new("/x/r.senna.json");
+    let has =
+        |m: &[&str]| -> Vec<Option<String>> { m.iter().map(|s| Some(s.to_string())).collect() };
+    assert_eq!(layout_hint(&has(&["phate", "umap"]), run), None);
+    let one = layout_hint(&has(&["umap"]), run).unwrap();
+    assert!(
+        one.contains("no PHATE") && one.contains("`senna layout phate --from r.senna.json`"),
+        "{one}"
+    );
+    let both = layout_hint(&[], run).unwrap();
+    assert!(
+        both.contains("no UMAP or PHATE") && both.contains("senna layout {umap|phate}"),
+        "{both}"
+    );
+}

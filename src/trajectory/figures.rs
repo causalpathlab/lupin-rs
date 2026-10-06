@@ -272,6 +272,8 @@ pub(crate) struct TrajectoryData {
     pub(crate) diffusion: Option<Mat>,
     /// The run's layouts that share cells with it, best first.
     pub(crate) layouts: Vec<Layout>,
+    /// What to run for the layouts of [`WANTED_LAYOUTS`] it lacks, if any.
+    pub(crate) layout_hint: Option<String>,
     pub(crate) edges: Vec<EdgeRow>,
     /// Each colouring's cell colours and legend, made on first use.
     pub(crate) colours: [OnceLock<CellColours>; 4],
@@ -319,11 +321,21 @@ impl TrajectoryData {
             None => None,
         };
         let mut all = Vec::new();
-        for (method, rel) in layouts(manifest) {
-            match read_layout(&at(&rel), &index) {
-                Ok((x, y)) => all.push(Layout { method, x, y }),
-                Err(e) => log::warn!("layout {rel}: {e:#}"),
+        let (found, run) = layouts_along(manifest, dir, file);
+        for (method, path) in &found {
+            match read_layout(path, &index) {
+                Ok((x, y)) => all.push(Layout {
+                    method: method.clone(),
+                    x,
+                    y,
+                }),
+                Err(e) => log::warn!("layout {path}: {e:#}"),
             }
+        }
+        let methods: Vec<Option<String>> = all.iter().map(|l| l.method.clone()).collect();
+        let layout_hint = layout_hint(&methods, &run);
+        if let Some(h) = &layout_hint {
+            log::warn!("{h}");
         }
         let edges = match t.edges.as_deref() {
             Some(rel) => edges::read(&at(rel))?,
@@ -337,6 +349,7 @@ impl TrajectoryData {
             lineage,
             diffusion,
             layouts: all,
+            layout_hint,
             edges,
             ..Self::default()
         }))
@@ -881,6 +894,73 @@ fn bounds_of(x: &[f32], y: &[f32], idx: &[usize]) -> DataBounds {
 /// to show trajectories, then the run's current layout, then the other
 /// layouts it records. Each with its method's name, when known, and its
 /// manifest-relative path.
+/// The layouts senna makes that the trajectory's figures look for.
+pub(crate) const WANTED_LAYOUTS: [&str; 2] = ["umap", "phate"];
+
+/// The layouts of `manifest` (read from `file` in `dir`) and of the runs it
+/// was made from, along `annotate.source`, as paths, PHATE first: a layout
+/// senna adds to the run after a round or trajectory was made is found too.
+/// Also the first run of that chain, which `senna layout` adds to.
+pub(crate) fn layouts_along(
+    manifest: &RunManifest,
+    dir: &Path,
+    file: &Path,
+) -> (Vec<(Option<String>, String)>, PathBuf) {
+    let mut out: Vec<(Option<String>, String)> = Vec::new();
+    let mut add = |m: &RunManifest, dir: &Path| {
+        for (method, rel) in layouts(m) {
+            let path = resolve(dir, &rel);
+            if !out.iter().any(|(_, p)| *p == path) {
+                out.push((method, path));
+            }
+        }
+    };
+    add(manifest, dir);
+    let mut run = file.to_path_buf();
+    let mut source = manifest.annotate.source.as_deref().map(|s| resolve(dir, s));
+    // A chain of rounds is short; the bound stops a cycle.
+    for _ in 0..32 {
+        let Some(src) = source.take() else { break };
+        let Ok(l) = crate::manifest::run::load(&src) else {
+            break;
+        };
+        add(&l.manifest, &l.dir);
+        source = l
+            .manifest
+            .annotate
+            .source
+            .as_deref()
+            .map(|s| resolve(&l.dir, s));
+        run = l.file;
+    }
+    out.sort_by_key(|(m, _)| m.as_deref() != Some("phate"));
+    (out, run)
+}
+
+/// What to run for the [`WANTED_LAYOUTS`] missing from `found` (the
+/// layouts' methods), on `run`.
+pub(crate) fn layout_hint(found: &[Option<String>], run: &Path) -> Option<String> {
+    let missing: Vec<&str> = WANTED_LAYOUTS
+        .into_iter()
+        .filter(|w| !found.iter().any(|m| m.as_deref() == Some(*w)))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let name = run
+        .file_name()
+        .map_or(run.to_string_lossy(), |n| n.to_string_lossy());
+    let which = match missing[..] {
+        [one] => one.to_string(),
+        _ => format!("{{{}}}", missing.join("|")),
+    };
+    let shown: Vec<String> = missing.iter().map(|m| m.to_uppercase()).collect();
+    Some(format!(
+        "no {} for this run: `senna layout {which} --from {name}` adds it, and the figures pick it up when they reopen",
+        shown.join(" or ")
+    ))
+}
+
 fn layouts(manifest: &RunManifest) -> Vec<(Option<String>, String)> {
     let l = &manifest.layout;
     let methods = l.extra.get("methods").and_then(|m| m.as_object());

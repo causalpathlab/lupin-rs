@@ -446,7 +446,10 @@ impl FigurePane {
         let cur = self.current();
         let Some(next) = self.data.next_scatter(cur) else {
             return if cur.is_scatter() {
-                "only one layout in this run".into()
+                match &self.data.layout_hint {
+                    Some(h) => format!("only one layout in this run; {h}"),
+                    None => "only one layout in this run".into(),
+                }
             } else {
                 "m switches the layout of the scatter (v shows it)".into()
             };
