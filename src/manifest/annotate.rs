@@ -101,6 +101,10 @@ pub fn annotate_by_enrichment(
         if let Some(r) = &inputs.cl_record {
             m.insert("cell_ontology".into(), r.clone());
         }
+        // Not the raw counts: an earlier pass's cache or the model's decoder.
+        if let Some(e) = &inputs.expression_source {
+            m.insert("expression".into(), e.clone());
+        }
         m.insert(
             "null".into(),
             serde_json::json!({
@@ -390,6 +394,15 @@ pub(super) fn load_enrichment_inputs(
     );
 
     let load = raw_counts_load(manifest, manifest_dir)?;
+    let missing: Vec<&str> = load
+        .data_files
+        .iter()
+        .map(AsRef::as_ref)
+        .filter(|f: &&str| !Path::new(f).exists())
+        .collect();
+    if !missing.is_empty() {
+        return super::no_counts::inputs(args, loaded, data, &missing);
+    }
     info!("Re-opening raw counts: {} file(s)", load.data_files.len());
     let SparseDataWithBatch {
         data: data_vec,
@@ -413,6 +426,53 @@ pub(super) fn load_enrichment_inputs(
     let (batch_labels, n_batches) = build_batch_labels(batch, n_cells)?;
     info!("Batches: {n_batches}");
 
+    let panel = panel_inputs(args, loaded, data, &gene_names)?;
+
+    let nb_fisher = nb_fisher_weights(&loaded.run_prefix(), data_vec, &gene_names)?;
+    let (profile_gk, pb_gene_gp, gene_sum_kg) = aggregate_expression(
+        data_vec,
+        &cluster_labels,
+        n_clusters,
+        &batch_labels,
+        n_batches,
+        gene_names.len(),
+        &nb_fisher,
+    )?;
+
+    Ok(EnrichmentInputs {
+        gene_names,
+        cell_names,
+        cluster_labels,
+        n_clusters,
+        batch_labels,
+        n_batches,
+        markers_gc: panel.markers_gc,
+        celltype_names: panel.celltype_names,
+        profile_gk,
+        pb_gene_gp,
+        gene_sum_kg,
+        gene_weights: nb_fisher,
+        type_tree: panel.type_tree,
+        cl_record: panel.cl_record,
+        expression_source: None,
+    })
+}
+
+/// The marker panel's side of [`EnrichmentInputs`], aligned to `gene_names`.
+pub(super) struct PanelInputs {
+    pub markers_gc: Mat,
+    pub celltype_names: Vec<Box<str>>,
+    pub type_tree: Option<enrichment::treebh::TypeTree>,
+    pub cl_record: Option<serde_json::Value>,
+}
+
+/// The marker matrix over `gene_names`, its cell types and their tree.
+pub(super) fn panel_inputs(
+    args: &AnnotateArgs,
+    loaded: &Loaded,
+    data: Option<&super::data_files::ClData>,
+    gene_names: &[Box<str>],
+) -> Result<PanelInputs> {
     // Markers aligned to data row order. Optional: GO/GMT ontology mode supplies
     // gene-sets instead of a curated marker TSV, so an empty path yields an empty
     // marker matrix (the marker-enrichment path is skipped by the caller).
@@ -421,7 +481,7 @@ pub(super) fn load_enrichment_inputs(
         info!("No marker TSV (ontology gene-set mode); skipping marker matrix");
         (Mat::zeros(gene_names.len(), 0), Vec::new(), None)
     } else {
-        let annot = build_annotation_matrix(&args.markers, &gene_names)?;
+        let annot = build_annotation_matrix(&args.markers, gene_names)?;
         info!(
             "Marker matrix: {} genes × {} celltypes",
             annot.membership_ga.nrows(),
@@ -449,30 +509,9 @@ pub(super) fn load_enrichment_inputs(
         (annot.membership_ga, annot.annot_names, type_tree)
     };
 
-    let nb_fisher = nb_fisher_weights(&loaded.run_prefix(), data_vec, &gene_names)?;
-    let (profile_gk, pb_gene_gp, gene_sum_kg) = aggregate_expression(
-        data_vec,
-        &cluster_labels,
-        n_clusters,
-        &batch_labels,
-        n_batches,
-        gene_names.len(),
-        &nb_fisher,
-    )?;
-
-    Ok(EnrichmentInputs {
-        gene_names,
-        cell_names,
-        cluster_labels,
-        n_clusters,
-        batch_labels,
-        n_batches,
+    Ok(PanelInputs {
         markers_gc,
         celltype_names,
-        profile_gk,
-        pb_gene_gp,
-        gene_sum_kg,
-        gene_weights: nb_fisher,
         type_tree,
         cl_record,
     })
@@ -484,7 +523,7 @@ pub(super) fn load_enrichment_inputs(
 ///      fall back to internal Leiden when stale / relocated, since
 ///      we can re-cluster from the same latent the manifest points at.
 ///   3. Internal Leiden on `manifest.outputs.latent`.
-fn resolve_clusters(
+pub(super) fn resolve_clusters(
     args: &AnnotateArgs,
     manifest: &RunManifest,
     manifest_dir: &Path,

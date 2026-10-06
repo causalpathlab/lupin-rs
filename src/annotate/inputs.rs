@@ -45,6 +45,9 @@ pub struct EnrichmentInputs {
     pub type_tree: Option<enrichment::treebh::TypeTree>,
     /// The Cell Ontology files and release the pass used, for its record.
     pub cl_record: Option<serde_json::Value>,
+    /// Where the cluster expression came from when not the raw counts, for
+    /// the pass's record.
+    pub expression_source: Option<serde_json::Value>,
 }
 
 /// Read the cluster parquet (cells × 1 cluster column, NaN for unassigned)

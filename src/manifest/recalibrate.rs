@@ -360,6 +360,7 @@ fn rescore_inputs(
                 .treebh(&annot.annot_names),
         ),
         cl_record: None,
+        expression_source: None,
     };
     Ok(Some((args, inputs, new_ids)))
 }

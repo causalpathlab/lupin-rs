@@ -36,6 +36,8 @@ pub struct Form {
     pub row: usize,
     pub note: Option<String>,
     pub confirm: bool,
+    /// Where the pass gets its cluster expression, when not the counts.
+    pub expression: Option<String>,
 }
 
 /// What follows a pass.
@@ -252,6 +254,28 @@ pub enum Pending {
     /// Run `lupin trajectory` with the output prefix typed; `replace` is the
     /// prefix whose existing manifest the user has agreed to replace.
     TrajectoryOut { replace: Option<String> },
+}
+
+/// Where a pass on the run `source` gets its cluster expression, in words,
+/// when the raw counts are not here.
+fn expression_note(source: &Path) -> Option<String> {
+    use crate::manifest::no_counts::{self, Source};
+    let loaded = crate::manifest::run::load(&source.to_string_lossy()).ok()?;
+    Some(match no_counts::source(&loaded) {
+        Source::Counts => return None,
+        Source::Cache(m) => format!(
+            "The raw counts are not here: it scores the clusters {} cached and their gene sums, whatever the clustering rows say",
+            file_name(&m)
+        ),
+        Source::Decoder(how) => format!(
+            "The raw counts are not here and no pass cached its sums: it scores the {} decoder's expected expression ({how}), a rough stand-in",
+            loaded.manifest.kind.as_str()
+        ),
+        Source::Nothing => format!(
+            "The raw counts are not here, no pass cached its sums, and a {} run has no decoder to stand in: the pass will fail",
+            loaded.manifest.kind.as_str()
+        ),
+    })
 }
 
 /// A file the main loop opens the file browser for, in a popup.
@@ -984,6 +1008,7 @@ impl App {
             } else {
                 Setting::Run
             }),
+            expression: expression_note(&self.source),
             ..Form::default()
         });
     }
@@ -1030,7 +1055,10 @@ impl App {
             AfterPass::Offer => "; then a choice to run the trajectory",
             AfterPass::Nothing => "",
         };
-        (format!("{what}{then}"), warns)
+        match self.form.as_ref().and_then(|f| f.expression.as_deref()) {
+            Some(e) => (format!("{what}{then}. {e}"), true),
+            None => (format!("{what}{then}"), warns),
+        }
     }
 
     /// Run the form: a marker panel is needed, and a pass that replaces
