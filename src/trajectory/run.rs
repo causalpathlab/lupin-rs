@@ -89,6 +89,13 @@ pub struct TrajectoryArgs {
 
     #[arg(
         long,
+        default_value_t = super::diffusion::DC_MIN_SHARE,
+        help = "Leave out of the pseudotime distance a diffusion component spread over less than this share of the cells (a barely attached group's own); 0 keeps them all, as scanpy"
+    )]
+    pub dc_min_share: f32,
+
+    #[arg(
+        long,
         default_value_t = 20,
         help = "Types with fewer cells are not nodes of the prior; their cells follow the nearest root"
     )]
@@ -147,6 +154,7 @@ impl TrajectoryArgs {
         }
         val("knn", self.knn.to_string());
         val("n-dcs", self.n_dcs.to_string());
+        val("dc-min-share", self.dc_min_share.to_string());
         val("min-cells", self.min_cells.to_string());
         val("min-connectivity", self.min_connectivity.to_string());
         if self.prior_only {
@@ -159,12 +167,17 @@ impl TrajectoryArgs {
     }
 }
 
+/// The quantile of a component's distances to its root that pseudotime 1
+/// stands at.
+const PSEUDOTIME_TOP: f64 = 0.99;
+
 /// What the manifest at `dir` records about the run; input files
 /// manifest-relative, as every path in a manifest is.
 fn settings(args: &TrajectoryArgs, dir: &std::path::Path) -> serde_json::Value {
     let rel = |p: &Option<Box<str>>| p.as_deref().map(|p| rel_to_manifest(dir, p));
     serde_json::json!({
-        "knn": args.knn, "n_dcs": args.n_dcs, "min_cells": args.min_cells,
+        "knn": args.knn, "n_dcs": args.n_dcs, "dc_min_share": args.dc_min_share,
+        "min_cells": args.min_cells,
         "min_connectivity": args.min_connectivity,
         "roots": args.root, "prior": rel(&args.prior), "prior_only": args.prior_only,
         "labels": rel(&args.labels), "obo": rel(&args.obo), "label_cl": rel(&args.label_cl),
@@ -298,7 +311,7 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     let mut t = check(&inputs, &nb, prior, args.min_connectivity);
     report_check(&inputs, &t);
     if !args.check_only {
-        t.ordering = Some(order(&inputs, &nb, &t.prior, usize::from(args.n_dcs))?);
+        t.ordering = Some(order(&inputs, &nb, &t.prior, args)?);
         agreement(&mut t);
         report_order(&inputs, &t);
     }
@@ -532,9 +545,28 @@ fn report_check(inputs: &Inputs, t: &Trajectory) {
 
 /// Diffusion pseudotime from each component's roots (the root types'
 /// medoids), scaled to [0, 1] per component, and the lineages.
-fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, n_dcs: usize) -> Result<Ordering> {
+fn order(
+    inputs: &Inputs,
+    nb: &Neighbours,
+    prior: &Prior,
+    args: &TrajectoryArgs,
+) -> Result<Ordering> {
     STAGES.start(STAGE_DIFFUSION);
-    let map = DiffusionMap::new(nb, DIFFMAP_COMPS, n_dcs)?;
+    let map = DiffusionMap::new(
+        nb,
+        DIFFMAP_COMPS,
+        usize::from(args.n_dcs),
+        f64::from(args.dc_min_share),
+    )?;
+    if !map.left_out.is_empty() {
+        let dcs: Vec<String> = map.left_out.iter().map(|j| format!("DC{j}")).collect();
+        warn!(
+            "{} left out of the pseudotime distance: each is spread over under {:.0}% of the cells, \
+             a group the kNN graph barely attaches (--dc-min-share 0 keeps them)",
+            dcs.join(", "),
+            100.0 * args.dc_min_share
+        );
+    }
     STAGES.start(STAGE_DIFFUSION + 1);
     let n = inputs.cells.len();
     // Distance to the nearest root of each component.
@@ -565,18 +597,29 @@ fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, n_dcs: usize) -> Resul
             }
         })
         .collect();
-    let mut top = vec![0.0f64; dist.len()];
+    // Each component's distances scaled to [0, 1] by their 99th percentile,
+    // the few cells beyond it at 1: a handful of outlying cells no longer
+    // squeeze every other cell towards 0.
+    let mut by_component: Vec<Vec<f64>> = vec![Vec::new(); dist.len()];
     for i in 0..n {
         if let Some(c) = component[i] {
             if dist[c][i].is_finite() {
-                top[c] = top[c].max(dist[c][i]);
+                by_component[c].push(dist[c][i]);
             }
         }
     }
+    let top: Vec<f64> = by_component
+        .iter_mut()
+        .map(|d| {
+            d.sort_by(f64::total_cmp);
+            let at = ((d.len() as f64 - 1.0) * PSEUDOTIME_TOP).round() as usize;
+            d.get(at).copied().unwrap_or(0.0)
+        })
+        .collect();
     let pseudotime: Vec<f32> = (0..n)
         .map(|i| match component[i] {
             Some(c) if dist[c][i].is_finite() => {
-                (dist[c][i] / top[c].max(f64::MIN_POSITIVE)) as f32
+                (dist[c][i] / top[c].max(f64::MIN_POSITIVE)).min(1.0) as f32
             }
             _ => f32::NAN,
         })

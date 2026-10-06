@@ -374,13 +374,14 @@ impl TrajectoryData {
     }
 
     /// The coordinates a scatter can show, in the order `m` steps through
-    /// them: the layouts, then the diffusion map at its first pair.
+    /// them: the layouts, then the diffusion map at its first pair spread
+    /// over the cells.
     pub(crate) fn scatters(&self) -> Vec<Panel> {
         let mut out: Vec<Panel> = (0..self.layouts.len())
             .map(|k| Panel::Layout { k })
             .collect();
-        if self.diffusion.as_ref().is_some_and(|d| d.ncols() >= 3) {
-            out.push(Panel::Diffusion { x: 1, y: 2 });
+        if let Some(d) = self.diffusion.as_ref().filter(|d| d.ncols() >= 3) {
+            out.push(first_spread_pair(d));
         }
         out
     }
@@ -1167,6 +1168,24 @@ pub(crate) fn render(fig: &Figure) -> Result<image::RgbaImage> {
         })
         .collect();
     image::RgbaImage::from_raw(fig.w, fig.h, rgba).context("the figure's pixels")
+}
+
+/// The first two diffusion components after the trivial one that are spread
+/// over the cells ([`DC_MIN_SHARE`]): the components of a barely attached
+/// group show that group against a line of every other cell. DC1 × DC2 when
+/// fewer than two are.
+fn first_spread_pair(d: &Mat) -> Panel {
+    use super::diffusion::{participation, DC_MIN_SHARE};
+    let spread: Vec<usize> = (1..d.ncols())
+        .filter(|&j| {
+            participation(d.column(j).iter().map(|&v| f64::from(v))) >= f64::from(DC_MIN_SHARE)
+        })
+        .take(2)
+        .collect();
+    match spread[..] {
+        [x, y] => Panel::Diffusion { x, y },
+        _ => Panel::Diffusion { x: 1, y: 2 },
+    }
 }
 
 #[cfg(test)]

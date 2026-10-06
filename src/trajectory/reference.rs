@@ -83,6 +83,6 @@ impl ScanpyReference {
     /// them in the DPT distance, as the fixture's pseudotime was made.
     pub(crate) fn diffusion_map(&self) -> DiffusionMap {
         let n = self.evals.len();
-        DiffusionMap::new(&self.neighbours(), n, n).unwrap()
+        DiffusionMap::new(&self.neighbours(), n, n, 0.0).unwrap()
     }
 }
