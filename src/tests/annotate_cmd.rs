@@ -107,3 +107,19 @@ fn susie_samples_a_thousand_draws_per_chain_by_default() {
     assert_eq!(cfg.samples, 1000);
     assert_eq!(crate::annotate::susie::SusieConfig::default().samples, 1000);
 }
+
+#[test]
+fn susie_settings_that_leave_no_posterior_fail_the_command() {
+    for bad in [
+        &["--susie-effects", "0"][..],
+        &["--mcmc-chains", "0"],
+        &["--mcmc-samples", "0"],
+        &["--mcmc-thin", "0"],
+        &["--susie-dispersion=-1"],
+    ] {
+        let mut argv = vec!["-o", "x", "-m", "m.tsv"];
+        argv.extend_from_slice(bad);
+        let err = run_annotate(&parse(&argv)).unwrap_err().to_string();
+        assert!(err.contains("SuSiE"), "{bad:?}: {err}");
+    }
+}

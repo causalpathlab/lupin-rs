@@ -678,6 +678,11 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
                 } else {
                     Color::Yellow
                 }),
+                Cell::from(num(cand.susie.map(|s| s.pip), 2)),
+                Cell::from(
+                    cand.susie
+                        .map_or_else(|| "—".into(), |s| format!("×{:.1}", s.fold)),
+                ),
                 Cell::from(num(cand.nes, 2)),
                 Cell::from(pval(cand.p)),
                 Cell::from(pval(cand.q)),
@@ -745,12 +750,14 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Min(14),
             Constraint::Length(5),
             Constraint::Length(BAR as u16),
+            Constraint::Length(5),
+            Constraint::Length(6),
             Constraint::Length(6),
             Constraint::Length(6),
             Constraint::Length(6),
         ],
     )
-    .header(Row::new(["", "type", "share", "", "NES", "p", "q"]).bold())
+    .header(Row::new(["", "type", "share", "", "PIP", "fold", "NES", "p", "q"]).bold())
     .block(
         Block::default()
             .borders(Borders::ALL)

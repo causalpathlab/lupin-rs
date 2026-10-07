@@ -25,14 +25,67 @@ const CANDIDATES: usize = 6;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
     pub label: String,
-    /// Its share of the cluster's evidence (Q): a softmax of z = Φ⁻¹(1 − p)
-    /// over the types that pass FDR.
+    /// Its share of the cluster's evidence: in a SuSiE round, of the deviance
+    /// the types explain; otherwise the enrichment's Q, a softmax of
+    /// z = Φ⁻¹(1 − p) over the types that pass FDR.
     pub share: f32,
+    /// SuSiE's reading, when it made the round's call.
+    pub susie: Option<SusieEvidence>,
     /// fgsea's normalized enrichment score, the effect size.
     pub nes: Option<f32>,
     pub p: Option<f32>,
     /// BH q-value within the cluster.
     pub q: Option<f32>,
+}
+
+/// A type's SuSiE posterior in one cluster.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SusieEvidence {
+    /// Posterior inclusion probability.
+    pub pip: f32,
+    /// The fold its markers rise by, e^θ.
+    pub fold: f32,
+}
+
+/// Below this PIP a type is not a SuSiE round's candidate.
+const MIN_CANDIDATE_PIP: f32 = 0.05;
+
+/// A SuSiE round's candidates for one cluster from its rows of PIP, effect θ
+/// and explained share (type, value), ranked as SuSiE calls: by PIP, ties
+/// (within 0.01) by the share explained; the share is the explained one.
+#[must_use]
+pub fn susie_candidates(
+    pip: &[(String, f32)],
+    effect: &[(String, f32)],
+    explained: &[(String, f32)],
+) -> Vec<Candidate> {
+    let of = |rows: &[(String, f32)], t: &str| {
+        rows.iter().find(|(l, _)| l == t).map_or(0.0, |(_, v)| *v)
+    };
+    let mut c: Vec<Candidate> = pip
+        .iter()
+        .filter(|(l, p)| *p >= MIN_CANDIDATE_PIP && l != UNASSIGNED_LABEL)
+        .map(|(l, p)| Candidate {
+            label: l.clone(),
+            share: of(explained, l),
+            susie: Some(SusieEvidence {
+                pip: *p,
+                fold: of(effect, l).exp(),
+            }),
+            nes: None,
+            p: None,
+            q: None,
+        })
+        .collect();
+    let pip_of = |c: &Candidate| c.susie.map_or(0.0, |s| s.pip);
+    c.sort_by(|a, b| {
+        if (pip_of(a) - pip_of(b)).abs() < 0.01 {
+            b.share.total_cmp(&a.share)
+        } else {
+            pip_of(b).total_cmp(&pip_of(a))
+        }
+    });
+    c
 }
 
 /// A genes × clusters expression table with what fold changes over it need,
@@ -203,6 +256,15 @@ impl RoundView {
         // Q: how the cluster's evidence splits over the types; and the
         // statistics it came from.
         let share = table(&a.cluster_celltype_q)?;
+        // SuSiE's tables, when it made the call: its ranking replaces Q's.
+        let susie = match (
+            table(&a.cluster_celltype_pip)?,
+            table(&a.cluster_celltype_effect)?,
+            table(&a.cluster_celltype_explained)?,
+        ) {
+            (Some(p), Some(e), Some(x)) => Some((p, e, x)),
+            _ => None,
+        };
         let (nes_table, p_table, q_table) = (
             table(&a.cluster_celltype_nes)?,
             table(&a.cluster_celltype_p)?,
@@ -229,27 +291,47 @@ impl RoundView {
         let clusters = digests
             .into_iter()
             .map(|(id, d)| {
-                let shares: Vec<(String, f32)> = share
-                    .as_ref()
-                    .and_then(|t| t.row(id).map(|r| (&t.cols, r)))
-                    .map(|(cols, r)| cols.iter().cloned().zip(r.iter().copied()).collect())
-                    .unwrap_or_default();
+                let row = |t: &Table| -> Vec<(String, f32)> {
+                    t.row(id)
+                        .map(|r| t.cols.iter().cloned().zip(r.iter().copied()).collect())
+                        .unwrap_or_default()
+                };
+                let shares: Vec<(String, f32)> = match &susie {
+                    Some((_, _, x)) => row(x),
+                    None => share.as_ref().map(row).unwrap_or_default(),
+                };
                 let stat = |t: &Option<Table>, label: &str| {
                     let t = t.as_ref()?;
                     let j = t.cols.iter().position(|c| c == label)?;
                     t.row(id).map(|r| r[j]).filter(|v| v.is_finite())
                 };
-                let candidates = top_by(shares.iter().cloned(), CANDIDATES)
-                    .into_iter()
-                    .filter(|(l, s)| *s > 0.0 && l != UNASSIGNED_LABEL)
-                    .map(|(label, share)| Candidate {
-                        nes: stat(&nes_table, &label),
-                        p: stat(&p_table, &label),
-                        q: stat(&q_table, &label),
-                        label,
-                        share,
-                    })
-                    .collect();
+                let mut candidates: Vec<Candidate> = match &susie {
+                    Some((p, e, x)) => {
+                        let mut c = susie_candidates(&row(p), &row(e), &row(x));
+                        c.truncate(CANDIDATES);
+                        c
+                    }
+                    None => top_by(shares.iter().cloned(), CANDIDATES)
+                        .into_iter()
+                        .filter(|(l, s)| *s > 0.0 && l != UNASSIGNED_LABEL)
+                        .map(|(label, share)| Candidate {
+                            label,
+                            share,
+                            susie: None,
+                            nes: None,
+                            p: None,
+                            q: None,
+                        })
+                        .collect(),
+                };
+                // The enrichment's statistics either way.
+                for c in &mut candidates {
+                    (c.nes, c.p, c.q) = (
+                        stat(&nes_table, &c.label),
+                        stat(&p_table, &c.label),
+                        stat(&q_table, &c.label),
+                    );
+                }
                 ClusterView {
                     id,
                     cells: d.size,
@@ -383,6 +465,7 @@ pub fn parse_scores(preview: &serde_json::Value) -> Option<Scores> {
                     Some(Candidate {
                         label: c["label"].as_str()?.to_string(),
                         share: num(&c["share"]).unwrap_or(0.0),
+                        susie: None,
                         nes: num(&c["nes"]),
                         p: num(&c["p"]),
                         q: num(&c["q"]),

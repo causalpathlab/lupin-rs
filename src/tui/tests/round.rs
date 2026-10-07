@@ -6,6 +6,7 @@ fn candidate(label: &str, share: f32) -> Candidate {
     Candidate {
         label: label.into(),
         share,
+        susie: None,
         nes: Some(1.0),
         p: Some(0.01),
         q: Some(0.05),
@@ -287,4 +288,30 @@ fn a_decisions_evidence_is_the_rounds_own_when_rescored_scores_are_shown() {
     )]));
     let d = decisions(&[relabel(0, "CT1")], &r, Some(&recorded));
     assert_eq!(d[0].evidence[0]["term"], "CT1", "the round's own, not CT4");
+}
+
+#[test]
+fn a_susie_rounds_candidates_follow_its_call() {
+    let row = |v: [f32; 3]| -> Vec<(String, f32)> {
+        ["A", "B", "C"]
+            .iter()
+            .map(|t| t.to_string())
+            .zip(v)
+            .collect()
+    };
+    // A and B both certain; B explains more. C barely enters.
+    let pip = row([1.0, 1.0, 0.01]);
+    let effect = row([0.95, 2.6, 0.1]);
+    let explained = row([0.2, 0.5, 0.0]);
+    let c = susie_candidates(&pip, &effect, &explained);
+    let labels: Vec<&str> = c.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["B", "A"],
+        "PIPs tie: the larger share leads; C is out"
+    );
+    assert_eq!(c[0].share, 0.5, "the share is the deviance explained");
+    let s = c[0].susie.as_ref().unwrap();
+    assert_eq!(s.pip, 1.0);
+    assert!((s.fold - 2.6f32.exp()).abs() < 1e-4);
 }

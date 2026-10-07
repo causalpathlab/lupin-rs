@@ -76,11 +76,13 @@ pub enum Setting {
     NumClusters,
     NumPerm,
     Go,
+    /// The enrichment's SuSiE stage, which makes the marker call.
+    Susie,
     /// Start the pass (Enter here, or Shift+Enter anywhere).
     Run,
 }
 
-pub const SETTINGS: [Setting; 9] = [
+pub const SETTINGS: [Setting; 10] = [
     Setting::Markers,
     Setting::Output,
     Setting::Method,
@@ -89,6 +91,7 @@ pub const SETTINGS: [Setting; 9] = [
     Setting::NumClusters,
     Setting::NumPerm,
     Setting::Go,
+    Setting::Susie,
     Setting::Run,
 ];
 
@@ -109,6 +112,7 @@ impl Setting {
             Self::NumClusters => "clusters (k)",
             Self::NumPerm => "permutations",
             Self::Go => "GO terms",
+            Self::Susie => "SuSiE call",
         }
     }
 
@@ -136,6 +140,7 @@ impl Setting {
                 _ if a.go => "on".into(),
                 _ => "off".into(),
             },
+            Self::Susie => if a.no_susie { "off" } else { "on" }.into(),
         }
     }
 
@@ -171,6 +176,7 @@ impl Setting {
                 };
             }
             Self::NumPerm => a.num_perm = step(a.num_perm, 100, 0),
+            Self::Susie => a.no_susie = !a.no_susie,
             // Named gene sets are the command line's; only `--go` toggles.
             Self::Go if a.gaf.is_none() && a.gmt.is_none() => a.go = !a.go,
             Self::Go | Self::Output | Self::Markers | Self::Run => {}
@@ -188,6 +194,7 @@ impl Setting {
             Self::NumClusters => "a fixed number of clusters, or auto from the resolution",
             Self::NumPerm => "permutations for the enrichment null: more is slower and finer",
             Self::Go => "also score GO terms for each cluster (slower)",
+            Self::Susie => "call each cluster by SuSiE (its counts on the panel; types compete for shared markers), or by the enrichment's share",
             Self::Run => "start the pass with these settings",
         }
     }
@@ -3236,9 +3243,13 @@ fn remember_alias(file: &Path, label: &str, id: &str, note: &str) -> anyhow::Res
     )
 }
 
-/// A candidate's evidence for a reason: share, and NES and q when known.
+/// A candidate's evidence for a reason: share, SuSiE's PIP and fold when it
+/// made the call, and NES and q when known.
 fn evidence(c: &super::round::Candidate) -> String {
     let mut s = format!("share {:.2}", c.share);
+    if let Some(e) = c.susie {
+        s += &format!(", PIP {:.2}, ×{:.1}", e.pip, e.fold);
+    }
     if let Some(nes) = c.nes {
         s += &format!(", NES {nes:.2}");
     }

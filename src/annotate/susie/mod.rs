@@ -68,6 +68,21 @@ impl Default for SusieConfig {
     }
 }
 
+impl SusieConfig {
+    /// Refuse settings that leave no posterior.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.prior.num_effects >= 1 && self.samples >= 1 && self.chains >= 1 && self.thin >= 1,
+            "SuSiE needs at least one single effect, chain and posterior sample, and thin ≥ 1"
+        );
+        anyhow::ensure!(
+            self.dispersion.is_none_or(|d| d >= 0.0),
+            "SuSiE's NB dispersion is ≥ 0 (0: Poisson)"
+        );
+        Ok(())
+    }
+}
+
 /// The posterior of one cluster.
 pub struct ClusterFit {
     /// Posterior inclusion probability per cell type.
@@ -137,14 +152,7 @@ pub fn fit_all(
         gene_sum_kg.len() == n_genes * n_clusters && markers.len() == n_genes,
         "count sums and marker rows disagree on the genes"
     );
-    anyhow::ensure!(
-        cfg.prior.num_effects >= 1 && cfg.samples >= 1 && cfg.chains >= 1 && cfg.thin >= 1,
-        "SuSiE needs at least one single effect, chain and posterior sample, and thin ≥ 1"
-    );
-    anyhow::ensure!(
-        cfg.dispersion.is_none_or(|d| d >= 0.0),
-        "the NB dispersion is ≥ 0 (0: Poisson)"
-    );
+    cfg.validate()?;
     // A cluster id with no cells (a gap in the ids) has no counts: it is left
     // out of the shared background and dispersion, and gets no call.
     let column = |k: usize| &gene_sum_kg[k * n_genes..(k + 1) * n_genes];
@@ -234,7 +242,7 @@ pub fn fit_all(
 
     let mut dispersion = vec![global; marker_genes.len()];
     let mut panel = Panel::new(types_of, n_types, &dispersion);
-    let fitted = if cfg.dispersion.is_none() {
+    if cfg.dispersion.is_none() {
         // A light first pass whose means give φ_g, from every cluster's
         // residuals around them; the call is the refit's.
         let first = fit_pass(
@@ -267,10 +275,8 @@ pub fn fit_all(
             .collect();
         dispersion = shrunk_dispersion(&raw, present.len());
         panel.set_dispersion(&dispersion);
-        fit_pass(&panel, cfg)
-    } else {
-        fit_pass(&panel, cfg)
-    };
+    }
+    let fitted = fit_pass(&panel, cfg);
     // Back to every id; one without counts gets no call.
     let mut fitted = fitted.into_iter();
     let clusters = (0..n_clusters)

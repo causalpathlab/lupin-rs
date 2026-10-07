@@ -264,6 +264,15 @@ impl McmcModel for SusieModel<'_> {
     fn sweep(&self, s: &mut SusieState, rng: &mut SmallRng) {
         let c = self.data.panel.n_types();
         let (log_type, log_null) = self.log_prior();
+        // η and the terms from θ afresh: the shifts below add and take away
+        // effects in f32, and their rounding would otherwise accumulate.
+        s.etas = self.data.etas(&s.theta);
+        s.base = s
+            .etas
+            .iter()
+            .enumerate()
+            .map(|(g, &e)| self.data.term(g, e))
+            .collect();
         for l in 0..self.prior.num_effects {
             if s.gamma[l] < c {
                 self.shift(s, s.gamma[l], -s.effect[l]);
@@ -295,12 +304,14 @@ impl McmcModel for SusieModel<'_> {
             // Its size: ESS on the likelihood of its type's markers (starting
             // from the gain just computed), or a prior draw when it picked none.
             if j < c {
-                // ESS takes an f32 log-likelihood; a gain is a sum of f64
-                // differences, small enough for f32 once formed.
-                let ll =
-                    |z: &DVector<f32>| self.data.gain(&s.etas, &s.base, j, self.effect(z)) as f32;
+                // ESS takes an f32 log-likelihood. A gain can run to ~10⁷ on large pseudobulks, past f32's
+                // precision; relative to the current one it stays near 0.
+                let cur = gains[j];
+                let ll = |z: &DVector<f32>| {
+                    (self.data.gain(&s.etas, &s.base, j, self.effect(z)) - cur) as f32
+                };
                 let nu = std_normal_1(rng);
-                s.z_eff[l] = elliptical_slice_step(&s.z_eff[l], &nu, &ll, gains[j] as f32, rng).0;
+                s.z_eff[l] = elliptical_slice_step(&s.z_eff[l], &nu, &ll, 0.0, rng).0;
                 s.effect[l] = self.effect(&s.z_eff[l]);
                 self.shift(s, j, s.effect[l]);
             } else {

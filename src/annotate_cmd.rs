@@ -300,6 +300,9 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     if args.opens_tui() {
         return crate::tui::run(args, None);
     }
+    if let Some(cfg) = build_enrichment_args(args).susie {
+        cfg.validate()?;
+    }
     // One manifest load per invocation; every route below reuses it.
     let loaded = args
         .from

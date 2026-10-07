@@ -142,19 +142,26 @@ pub fn run(
     }
     let summary: Vec<String> = called.iter().map(|(t, n)| format!("{t} {n}")).collect();
     info!("SuSiE calls (clusters): {}", summary.join(", "));
+    // The per-cell files replace the enrichment's: written under a staging
+    // prefix, then moved into place together, so a failure leaves the
+    // enrichment's call whole.
+    let staged = format!("{out}.susie-staging");
     let annotation_path = format!("{out}.annotation.parquet");
     annotation.to_parquet_with_names(
-        &annotation_path,
+        &format!("{staged}.annotation.parquet"),
         (Some(&inputs.cell_names), Some("cell")),
         Some(&inputs.celltype_names),
     )?;
-    info!("wrote {annotation_path}");
     graph_embedding_util::type_annotation::write_label_tsvs(
-        out,
+        &staged,
         &inputs.cell_names,
         &labels,
         &probs,
     )?;
+    for suffix in [".annotation.parquet", ARGMAX_TSV, ".membership.tsv"] {
+        std::fs::rename(format!("{staged}{suffix}"), format!("{out}{suffix}"))?;
+    }
+    info!("wrote {annotation_path} and the per-cell labels");
 
     outputs.argmax = Some(format!("{out}{ARGMAX_TSV}"));
     outputs.annotation = Some(annotation_path);

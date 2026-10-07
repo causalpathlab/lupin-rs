@@ -883,3 +883,52 @@ fn esc_closes_the_browser_popup_and_leaves_the_form() {
     assert!(app.args.markers.is_empty());
     assert_eq!(app.status, "no marker panel picked");
 }
+
+/// The screen `app` draws, as one string.
+fn drawn(app: &App) -> String {
+    let backend = ratatui::backend::TestBackend::new(160, 45);
+    let mut term = ratatui::Terminal::new(backend).unwrap();
+    term.draw(|f| super::super::ui::draw(f, app)).unwrap();
+    term.backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect()
+}
+
+#[test]
+fn a_susie_candidate_shows_its_pip_and_fold() {
+    use super::super::round::{Candidate, SusieEvidence};
+    let mut app = app_with_terms(false);
+    let cand = Candidate {
+        label: "CT1".into(),
+        share: 0.85,
+        susie: Some(SusieEvidence {
+            pip: 1.0,
+            fold: 7.0,
+        }),
+        nes: Some(2.16),
+        p: Some(0.0001),
+        q: Some(0.001),
+    };
+    if let Some(r) = app.round.as_mut() {
+        r.clusters[0].candidates = vec![cand.clone()];
+    }
+    let screen = drawn(&app);
+    assert!(screen.contains("PIP"), "a PIP column");
+    assert!(screen.contains("×7.0"), "the fold");
+    assert!(evidence(&cand).contains("PIP 1.00") && evidence(&cand).contains("×7.0"));
+}
+
+#[test]
+fn the_susie_setting_toggles_the_stage() {
+    assert!(SETTINGS.contains(&Setting::Susie));
+    let mut a = cli(&[]);
+    assert_eq!(Setting::Susie.value(&a), "on");
+    Setting::Susie.adjust(&mut a, true);
+    assert!(a.no_susie);
+    assert_eq!(Setting::Susie.value(&a), "off");
+    Setting::Susie.adjust(&mut a, false);
+    assert!(!a.no_susie);
+}

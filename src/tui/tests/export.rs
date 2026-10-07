@@ -31,6 +31,7 @@ fn cluster(id: ClusterId, label: &str, shares: &[(&str, f32)]) -> ClusterView {
             .map(|(label, share)| Candidate {
                 label: label.clone(),
                 share: *share,
+                susie: None,
                 nes: None,
                 p: None,
                 q: None,
