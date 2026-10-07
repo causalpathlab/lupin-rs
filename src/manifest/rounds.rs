@@ -84,7 +84,7 @@ pub fn write_clusters(path: &str, cells: &[Box<str>], ids: &[Option<ClusterId>])
 }
 
 /// `cell⇥cell_type⇥probability`, header first.
-pub(super) fn read_argmax(path: &str) -> Result<HashMap<String, (String, f32)>> {
+pub(crate) fn read_argmax(path: &str) -> Result<HashMap<String, (String, f32)>> {
     let raw = fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
     Ok(raw
         .lines()
@@ -752,6 +752,15 @@ fn relabel(
         .transpose()?;
 
     let mut next = source.copy_to(manifest_path)?;
+    // SuSiE's tables describe the source round's clusters. TODO: run the
+    // SuSiE stage on the regrouped clusters too; until then this round's
+    // call is its decisions over the enrichment's rescored statistics.
+    let a = &mut next.manifest.annotate;
+    (
+        a.cluster_celltype_pip,
+        a.cluster_celltype_effect,
+        a.cluster_celltype_explained,
+    ) = (None, None, None);
     let rel = |p: &str| Some(rel_to_manifest(&next.dir, p));
     if let Some(t) = &tables {
         let a = &mut next.manifest.annotate;

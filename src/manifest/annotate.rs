@@ -73,6 +73,26 @@ pub fn annotate_by_enrichment(
     stages.start(0);
     let inputs = load_enrichment_inputs(args, loaded, data)?;
     let mut outputs = by_enrichment::run(args, &plan, &inputs)?;
+    // SuSiE makes the marker call over the enrichment's statistics, on raw
+    // count sums (a decoder's expectation is none). NON-FATAL, like the
+    // ontology walk: the enrichment's outputs are already written.
+    let from_decoder = inputs
+        .expression_source
+        .as_ref()
+        .is_some_and(|e| e["from"] == "decoder");
+    match (&args.susie, plan.ontology_mode, from_decoder) {
+        (Some(cfg), false, false) => {
+            if let Err(e) = crate::annotate::by_susie::run(&args.out, cfg, &inputs, &mut outputs) {
+                log::error!(
+                    "SuSiE stage failed ({e:#}); the call is the enrichment's softmax share"
+                );
+            }
+        }
+        (Some(_), false, true) => {
+            info!("no raw counts (decoder expression): the call is the enrichment's softmax share");
+        }
+        _ => {}
+    }
     // The ids the cluster tables' `K{id}` rows refer to, so later rounds and
     // viewers key on the same clusters.
     let clusters_path = format!("{}{}", args.out, rounds::CLUSTERS);
@@ -84,11 +104,7 @@ pub fn annotate_by_enrichment(
     rounds::write_clusters(&clusters_path, &inputs.cell_names, &ids)?;
     outputs.clusters = Some(clusters_path);
     // The decoder's expected expression is no count sum: a later pass or
-    // rescoring must not take it for one.
-    let from_decoder = inputs
-        .expression_source
-        .as_ref()
-        .is_some_and(|e| e["from"] == "decoder");
+    // rescoring must not take it for one (`from_decoder`, above).
     if !plan.ontology_mode && !from_decoder {
         outputs.stats_cache = Some(crate::manifest::recalibrate::write_cache(
             &args.out, &inputs,
@@ -254,6 +270,9 @@ fn record(
             a.annotation = rel(&out.annotation);
             a.cluster_celltype_q = rel(&out.cluster_celltype_q);
             a.cluster_celltype_es = rel(&out.cluster_celltype_es);
+            a.cluster_celltype_pip = rel(&out.cluster_celltype_pip);
+            a.cluster_celltype_effect = rel(&out.cluster_celltype_effect);
+            a.cluster_celltype_explained = rel(&out.cluster_celltype_explained);
             a.cluster_expression = rel(&out.cluster_expression);
             a.ontology_assignment = rel(&out.ontology_assignment);
             a.ontology_node_mass = rel(&out.ontology_node_mass);

@@ -868,3 +868,35 @@ fn a_moved_runs_markers_are_read_from_where_the_run_now_is() {
     let (pairs, _) = read_markers(&loaded).expect("the panel, found again");
     assert_eq!(pairs.len(), 2);
 }
+
+#[test]
+fn a_relabel_round_drops_the_susie_tables_of_the_clusters_it_regrouped() {
+    let root = tempfile::tempdir().unwrap();
+    let src = first_round(root.path());
+    let mut m = run::load(&src.to_string_lossy()).unwrap();
+    m.manifest.annotate.cluster_celltype_pip = Some("run.cluster_celltype_pip.parquet".into());
+    m.manifest.annotate.cluster_celltype_effect =
+        Some("run.cluster_celltype_effect.parquet".into());
+    m.manifest.annotate.cluster_celltype_explained =
+        Some("run.cluster_celltype_explained.parquet".into());
+    m.manifest.save(&src).unwrap();
+
+    let decisions = root.path().join("d.jsonl");
+    fs::write(
+        &decisions,
+        line(json!({"clusters": [1, 2], "action": "merge", "label": "CT2", "rationale": "same", "decided_by": "user"})),
+    )
+    .unwrap();
+    let out = root.path().join("r1/next");
+    run_relabel(&args(&src, &decisions, Some(&out))).unwrap();
+
+    let next = run::load(&format!("{}.senna.json", out.display())).unwrap();
+    let a = &next.manifest.annotate;
+    assert!(
+        a.cluster_celltype_pip.is_none(),
+        "{:?}",
+        a.cluster_celltype_pip
+    );
+    assert!(a.cluster_celltype_effect.is_none());
+    assert!(a.cluster_celltype_explained.is_none());
+}

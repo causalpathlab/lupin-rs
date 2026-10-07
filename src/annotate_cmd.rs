@@ -126,6 +126,32 @@ pub struct AnnotateCliArgs {
     )]
     pub go_max_overlap: usize,
 
+    // ── enrichment's SuSiE stage ──
+    #[arg(
+        long = "no-susie",
+        help = "Call clusters by the enrichment's softmax share, without the SuSiE stage \
+                (cluster counts regressed on the panel, so types compete for shared markers)"
+    )]
+    pub no_susie: bool,
+    #[arg(
+        long = "susie-effects",
+        default_value_t = 5,
+        help = "SuSiE: single effects per cluster (cell types one cluster can be)"
+    )]
+    pub susie_effects: usize,
+    #[arg(
+        long = "susie-dispersion",
+        help = "SuSiE: one NB dispersion for every gene (0: Poisson); default: gene-specific, \
+                estimated across the clusters"
+    )]
+    pub susie_dispersion: Option<f32>,
+    #[arg(long = "mcmc-samples", default_value_t = 1000)]
+    pub mcmc_samples: usize,
+    #[arg(long = "mcmc-warmup", default_value_t = 500)]
+    pub mcmc_warmup: usize,
+    #[arg(long = "mcmc-thin", default_value_t = 1)]
+    pub mcmc_thin: usize,
+
     // ── projection / ORA ──
     #[arg(long = "no-idf")]
     pub no_idf: bool,
@@ -195,7 +221,11 @@ impl AnnotateCliArgs {
         val("min-cluster-size", self.min_cluster_size.to_string());
         val("assign-mad", self.assign_mad.to_string());
         val("ontology-fdr-q", self.ontology_fdr_q.to_string());
-        let opts: [(&str, Option<String>); 15] = [
+        val("susie-effects", self.susie_effects.to_string());
+        val("mcmc-samples", self.mcmc_samples.to_string());
+        val("mcmc-warmup", self.mcmc_warmup.to_string());
+        val("mcmc-thin", self.mcmc_thin.to_string());
+        let opts: [(&str, Option<String>); 16] = [
             ("from", self.from.as_deref().map(String::from)),
             (
                 "feature-embedding",
@@ -224,6 +254,10 @@ impl AnnotateCliArgs {
             ("go-min-overlap", Some(self.go_min_overlap.to_string())),
             ("go-max-overlap", Some(self.go_max_overlap.to_string())),
             ("label-cl", self.label_cl.as_deref().map(String::from)),
+            (
+                "susie-dispersion",
+                self.susie_dispersion.map(|x| x.to_string()),
+            ),
         ];
         for (flag, x) in opts {
             if let Some(x) = x {
@@ -238,6 +272,7 @@ impl AnnotateCliArgs {
             ("use-perm-p", self.use_perm_p),
             ("fine", self.fine),
             ("go", self.go),
+            ("no-susie", self.no_susie),
         ];
         v.extend(
             flags
@@ -539,7 +574,21 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
         label_cl: args.label_cl.clone(),
         ontology_fdr_q: args.ontology_fdr_q,
         ontology_by: args.ontology_by,
+        susie: (!args.no_susie).then(|| build_susie_config(args)),
     }
+}
+
+fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieConfig {
+    let mut cfg = crate::annotate::susie::SusieConfig {
+        samples: args.mcmc_samples,
+        warmup: args.mcmc_warmup,
+        thin: args.mcmc_thin,
+        seed: args.seed,
+        dispersion: args.susie_dispersion,
+        ..Default::default()
+    };
+    cfg.prior.num_effects = args.susie_effects;
+    cfg
 }
 
 fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {

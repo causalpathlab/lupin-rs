@@ -35,6 +35,15 @@ pub const CLUSTER_TERM_P: &str = ".cluster_term_p.parquet";
 /// cluster), named as [`CLUSTER_CELLTYPE_Q_VALUES`] is.
 pub const CLUSTER_TERM_Q_VALUES: &str = ".cluster_term_q_values.parquet";
 
+/// SuSiE stage: cluster × cell type posterior inclusion probability.
+pub const CLUSTER_CELLTYPE_PIP: &str = ".cluster_celltype_pip.parquet";
+/// SuSiE stage: cluster × cell type posterior mean effect (log fold of the markers).
+pub const CLUSTER_CELLTYPE_EFFECT: &str = ".cluster_celltype_effect.parquet";
+/// SuSiE stage: cluster × cell type share of the deviance its effect explains.
+pub const CLUSTER_CELLTYPE_EXPLAINED: &str = ".cluster_celltype_explained.parquet";
+/// SuSiE stage: one row per credible set.
+pub const CLUSTER_CREDIBLE_SETS: &str = ".cluster_credible_sets.tsv";
+
 /// `{prefix}{suffix}` files written by `annotate --method enrichment` (relative to its
 /// bare `{out}` prefix). NOTE: this prefix is shared with the training run's
 /// artifacts (`{out}.cell_embedding.parquet`, `{out}.senna.json`, …), so the
@@ -51,6 +60,10 @@ pub const ENRICHMENT_OUTPUT_SUFFIXES: &[&str] = &[
     CLUSTER_CELLTYPE_Z,
     CLUSTER_CELLTYPE_Q_VALUES,
     ".cluster_celltype_perm_z.parquet",
+    CLUSTER_CELLTYPE_PIP,
+    CLUSTER_CELLTYPE_EFFECT,
+    CLUSTER_CELLTYPE_EXPLAINED,
+    CLUSTER_CREDIBLE_SETS,
     ".cluster_expression.parquet",
     CLUSTER_TERM_NES,
     CLUSTER_TERM_P,
@@ -98,6 +111,10 @@ pub struct AnnotationOutputs {
     pub annotation: Option<String>,
     pub cluster_celltype_q: Option<String>,
     pub cluster_celltype_es: Option<String>,
+    /// The SuSiE stage's PIP, effect and explained-share tables, when it made the call.
+    pub cluster_celltype_pip: Option<String>,
+    pub cluster_celltype_effect: Option<String>,
+    pub cluster_celltype_explained: Option<String>,
     pub cluster_expression: Option<String>,
     pub ontology_assignment: Option<String>,
     pub ontology_node_mass: Option<String>,

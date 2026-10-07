@@ -261,6 +261,16 @@ pub struct RunAnnotate {
     pub cluster_celltype_q: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_celltype_es: Option<String>,
+    /// nClusters × C SuSiE posterior inclusion probability; set when SuSiE
+    /// made the round's call (`argmax`, `annotation`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_celltype_pip: Option<String>,
+    /// nClusters × C SuSiE posterior mean effect (log fold of the markers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_celltype_effect: Option<String>,
+    /// nClusters × C share of each cluster's explained deviance per type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_celltype_explained: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_expression: Option<String>,
     /// Input marker TSV (provenance).

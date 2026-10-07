@@ -103,11 +103,15 @@ pub fn finish(manifest: &Path, tree: &TypeTree, coarse: bool) -> Result<()> {
     }
     let cells = read_cells(&loaded)?;
     // Per cluster × type, the pass's shares (enrichment): its Q probabilities.
+    // When SuSiE made the call, the cluster's group is its call's, as for a
+    // per-cell pass: the softmax shares would group it by another reading.
+    let susie = loaded.manifest.annotate.cluster_celltype_pip.is_some();
     let probs = loaded
         .manifest
         .annotate
         .cluster_celltype_q
         .as_deref()
+        .filter(|_| !susie)
         .map(|rel| read_table(&resolve(&loaded.dir, rel)))
         .transpose()?;
     let mut votes: BTreeMap<ClusterId, Vec<&str>> = BTreeMap::new();
