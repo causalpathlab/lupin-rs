@@ -21,7 +21,7 @@
 pub mod model;
 
 use legume_numeric::matrix::rand_util::mix_seed;
-use legume_numeric::matrix::utils::median;
+use legume_numeric::matrix::utils::{median, quantiles};
 use legume_numeric::mcmc::engine::{run_mcmc_parallel, split_rhat_chains, McmcConfig};
 use model::{Cluster, ClusterCounts, Panel, SusieModel, SusiePrior, SusieSample};
 use rayon::prelude::*;
@@ -169,11 +169,6 @@ pub fn fit_all(
         .filter(|&k| column(k).iter().any(|&v| v > 0.0))
         .collect();
     let at = |g: usize, k: usize| gene_sum_kg[k * n_genes + g];
-    let lib: Vec<f64> = present
-        .iter()
-        .map(|&k| column(k).iter().sum::<f64>())
-        .collect();
-    let total: f64 = lib.iter().sum();
     let expressed: Vec<usize> = (0..n_genes)
         .filter(|&g| present.iter().any(|&k| at(g, k) > 0.0))
         .collect();
@@ -193,6 +188,20 @@ pub fn fit_all(
     let (marker_genes, free): (Vec<usize>, Vec<usize>) =
         expressed.iter().partition(|&&g| !kept(g).is_empty());
     anyhow::ensure!(!marker_genes.is_empty(), "no marker gene has counts");
+    // A cluster's size: its counts of the genes no type claims, which a type's
+    // markers rising cannot inflate (all its counts when no gene is free).
+    let lib: Vec<f64> = present
+        .iter()
+        .map(|&k| {
+            let free_sum: f64 = free.iter().map(|&g| at(g, k)).sum();
+            if free_sum > 0.0 {
+                free_sum
+            } else {
+                column(k).iter().sum()
+            }
+        })
+        .collect();
+    let total: f64 = lib.iter().sum();
 
     // The genes no type claims, at their pooled rate in every cluster.
     let global = cfg.dispersion.unwrap_or_else(|| {
@@ -209,36 +218,38 @@ pub fn fit_all(
         median(&est)
     });
 
-    // A marker gene's background rate: its median rate across clusters,
-    // floored so a gene silent in most clusters keeps a finite log.
+    // Each marker gene's rate in each present cluster, floored so a gene
+    // silent in a cluster keeps a finite log.
     let floor = (0.5 / total) as f32;
-    let background: Vec<f32> = marker_genes
+    let rates: Vec<Vec<f32>> = marker_genes
         .iter()
         .map(|&g| {
-            let rates: Vec<f32> = present
+            present
                 .iter()
                 .zip(&lib)
-                .map(|(&k, &n)| (at(g, k) / n) as f32)
-                .collect();
-            median(&rates).max(floor)
+                .map(|(&k, &n)| ((at(g, k) / n) as f32).max(floor))
+                .collect()
         })
         .collect();
-    let data: Vec<Cluster> = present
-        .iter()
-        .zip(&lib)
-        .map(|(&k, &n)| Cluster {
-            y: marker_genes.iter().map(|&g| at(g, k) as f32).collect(),
-            log_mu0: background
-                .iter()
-                .map(|&b| (f64::from(b) * n).ln() as f32)
-                .collect(),
-        })
-        .collect();
+    // The clusters on a background: each marker gene's rate × library size.
+    let on = |background: &[f32]| -> Vec<Cluster> {
+        present
+            .iter()
+            .zip(&lib)
+            .map(|(&k, &n)| Cluster {
+                y: marker_genes.iter().map(|&g| at(g, k) as f32).collect(),
+                log_mu0: background
+                    .iter()
+                    .map(|&b| (f64::from(b) * n).ln() as f32)
+                    .collect(),
+            })
+            .collect()
+    };
     let types_of: Vec<Vec<usize>> = marker_genes.iter().map(|&g| kept(g)).collect();
     let corr = marker_correlation(&types_of, n_types);
 
     // Each present cluster's fit under `cfg`, seeded by its own id.
-    let fit_pass = |panel: &Panel, cfg: &SusieConfig| -> Vec<ClusterFit> {
+    let fit_pass = |panel: &Panel, data: &[Cluster], cfg: &SusieConfig| -> Vec<ClusterFit> {
         data.par_iter()
             .zip(&present)
             .map(|(cluster, &k)| {
@@ -262,22 +273,57 @@ pub fn fit_all(
             .collect()
     };
 
+    // A light first pass, on each marker's lower-quartile rate: a type in up
+    // to three quarters of the clusters still shows above it.
+    let quartile: Vec<f32> = rates.iter().map(|r| quantiles(r, &[0.25])[0]).collect();
+    let first_data = on(&quartile);
     let mut dispersion = vec![global; marker_genes.len()];
-    let mut panel = Panel::new(types_of, n_types, &dispersion);
+    let mut panel = Panel::new(types_of.clone(), n_types, &dispersion);
+    let first = fit_pass(
+        &panel,
+        &first_data,
+        &SusieConfig {
+            chains: 1,
+            samples: FIRST_PASS_DRAWS,
+            warmup: FIRST_PASS_DRAWS,
+            thin: 1,
+            ..*cfg
+        },
+    );
+    // The background: a marker's median rate over the clusters the first
+    // pass called none of its types (so a type in most clusters does not set
+    // its own), else the lower quartile.
+    let entered: Vec<Vec<bool>> = first
+        .iter()
+        .map(|f| {
+            let mut e = vec![false; n_types];
+            if let Some(c) = f.call() {
+                e[c] = true;
+            }
+            e
+        })
+        .collect();
+    let background: Vec<f32> = rates
+        .iter()
+        .zip(&types_of)
+        .zip(&quartile)
+        .map(|((r, types), &q)| {
+            let absent: Vec<f32> = r
+                .iter()
+                .zip(&entered)
+                .filter(|(_, e)| types.iter().all(|&c| !e[c]))
+                .map(|(&v, _)| v)
+                .collect();
+            if absent.is_empty() {
+                q
+            } else {
+                median(&absent)
+            }
+        })
+        .collect();
     if cfg.dispersion.is_none() {
-        // A light first pass whose means give φ_g, from every cluster's
-        // residuals around them; the call is the refit's.
-        let first = fit_pass(
-            &panel,
-            &SusieConfig {
-                chains: 1,
-                samples: FIRST_PASS_DRAWS,
-                warmup: FIRST_PASS_DRAWS,
-                thin: 1,
-                ..*cfg
-            },
-        );
-        let etas: Vec<Vec<f32>> = data
+        // φ_g from every cluster's residuals around the first pass's means.
+        let etas: Vec<Vec<f32>> = first_data
             .iter()
             .zip(&first)
             .map(|(cluster, f)| {
@@ -290,7 +336,7 @@ pub fn fit_all(
             .collect();
         let raw: Vec<f64> = (0..marker_genes.len())
             .map(|i| {
-                let y = data.iter().map(|c| f64::from(c.y[i]));
+                let y = first_data.iter().map(|c| f64::from(c.y[i]));
                 let mu = etas.iter().map(|eta| f64::from(eta[i].exp()));
                 moment_phi(y, mu)
             })
@@ -298,7 +344,7 @@ pub fn fit_all(
         dispersion = shrunk_dispersion(&raw, present.len());
         panel.set_dispersion(&dispersion);
     }
-    let fitted = fit_pass(&panel, cfg);
+    let fitted = fit_pass(&panel, &on(&background), cfg);
     // Back to every id; one without counts gets no call.
     let mut fitted = fitted.into_iter();
     let clusters = (0..n_clusters)

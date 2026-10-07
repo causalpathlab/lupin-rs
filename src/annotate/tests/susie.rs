@@ -356,3 +356,23 @@ fn a_type_with_too_few_matched_markers_never_enters() {
     assert!(f.credible_sets.iter().all(|s| !s.contains(&4)));
     assert_eq!(f.call(), Some(0));
 }
+
+#[test]
+fn a_type_in_most_clusters_is_still_called() {
+    // Type 0 in five of eight clusters; types 1, 2, 3 in one each.
+    let planted: Vec<Vec<(usize, f64)>> = [0, 0, 0, 0, 0, 1, 2, 3]
+        .iter()
+        .map(|&t| vec![(t, 4.0)])
+        .collect();
+    let sim = simulate(400, &disjoint(), &planted, 71);
+    let fits = fit(&sim, 4);
+    for (k, f) in fits.clusters.iter().enumerate().take(5) {
+        assert_eq!(f.call(), Some(0), "cluster {k}: pip {:?}", f.pip);
+        // Its markers' ×4 is recovered, not absorbed into the background.
+        let fold = f.theta[0].exp();
+        assert!((2.8..5.6).contains(&fold), "cluster {k}: fold {fold}");
+    }
+    for (k, t) in [(5, 1), (6, 2), (7, 3)] {
+        assert_eq!(fits.clusters[k].call(), Some(t), "cluster {k}");
+    }
+}
