@@ -970,3 +970,258 @@ fn a_susie_rounds_cluster_list_shows_the_calls_pip_and_fold() {
     let k0: String = k0.chars().skip(1).take_while(|&c| c != '│').collect();
     assert!(k0.contains("×7.0"), "{k0}");
 }
+
+#[test]
+fn arrows_on_a_form_row_that_changes_nothing_leave_the_round_current() {
+    let mut app = app_with_terms(false);
+    app.form = Some(Form::default());
+    for s in [Setting::Run, Setting::Markers, Setting::Output] {
+        app.form.as_mut().unwrap().row = setting_row(s);
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Right);
+        assert!(!app.stale, "{s:?} changed nothing");
+    }
+    app.form.as_mut().unwrap().row = setting_row(Setting::Knn);
+    press(&mut app, KeyCode::Right);
+    assert!(app.stale, "knn changed");
+}
+
+#[test]
+fn enter_on_a_cluster_selects_its_type_only_in_a_tree_on_screen() {
+    let panel = [
+        ("GENE1".to_string(), "CT1".to_string()),
+        ("GENE2".to_string(), "CT2".to_string()),
+    ];
+    let with_ct2 = || {
+        let mut app = app_with_terms(false);
+        app.tree = crate::manifest::ontology::panel_tree_on(None, &panel);
+        app.round.as_mut().unwrap().clusters[0].label = Some("CT2".into());
+        app.focus = Focus::Clusters;
+        app
+    };
+    // On the panel tree, Enter selects the cluster's type.
+    let mut app = with_ct2();
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.tree.label(app.tree.visible()[app.tree_sel]), "CT2");
+    assert!(app.focus == Focus::Tree);
+
+    // In the order view the panel tree is hidden: its selection stays.
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = with_ct2();
+    app.data_search = crate::manifest::data_files::SearchPath::new(Some(dir.path()));
+    app.reload_order();
+    assert!(matches!(app.tree_mode, TreeMode::Order(_)));
+    app.focus = Focus::Clusters;
+    let before = app.tree_sel;
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.tree_sel, before, "the hidden panel tree is untouched");
+    assert!(app.status.contains("panel"), "{}", app.status);
+}
+
+#[test]
+fn capital_t_leaves_the_order_view_from_the_grid_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    press(&mut app, KeyCode::Char('w'));
+    assert!(app.figures.as_ref().unwrap().grid.is_some());
+    press(&mut app, KeyCode::Char('T'));
+    assert!(!app.in_order(), "T leaves the order view");
+}
+
+#[test]
+fn u_and_k_ask_why_then_backspace_undoes_and_e_waits_for_a_save() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('u'));
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Label { label, .. }) if label == UNASSIGNED_LABEL
+    ));
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(&app.edits[..], [Edit::Label { cluster: 0, label, .. }] if label == UNASSIGNED_LABEL)
+    );
+    press(&mut app, KeyCode::Char('e'));
+    assert!(
+        app.status.starts_with("save the edits first"),
+        "{}",
+        app.status
+    );
+
+    press(&mut app, KeyCode::Backspace);
+    assert!(app.edits.is_empty());
+    assert_eq!(app.status, "undid K0's edit");
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(app.status, "no edit of K0 to undo");
+
+    press(&mut app, KeyCode::Char('k'));
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Keep { cluster: 0 })
+    ));
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.edits[..], [Edit::Keep { cluster: 0, .. }]));
+}
+
+#[test]
+fn close_bracket_visits_the_flagged_clusters_left_to_decide() {
+    use super::super::round::{Candidate, ClusterView};
+    let mut app = app_with_terms(false);
+    let r = app.round.as_mut().unwrap();
+    let cluster = |id, label: Option<&str>, candidates| ClusterView {
+        id,
+        cells: 10,
+        label: label.map(Into::into),
+        candidates,
+        shares: Vec::new(),
+        genes: vec![("GENE1".into(), 1.0)],
+        terms: Vec::new(),
+    };
+    let sure = cluster(
+        1,
+        Some("CT1"),
+        vec![Candidate {
+            label: "CT1".into(),
+            share: 1.0,
+            susie: None,
+            nes: None,
+            p: None,
+            q: None,
+        }],
+    );
+    let open = cluster(2, None, Vec::new());
+    r.clusters.extend([sure, open]);
+    app.focus = Focus::Clusters;
+    // K0 (no candidates) and K2 (no label) are flagged; K1 is not.
+    press(&mut app, KeyCode::Char(']'));
+    assert_eq!(app.cluster_sel, 2);
+    press(&mut app, KeyCode::Char(']'));
+    assert_eq!(app.cluster_sel, 0);
+    // Deciding both leaves nothing to visit.
+    for _ in 0..2 {
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char(']'));
+    }
+    assert_eq!(app.status, "every flagged cluster is decided");
+}
+
+#[test]
+fn question_mark_opens_the_guide_and_any_key_closes_it() {
+    let mut app = app_with_terms(false);
+    press(&mut app, KeyCode::Char('?'));
+    assert!(app.help_open);
+    press(&mut app, KeyCode::Char('q'));
+    assert!(!app.help_open);
+    assert!(!app.quit, "the closing key does nothing else");
+}
+
+#[test]
+fn gene_keys_add_and_drop_markers_and_backspace_undoes_the_last() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Genes;
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.marked, ["GENE1"]);
+    press(&mut app, KeyCode::Char('d'));
+    assert_eq!(app.status, "not markers of CT1");
+    press(&mut app, KeyCode::Char('a'));
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Markers { label, genes, add: true }) if label == "CT1" && genes == &["GENE1"]
+    ));
+    press(&mut app, KeyCode::Enter);
+    assert!(app
+        .edits
+        .iter()
+        .any(|e| matches!(e, Edit::Markers { add: true, .. })));
+    // Esc on the "label it too?" question keeps the markers alone.
+    app.prompt = None;
+    app.focus = Focus::Genes;
+    press(&mut app, KeyCode::Backspace);
+    assert!(
+        app.status.starts_with("undid adding GENE1"),
+        "{}",
+        app.status
+    );
+    assert!(app.edits.is_empty());
+}
+
+#[test]
+fn on_the_panel_tree_enter_labels_and_plus_mixes_the_marked() {
+    let panel = [
+        ("GENE1".to_string(), "CT1".to_string()),
+        ("GENE2".to_string(), "CT2".to_string()),
+    ];
+    let mut app = app_with_terms(false);
+    app.tree = crate::manifest::ontology::panel_tree_on(None, &panel);
+    app.focus = Focus::Tree;
+    let at = |app: &App, t: &str| {
+        let i = app.tree.node_of(t).unwrap();
+        app.tree.visible().iter().position(|&v| v == i).unwrap()
+    };
+    app.tree_sel = at(&app, "CT2");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Label { label, .. }) if label == "CT2"
+    ));
+    app.prompt = None;
+
+    press(&mut app, KeyCode::Char('+'));
+    assert!(app.status.starts_with("mark two or more"), "{}", app.status);
+    press(&mut app, KeyCode::Char(' '));
+    app.tree_sel = at(&app, "CT1");
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char('+'));
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::MixName { parts }) if parts == &["CT1", "CT2"]
+    ));
+}
+
+#[test]
+fn in_the_order_table_two_marks_then_precedes_or_unrelated_ask_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    press(&mut app, KeyCode::Char('>'));
+    assert!(app.status.starts_with("mark exactly two"), "{}", app.status);
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.tree_marked, ["CT1", "CT2"]);
+    for (key, relation) in [('>', Relation::Precedes), ('-', Relation::Unrelated)] {
+        press(&mut app, KeyCode::Char(key));
+        assert!(matches!(
+            app.prompt.as_ref().map(|p| &p.pending),
+            Some(Pending::Precedence { from, to, relation: r })
+                if from == "CT1" && to == "CT2" && *r == relation
+        ));
+        app.prompt = None;
+    }
+}
+
+#[test]
+fn in_the_form_enter_picks_the_panel_and_shift_enter_runs_from_any_row() {
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('r'));
+    assert!(app.form.is_some());
+    app.form.as_mut().unwrap().row = setting_row(Setting::Markers);
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.want_file, Some(FileWant::Markers)));
+    app.want_file = None;
+
+    // Plain Enter on another row only says how to run.
+    app.form.as_mut().unwrap().row = setting_row(Setting::Susie);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.status.ends_with("starts the pass"), "{}", app.status);
+    // Shift+Enter runs from there, where the terminal tells it apart: with
+    // no panel yet, it goes back to the panel's row.
+    app.shift_enter = true;
+    app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    let form = app.form.as_ref().unwrap();
+    assert_eq!(form.row, setting_row(Setting::Markers));
+    assert!(form.note.as_deref().unwrap_or("").contains("marker panel"));
+}

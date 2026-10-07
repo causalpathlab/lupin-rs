@@ -1827,8 +1827,12 @@ impl App {
                 step(&mut form.row, SETTINGS.len(), code);
             }
             KeyCode::Left | KeyCode::Right => {
+                // Stale only when the pass's arguments really changed.
+                let before = self.args.to_argv();
                 at.adjust(&mut self.args, code == KeyCode::Right);
-                self.stale = self.round.is_some();
+                if self.args.to_argv() != before {
+                    self.stale = self.round.is_some();
+                }
             }
             KeyCode::Enter if self.shift_enter && k.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.run_form();
@@ -2913,7 +2917,7 @@ impl App {
         }
         // The thumbnail grid is modal: arrows choose, Enter opens, p exports
         // the tile chosen, and only the app's own keys (quit, run, stop,
-        // save, export the round, panes) go by.
+        // save, export the round, panes, the tree) go by.
         if let Some(g) = &mut v.grid {
             if g.step(code) {
                 return true;
@@ -2945,7 +2949,7 @@ impl App {
                         .unwrap_or_else(|e| format!("export failed: {e:#}"));
                 }
                 KeyCode::Char('f') => v.exports.open = !v.exports.open,
-                KeyCode::Char(c) if !"qrxse".contains(c) => {
+                KeyCode::Char(c) if !"qrxseT".contains(c) => {
                     self.status = GRID_KEYS.into();
                 }
                 _ => return false,
@@ -3183,7 +3187,15 @@ impl App {
 
     /// Focus the tree on the selected cluster's label (or its top candidate).
     fn jump_to_tree(&mut self) {
-        if let Some(i) = self.label_or_top().and_then(|l| self.tree.node_of(&l)) {
+        // Only the panel tree on screen is moved: another view leaves its
+        // selection where the user left it.
+        if let Some(back) = match self.tree_mode {
+            TreeMode::Panel => None,
+            TreeMode::Ontology(_) => Some("o on the tree"),
+            TreeMode::Order(_) => Some("T"),
+        } {
+            self.status = format!("the panel tree is not shown: {back} returns to it");
+        } else if let Some(i) = self.label_or_top().and_then(|l| self.tree.node_of(&l)) {
             self.tree.reveal(i);
             self.select_node(i);
         }
@@ -3211,7 +3223,7 @@ const NOT_STARTED: &str = "no trajectory run started";
 
 /// What the thumbnail grid's keys do.
 const GRID_KEYS: &str =
-    "arrows choose · Enter, space or 1-9 opens · p exports it · f exports · t c restyle · V table · esc or w closes";
+    "arrows choose · Enter, space or 1-9 opens · p exports it · f exports · t c restyle · V table · T tree · esc or w closes";
 
 /// The labels file a trajectory run on `loaded` recorded in its settings,
 /// resolved against the manifest's directory, when it is still there.

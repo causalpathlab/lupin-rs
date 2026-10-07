@@ -278,7 +278,7 @@ fn help(app: &App) -> &'static str {
             " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab ontology · T tree"
         }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Ontology(_)) => {
-            " ? keys · ↑↓ term · → children · ← parents · d in the data / all · / search · o panel · t order"
+            " ? keys · ↑↓ term · enter label · space mark · + mixed label · → children · ← parents · d in the data / all · / search · o panel · t order"
         }
         Focus::Tree => {
             " ? keys · ↑↓ node · enter label · space mark · + mixed label · o ontology · / search · t order"
@@ -364,7 +364,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         &[
             ("↑↓", "the selected cluster's top terms, by effect"),
             ("← →", "slide a long name back / on, a word at a time"),
-            ("r", "GO terms in the settings: score them in the next pass"),
+            ("r", "the pass's settings, whose GO terms row turns the scoring on or off"),
         ],
     ),
     (
@@ -375,7 +375,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             (">", "the first marked type precedes the second (asks why)"),
             ("-", "the two marked types are unrelated (asks why)"),
             ("r", "run lupin trajectory on the labels on screen (asks for the output prefix; when nothing orders the types, asks how)"),
-            ("tab", "the Cell Ontology beside the table: ↑↓ selects a type in both, space marks it, o the ontology, d in the data ↔ all"),
+            ("tab", "the Cell Ontology beside the table: ↑↓ selects a type in both, space marks it, o the full ontology, there d in the data ↔ all"),
             ("T / esc", "back to the tree / to the clusters (t restyles the figures' labels)"),
             ("", "statements go to the project's precedence.tsv; edges show source and, after a trajectory run, verdict"),
         ],
