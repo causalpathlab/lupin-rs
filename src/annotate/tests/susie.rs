@@ -274,17 +274,6 @@ fn huge_pseudobulks_still_separate_types_that_share_markers() {
 }
 
 #[test]
-fn chains_that_settle_apart_are_flagged() {
-    let same = vec![vec![1.0f32, 1.1, 0.9, 1.0, 1.05, 0.95]; 4];
-    assert!(between_chain_rhat(&same) < 1.05);
-    let apart = vec![
-        vec![0.0f32, 0.1, -0.1, 0.0, 0.05, -0.05],
-        vec![2.0f32, 2.1, 1.9, 2.0, 2.05, 1.95],
-    ];
-    assert!(between_chain_rhat(&apart) > 2.0);
-}
-
-#[test]
 fn chains_that_number_the_same_effects_differently_agree_on_the_credible_sets() {
     use model::{Cluster, ClusterCounts, Panel, SusieSample};
     let panel = Panel::new(vec![vec![0], vec![1], vec![]], 2, &[0.1, 0.1, 0.1]);
@@ -337,4 +326,33 @@ fn a_type_that_moves_between_effects_within_a_chain_keeps_its_credible_set() {
     let corr = marker_correlation(&[vec![0], vec![1], vec![]], 2);
     let sets = summarize(&[chain], counts, &corr).credible_sets;
     assert_eq!(sets, vec![vec![0]]);
+}
+
+#[test]
+fn a_type_with_too_few_matched_markers_never_enters() {
+    // Type 4 has two marker genes, ×20 in cluster 0; types 0..3 have 30.
+    let mut sets = disjoint();
+    sets.push(vec![120, 121]);
+    let mut planted: Vec<Vec<(usize, f64)>> = vec![vec![(0, 4.0), (4, 20.0)]];
+    planted.extend((0..7).map(|k| vec![(k % 4, 4.0)]));
+    let sim = simulate(400, &sets, &planted, 61);
+    let cfg = SusieConfig {
+        samples: 300,
+        warmup: 200,
+        min_markers: 3,
+        ..Default::default()
+    };
+    let fits = fit_all(
+        &sim.sums,
+        sim.n_genes,
+        sim.n_clusters,
+        &sim.markers,
+        5,
+        &cfg,
+    )
+    .unwrap();
+    let f = &fits.clusters[0];
+    assert_eq!(f.pip[4], 0.0, "pip {:?}", f.pip);
+    assert!(f.credible_sets.iter().all(|s| !s.contains(&4)));
+    assert_eq!(f.call(), Some(0));
 }

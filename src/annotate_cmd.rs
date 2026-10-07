@@ -596,6 +596,7 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
 fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieConfig {
     let mut cfg = crate::annotate::susie::SusieConfig {
         chains: args.mcmc_chains,
+        min_markers: args.min_markers,
         samples: args.mcmc_samples,
         warmup: args.mcmc_warmup,
         thin: args.mcmc_thin,

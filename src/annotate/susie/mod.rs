@@ -22,7 +22,7 @@ pub mod model;
 
 use legume_numeric::matrix::rand_util::mix_seed;
 use legume_numeric::matrix::utils::median;
-use legume_numeric::mcmc::engine::{run_mcmc_parallel, McmcConfig};
+use legume_numeric::mcmc::engine::{run_mcmc_parallel, split_rhat_chains, McmcConfig};
 use model::{Cluster, ClusterCounts, Panel, SusieModel, SusiePrior, SusieSample};
 use rayon::prelude::*;
 
@@ -49,6 +49,10 @@ pub struct SusieConfig {
     pub warmup: usize,
     pub thin: usize,
     pub seed: u64,
+    /// A type needs at least this many matched marker genes with counts to
+    /// enter, as the enrichment's `--min-markers`.
+    #[serde(default = "default_min_markers")]
+    pub min_markers: usize,
     /// One NB dispersion φ for every gene, fixed (0: Poisson); when `None`,
     /// gene-specific and estimated, with one refit.
     pub dispersion: Option<f32>,
@@ -63,9 +67,14 @@ impl Default for SusieConfig {
             warmup: 500,
             thin: 1,
             seed: 42,
+            min_markers: default_min_markers(),
             dispersion: None,
         }
     }
+}
+
+fn default_min_markers() -> usize {
+    3
 }
 
 impl SusieConfig {
@@ -93,7 +102,7 @@ pub struct ClusterFit {
     pub explained: Vec<f32>,
     /// Credible sets: cell-type indices, most probable first.
     pub credible_sets: Vec<Vec<usize>>,
-    /// The largest Gelman–Rubin R̂ between the chains over the types' θ.
+    /// The largest split R̂ over the chains (each split in half) of the types' θ.
     pub max_rhat: f32,
 }
 
@@ -168,8 +177,21 @@ pub fn fit_all(
     let expressed: Vec<usize> = (0..n_genes)
         .filter(|&g| present.iter().any(|&k| at(g, k) > 0.0))
         .collect();
+    // A type with too few matched markers is left out, as the enrichment
+    // leaves it out.
+    let mut matched = vec![0usize; n_types];
+    for &g in &expressed {
+        markers[g].iter().for_each(|&c| matched[c] += 1);
+    }
+    let kept = |g: usize| -> Vec<usize> {
+        markers[g]
+            .iter()
+            .copied()
+            .filter(|&c| matched[c] >= cfg.min_markers)
+            .collect()
+    };
     let (marker_genes, free): (Vec<usize>, Vec<usize>) =
-        expressed.iter().partition(|&&g| !markers[g].is_empty());
+        expressed.iter().partition(|&&g| !kept(g).is_empty());
     anyhow::ensure!(!marker_genes.is_empty(), "no marker gene has counts");
 
     // The genes no type claims, at their pooled rate in every cluster.
@@ -212,7 +234,7 @@ pub fn fit_all(
                 .collect(),
         })
         .collect();
-    let types_of: Vec<Vec<usize>> = marker_genes.iter().map(|&g| markers[g].clone()).collect();
+    let types_of: Vec<Vec<usize>> = marker_genes.iter().map(|&g| kept(g)).collect();
     let corr = marker_correlation(&types_of, n_types);
 
     // Each present cluster's fit under `cfg`, seeded by its own id.
@@ -402,39 +424,6 @@ fn match_effects(reference: &[Vec<f32>], draw: &[Vec<f32>]) -> Vec<(usize, usize
     out
 }
 
-/// Gelman–Rubin R̂ between equal-length chains of one quantity: √(V̂ / W),
-/// V̂ = (n − 1)/n · W + B/n from the within-chain variance W and the variance
-/// B of the chain means. 1 when chains agree; ∞ when constant chains differ.
-fn between_chain_rhat(chains: &[Vec<f32>]) -> f32 {
-    let n = chains.iter().map(Vec::len).min().unwrap_or(0);
-    if chains.len() < 2 || n < 2 {
-        return 1.0;
-    }
-    let (m, nf) = (chains.len() as f64, n as f64);
-    let means: Vec<f64> = chains
-        .iter()
-        .map(|c| c[..n].iter().map(|&v| f64::from(v)).sum::<f64>() / nf)
-        .collect();
-    let w = chains
-        .iter()
-        .zip(&means)
-        .map(|(c, &mu)| {
-            c[..n]
-                .iter()
-                .map(|&v| (f64::from(v) - mu).powi(2))
-                .sum::<f64>()
-                / (nf - 1.0)
-        })
-        .sum::<f64>()
-        / m;
-    let grand = means.iter().sum::<f64>() / m;
-    let b = nf * means.iter().map(|mu| (mu - grand).powi(2)).sum::<f64>() / (m - 1.0);
-    if w <= 0.0 {
-        return if b > 0.0 { f32::INFINITY } else { 1.0 };
-    }
-    (((nf - 1.0) / nf * w + b / nf) / w).sqrt() as f32
-}
-
 /// PIP, mean θ, the share each type explains, credible sets and R̂ from one
 /// cluster's chains, pooled.
 fn summarize(
@@ -479,7 +468,7 @@ fn summarize(
                 .iter()
                 .map(|chain| chain.iter().map(|s| s.theta[c]).collect())
                 .collect();
-            between_chain_rhat(&per_chain)
+            split_rhat_chains(&per_chain)
         })
         .fold(1.0f32, f32::max);
     ClusterFit {

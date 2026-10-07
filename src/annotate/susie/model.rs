@@ -18,7 +18,6 @@
 //! probabilities, so a type's PIP is Rao-Blackwellised.
 
 use legume_numeric::mcmc::engine::{elliptical_slice_step, McmcModel};
-use nalgebra::DVector;
 use rand::rngs::SmallRng;
 use rand::{Rng, RngExt};
 use rand_distr::{Distribution, StandardNormal};
@@ -174,10 +173,9 @@ fn log_add_exp(a: f64, b: f64) -> f64 {
     a.max(b) + (-(a - b).abs()).exp().ln_1p()
 }
 
-/// One standard-normal draw, as the 1-vector ESS samples.
-fn std_normal_1(rng: &mut impl Rng) -> DVector<f32> {
+fn std_normal(rng: &mut impl Rng) -> f32 {
     let v: f64 = StandardNormal.sample(rng);
-    DVector::from_element(1, v as f32)
+    v as f32
 }
 
 /// The sampler over one cluster.
@@ -191,7 +189,7 @@ pub(super) struct SusieModel<'a> {
 /// marker genes' η at θ with their likelihood terms, kept in step with it.
 pub(super) struct SusieState {
     gamma: Vec<usize>,
-    z_eff: Vec<DVector<f32>>,
+    z_eff: Vec<f32>,
     effect: Vec<f32>,
     probs: Vec<Vec<f32>>,
     theta: Vec<f32>,
@@ -210,8 +208,8 @@ pub(super) struct SusieSample {
 }
 
 impl SusieModel<'_> {
-    fn effect(&self, z: &DVector<f32>) -> f32 {
-        (self.prior.effect_mean + self.prior.effect_sd * z[0])
+    fn effect(&self, z: f32) -> f32 {
+        (self.prior.effect_mean + self.prior.effect_sd * z)
             .min(5.0)
             .exp()
     }
@@ -240,8 +238,8 @@ impl McmcModel for SusieModel<'_> {
 
     fn init(&self, rng: &mut SmallRng) -> SusieState {
         let (c, l) = (self.data.panel.n_types(), self.prior.num_effects);
-        let z_eff: Vec<DVector<f32>> = (0..l).map(|_| std_normal_1(rng)).collect();
-        let effect = z_eff.iter().map(|z| self.effect(z)).collect();
+        let z_eff: Vec<f32> = (0..l).map(|_| std_normal(rng)).collect();
+        let effect = z_eff.iter().map(|&z| self.effect(z)).collect();
         let theta = vec![0.0; c];
         let etas = self.data.etas(&theta);
         let base = etas
@@ -283,7 +281,16 @@ impl McmcModel for SusieModel<'_> {
             let gains: Vec<f64> = (0..c)
                 .map(|j| self.data.gain(&s.etas, &s.base, j, effect))
                 .collect();
-            let mut logp: Vec<f64> = gains.iter().map(|&g| log_type + g).collect();
+            // A type with no marker genes is no choice.
+            let mut logp: Vec<f64> = (0..c)
+                .map(|j| {
+                    if self.data.panel.genes_of[j].is_empty() {
+                        f64::NEG_INFINITY
+                    } else {
+                        log_type + gains[j]
+                    }
+                })
+                .collect();
             logp.push(log_null);
             let m = logp.iter().fold(f64::NEG_INFINITY, |m, &v| m.max(v));
             let w: Vec<f64> = logp.iter().map(|&v| (v - m).exp()).collect();
@@ -304,19 +311,19 @@ impl McmcModel for SusieModel<'_> {
             // Its size: ESS on the likelihood of its type's markers (starting
             // from the gain just computed), or a prior draw when it picked none.
             if j < c {
-                // ESS takes an f32 log-likelihood. A gain can run to ~10⁷ on large pseudobulks, past f32's
-                // precision; relative to the current one it stays near 0.
+                // ESS takes an f32 log-likelihood. A gain can run to ~10⁷ on
+                // large pseudobulks, past f32's precision; relative to the
+                // current one it stays near 0.
                 let cur = gains[j];
-                let ll = |z: &DVector<f32>| {
-                    (self.data.gain(&s.etas, &s.base, j, self.effect(z)) - cur) as f32
-                };
-                let nu = std_normal_1(rng);
+                let ll =
+                    |z: &f32| (self.data.gain(&s.etas, &s.base, j, self.effect(*z)) - cur) as f32;
+                let nu = std_normal(rng);
                 s.z_eff[l] = elliptical_slice_step(&s.z_eff[l], &nu, &ll, 0.0, rng).0;
-                s.effect[l] = self.effect(&s.z_eff[l]);
+                s.effect[l] = self.effect(s.z_eff[l]);
                 self.shift(s, j, s.effect[l]);
             } else {
-                s.z_eff[l] = std_normal_1(rng);
-                s.effect[l] = self.effect(&s.z_eff[l]);
+                s.z_eff[l] = std_normal(rng);
+                s.effect[l] = self.effect(s.z_eff[l]);
             }
         }
     }
