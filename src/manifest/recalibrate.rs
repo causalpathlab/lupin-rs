@@ -67,6 +67,81 @@ pub fn write_cache(out: &str, inputs: &EnrichmentInputs) -> Result<StatsCache> {
     })
 }
 
+/// The cache and clusters file `source`'s pass recorded, when every cached
+/// file is still there.
+pub(super) fn complete_cache(source: &Loaded) -> Option<(&StatsCache, &str)> {
+    let a = &source.manifest.annotate;
+    let (cache, ids) = (a.stats_cache.as_ref()?, a.expression_clusters.as_deref()?);
+    [
+        &cache.gene_sum,
+        &cache.gene_weight,
+        &cache.batch_profile,
+        &cache.cell_batch,
+        ids,
+    ]
+    .iter()
+    .all(|r| std::path::Path::new(&resolve(&source.dir, r)).is_file())
+    .then_some((cache, ids))
+}
+
+/// A pass's cached statistics, regrouped.
+pub(super) struct CachedStats {
+    pub gene_names: Vec<Box<str>>,
+    /// Row-major `k · g` gene sums.
+    pub gene_sum_kg: Vec<f64>,
+    pub gene_weights: Vec<f32>,
+    /// `g × batches` weighted mean per-batch expression.
+    pub pb_gene_gp: Mat,
+    /// The batch of each of the cells asked for (0 when unknown).
+    pub batch_labels: Vec<usize>,
+}
+
+/// `cache` (written by [`write_cache`], recorded by `source`) read back: the
+/// cached clusters' gene sums added into `k` groups by `group_of` (a cluster
+/// with none is dropped), and the batch of each of `cells`.
+pub(super) fn read_cache(
+    source: &Loaded,
+    cache: &StatsCache,
+    group_of: impl Fn(ClusterId) -> Option<usize>,
+    k: usize,
+    cells: &[Box<str>],
+) -> Result<CachedStats> {
+    let at = |rel: &str| resolve(&source.dir, rel);
+    let sums = read_mat(&at(&cache.gene_sum))?;
+    let g = sums.rows.len();
+    let mut gene_sum_kg = vec![0f64; g * k];
+    for (j, col) in sums.cols.iter().enumerate() {
+        let Some(dest) = parse_cluster_id(col).and_then(&group_of) else {
+            continue;
+        };
+        for i in 0..g {
+            gene_sum_kg[dest * g + i] += f64::from(sums.mat[(i, j)]);
+        }
+    }
+    let weights = read_mat(&at(&cache.gene_weight))?;
+    anyhow::ensure!(
+        weights.rows == sums.rows,
+        "{}: its genes are not the gene sums'",
+        cache.gene_weight
+    );
+    let (batch_cells, batch_ids) = read_clusters(&at(&cache.cell_batch))?;
+    let batch_of: HashMap<&str, usize> = batch_cells
+        .iter()
+        .zip(&batch_ids)
+        .filter_map(|(n, b)| b.map(|b| (n.as_ref(), b as usize)))
+        .collect();
+    Ok(CachedStats {
+        gene_sum_kg,
+        gene_weights: (0..g).map(|i| weights.mat[(i, 0)]).collect(),
+        pb_gene_gp: read_mat(&at(&cache.batch_profile))?.mat,
+        batch_labels: cells
+            .iter()
+            .map(|n| batch_of.get(n.as_ref()).copied().unwrap_or(0))
+            .collect(),
+        gene_names: sums.rows,
+    })
+}
+
 /// A round rescored: per cluster (rows, by `ids`) × cell type (`types`).
 pub struct Rescored {
     pub ids: Vec<ClusterId>,
@@ -297,31 +372,12 @@ fn rescore_inputs(
         .collect();
 
     // Gene sums of the new clusters, then their profile.
-    let sums = read_mat(&at(&cache.gene_sum))?;
-    let g = sums.rows.len();
     let k = new_ids.len();
-    let mut gene_sum_kg = vec![0f64; g * k];
-    for (j, col) in sums.cols.iter().enumerate() {
-        let Some(&dest) = parse_cluster_id(col).and_then(|o| became.get(&o)) else {
-            continue;
-        };
-        for i in 0..g {
-            gene_sum_kg[dest * g + i] += f64::from(sums.mat[(i, j)]);
-        }
-    }
-    let weights = read_mat(&at(&cache.gene_weight))?;
-    let weights: Vec<f32> = (0..g).map(|i| weights.mat[(i, 0)]).collect();
-    let profile_gk = weighted_mean_profile(&gene_sum_kg, k, g, &weights);
+    let stats = read_cache(source, cache, |o| became.get(&o).copied(), k, &after.names)?;
+    let g = stats.gene_names.len();
+    let profile_gk = weighted_mean_profile(&stats.gene_sum_kg, k, g, &stats.gene_weights);
 
-    // Each cell's new cluster and its batch, in `after`'s cell order.
-    let (batch_cells, batch_ids) = read_clusters(&at(&cache.cell_batch))?;
-    let batch_of: HashMap<&str, usize> = batch_cells
-        .iter()
-        .zip(&batch_ids)
-        .filter_map(|(n, b)| b.map(|b| (n.as_ref(), b as usize)))
-        .collect();
-    let pb = read_mat(&at(&cache.batch_profile))?;
-    let n_batches = pb.mat.ncols();
+    // Each cell's new cluster, in `after`'s cell order.
     let cluster_labels: Vec<usize> = after
         .clusters
         .iter()
@@ -330,29 +386,24 @@ fn rescore_inputs(
                 .unwrap_or(usize::MAX)
         })
         .collect();
-    let batch_labels: Vec<usize> = after
-        .names
-        .iter()
-        .map(|n| batch_of.get(n.as_ref()).copied().unwrap_or(0))
-        .collect();
 
     let pairs: Vec<(Box<str>, Box<str>)> = panel
         .iter()
         .map(|(g, t)| (g.as_str().into(), t.as_str().into()))
         .collect();
-    let annot = crate::annotate::markers::annotation_matrix_from_pairs(&pairs, &sums.rows)?;
+    let annot = crate::annotate::markers::annotation_matrix_from_pairs(&pairs, &stats.gene_names)?;
 
     let inputs = EnrichmentInputs {
-        gene_names: sums.rows.clone(),
+        gene_names: stats.gene_names,
         cell_names: after.names.clone(),
         cluster_labels,
         n_clusters: k,
-        batch_labels,
-        n_batches,
+        batch_labels: stats.batch_labels,
+        n_batches: stats.pb_gene_gp.ncols(),
         markers_gc: annot.membership_ga,
         celltype_names: annot.annot_names.clone(),
         profile_gk,
-        pb_gene_gp: pb.mat,
+        pb_gene_gp: stats.pb_gene_gp,
         gene_sum_kg: Vec::new(),
         gene_weights: Vec::new(),
         type_tree: Some(
@@ -360,6 +411,7 @@ fn rescore_inputs(
                 .treebh(&annot.annot_names),
         ),
         cl_record: None,
+        expression_source: None,
     };
     Ok(Some((args, inputs, new_ids)))
 }

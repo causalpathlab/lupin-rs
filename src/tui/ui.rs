@@ -83,7 +83,43 @@ fn draw_overlays(f: &mut Frame, app: &App, menu_area: Rect) {
         // A list of long rows (the runs) takes the screen's width.
         draw_menu(f, m, if m.wide { f.area() } else { menu_area });
     }
+    if let Some((_, b)) = &app.browser {
+        draw_browser(f, b);
+    }
     draw_failed(f, app);
+}
+
+/// The file browser, in a popup over the form or menu that asked for a file:
+/// the directory on top, its entries below.
+fn draw_browser(f: &mut Frame, b: &super::picker::Picker) {
+    let over = f.area();
+    let area = centered(
+        over,
+        over.width.saturating_sub(4).min(100),
+        over.height.saturating_sub(4).min(30),
+    );
+    let (hint, note) = b.hint("esc cancel");
+    let hint = Line::from(hint);
+    let hint = if note {
+        hint.fg(Color::LightYellow)
+    } else {
+        hint
+    };
+    let block = popup(format!(" {} ", b.title()), hint);
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let [dir, _, list] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .areas(inner);
+    f.render_widget(
+        Paragraph::new(b.dir().display().to_string()).style(POPUP.fg(Color::Indexed(245))),
+        dir,
+    );
+    b.draw_list(f, list);
 }
 
 /// The trajectory's order view: the clusters on the left, the ordering (or
@@ -405,14 +441,21 @@ fn draw_guide(f: &mut Frame) {
 /// whatever the terminal's theme.
 const POPUP: Style = Style::new().fg(Color::Indexed(255)).bg(Color::Indexed(236));
 
-/// A popup's frame: a bright border and title over [`POPUP`].
-fn popup(title: String, hint: impl Into<String>) -> Block<'static> {
+/// A popup's frame: a bright border and title over [`POPUP`], and a hint
+/// along the bottom (dim unless styled).
+fn popup(title: String, hint: impl Into<Line<'static>>) -> Block<'static> {
+    let hint: Line = hint.into();
+    let hint = if hint.style.fg.is_none() {
+        hint.fg(Color::Indexed(250))
+    } else {
+        hint
+    };
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
         .border_style(Style::new().fg(Color::LightYellow).bg(Color::Indexed(236)))
         .title(Line::from(title).bold())
-        .title_bottom(Line::from(hint.into()).fg(Color::Indexed(250)))
+        .title_bottom(hint)
         .style(POPUP)
 }
 
@@ -1380,6 +1423,19 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
             &s.to,
             format!("{} · unrelated", s.source.as_str()),
         ));
+    }
+    let inferred = v.inferred();
+    if !inferred.is_empty() {
+        rows.push(
+            Row::new(vec![Cell::from(format!(
+                "{} edge(s) the run inferred for types the prior leaves out",
+                inferred.len()
+            ))])
+            .style(dim),
+        );
+        for d in &inferred {
+            rows.push(pair(&d.a, "⇢", &d.b, d.summary()));
+        }
     }
     let candidates = v.candidates();
     if !candidates.is_empty() {

@@ -27,6 +27,7 @@ use anyhow::{Context, Result};
 use app::App;
 pub use figure_pane::Graphics;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -236,10 +237,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                 dirty = false;
             }
             if let Some(want) = app.want_file.take() {
-                // The file browser takes the screen, then gives it back.
-                if app.shift_enter {
-                    pop_keys();
-                }
+                // The file browser opens in a popup over what asked for it.
                 let kind = match want {
                     app::FileWant::Markers => {
                         let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
@@ -249,18 +247,18 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                     // Tab-separated text files.
                     _ => picker::Want::Labels,
                 };
-                let picked = picker::pick(want.title(), &loaded.dir, kind)?;
-                // A fresh terminal redraws every cell on its first draw.
-                terminal = ratatui::init();
-                if app.shift_enter {
-                    push_keys();
-                }
-                match want {
-                    app::FileWant::Markers => app.set_markers(picked.as_deref()),
-                    app::FileWant::Labels => app.set_labels(picked.as_deref()),
-                    app::FileWant::Prior => app.set_prior(picked.as_deref()),
-                    app::FileWant::LabelCl => app.set_label_cl(picked.as_deref()),
-                }
+                let start = match want {
+                    // Beside the panel already chosen, else the run.
+                    app::FileWant::Markers if !app.args.markers.is_empty() => {
+                        Path::new(app.args.markers.as_ref())
+                            .parent()
+                            .filter(|d| d.is_dir())
+                            .unwrap_or(&loaded.dir)
+                            .to_path_buf()
+                    }
+                    _ => loaded.dir.clone(),
+                };
+                app.browser = Some((want, picker::Picker::new(want.title(), &start, kind)));
                 dirty = true;
             }
             // Every event already waiting is handled before the next draw, so

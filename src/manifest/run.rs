@@ -553,6 +553,29 @@ pub fn parent_dir(p: &Path) -> PathBuf {
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
+/// The runs `manifest` (in `dir`) was made from, along `annotate.source`,
+/// nearest first; the walk stops at a run it cannot read, and its bound at a
+/// cycle.
+pub fn source_chain(manifest: &RunManifest, dir: &Path) -> Vec<Loaded> {
+    let next = |m: &RunManifest, d: &Path| m.annotate.source.as_deref().map(|s| resolve(d, s));
+    let mut out: Vec<Loaded> = Vec::new();
+    let mut source = next(manifest, dir);
+    while let Some(src) = source.take().filter(|_| out.len() < 32) {
+        let file = PathBuf::from(&src);
+        // Read quietly: `load` logs every manifest it reads.
+        let Ok((manifest, dir)) = RunManifest::load(&file) else {
+            break;
+        };
+        source = next(&manifest, &dir);
+        out.push(Loaded {
+            manifest,
+            dir,
+            file,
+        });
+    }
+    out
+}
+
 /// Whether two paths name the same file. Paths that cannot be resolved (a
 /// file not written yet) are compared as written.
 #[must_use]
@@ -796,6 +819,24 @@ impl Loaded {
     #[must_use]
     pub fn run_prefix(&self) -> String {
         derive_out_prefix(&self.file.to_string_lossy())
+    }
+
+    /// The prefix the training run wrote its outputs under, here: taken from
+    /// a recorded output (`{prefix}.dictionary.parquet`, `{prefix}.latent.parquet`),
+    /// so a round's or trajectory's manifest finds the model's files too;
+    /// else [`Self::run_prefix`].
+    pub fn model_prefix(&self) -> String {
+        let o = &self.manifest.outputs;
+        [
+            (o.dictionary.as_deref(), ".dictionary.parquet"),
+            (o.latent.as_deref(), ".latent.parquet"),
+        ]
+        .into_iter()
+        .find_map(|(rel, suffix)| {
+            let p = resolve(&self.dir, rel?);
+            p.strip_suffix(suffix).map(str::to_string)
+        })
+        .unwrap_or_else(|| self.run_prefix())
     }
 
     /// The cell table for geometry (`cell_embedding`, else `latent`), resolved.

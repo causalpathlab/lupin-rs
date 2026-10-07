@@ -36,6 +36,8 @@ pub struct Form {
     pub row: usize,
     pub note: Option<String>,
     pub confirm: bool,
+    /// Where the pass gets its cluster expression, when not the counts.
+    pub expression: Option<String>,
 }
 
 /// What follows a pass.
@@ -254,7 +256,30 @@ pub enum Pending {
     TrajectoryOut { replace: Option<String> },
 }
 
-/// A file the main loop picks in the file browser, which takes the screen.
+/// Where a pass on the run `source` gets its cluster expression, in words,
+/// when the raw counts are not here.
+fn expression_note(source: &Path) -> Option<String> {
+    use crate::manifest::no_counts::{self, Source};
+    let loaded = crate::manifest::run::load(&source.to_string_lossy()).ok()?;
+    Some(match no_counts::source(&loaded) {
+        Source::Counts => return None,
+        Source::Cache(src) => format!(
+            "The raw counts are not here: it scores the clusters {} cached and their gene sums, whatever the clustering rows say",
+            file_name(&src.file)
+        ),
+        Source::Decoder(d) => format!(
+            "The raw counts are not here and no pass cached its sums: it scores the {} decoder's expected expression ({}), a rough stand-in",
+            loaded.manifest.kind.as_str(),
+            d.formula()
+        ),
+        Source::Nothing => format!(
+            "The raw counts are not here, no pass cached its sums, and a {} run has no decoder to stand in: the pass will fail",
+            loaded.manifest.kind.as_str()
+        ),
+    })
+}
+
+/// A file the main loop opens the file browser for, in a popup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileWant {
     /// A marker panel, for the annotation form.
@@ -445,10 +470,14 @@ pub struct App {
     pub trajectory: super::order::TrajectoryRun,
     /// A file to pick in the file browser, which the main loop opens.
     pub want_file: Option<FileWant>,
+    /// The file browser, open in a popup over the form or menu that asked.
+    pub browser: Option<(FileWant, super::picker::Picker)>,
     /// What follows the pass running now (or the form about to start one).
     after_pass: AfterPass,
     /// The terminal's picture protocol, asked for once.
     picker: Option<ratatui_image::picker::Picker>,
+    /// [`expression_note`] for a run, kept until a pass writes a new round.
+    expression_notes: Option<(PathBuf, Option<String>)>,
 }
 
 impl App {
@@ -499,8 +528,10 @@ impl App {
             out_chosen: true,
             trajectory: super::order::TrajectoryRun::default(),
             want_file: None,
+            browser: None,
             after_pass: AfterPass::Nothing,
             picker: None,
+            expression_notes: None,
             progress_hidden: false,
             failed: None,
         }
@@ -560,8 +591,9 @@ impl App {
                     AfterPass::Nothing
                 };
                 // A new pass rewrote the base round: rounds made on the old
-                // one no longer apply.
+                // one no longer apply, and it may have cached new statistics.
                 if job == Job::Pass {
+                    self.expression_notes = None;
                     if let Err(e) = crate::manifest::rounds::supersede_later(&self.target) {
                         self.push_log(format!("could not set the old rounds aside: {e:#}"));
                     }
@@ -981,8 +1013,22 @@ impl App {
             } else {
                 Setting::Run
             }),
+            expression: self.expression_note(),
             ..Form::default()
         });
+    }
+
+    /// Where a pass on the run gets its expression, in words, asked once per
+    /// run: the answer reads the run's family.
+    fn expression_note(&mut self) -> Option<String> {
+        match &self.expression_notes {
+            Some((run, note)) if *run == self.source => note.clone(),
+            _ => {
+                let note = expression_note(&self.source);
+                self.expression_notes = Some((self.source.clone(), note.clone()));
+                note
+            }
+        }
     }
 
     /// Close the form without running.
@@ -1027,7 +1073,10 @@ impl App {
             AfterPass::Offer => "; then a choice to run the trajectory",
             AfterPass::Nothing => "",
         };
-        (format!("{what}{then}"), warns)
+        match self.form.as_ref().and_then(|f| f.expression.as_deref()) {
+            Some(e) => (format!("{what}{then}. {e}"), true),
+            None => (format!("{what}{then}"), warns),
+        }
     }
 
     /// Run the form: a marker panel is needed, and a pass that replaces
@@ -1621,6 +1670,9 @@ impl App {
         // nothing else; then a prompt or menu.
         if self.failed.take().is_some() {
             return;
+        }
+        if self.browser.is_some() {
+            return self.browser_key(k.code);
         }
         if self.menu.is_some() {
             return self.menu_key(k.code);
@@ -2536,6 +2588,28 @@ impl App {
             ]),
             "r runs the trajectory when you are ready",
         ));
+    }
+
+    /// A key for the file browser; a choice or a cancel closes it and goes
+    /// to what asked for the file.
+    fn browser_key(&mut self, code: KeyCode) {
+        let Some((want, b)) = &mut self.browser else {
+            return;
+        };
+        let want = *want;
+        let picked = match b.key(code) {
+            super::picker::Step::Stay => return,
+            super::picker::Step::Chosen(p) => Some(p),
+            super::picker::Step::Cancelled => None,
+        };
+        self.browser = None;
+        let picked = picked.as_deref();
+        match want {
+            FileWant::Markers => self.set_markers(picked),
+            FileWant::Labels => self.set_labels(picked),
+            FileWant::Prior => self.set_prior(picked),
+            FileWant::LabelCl => self.set_label_cl(picked),
+        }
     }
 
     /// Take `path` as the marker panel (picked in the file browser from the

@@ -15,6 +15,7 @@ use crate::manifest::run::{
 use crate::progress::Stages;
 use anyhow::{bail, Context, Result};
 use clap::Args;
+use data_beans::alg::union_find::UnionFind;
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dense_mat_io::{axis_id_names, Mat};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
@@ -89,6 +90,13 @@ pub struct TrajectoryArgs {
 
     #[arg(
         long,
+        default_value_t = super::diffusion::DC_MIN_SHARE,
+        help = "Leave out of the pseudotime distance a diffusion component spread over less than this share of the cells (a barely attached group's own); 0 keeps them all, as scanpy"
+    )]
+    pub dc_min_share: f32,
+
+    #[arg(
+        long,
         default_value_t = 20,
         help = "Types with fewer cells are not nodes of the prior; their cells follow the nearest root"
     )]
@@ -147,6 +155,7 @@ impl TrajectoryArgs {
         }
         val("knn", self.knn.to_string());
         val("n-dcs", self.n_dcs.to_string());
+        val("dc-min-share", self.dc_min_share.to_string());
         val("min-cells", self.min_cells.to_string());
         val("min-connectivity", self.min_connectivity.to_string());
         if self.prior_only {
@@ -159,12 +168,17 @@ impl TrajectoryArgs {
     }
 }
 
+/// The quantile of a component's distances to its root that pseudotime 1
+/// stands at.
+const PSEUDOTIME_TOP: f64 = 0.99;
+
 /// What the manifest at `dir` records about the run; input files
 /// manifest-relative, as every path in a manifest is.
 fn settings(args: &TrajectoryArgs, dir: &std::path::Path) -> serde_json::Value {
     let rel = |p: &Option<Box<str>>| p.as_deref().map(|p| rel_to_manifest(dir, p));
     serde_json::json!({
-        "knn": args.knn, "n_dcs": args.n_dcs, "min_cells": args.min_cells,
+        "knn": args.knn, "n_dcs": args.n_dcs, "dc_min_share": args.dc_min_share,
+        "min_cells": args.min_cells,
         "min_connectivity": args.min_connectivity,
         "roots": args.root, "prior": rel(&args.prior), "prior_only": args.prior_only,
         "labels": rel(&args.labels), "obo": rel(&args.obo), "label_cl": rel(&args.label_cl),
@@ -191,7 +205,7 @@ impl Inputs {
     }
 }
 
-/// A direct prior edge with its data verdict.
+/// A direct prior edge, or one the run inferred, with its data verdict.
 #[derive(Debug, Clone)]
 struct EdgeCheck {
     pub(crate) from: usize,
@@ -298,7 +312,17 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     let mut t = check(&inputs, &nb, prior, args.min_connectivity);
     report_check(&inputs, &t);
     if !args.check_only {
-        t.ordering = Some(order(&inputs, &nb, &t.prior, usize::from(args.n_dcs))?);
+        let (ordering, inferred) = order(&inputs, &nb, &t.prior, &t.connectivity, args)?;
+        t.ordering = Some(ordering);
+        // The inferred edges join the prior's, to be measured and written
+        // as they are.
+        t.edges
+            .extend(inferred.into_iter().map(|(from, to)| EdgeCheck {
+                from,
+                to,
+                verdict: Verdict::Inferred,
+                order_agreement: f32::NAN,
+            }));
         agreement(&mut t);
         report_order(&inputs, &t);
     }
@@ -306,6 +330,10 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     let written = write(&inputs, &t, out)?;
     record(&loaded, &manifest_out, &written, args)?;
     STAGES.finish();
+    let (found, run) = super::figures::layouts_along(&loaded.manifest, &loaded.dir, &loaded.file);
+    if let Some(h) = super::figures::layout_hint(found.iter().map(|(m, _)| m.as_deref()), &run) {
+        warn!("{h}");
+    }
     info!(
         "wrote {}",
         written.values().cloned().collect::<Vec<_>>().join(", ")
@@ -447,7 +475,7 @@ fn report_prior(inputs: &Inputs, prior: &Prior) {
         .collect();
     if !loose.is_empty() {
         warn!(
-            "{} node type(s) have no prior edge and get no pseudotime: {}",
+            "{} node type(s) have no prior edge: {}",
             loose.len(),
             loose.join(", ")
         );
@@ -532,9 +560,29 @@ fn report_check(inputs: &Inputs, t: &Trajectory) {
 
 /// Diffusion pseudotime from each component's roots (the root types'
 /// medoids), scaled to [0, 1] per component, and the lineages.
-fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, n_dcs: usize) -> Result<Ordering> {
+fn order(
+    inputs: &Inputs,
+    nb: &Neighbours,
+    prior: &Prior,
+    conn: &DMatrix<f64>,
+    args: &TrajectoryArgs,
+) -> Result<(Ordering, Vec<(usize, usize)>)> {
     STAGES.start(STAGE_DIFFUSION);
-    let map = DiffusionMap::new(nb, DIFFMAP_COMPS, n_dcs)?;
+    let map = DiffusionMap::new(
+        nb,
+        DIFFMAP_COMPS,
+        usize::from(args.n_dcs),
+        f64::from(args.dc_min_share),
+    )?;
+    if !map.left_out.is_empty() {
+        let dcs: Vec<String> = map.left_out.iter().map(|j| format!("DC{j}")).collect();
+        warn!(
+            "{} left out of the pseudotime distance: each is spread over under {:.0}% of the cells, \
+             a group the kNN graph barely attaches (--dc-min-share 0 keeps them)",
+            dcs.join(", "),
+            100.0 * args.dc_min_share
+        );
+    }
     STAGES.start(STAGE_DIFFUSION + 1);
     let n = inputs.cells.len();
     // Distance to the nearest root of each component.
@@ -551,13 +599,27 @@ fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, n_dcs: usize) -> Resul
         }
         dist.push(map.distances_from(&cells));
     }
-    // A node type's cell belongs to its type's component; any other cell to
-    // the component whose root is nearest.
+    // The node types the prior leaves without an edge join it along the
+    // strongest connectivity.
+    let (host, mut inferred) = hosts(&inputs.is_node, &prior.component, conn);
+    let unplaced: Vec<&str> = (0..inputs.names.len())
+        .filter(|&g| inputs.is_node[g] && prior.component[g].is_none() && host[g].is_none())
+        .map(|g| inputs.names[g].as_ref())
+        .collect();
+    if !unplaced.is_empty() {
+        warn!(
+            "{} node type(s) without a prior edge connect to no lineage and get no pseudotime: {}",
+            unplaced.len(),
+            unplaced.join(", ")
+        );
+    }
+    // A node type's cell belongs to its type's (or host's) component; any
+    // other cell to the component whose root is nearest.
     let component: Vec<Option<usize>> = (0..n)
         .map(|i| {
             let g = inputs.group[i];
             if inputs.is_node[g] {
-                prior.component[g]
+                prior.component[host[g].unwrap_or(g)]
             } else {
                 (0..dist.len())
                     .filter(|&c| dist[c][i].is_finite())
@@ -565,18 +627,33 @@ fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, n_dcs: usize) -> Resul
             }
         })
         .collect();
-    let mut top = vec![0.0f64; dist.len()];
+    // Each component's distances scaled to [0, 1] by their 99th percentile,
+    // the few cells beyond it at 1: a handful of outlying cells no longer
+    // squeeze every other cell towards 0.
+    let mut by_component: Vec<Vec<f64>> = vec![Vec::new(); dist.len()];
     for i in 0..n {
         if let Some(c) = component[i] {
             if dist[c][i].is_finite() {
-                top[c] = top[c].max(dist[c][i]);
+                by_component[c].push(dist[c][i]);
             }
         }
     }
+    let top: Vec<f64> = by_component
+        .iter_mut()
+        .map(|d| {
+            d.sort_by(f64::total_cmp);
+            let at = ((d.len() as f64 - 1.0) * PSEUDOTIME_TOP).round() as usize;
+            // Nearly every cell at the root: the farthest one sets the scale.
+            match d.get(at) {
+                Some(&q) if q > 0.0 => q,
+                _ => d.last().copied().unwrap_or(0.0),
+            }
+        })
+        .collect();
     let pseudotime: Vec<f32> = (0..n)
         .map(|i| match component[i] {
             Some(c) if dist[c][i].is_finite() => {
-                (dist[c][i] / top[c].max(f64::MIN_POSITIVE)) as f32
+                (dist[c][i] / top[c].max(f64::MIN_POSITIVE)).min(1.0) as f32
             }
             _ => f32::NAN,
         })
@@ -584,6 +661,7 @@ fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, n_dcs: usize) -> Resul
 
     let lineages = prior.lineages();
     let type_weights: Vec<Vec<f32>> = (0..inputs.names.len())
+        .map(|g| host[g].unwrap_or(g))
         .map(|g| {
             let through: Vec<bool> = lineages.iter().map(|(_, p)| p.contains(&g)).collect();
             let k = through.iter().filter(|&&t| t).count() as f32;
@@ -600,19 +678,35 @@ fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, n_dcs: usize) -> Resul
             by_type[g].push(pt);
         }
     }
-    let mut order: Vec<(f32, usize)> = (0..inputs.names.len())
-        .filter(|&g| inputs.is_node[g])
-        .map(|g| {
-            let m = if by_type[g].is_empty() {
+    let medians: Vec<f32> = by_type
+        .iter()
+        .map(|t| {
+            if t.is_empty() {
                 f32::INFINITY
             } else {
-                median(&by_type[g])
-            };
-            (m, g)
+                median(t)
+            }
         })
         .collect();
+    let mut order: Vec<(f32, usize)> = (0..inputs.names.len())
+        .filter(|&g| inputs.is_node[g])
+        .map(|g| (medians[g], g))
+        .collect();
     order.sort_by(|p, q| p.0.total_cmp(&q.0));
-    Ok(Ordering {
+    // With no prior to say which way, an inferred edge runs from the earlier
+    // type to the later by median pseudotime.
+    for e in &mut inferred {
+        if medians[e.1] < medians[e.0] {
+            *e = (e.1, e.0);
+        }
+        info!(
+            "inferred edge {} → {} (connectivity {:.3}), by median pseudotime",
+            inputs.names[e.0],
+            inputs.names[e.1],
+            conn[(e.0, e.1)]
+        );
+    }
+    let ordering = Ordering {
         map,
         pseudotime,
         component,
@@ -620,7 +714,64 @@ fn order(inputs: &Inputs, nb: &Neighbours, prior: &Prior, n_dcs: usize) -> Resul
         type_weights,
         by_type,
         order,
-    })
+    };
+    Ok((ordering, inferred))
+}
+
+/// The prior completed by connectivity: the node types it leaves without an
+/// edge join it along a maximum spanning tree of PAGA connectivity, grown
+/// from the prior's components (strongest pairs first, never joining two
+/// components). Per type, the type on a lineage it reaches that way (`None`
+/// for a type the prior places, or one connected to nothing), and the
+/// inferred edges, from the side nearer a root.
+pub(crate) fn hosts(
+    is_node: &[bool],
+    component: &[Option<usize>],
+    conn: &DMatrix<f64>,
+) -> (Vec<Option<usize>>, Vec<(usize, usize)>) {
+    let types = is_node.len();
+    let nodes: Vec<usize> = (0..types).filter(|&g| is_node[g]).collect();
+    // Union-find over the types; a set is anchored when it holds a placed
+    // type, and two anchored sets never join.
+    let mut sets = UnionFind::new(types);
+    let mut anchor: Vec<Option<usize>> = component.to_vec();
+    let mut pairs: Vec<(usize, usize)> = nodes
+        .iter()
+        .flat_map(|&a| nodes.iter().map(move |&b| (a, b)))
+        .filter(|&(a, b)| a < b && conn[(a, b)] > 0.0)
+        .filter(|&(a, b)| component[a].is_none() || component[b].is_none())
+        .collect();
+    pairs.sort_by(|&(a, b), &(c, d)| conn[(c, d)].total_cmp(&conn[(a, b)]));
+    let mut tree: Vec<(usize, usize)> = Vec::new();
+    for (a, b) in pairs {
+        let (ra, rb) = (sets.find(a), sets.find(b));
+        if ra == rb || (anchor[ra].is_some() && anchor[rb].is_some()) {
+            continue;
+        }
+        let r = sets.union(a, b);
+        anchor[r] = anchor[ra].or(anchor[rb]);
+        tree.push((a, b));
+    }
+    // Walk the inferred edges out from the placed types: each type reached
+    // takes the placed type it was reached from.
+    let mut host: Vec<Option<usize>> = vec![None; types];
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    let placed = |g: usize, host: &[Option<usize>]| component[g].is_some() || host[g].is_some();
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for &(a, b) in &tree {
+            let (from, to) = match (placed(a, &host), placed(b, &host)) {
+                (true, false) => (a, b),
+                (false, true) => (b, a),
+                _ => continue,
+            };
+            host[to] = Some(host[from].unwrap_or(from));
+            edges.push((from, to));
+            grew = true;
+        }
+    }
+    (host, edges)
 }
 
 /// For each direct edge A → B, the fraction of B's cells beyond A's median.
@@ -642,7 +793,7 @@ fn report_order(inputs: &Inputs, t: &Trajectory) {
     if unreached > 0 {
         warn!(
             "{unreached}/{} cells are reached by no root (another kNN component, or a type \
-             without a prior edge) and get no pseudotime",
+             without a prior edge connected to no lineage) and get no pseudotime",
             o.pseudotime.len()
         );
     }
@@ -655,7 +806,7 @@ fn report_order(inputs: &Inputs, t: &Trajectory) {
             inputs.cells_of[g].len()
         );
     }
-    info!("order agreement of the prior's edges:");
+    info!("order agreement of the edges:");
     for e in &t.edges {
         info!(
             "  {} → {}: {:.2} ({})",
@@ -725,7 +876,7 @@ fn write_edges(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<String> {
                 a: inputs.names[from].clone(),
                 b: inputs.names[to].clone(),
                 connectivity: t.connectivity[(p, q)] as f32,
-                in_prior: edge.is_some(),
+                in_prior: edge.is_some_and(|e| e.verdict != Verdict::Inferred),
                 verdict: match edge {
                     Some(e) => Some(e.verdict),
                     None if candidate.contains(&(p, q)) => Some(Verdict::Candidate),
@@ -810,3 +961,7 @@ fn record(
     t.settings = Some(settings);
     copy.manifest.save(&copy.file)
 }
+
+#[cfg(test)]
+#[path = "tests/run.rs"]
+mod tests;

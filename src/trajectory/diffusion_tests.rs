@@ -57,7 +57,7 @@ fn exact_duplicate_cells_share_their_pseudotime() {
     assert_eq!(nb.n_cells(), 38);
     assert_eq!(nb.rep_of[1], nb.rep_of[0]);
     assert_eq!(nb.rep_of[2], nb.rep_of[0]);
-    let dm = DiffusionMap::new(&nb, 5, 5).unwrap();
+    let dm = DiffusionMap::new(&nb, 5, 5, 0.0).unwrap();
     assert_eq!(dm.evecs.nrows(), 40);
     let pt = dm.pseudotime(10);
     assert!(pt[0].is_finite());
@@ -72,8 +72,8 @@ fn dpt_uses_the_first_n_dcs_of_the_computed_components() {
         ((i * 13 + j * 5) % 17) as f32 + i as f32 * 0.03
     });
     let nb = Neighbours::new(&x, 6).unwrap();
-    let all = DiffusionMap::new(&nb, 8, 8).unwrap();
-    let first = DiffusionMap::new(&nb, 8, 3).unwrap();
+    let all = DiffusionMap::new(&nb, 8, 8, 0.0).unwrap();
+    let first = DiffusionMap::new(&nb, 8, 3, 0.0).unwrap();
     assert_eq!(first.evals.len(), 8, "every computed component is kept");
     assert_eq!(first.evals, all.evals);
     assert_ne!(first.pseudotime(0), all.pseudotime(0));
@@ -117,7 +117,7 @@ fn full_bench_matches_scanpy() {
     let t0 = std::time::Instant::now();
     // All 15 components in the distance, as this bench has always run; it
     // must match the n_dcs of the scanpy run it is compared with.
-    let dm = DiffusionMap::new(&Neighbours::new(&x.mat, 15).unwrap(), 15, 15).unwrap();
+    let dm = DiffusionMap::new(&Neighbours::new(&x.mat, 15).unwrap(), 15, 15, 0.0).unwrap();
     let got = dm.pseudotime(root);
     let secs = t0.elapsed().as_secs_f64();
     let rho = spearman(&got, &want);
@@ -126,4 +126,38 @@ fn full_bench_matches_scanpy() {
         x.rows.len()
     );
     assert!(rho >= 0.98, "Spearman with scanpy on the full bench {rho}");
+}
+
+#[test]
+fn participation_is_one_spread_evenly_and_one_over_n_on_one_cell() {
+    assert!((participation([1.0, -1.0, 1.0, -1.0].into_iter()) - 1.0).abs() < 1e-12);
+    assert!((participation([0.0, 3.0, 0.0, 0.0].into_iter()) - 0.25).abs() < 1e-12);
+    assert_eq!(participation(std::iter::empty()), 0.0);
+}
+
+/// 600 cells along a line, and 6 cells (1%) in a clump far off it.
+fn line_and_clump() -> DMatrix<f32> {
+    DMatrix::<f32>::from_fn(606, 2, |i, j| match (i < 600, j) {
+        (true, 0) => i as f32 * 0.05,
+        (true, _) => ((i * 7) % 5) as f32 * 0.01,
+        (false, 0) => 60.0 + (i % 3) as f32 * 0.01,
+        (false, _) => (i % 4) as f32 * 0.01,
+    })
+}
+
+#[test]
+fn a_clumps_own_components_are_left_out_of_the_distance() {
+    let nb = Neighbours::new(&line_and_clump(), 6).unwrap();
+    let kept = DiffusionMap::new(&nb, 10, 10, 0.0).unwrap();
+    assert!(kept.left_out.is_empty(), "0 keeps every component");
+    let dm = DiffusionMap::new(&nb, 10, 10, f64::from(DC_MIN_SHARE)).unwrap();
+    assert!(!dm.left_out.is_empty(), "the clump's components go");
+    for &j in &dm.left_out {
+        let share = participation(dm.evecs.column(j).iter().copied());
+        assert!(share < f64::from(DC_MIN_SHARE), "DC{j} spread over {share}");
+    }
+    let main: Vec<usize> = (0..dm.evecs.ncols())
+        .filter(|j| !dm.left_out.contains(j))
+        .collect();
+    assert!(main.len() >= 8, "the line's own components stay: {main:?}");
 }

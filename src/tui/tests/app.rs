@@ -829,3 +829,57 @@ fn switching_runs_gives_the_order_view_the_edges_of_what_is_shown() {
         "the earlier trajectory's edges are gone"
     );
 }
+
+/// The form's marker panel, picked in the browser popup over it.
+fn browsing_for_markers(dir: &Path) -> App {
+    let mut app = app_with_terms(false);
+    app.args.markers = Default::default();
+    app.form = Some(Form::default());
+    let want = super::super::picker::Want::Markers(None, 0);
+    let b = super::super::picker::Picker::new(FileWant::Markers.title(), dir, want);
+    app.browser = Some((FileWant::Markers, b));
+    app
+}
+
+#[test]
+fn the_browser_popup_picks_the_forms_marker_panel_and_draws_over_it() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("sub")).unwrap();
+    let panel = root.path().join("panel.tsv");
+    std::fs::write(&panel, "GENE1\tCT1\nGENE2\tCT2\n").unwrap();
+    let mut app = browsing_for_markers(root.path());
+
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut term = ratatui::Terminal::new(backend).unwrap();
+    term.draw(|f| super::super::ui::draw(f, &app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(screen.contains("Pick a marker panel"), "the popup's title");
+    assert!(screen.contains("panel.tsv"), "the panel is listed");
+    assert!(screen.contains("sub/"), "directories are listed");
+
+    // The browser starts on the panel; enter takes it, and the form stays.
+    press(&mut app, KeyCode::Enter);
+    assert!(app.browser.is_none());
+    assert!(app.form.is_some(), "the form stays open to run");
+    assert_eq!(
+        Path::new(app.args.markers.as_ref()).file_name(),
+        panel.file_name()
+    );
+}
+
+#[test]
+fn esc_closes_the_browser_popup_and_leaves_the_form() {
+    let root = tempfile::tempdir().unwrap();
+    let mut app = browsing_for_markers(root.path());
+    press(&mut app, KeyCode::Esc);
+    assert!(app.browser.is_none());
+    assert!(app.form.is_some(), "esc closes only the browser");
+    assert!(app.args.markers.is_empty());
+    assert_eq!(app.status, "no marker panel picked");
+}

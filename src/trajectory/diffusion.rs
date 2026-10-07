@@ -44,6 +44,26 @@ pub(crate) const DIFFMAP_COMPS: usize = 15;
 /// compares in float32).
 const UNWEIGHTED_FROM: f32 = 0.9994;
 
+/// A diffusion component spread over less than this share of the cells is
+/// left out of the DPT distance by default: a group of cells the kNN graph
+/// barely attaches (a batch's island, a doublet cluster) gets eigenvectors of
+/// its own, near 1, whose weight `λ / (1 − λ)` would then make the distance
+/// to that group the whole of pseudotime.
+pub(crate) const DC_MIN_SHARE: f32 = 0.02;
+
+/// The share of the cells the vector `u` is spread over: its participation
+/// ratio `(Σ u²)² / (n Σ u⁴)`, 1 when even over every cell, `1/n` on one.
+pub(crate) fn participation(u: impl Iterator<Item = f64>) -> f64 {
+    let (n, s2, s4) = u.fold((0usize, 0f64, 0f64), |(n, a, b), v| {
+        let v2 = v * v;
+        (n + 1, a + v2, b + v2 * v2)
+    });
+    if n == 0 || s4 == 0.0 {
+        return 0.0;
+    }
+    s2 * s2 / (n as f64 * s4)
+}
+
 /// The randomised SVD's starting effort: the leading eigenvalues of a
 /// diffusion operator sit close together, and the defaults (5, 5) do not
 /// separate them.
@@ -172,12 +192,22 @@ pub(crate) struct DiffusionMap {
     coords: DMatrix<f64>,
     /// Connected component of each cell in the kNN graph.
     component: Vec<usize>,
+    /// The components among the first `n_dcs` left out of the DPT distance,
+    /// each spread over too few cells.
+    pub(crate) left_out: Vec<usize>,
 }
 
 impl DiffusionMap {
     /// The diffusion map on `nb` with `n_comps` components, of which the
-    /// DPT distance uses the first `n_dcs` (all of them if `n_dcs` is larger).
-    pub(crate) fn new(nb: &Neighbours, n_comps: usize, n_dcs: usize) -> Result<Self> {
+    /// DPT distance uses the first `n_dcs` (all of them if `n_dcs` is larger)
+    /// less those spread over under `min_share` of the cells (0 keeps every
+    /// one, as scanpy does).
+    pub(crate) fn new(
+        nb: &Neighbours,
+        n_comps: usize,
+        n_dcs: usize,
+        min_share: f64,
+    ) -> Result<Self> {
         let n = nb.n_cells();
         ensure!(n_dcs >= 1, "at least one diffusion component is needed");
         let kernel = gauss_kernel(&nb.idx, &nb.dist)?;
@@ -196,9 +226,18 @@ impl DiffusionMap {
                 );
             }
         }
+        let mut left_out: Vec<usize> = (0..n_dcs)
+            .filter(|&j| participation(evecs.column(j).iter().copied()) < min_share)
+            .collect();
+        if left_out.len() == n_dcs {
+            warn!("every diffusion component is spread over under {min_share} of the cells; all are kept");
+            left_out.clear();
+        }
         let mut coords = evecs.columns(0, n_dcs).into_owned();
-        for (mut col, &l) in coords.column_iter_mut().zip(&evals) {
-            if l < UNWEIGHTED_FROM {
+        for (j, (mut col, &l)) in coords.column_iter_mut().zip(&evals).enumerate() {
+            if left_out.contains(&j) {
+                col.fill(0.0);
+            } else if l < UNWEIGHTED_FROM {
                 col *= f64::from(l / (1.0 - l));
             }
         }
@@ -206,6 +245,7 @@ impl DiffusionMap {
             evals,
             evecs,
             coords,
+            left_out,
             component: {
                 let c = nb.components();
                 nb.rep_of.iter().map(|&r| c[r]).collect()

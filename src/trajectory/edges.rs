@@ -14,6 +14,9 @@ pub(crate) enum Verdict {
     Unsupported,
     /// A pair the prior does not order whose connectivity reaches it.
     Candidate,
+    /// An edge the run added: a node type the prior leaves without an edge
+    /// joins it along its strongest connectivity.
+    Inferred,
 }
 
 impl Verdict {
@@ -22,6 +25,7 @@ impl Verdict {
             Self::Supported => "supported",
             Self::Unsupported => "unsupported",
             Self::Candidate => "candidate",
+            Self::Inferred => "inferred",
         }
     }
 
@@ -31,12 +35,14 @@ impl Verdict {
             "supported" => Some(Self::Supported),
             "unsupported" => Some(Self::Unsupported),
             "candidate" => Some(Self::Candidate),
+            "inferred" => Some(Self::Inferred),
             _ => None,
         }
     }
 }
 
-/// One pair. A prior edge runs `a → b`; any other pair is written `a < b`.
+/// One pair. A prior or inferred edge runs `a → b`; any other pair is
+/// written `a < b`.
 #[derive(Debug, Clone)]
 pub(crate) struct EdgeRow {
     pub(crate) a: Box<str>,
