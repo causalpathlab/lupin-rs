@@ -49,7 +49,10 @@ pub fn run(
     info!(
         "SuSiE: {n_clusters} clusters × {n_types} cell types over {} marker genes; \
          dispersion median {:.3} (range {:.3}–{:.3})",
-        fits.n_marker_genes, phi[1], phi[0], phi[2]
+        fits.dispersion.len(),
+        phi[1],
+        phi[0],
+        phi[2]
     );
 
     let cluster_names = axis_id_names("K", n_clusters);
@@ -63,7 +66,7 @@ pub fn run(
     for (k, f) in fits.clusters.iter().enumerate() {
         if f.max_rhat > 1.1 {
             warn!(
-                "SuSiE: {} has split-R̂ {:.2}; raise --mcmc-samples",
+                "SuSiE: {}'s chains disagree (R̂ {:.2}); raise --mcmc-samples",
                 cluster_names[k], f.max_rhat
             );
         }
@@ -115,12 +118,13 @@ pub fn run(
     let mut annotation = Mat::zeros(n_cells, n_types);
     let (mut labels, mut probs) = (Vec::with_capacity(n_cells), Vec::with_capacity(n_cells));
     for (i, &k) in inputs.cluster_labels.iter().enumerate() {
-        if k < n_clusters {
+        let call = calls.get(k).copied();
+        if call.is_some() {
             for t in 0..n_types {
                 annotation[(i, t)] = pip[(k, t)];
             }
         }
-        match calls.get(k).copied().flatten() {
+        match call.flatten() {
             Some(c) => {
                 labels.push(inputs.celltype_names[c].clone());
                 probs.push(pip[(k, c)]);

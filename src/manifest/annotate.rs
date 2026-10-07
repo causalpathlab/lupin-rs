@@ -80,14 +80,12 @@ pub fn annotate_by_enrichment(
         .expression_source
         .as_ref()
         .is_some_and(|e| e["from"] == "decoder");
-    let mut susie_called = false;
     match (&args.susie, plan.ontology_mode, from_decoder) {
         (Some(cfg), false, false) => {
-            match crate::annotate::by_susie::run(&args.out, cfg, &inputs, &mut outputs) {
-                Ok(()) => susie_called = true,
-                Err(e) => log::error!(
+            if let Err(e) = crate::annotate::by_susie::run(&args.out, cfg, &inputs, &mut outputs) {
+                log::error!(
                     "SuSiE stage failed ({e:#}); the call is the enrichment's softmax share"
-                ),
+                );
             }
         }
         (Some(_), false, true) => {
@@ -123,7 +121,7 @@ pub fn annotate_by_enrichment(
     if let serde_json::Value::Object(m) = &mut used {
         // The SuSiE settings that made the call, or none when it was skipped
         // or failed and the softmax share made it.
-        if !susie_called {
+        if outputs.cluster_celltype_pip.is_none() {
             m.insert("susie".into(), serde_json::Value::Null);
         }
         let draws = by_enrichment::sample_perm_draws(inputs.n_batches, args.num_perm);

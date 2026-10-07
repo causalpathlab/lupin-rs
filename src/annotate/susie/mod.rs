@@ -30,6 +30,9 @@ use rayon::prelude::*;
 const COVERAGE: f32 = 0.95;
 /// Smallest |correlation| between two marker sets in one credible set.
 const MIN_PURITY: f32 = 0.5;
+/// Draws (and warmup) of the single-chain first pass, whose means only
+/// feed the dispersion estimate.
+const FIRST_PASS_DRAWS: usize = 200;
 /// Pseudo-clusters of weight pulling each gene's log φ_g to the median.
 const DISPERSION_SHRINKAGE: f64 = 10.0;
 /// The range an estimated φ is clamped to.
@@ -75,7 +78,7 @@ pub struct ClusterFit {
     pub explained: Vec<f32>,
     /// Credible sets: cell-type indices, most probable first.
     pub credible_sets: Vec<Vec<usize>>,
-    /// The largest R̂ between the chains over the types' θ.
+    /// The largest Gelman–Rubin R̂ between the chains over the types' θ.
     pub max_rhat: f32,
 }
 
@@ -115,9 +118,8 @@ impl ClusterFit {
 /// All clusters' fits plus the dispersions they used.
 pub struct SusieFits {
     pub clusters: Vec<ClusterFit>,
-    /// Marker genes with counts, the likelihood's rows.
-    pub n_marker_genes: usize,
-    /// φ_g of each of those genes in the last pass.
+    /// φ_g of each marker gene with counts (the likelihood's rows) in the
+    /// last pass.
     pub dispersion: Vec<f32>,
 }
 
@@ -136,8 +138,8 @@ pub fn fit_all(
         "count sums and marker rows disagree on the genes"
     );
     anyhow::ensure!(
-        cfg.prior.num_effects >= 1 && cfg.samples >= 1 && cfg.chains >= 1,
-        "SuSiE needs at least one single effect, chain and posterior sample"
+        cfg.prior.num_effects >= 1 && cfg.samples >= 1 && cfg.chains >= 1 && cfg.thin >= 1,
+        "SuSiE needs at least one single effect, chain and posterior sample, and thin ≥ 1"
     );
     anyhow::ensure!(
         cfg.dispersion.is_none_or(|d| d >= 0.0),
@@ -149,28 +151,14 @@ pub fn fit_all(
     let present: Vec<usize> = (0..n_clusters)
         .filter(|&k| column(k).iter().any(|&v| v > 0.0))
         .collect();
-    if present.len() < n_clusters {
-        let sums: Vec<f64> = present.iter().flat_map(|&k| column(k).to_vec()).collect();
-        let fits = fit_all(&sums, n_genes, present.len(), markers, n_types, cfg)?;
-        let mut fitted = fits.clusters.into_iter();
-        let clusters = (0..n_clusters)
-            .map(|k| {
-                if present.binary_search(&k).is_ok() {
-                    fitted.next().expect("one fit per present cluster")
-                } else {
-                    ClusterFit::empty(n_types)
-                }
-            })
-            .collect();
-        return Ok(SusieFits { clusters, ..fits });
-    }
     let at = |g: usize, k: usize| gene_sum_kg[k * n_genes + g];
-    let lib: Vec<f64> = (0..n_clusters)
-        .map(|k| column(k).iter().sum::<f64>())
+    let lib: Vec<f64> = present
+        .iter()
+        .map(|&k| column(k).iter().sum::<f64>())
         .collect();
     let total: f64 = lib.iter().sum();
     let expressed: Vec<usize> = (0..n_genes)
-        .filter(|&g| (0..n_clusters).any(|k| at(g, k) > 0.0))
+        .filter(|&g| present.iter().any(|&k| at(g, k) > 0.0))
         .collect();
     let (marker_genes, free): (Vec<usize>, Vec<usize>) =
         expressed.iter().partition(|&&g| !markers[g].is_empty());
@@ -181,12 +169,11 @@ pub fn fit_all(
         let est: Vec<f32> = free
             .iter()
             .filter_map(|&g| {
-                let p = (0..n_clusters).map(|k| at(g, k)).sum::<f64>() / total;
+                let y = || present.iter().map(move |&k| at(g, k));
+                let p = y().sum::<f64>() / total;
                 // Genes too sparse to say anything are skipped.
-                (p * total >= 10.0 * n_clusters as f64).then(|| {
-                    let mu = lib.iter().map(|&n| n * p);
-                    moment_phi((0..n_clusters).map(|k| at(g, k)), mu) as f32
-                })
+                (p * total >= 10.0 * present.len() as f64)
+                    .then(|| moment_phi(y(), lib.iter().map(|&n| n * p)) as f32)
             })
             .collect();
         median(&est)
@@ -198,28 +185,33 @@ pub fn fit_all(
     let background: Vec<f32> = marker_genes
         .iter()
         .map(|&g| {
-            let rates: Vec<f32> = (0..n_clusters)
-                .map(|k| (at(g, k) / lib[k]) as f32)
+            let rates: Vec<f32> = present
+                .iter()
+                .zip(&lib)
+                .map(|(&k, &n)| (at(g, k) / n) as f32)
                 .collect();
             median(&rates).max(floor)
         })
         .collect();
-    let data: Vec<Cluster> = (0..n_clusters)
-        .map(|k| Cluster {
+    let data: Vec<Cluster> = present
+        .iter()
+        .zip(&lib)
+        .map(|(&k, &n)| Cluster {
             y: marker_genes.iter().map(|&g| at(g, k) as f32).collect(),
             log_mu0: background
                 .iter()
-                .map(|&b| (f64::from(b) * lib[k]).ln() as f32)
+                .map(|&b| (f64::from(b) * n).ln() as f32)
                 .collect(),
         })
         .collect();
     let types_of: Vec<Vec<usize>> = marker_genes.iter().map(|&g| markers[g].clone()).collect();
     let corr = marker_correlation(&types_of, n_types);
 
-    let fit_pass = |panel: &Panel| -> Vec<ClusterFit> {
+    // Each present cluster's fit under `cfg`, seeded by its own id.
+    let fit_pass = |panel: &Panel, cfg: &SusieConfig| -> Vec<ClusterFit> {
         data.par_iter()
-            .enumerate()
-            .map(|(k, cluster)| {
+            .zip(&present)
+            .map(|(cluster, &k)| {
                 let counts = ClusterCounts { panel, cluster };
                 let model = SusieModel {
                     data: counts,
@@ -228,7 +220,7 @@ pub fn fit_all(
                 let config = McmcConfig {
                     n_samples: cfg.samples,
                     warmup: cfg.warmup,
-                    thin: cfg.thin.max(1),
+                    thin: cfg.thin,
                     seed: mix_seed(cfg.seed, k as u64),
                 };
                 summarize(
@@ -241,13 +233,23 @@ pub fn fit_all(
     };
 
     let mut dispersion = vec![global; marker_genes.len()];
-    let mut panel = Panel::new(types_of.clone(), n_types, &dispersion);
-    let mut clusters = fit_pass(&panel);
-    if cfg.dispersion.is_none() {
-        // φ_g from every cluster's residuals around the fitted means.
-        let fitted: Vec<Vec<f32>> = data
+    let mut panel = Panel::new(types_of, n_types, &dispersion);
+    let fitted = if cfg.dispersion.is_none() {
+        // A light first pass whose means give φ_g, from every cluster's
+        // residuals around them; the call is the refit's.
+        let first = fit_pass(
+            &panel,
+            &SusieConfig {
+                chains: 1,
+                samples: FIRST_PASS_DRAWS,
+                warmup: FIRST_PASS_DRAWS,
+                thin: 1,
+                ..*cfg
+            },
+        );
+        let etas: Vec<Vec<f32>> = data
             .iter()
-            .zip(&clusters)
+            .zip(&first)
             .map(|(cluster, f)| {
                 ClusterCounts {
                     panel: &panel,
@@ -259,17 +261,29 @@ pub fn fit_all(
         let raw: Vec<f64> = (0..marker_genes.len())
             .map(|i| {
                 let y = data.iter().map(|c| f64::from(c.y[i]));
-                let mu = fitted.iter().map(|eta| f64::from(eta[i].exp()));
+                let mu = etas.iter().map(|eta| f64::from(eta[i].exp()));
                 moment_phi(y, mu)
             })
             .collect();
-        dispersion = shrunk_dispersion(&raw, n_clusters);
-        panel = Panel::new(types_of, n_types, &dispersion);
-        clusters = fit_pass(&panel);
-    }
+        dispersion = shrunk_dispersion(&raw, present.len());
+        panel.set_dispersion(&dispersion);
+        fit_pass(&panel, cfg)
+    } else {
+        fit_pass(&panel, cfg)
+    };
+    // Back to every id; one without counts gets no call.
+    let mut fitted = fitted.into_iter();
+    let clusters = (0..n_clusters)
+        .map(|k| {
+            if present.binary_search(&k).is_ok() {
+                fitted.next().expect("one fit per present cluster")
+            } else {
+                ClusterFit::empty(n_types)
+            }
+        })
+        .collect();
     Ok(SusieFits {
         clusters,
-        n_marker_genes: marker_genes.len(),
         dispersion,
     })
 }
@@ -340,15 +354,12 @@ fn marker_correlation(types_of: &[Vec<usize>], n_types: usize) -> Vec<Vec<f32>> 
 /// greedily by overlap, before they are averaged: first to the first draw,
 /// then to that average. PIP and θ do not depend on the numbering, an
 /// effect's credible set does.
-fn aligned_choice_means(
-    chains: &[Vec<SusieSample>],
-    effects: usize,
-    choices: usize,
-) -> Vec<Vec<f32>> {
+fn aligned_choice_means(chains: &[Vec<SusieSample>]) -> Vec<Vec<f32>> {
     let draws: Vec<&Vec<Vec<f32>>> = chains.iter().flatten().map(|s| &s.probs).collect();
     let Some(first) = draws.first() else {
-        return vec![vec![0.0; choices]; effects];
+        return Vec::new();
     };
+    let (effects, choices) = (first.len(), first.first().map_or(0, Vec::len));
     let mut reference: Vec<Vec<f32>> = (*first).clone();
     for _ in 0..2 {
         let mut total = vec![vec![0.0f32; choices]; effects];
@@ -388,7 +399,7 @@ fn match_effects(reference: &[Vec<f32>], draw: &[Vec<f32>]) -> Vec<(usize, usize
 /// Gelman–Rubin R̂ between equal-length chains of one quantity: √(V̂ / W),
 /// V̂ = (n − 1)/n · W + B/n from the within-chain variance W and the variance
 /// B of the chain means. 1 when chains agree; ∞ when constant chains differ.
-pub(crate) fn between_chain_rhat(chains: &[Vec<f32>]) -> f32 {
+fn between_chain_rhat(chains: &[Vec<f32>]) -> f32 {
     let n = chains.iter().map(Vec::len).min().unwrap_or(0);
     if chains.len() < 2 || n < 2 {
         return 1.0;
@@ -428,7 +439,6 @@ fn summarize(
     let samples: Vec<&SusieSample> = chains.iter().flatten().collect();
     let n_types = corr.len();
     let t = samples.len().max(1) as f32;
-    let num_effects = samples.first().map_or(0, |s| s.probs.len());
     let mut pip = vec![0.0f32; n_types];
     let mut theta = vec![0.0f32; n_types];
     for s in &samples {
@@ -438,7 +448,7 @@ fn summarize(
             theta[c] += s.theta[c] / t;
         }
     }
-    let alpha_bar = aligned_choice_means(chains, num_effects, n_types + 1);
+    let alpha_bar = aligned_choice_means(chains);
     let mut credible_sets: Vec<Vec<usize>> = Vec::new();
     for bar in &alpha_bar {
         let null = bar[n_types];

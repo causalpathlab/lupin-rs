@@ -2,6 +2,7 @@
 
 use crate::annotate::args::{AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs};
 use crate::annotate::by_projection::{self, ProjectionInputs};
+use crate::annotate::susie::SusieConfig;
 use crate::manifest::annotate::{
     annotate_by_enrichment, annotate_by_projection, annotate_ontology,
 };
@@ -135,7 +136,7 @@ pub struct AnnotateCliArgs {
     pub no_susie: bool,
     #[arg(
         long = "susie-effects",
-        default_value_t = 5,
+        default_value_t = SusieConfig::default().prior.num_effects,
         help = "SuSiE: single effects per cluster (cell types one cluster can be)"
     )]
     pub susie_effects: usize,
@@ -147,19 +148,19 @@ pub struct AnnotateCliArgs {
     pub susie_dispersion: Option<f32>,
     #[arg(
         long = "mcmc-chains",
-        default_value_t = 4,
+        default_value_t = SusieConfig::default().chains,
         help = "SuSiE: independent chains per cluster, pooled (R̂ compares them)"
     )]
     pub mcmc_chains: usize,
     #[arg(
         long = "mcmc-samples",
-        default_value_t = 1000,
+        default_value_t = SusieConfig::default().samples,
         help = "SuSiE: samples per chain"
     )]
     pub mcmc_samples: usize,
-    #[arg(long = "mcmc-warmup", default_value_t = 500)]
+    #[arg(long = "mcmc-warmup", default_value_t = SusieConfig::default().warmup)]
     pub mcmc_warmup: usize,
-    #[arg(long = "mcmc-thin", default_value_t = 1)]
+    #[arg(long = "mcmc-thin", default_value_t = SusieConfig::default().thin)]
     pub mcmc_thin: usize,
 
     // ── projection / ORA ──

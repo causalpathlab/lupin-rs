@@ -67,17 +67,23 @@ impl Panel {
                 genes_of[c].push(g);
             }
         }
-        let nb_size: Vec<f32> = dispersion
+        let mut panel = Self {
+            types_of,
+            genes_of,
+            nb_size: Vec::new(),
+            ln_r: Vec::new(),
+        };
+        panel.set_dispersion(dispersion);
+        panel
+    }
+
+    /// Set φ_g of every marker gene (φ = 0 is Poisson).
+    pub(super) fn set_dispersion(&mut self, dispersion: &[f32]) {
+        self.nb_size = dispersion
             .iter()
             .map(|&d| if d > 0.0 { 1.0 / d } else { f32::INFINITY })
             .collect();
-        let ln_r = nb_size.iter().map(|r| r.ln()).collect();
-        Self {
-            types_of,
-            genes_of,
-            nb_size,
-            ln_r,
-        }
+        self.ln_r = self.nb_size.iter().map(|r| r.ln()).collect();
     }
 
     pub(super) fn n_types(&self) -> usize {
@@ -168,9 +174,10 @@ fn log_add_exp(a: f64, b: f64) -> f64 {
     a.max(b) + (-(a - b).abs()).exp().ln_1p()
 }
 
-fn std_normal(rng: &mut impl Rng) -> f32 {
+/// One standard-normal draw, as the 1-vector ESS samples.
+fn std_normal_1(rng: &mut impl Rng) -> DVector<f32> {
     let v: f64 = StandardNormal.sample(rng);
-    v as f32
+    DVector::from_element(1, v as f32)
 }
 
 /// The sampler over one cluster.
@@ -233,9 +240,7 @@ impl McmcModel for SusieModel<'_> {
 
     fn init(&self, rng: &mut SmallRng) -> SusieState {
         let (c, l) = (self.data.panel.n_types(), self.prior.num_effects);
-        let z_eff: Vec<DVector<f32>> = (0..l)
-            .map(|_| DVector::from_element(1, std_normal(rng)))
-            .collect();
+        let z_eff: Vec<DVector<f32>> = (0..l).map(|_| std_normal_1(rng)).collect();
         let effect = z_eff.iter().map(|z| self.effect(z)).collect();
         let theta = vec![0.0; c];
         let etas = self.data.etas(&theta);
@@ -289,19 +294,18 @@ impl McmcModel for SusieModel<'_> {
 
             // Its size: ESS on the likelihood of its type's markers (starting
             // from the gain just computed), or a prior draw when it picked none.
-            s.z_eff[l] = if j < c {
+            if j < c {
                 // ESS takes an f32 log-likelihood; a gain is a sum of f64
                 // differences, small enough for f32 once formed.
                 let ll =
                     |z: &DVector<f32>| self.data.gain(&s.etas, &s.base, j, self.effect(z)) as f32;
-                let nu = DVector::from_element(1, std_normal(rng));
-                elliptical_slice_step(&s.z_eff[l], &nu, &ll, gains[j] as f32, rng).0
-            } else {
-                DVector::from_element(1, std_normal(rng))
-            };
-            s.effect[l] = self.effect(&s.z_eff[l]);
-            if j < c {
+                let nu = std_normal_1(rng);
+                s.z_eff[l] = elliptical_slice_step(&s.z_eff[l], &nu, &ll, gains[j] as f32, rng).0;
+                s.effect[l] = self.effect(&s.z_eff[l]);
                 self.shift(s, j, s.effect[l]);
+            } else {
+                s.z_eff[l] = std_normal_1(rng);
+                s.effect[l] = self.effect(&s.z_eff[l]);
             }
         }
     }
