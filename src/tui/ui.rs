@@ -512,6 +512,8 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         );
         return;
     };
+    // A SuSiE round shows its calls' PIP and fold; otherwise the share.
+    let susie = r.clusters.iter().any(|c| c.call_evidence().is_some());
     let rows: Vec<Row> = r
         .clusters
         .iter()
@@ -525,13 +527,15 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 ""
             };
-            let row = Row::new([
-                format!("K{}", c.id),
-                c.cells.to_string(),
-                shown,
-                format!("{:.2}", c.top_share()),
-                flag.to_string(),
-            ]);
+            let evidence = match (susie, c.call_evidence()) {
+                (true, Some(e)) => vec![format!("{:.2}", e.pip), format!("×{:.1}", e.fold)],
+                (true, None) => vec!["—".into(), "—".into()],
+                (false, _) => vec![format!("{:.2}", c.top_share())],
+            };
+            let mut cells = vec![format!("K{}", c.id), c.cells.to_string(), shown];
+            cells.extend(evidence);
+            cells.push(flag.to_string());
+            let row = Row::new(cells);
             if app.edited(c.id) {
                 row.yellow()
             } else if label.is_none() {
@@ -541,25 +545,40 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
             }
         })
         .collect();
-    let header = Row::new(["", "cells", "label", "share", ""]).bold();
+    let (header, widths) = if susie {
+        (
+            Row::new(["", "cells", "label", "PIP", "fold", ""]),
+            vec![
+                Constraint::Length(5),
+                Constraint::Length(6),
+                Constraint::Min(20),
+                Constraint::Length(5),
+                Constraint::Length(6),
+                Constraint::Length(1),
+            ],
+        )
+    } else {
+        (
+            Row::new(["", "cells", "label", "share", ""]),
+            vec![
+                Constraint::Length(5),
+                Constraint::Length(6),
+                Constraint::Min(20),
+                Constraint::Length(5),
+                Constraint::Length(1),
+            ],
+        )
+    };
+    let header = header.bold();
     let done = r.clusters.iter().filter(|c| app.edited(c.id)).count();
     let mut state = TableState::default().with_selected(Some(app.cluster_sel));
-    let t = Table::new(
-        rows,
-        [
-            Constraint::Length(5),
-            Constraint::Length(6),
-            Constraint::Min(20),
-            Constraint::Length(5),
-            Constraint::Length(1),
-        ],
-    )
-    .header(header)
-    .block(pane(
-        format!(" clusters ({}, {done} edited) ", r.clusters.len()),
-        focused,
-    ))
-    .row_highlight_style(highlight(focused));
+    let t = Table::new(rows, widths)
+        .header(header)
+        .block(pane(
+            format!(" clusters ({}, {done} edited) ", r.clusters.len()),
+            focused,
+        ))
+        .row_highlight_style(highlight(focused));
     f.render_stateful_widget(t, area, &mut state);
 }
 

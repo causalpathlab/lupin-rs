@@ -932,3 +932,41 @@ fn the_susie_setting_toggles_the_stage() {
     Setting::Susie.adjust(&mut a, false);
     assert!(!a.no_susie);
 }
+
+#[test]
+fn a_susie_rounds_cluster_list_shows_the_calls_pip_and_fold() {
+    use super::super::round::{Candidate, SusieEvidence};
+    let mut app = app_with_terms(false);
+    if let Some(r) = app.round.as_mut() {
+        r.clusters[0].candidates = vec![Candidate {
+            label: "CT1".into(),
+            share: 0.85,
+            susie: Some(SusieEvidence {
+                pip: 1.0,
+                fold: 7.0,
+            }),
+            nes: None,
+            p: None,
+            q: None,
+        }];
+    }
+    let screen = drawn(&app);
+    // The screen is 160 cells a row; the list's header row names cells and label.
+    let rows: Vec<String> = screen
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(160)
+        .map(|r| r.iter().collect())
+        .collect();
+    let header = rows
+        .iter()
+        .find(|r| r.contains("cells") && r.contains("label"))
+        .expect("the cluster list's header");
+    // The list pane: from its left border to its right one.
+    let list: String = header.chars().skip(1).take_while(|&c| c != '│').collect();
+    assert!(list.contains("PIP") && list.contains("fold"), "{list}");
+    assert!(!list.contains("share"), "{list}");
+    let k0 = rows.iter().find(|r| r.contains("K0")).unwrap();
+    let k0: String = k0.chars().skip(1).take_while(|&c| c != '│').collect();
+    assert!(k0.contains("×7.0"), "{k0}");
+}

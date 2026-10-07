@@ -191,10 +191,30 @@ impl ClusterView {
         self.candidates.first().map_or(0.0, |c| c.share)
     }
 
-    /// Unassigned, or its top candidate holds too little of its evidence.
+    /// SuSiE's reading of the call (the top candidate), in a SuSiE round.
+    #[must_use]
+    pub fn call_evidence(&self) -> Option<SusieEvidence> {
+        self.candidates.first().and_then(|c| c.susie)
+    }
+
+    /// Needs a look: unassigned; or, in a SuSiE round, its call is unsure
+    /// (PIP under 0.95) or close (a runner-up explains at least half as
+    /// much); otherwise its top candidate holds too little of the evidence.
     #[must_use]
     pub fn flagged(&self) -> bool {
-        self.label.is_none() || self.top_share() < super::app::CONTESTED
+        if self.label.is_none() {
+            return true;
+        }
+        match self.call_evidence() {
+            Some(e) => {
+                let close = self
+                    .candidates
+                    .get(1)
+                    .is_some_and(|r| r.share >= 0.5 * self.top_share());
+                e.pip < 0.95 || close
+            }
+            None => self.top_share() < super::app::CONTESTED,
+        }
     }
 }
 

@@ -315,3 +315,39 @@ fn a_susie_rounds_candidates_follow_its_call() {
     assert_eq!(s.pip, 1.0);
     assert!((s.fold - 2.6f32.exp()).abs() < 1e-4);
 }
+
+/// A SuSiE candidate with a PIP and an explained share.
+fn susie_candidate(label: &str, pip: f32, share: f32) -> Candidate {
+    Candidate {
+        susie: Some(SusieEvidence { pip, fold: 4.0 }),
+        ..candidate(label, share)
+    }
+}
+
+#[test]
+fn a_susie_cluster_is_flagged_when_its_call_is_unsure_or_close() {
+    let with = |c: Vec<Candidate>| ClusterView {
+        candidates: c,
+        ..cluster(0, 10, Some("A"))
+    };
+    let clear = with(vec![
+        susie_candidate("A", 1.0, 0.8),
+        susie_candidate("B", 1.0, 0.3),
+    ]);
+    assert!(!clear.flagged(), "a sure call well ahead");
+    let unsure = with(vec![susie_candidate("A", 0.9, 0.8)]);
+    assert!(unsure.flagged(), "PIP under 0.95");
+    let close = with(vec![
+        susie_candidate("A", 1.0, 0.8),
+        susie_candidate("B", 1.0, 0.45),
+    ]);
+    assert!(
+        close.flagged(),
+        "a runner-up explains at least half as much"
+    );
+    let none = ClusterView {
+        label: None,
+        ..with(vec![susie_candidate("A", 1.0, 0.8)])
+    };
+    assert!(none.flagged(), "no call");
+}
