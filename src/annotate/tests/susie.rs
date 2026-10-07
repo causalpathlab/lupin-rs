@@ -312,3 +312,29 @@ fn chains_that_number_the_same_effects_differently_agree_on_the_credible_sets() 
     sets.sort();
     assert_eq!(sets, vec![vec![0], vec![1]]);
 }
+
+#[test]
+fn a_type_that_moves_between_effects_within_a_chain_keeps_its_credible_set() {
+    use model::{Cluster, ClusterCounts, Panel, SusieSample};
+    let panel = Panel::new(vec![vec![0], vec![1], vec![]], 2, &[0.1, 0.1, 0.1]);
+    let cluster = Cluster {
+        y: vec![10.0, 10.0, 10.0],
+        log_mu0: vec![0.0, 0.0, 0.0],
+    };
+    let counts = ClusterCounts {
+        panel: &panel,
+        cluster: &cluster,
+    };
+    let null = vec![0.0, 0.0, 1.0];
+    let type0 = vec![1.0, 0.0, 0.0];
+    let draw = |probs: Vec<Vec<f32>>| SusieSample {
+        probs,
+        theta: vec![1.0, 0.0],
+    };
+    // Type 0 sits in effect 0 for the first half, in effect 1 for the second.
+    let mut chain = vec![draw(vec![type0.clone(), null.clone()]); 10];
+    chain.extend(vec![draw(vec![null.clone(), type0.clone()]); 10]);
+    let corr = marker_correlation(&[vec![0], vec![1], vec![]], 2);
+    let sets = summarize(&[chain], counts, &corr).credible_sets;
+    assert_eq!(sets, vec![vec![0]]);
+}

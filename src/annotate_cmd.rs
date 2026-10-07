@@ -153,7 +153,7 @@ pub struct AnnotateCliArgs {
     pub mcmc_chains: usize,
     #[arg(
         long = "mcmc-samples",
-        default_value_t = 500,
+        default_value_t = 1000,
         help = "SuSiE: samples per chain"
     )]
     pub mcmc_samples: usize,

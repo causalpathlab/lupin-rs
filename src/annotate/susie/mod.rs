@@ -56,7 +56,7 @@ impl Default for SusieConfig {
         Self {
             prior: SusiePrior::default(),
             chains: 4,
-            samples: 500,
+            samples: 1000,
             warmup: 500,
             thin: 1,
             seed: 42,
@@ -334,55 +334,55 @@ fn marker_correlation(types_of: &[Vec<usize>], n_types: usize) -> Vec<Vec<f32>> 
         .collect()
 }
 
-/// Each single effect's mean choice probabilities over all chains. Chains
-/// number the same effects differently (effect 0 of one chain may be effect 3
-/// of another), so each chain's effects are matched to the first chain's,
-/// greedily by the overlap of their mean choice probabilities, before they
-/// are averaged; PIP and θ do not depend on the numbering, an effect's
-/// credible set does.
+/// Each single effect's mean choice probabilities over all draws. Draws
+/// number the same effects differently (across chains, and within one as
+/// effects trade types), so each draw's effects are matched to a reference,
+/// greedily by overlap, before they are averaged: first to the first draw,
+/// then to that average. PIP and θ do not depend on the numbering, an
+/// effect's credible set does.
 fn aligned_choice_means(
     chains: &[Vec<SusieSample>],
     effects: usize,
     choices: usize,
 ) -> Vec<Vec<f32>> {
-    let means: Vec<Vec<Vec<f32>>> = chains
-        .iter()
-        .map(|chain| {
-            let t = chain.len().max(1) as f32;
-            let mut bar = vec![vec![0.0f32; choices]; effects];
-            for s in chain {
-                for (b, p) in bar.iter_mut().zip(&s.probs) {
-                    for (v, &x) in b.iter_mut().zip(p) {
-                        *v += x / t;
-                    }
-                }
-            }
-            bar
-        })
-        .collect();
-    let Some(reference) = means.first() else {
+    let draws: Vec<&Vec<Vec<f32>>> = chains.iter().flatten().map(|s| &s.probs).collect();
+    let Some(first) = draws.first() else {
         return vec![vec![0.0; choices]; effects];
     };
-    let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
-    let mut total = vec![vec![0.0f32; choices]; effects];
-    for bar in &means {
-        // Greedy matching: the most overlapping pair of free effects first.
-        let mut pairs: Vec<(usize, usize, f32)> = (0..effects)
-            .flat_map(|r| (0..effects).map(move |c| (r, c)))
-            .map(|(r, c)| (r, c, dot(&reference[r], &bar[c])))
-            .collect();
-        pairs.sort_by(|a, b| b.2.total_cmp(&a.2));
-        let (mut used_r, mut used_c) = (vec![false; effects], vec![false; effects]);
-        for (r, c, _) in pairs {
-            if !used_r[r] && !used_c[c] {
-                (used_r[r], used_c[c]) = (true, true);
-                for (v, &x) in total[r].iter_mut().zip(&bar[c]) {
-                    *v += x / means.len() as f32;
+    let mut reference: Vec<Vec<f32>> = (*first).clone();
+    for _ in 0..2 {
+        let mut total = vec![vec![0.0f32; choices]; effects];
+        for probs in &draws {
+            for (r, c) in match_effects(&reference, probs) {
+                for (v, &x) in total[r].iter_mut().zip(&probs[c]) {
+                    *v += x / draws.len() as f32;
                 }
             }
         }
+        reference = total;
     }
-    total
+    reference
+}
+
+/// Pairs (reference effect, draw effect), the most overlapping free pair
+/// first.
+fn match_effects(reference: &[Vec<f32>], draw: &[Vec<f32>]) -> Vec<(usize, usize)> {
+    let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    let n = reference.len().min(draw.len());
+    let mut pairs: Vec<(usize, usize, f32)> = (0..n)
+        .flat_map(|r| (0..n).map(move |c| (r, c)))
+        .map(|(r, c)| (r, c, dot(&reference[r], &draw[c])))
+        .collect();
+    pairs.sort_by(|a, b| b.2.total_cmp(&a.2));
+    let (mut used_r, mut used_c) = (vec![false; n], vec![false; n]);
+    let mut out = Vec::with_capacity(n);
+    for (r, c, _) in pairs {
+        if !used_r[r] && !used_c[c] {
+            (used_r[r], used_c[c]) = (true, true);
+            out.push((r, c));
+        }
+    }
+    out
 }
 
 /// Gelman–Rubin R̂ between equal-length chains of one quantity: √(V̂ / W),

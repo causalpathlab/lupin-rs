@@ -100,3 +100,10 @@ fn a_moved_runs_marker_panel_is_found_by_its_path_tail() {
         "{found}"
     );
 }
+
+#[test]
+fn susie_samples_a_thousand_draws_per_chain_by_default() {
+    let cfg = build_enrichment_args(&parse(&["-o", "x"])).susie.unwrap();
+    assert_eq!(cfg.samples, 1000);
+    assert_eq!(crate::annotate::susie::SusieConfig::default().samples, 1000);
+}
