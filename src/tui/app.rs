@@ -205,7 +205,7 @@ pub enum TreeMode {
     /// The panel's types on the tree lupin built.
     Panel,
     /// The Cell Ontology around a term.
-    Ontology(super::ontology::OntologyView),
+    Ontology(Box<super::ontology::OntologyView>),
     /// Which cell types precede which: the prior `lupin trajectory` builds.
     Order(Box<super::order::OrderView>),
 }
@@ -475,6 +475,8 @@ pub struct App {
     pub out_chosen: bool,
     /// How the order view runs `lupin trajectory`.
     pub trajectory: super::order::TrajectoryRun,
+    /// Started as `lupin trajectory`'s TUI: only it has the order view.
+    pub trajectory_tui: bool,
     /// A file to pick in the file browser, which the main loop opens.
     pub want_file: Option<FileWant>,
     /// The file browser, open in a popup over the form or menu that asked.
@@ -534,6 +536,7 @@ impl App {
             figures: None,
             out_chosen: true,
             trajectory: super::order::TrajectoryRun::default(),
+            trajectory_tui: false,
             want_file: None,
             browser: None,
             after_pass: AfterPass::Nothing,
@@ -1689,7 +1692,7 @@ impl App {
         }
         let beside = self.focus == Focus::Tree && self.in_order();
         let view = match &mut self.tree_mode {
-            TreeMode::Ontology(v) => Some(v),
+            TreeMode::Ontology(v) => Some(v.as_mut()),
             TreeMode::Order(v) if beside => v.ontology.as_mut(),
             _ => None,
         };
@@ -1994,7 +1997,9 @@ impl App {
             Focus::Tree if self.in_order() => {
                 return self.order_tree_key(code);
             }
-            Focus::Tree if matches!(code, KeyCode::Char('t' | 'T')) => self.toggle_order(false),
+            Focus::Tree if self.trajectory_tui && matches!(code, KeyCode::Char('t' | 'T')) => {
+                self.toggle_order(false);
+            }
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
             // A search is of the ontology: open it there.
             Focus::Tree
@@ -2021,13 +2026,59 @@ impl App {
                             self.select_node(p);
                         }
                     }
-                    (KeyCode::Right, Some(i)) => self.tree.fold(i, false),
+                    // A folded branch unfolds; a leaf, or a branch already
+                    // open, goes on into the Cell Ontology, beyond the panel.
+                    (KeyCode::Right, Some(i)) => {
+                        if self.tree.is_folded(i) {
+                            self.tree.fold(i, false);
+                        } else {
+                            self.go_on_into_ontology(i);
+                        }
+                    }
                     (KeyCode::Esc, _) => self.focus = Focus::Clusters,
                     _ => return false,
                 }
             }
         }
         true
+    }
+
+    /// The Cell Ontology view opened at panel node `i`'s term, else at the
+    /// nearest term above it.
+    fn go_on_into_ontology(&mut self, i: usize) {
+        let label = self.tree.label(i).to_string();
+        let own = self.node_term(i);
+        let term = own.clone().or_else(|| {
+            self.tree
+                .path(i)
+                .into_iter()
+                .rev()
+                .skip(1)
+                .find_map(|a| self.node_term(a))
+        });
+        let Some(mut v) = self.ontology_at(term.clone()) else {
+            return;
+        };
+        let Some(cl) = &self.cl else { return };
+        // Without a term here or above, the view's own focus (the root).
+        let id = term.unwrap_or_else(|| v.focus.clone());
+        v.open_at(cl, &id);
+        let name = cl.name(&id).unwrap_or(&id).to_string();
+        self.status = if own.is_some() {
+            format!("{label} in the Cell Ontology: → opens a term, h hides the unmatched, o back to the panel")
+        } else {
+            format!("{label} has no Cell Ontology term: at {name}, the nearest above it (o back to the panel)")
+        };
+        self.tree_mode = TreeMode::Ontology(Box::new(v));
+    }
+
+    /// Panel node `i`'s Cell Ontology term: the one it was placed on, else
+    /// the term its label names.
+    fn node_term(&self, i: usize) -> Option<String> {
+        self.tree.nodes[i].cl_id.clone().or_else(|| {
+            let cl = self.cl.as_ref()?;
+            super::ontology::term_of(cl, &self.tree, self.tree.label(i)).filter(|id| cl.has(id))
+        })
     }
 
     /// Switch the tree pane to the order view (which types precede which) and
@@ -3068,13 +3119,13 @@ impl App {
             .tree
             .visible()
             .get(self.tree_sel)
-            .and_then(|&i| self.tree.nodes[i].cl_id.clone());
+            .and_then(|&i| self.node_term(i));
         let from_cluster = self
             .cl
             .as_ref()
             .and_then(|cl| super::ontology::term_of(cl, &self.tree, &self.label_or_top()?));
         if let Some(v) = self.ontology_at(from_node.or(from_cluster)) {
-            self.tree_mode = TreeMode::Ontology(v);
+            self.tree_mode = TreeMode::Ontology(Box::new(v));
         }
     }
 

@@ -242,6 +242,7 @@ fn order_app(dir: &std::path::Path, types: &[&str]) -> App {
     app.reload_order();
     // Labelled from a file, as a run with no round is.
     app.trajectory.labels = Some("labels.tsv".into());
+    app.trajectory_tui = true;
     app.focus = Focus::Order;
     app
 }
@@ -1224,4 +1225,114 @@ fn in_the_form_enter_picks_the_panel_and_shift_enter_runs_from_any_row() {
     let form = app.form.as_ref().unwrap();
     assert_eq!(form.row, setting_row(Setting::Markers));
     assert!(form.note.as_deref().unwrap_or("").contains("marker panel"));
+}
+
+#[test]
+fn the_annotate_tui_has_no_order_view_and_says_nothing_of_it() {
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Tree;
+    for key in ['t', 'T'] {
+        press(&mut app, KeyCode::Char(key));
+        assert!(!app.in_order(), "{key} stays on the tree");
+    }
+    for focus in [Focus::Clusters, Focus::Genes, Focus::Tree] {
+        app.focus = focus;
+        let bar = super::super::ui::help(&app);
+        assert!(!bar.contains("order"), "{focus:?}: {bar}");
+    }
+    for (section, keys) in super::super::ui::guide(false) {
+        for (key, what) in keys {
+            let text = format!("{section} {key} {what}");
+            assert!(
+                !text.contains("order view") && !text.contains("run the trajectory"),
+                "{text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_trajectory_tui_opens_the_order_view_from_the_tree() {
+    let mut app = app_with_terms(false);
+    app.trajectory_tui = true;
+    app.focus = Focus::Tree;
+    assert!(super::super::ui::help(&app).contains("t order"));
+    press(&mut app, KeyCode::Char('t'));
+    assert!(app.in_order());
+    assert!(super::super::ui::guide(true).any(|(s, _)| s.starts_with("order view")));
+}
+
+#[test]
+fn right_on_a_panel_leaf_goes_on_into_the_ontology_at_its_term() {
+    use super::super::ontology::Scope;
+    let parse = || {
+        crate::annotate::celltype_tree::ClTerms::parse(
+            TYPES_OBO,
+            &crate::annotate::cl_rules::shipped(),
+        )
+    };
+    let panel = [
+        ("GENE1".to_string(), "CT1".to_string()),
+        ("GENE2".to_string(), "CT2".to_string()),
+    ];
+    let leaf = |label: &str| {
+        let mut app = app_with_terms(false);
+        let cl = parse();
+        app.tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &panel);
+        app.cl = Some(cl);
+        app.focus = Focus::Tree;
+        let i = app.tree.node_of(label).unwrap();
+        app.tree.reveal(i);
+        app.select_node(i);
+        press(&mut app, KeyCode::Right);
+        app
+    };
+    // CT1 labels the round's cluster: the data's tree, opened on it.
+    let app = leaf("CT1");
+    let TreeMode::Ontology(v) = &app.tree_mode else {
+        panic!("the ontology view");
+    };
+    assert_eq!(v.scope, Scope::Data);
+    assert_eq!(v.selected().unwrap().id, "CL:104");
+    assert!(v.is_open("CL:104"));
+    // CT2 labels none: the whole ontology around its term.
+    let app = leaf("CT2");
+    let TreeMode::Ontology(v) = &app.tree_mode else {
+        panic!("the ontology view");
+    };
+    assert_eq!(v.scope, Scope::All);
+    assert_eq!(v.selected().unwrap().id, "CL:105");
+}
+
+#[test]
+fn right_on_an_unfolded_panel_branch_goes_on_into_the_ontology() {
+    let cl = crate::annotate::celltype_tree::ClTerms::parse(
+        TYPES_OBO,
+        &crate::annotate::cl_rules::shipped(),
+    );
+    let panel = [
+        ("GENE1".to_string(), "CT1".to_string()),
+        ("GENE2".to_string(), "CT2".to_string()),
+        // A type on the parent term too, so the panel tree branches.
+        ("GENE3".to_string(), "group".to_string()),
+    ];
+    let mut app = app_with_terms(false);
+    app.tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &panel);
+    app.cl = Some(cl);
+    app.focus = Focus::Tree;
+    let i = (0..app.tree.nodes.len())
+        .find(|&i| !app.tree.nodes[i].children.is_empty())
+        .expect("a branch");
+    app.tree.fold(i, true);
+    app.select_node(i);
+    press(&mut app, KeyCode::Right);
+    assert!(matches!(app.tree_mode, TreeMode::Panel), "first it unfolds");
+    assert!(!app.tree.is_folded(i));
+    press(&mut app, KeyCode::Right);
+    let TreeMode::Ontology(v) = &app.tree_mode else {
+        panic!("then on into the ontology");
+    };
+    let term = app.tree.nodes[i].cl_id.clone().unwrap();
+    assert_eq!(v.selected().unwrap().id, term);
+    assert!(v.is_open(&term));
 }

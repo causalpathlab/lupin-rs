@@ -201,6 +201,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         let (latest, _) = crate::manifest::rounds::chain_rounds(&target);
         app.open(&latest);
     }
+    app.trajectory_tui = start_in_order;
     if start_in_order {
         // A run that is already annotated shows its round in the cluster
         // panes; the trajectory then reads the same labels.

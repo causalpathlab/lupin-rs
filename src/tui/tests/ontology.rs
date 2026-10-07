@@ -184,7 +184,8 @@ fn a_term_with_several_panel_types_is_labelled_the_same_either_way() {
 }
 
 /// top ─ group ─┬─ step one ─ step two ─ kind one (data)
-///              └─ kind two (data)
+///              ├─ kind two (data)
+///              └─ kind three ─ kind three a (neither in the data)
 /// top ─ elsewhere (not in the data)
 const DATA_OBO: &str = "format-version: 1.2
 
@@ -221,6 +222,16 @@ is_a: CL:101
 id: CL:106
 name: elsewhere
 is_a: CL:100
+
+[Term]
+id: CL:107
+name: kind three
+is_a: CL:101
+
+[Term]
+id: CL:108
+name: kind three a
+is_a: CL:107
 ";
 
 fn data_view(focus: &str) -> (ClTerms, OntologyView) {
@@ -319,4 +330,142 @@ fn without_data_the_view_is_the_whole_ontology() {
     let mut v = OntologyView::in_data(&cl, Default::default(), "CL:101");
     assert_eq!(v.scope, Scope::All);
     assert!(!v.toggle_scope(&cl), "nothing to toggle to");
+}
+
+#[test]
+fn right_opens_a_term_in_place_on_all_its_children_and_left_closes_it() {
+    let (cl, mut v) = data_view("CL:101");
+    assert_eq!(v.selected().unwrap().id, "CL:101");
+    v.enter(&cl);
+    assert_eq!(
+        tree_rows(&v),
+        [
+            ("CL:101", 0, vec![]),
+            ("CL:107", 1, vec![]),
+            ("CL:105", 1, vec![]),
+            ("CL:104", 1, vec!["CL:102", "CL:103"]),
+        ],
+        "the term outside the data joins its siblings, by name; the cursor stays"
+    );
+    assert_eq!(v.selected().unwrap().id, "CL:101");
+    // An opened term opens further.
+    v.sel = 1;
+    v.enter(&cl);
+    assert_eq!(tree_rows(&v)[2], ("CL:108", 2, vec![]));
+    assert_eq!(v.selected().unwrap().id, "CL:107");
+    // Left closes it, then the one above.
+    v.up(&cl);
+    assert_eq!(v.rows.len(), 4);
+    v.sel = 0;
+    v.up(&cl);
+    assert_eq!(v.rows.len(), 3, "back to the data's tree");
+}
+
+#[test]
+fn h_hides_the_unmatched_terms_below_the_cursor_and_shows_them_again() {
+    let (cl, mut v) = data_view("CL:101");
+    // Open the top, then the term outside the data under it.
+    v.enter(&cl);
+    v.sel = 1;
+    assert_eq!(v.selected().unwrap().id, "CL:107");
+    v.enter(&cl);
+    let full = tree_rows(&v)
+        .into_iter()
+        .map(|(id, d, c)| (id.to_string(), d, c.len()))
+        .collect::<Vec<_>>();
+    assert_eq!(full.len(), 5, "CL:107 and CL:108 opened in");
+
+    // Only below the top: its unmatched terms go, the top itself stays.
+    v.sel = 0;
+    assert_eq!(v.key(&cl, KeyCode::Char('h')), ViewKey::Taken);
+    assert_eq!(
+        tree_rows(&v),
+        [
+            ("CL:101", 0, vec![]),
+            ("CL:105", 1, vec![]),
+            ("CL:104", 1, vec![]),
+        ],
+        "only the matched terms below it, without their folded chains"
+    );
+    assert_eq!(v.selected().unwrap().id, "CL:101", "the cursor stays");
+
+    v.key(&cl, KeyCode::Char('h'));
+    let again = tree_rows(&v)
+        .into_iter()
+        .map(|(id, d, c)| (id.to_string(), d, c.len()))
+        .collect::<Vec<_>>();
+    assert_eq!(again, full, "as it was, the opened terms too");
+}
+
+#[test]
+fn hidden_terms_nest_under_their_nearest_matched_ancestor() {
+    let cl = ClTerms::parse(DATA_OBO, &crate::annotate::cl_rules::shipped());
+    // The top's child CL:102 is matched, and so is CL:104 two steps below it.
+    let data = [
+        ("CL:102", "G", 3),
+        ("CL:104", "CT1", 10),
+        ("CL:105", "CT2", 5),
+    ]
+    .iter()
+    .map(|(id, t, n)| ((*id).to_string(), vec![((*t).to_string(), *n)]))
+    .collect();
+    let mut v = OntologyView::in_data(&cl, data, "CL:101");
+    v.key(&cl, KeyCode::Char('h'));
+    assert_eq!(
+        tree_rows(&v),
+        [
+            ("CL:101", 0, vec![]),
+            ("CL:105", 1, vec![]),
+            ("CL:102", 1, vec![]),
+            ("CL:104", 2, vec![]),
+        ]
+    );
+}
+
+#[test]
+fn left_on_the_top_row_climbs_above_it_on_all_the_parents_children() {
+    let (cl, mut v) = data_view("CL:101");
+    assert_eq!(v.selected().unwrap().id, "CL:101");
+    v.up(&cl);
+    assert_eq!(
+        tree_rows(&v)[..3],
+        [
+            ("CL:100", 0, vec![]),
+            ("CL:106", 1, vec![]),
+            ("CL:101", 1, vec![]),
+        ],
+        "the parent on top, its other child beside the old top"
+    );
+    assert_eq!(v.selected().unwrap().id, "CL:101", "the cursor stays");
+    // An opened top closes first; CL:100 has no parent to climb to.
+    v.sel = 0;
+    let before = tree_rows(&v).len();
+    v.up(&cl);
+    assert!(!v.is_open("CL:100"));
+    assert_eq!(tree_rows(&v).len(), before - 1, "closing it drops CL:106");
+    v.up(&cl);
+    assert_eq!(tree_rows(&v).len(), before - 1, "nothing above");
+    assert_eq!(v.selected().unwrap().id, "CL:100");
+}
+
+#[test]
+fn a_climb_keeps_the_term_climbed_from_on_its_own_row() {
+    // Only CL:104 in the data: the top is CL:104 itself.
+    let cl = ClTerms::parse(DATA_OBO, &crate::annotate::cl_rules::shipped());
+    let data = std::iter::once(("CL:104".to_string(), vec![("CT1".to_string(), 10)])).collect();
+    let mut v = OntologyView::in_data(&cl, data, "CL:104");
+    // Climb to CL:103, up onto it, close it, climb again: CL:103 is then a
+    // term with one way down, which would fold into CL:104's line.
+    for _ in 0..4 {
+        v.up(&cl);
+    }
+    assert_eq!(
+        tree_rows(&v),
+        [
+            ("CL:102", 0, vec![]),
+            ("CL:103", 1, vec![]),
+            ("CL:104", 2, vec![])
+        ]
+    );
+    assert_eq!(v.selected().unwrap().id, "CL:103");
 }

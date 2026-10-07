@@ -79,6 +79,16 @@ pub struct OntologyView {
     pub data: BTreeMap<String, Vec<(String, usize)>>,
     /// Rows whose folded chain is shown term by term.
     expanded: BTreeSet<String>,
+    /// Terms of the data's tree listed on all their children, not only
+    /// those leading to the data.
+    opened: BTreeSet<String>,
+    /// Terms of the data's tree showing only the data's terms below them.
+    hidden: BTreeSet<String>,
+    /// The data's tree's top when climbed above the common ancestor.
+    top: Option<String>,
+    /// Terms keeping a row of their own, never folded into a chain: the
+    /// tops climbed from.
+    own: BTreeSet<String>,
 }
 
 impl OntologyView {
@@ -94,6 +104,10 @@ impl OntologyView {
             scope: Scope::All,
             data: BTreeMap::new(),
             expanded: BTreeSet::new(),
+            opened: BTreeSet::new(),
+            hidden: BTreeSet::new(),
+            top: None,
+            own: BTreeSet::new(),
         };
         v.refocus(cl, focus);
         v
@@ -120,19 +134,22 @@ impl OntologyView {
     /// List the data's tree, the cursor on `id` (or the row folding it in).
     fn show_data(&mut self, cl: &ClTerms, id: &str) {
         self.query = None;
-        let terms: BTreeSet<String> = self.data.keys().cloned().collect();
-        self.rows = data_rows(cl, &terms, &self.expanded);
-        self.sel = self
-            .rows
+        self.rows = data_rows(cl, self);
+        self.sel = self.row_of(id).unwrap_or(0);
+    }
+
+    /// The row showing `id`, on its own or folded into its chain.
+    fn row_of(&self, id: &str) -> Option<usize> {
+        self.rows
             .iter()
             .position(|r| r.id == id || r.chain.iter().any(|c| c == id))
-            .unwrap_or(0);
     }
 
     /// Between the terms in the data and the whole ontology, the cursor on
     /// the same term; `false` when there is no data to show.
     /// The keys every ontology view shares: ↑↓ and pages move, → into a
-    /// term (or open a chain), ← up, `/` search, `d` in the data ↔ all.
+    /// term (or open a chain), ← up, `/` search, `d` in the data ↔ all, `h`
+    /// hide / show the terms not in the data below the selected one.
     pub fn key(&mut self, cl: &ClTerms, code: KeyCode) -> ViewKey {
         if super::app::step(&mut self.sel, self.rows.len(), code) {
             return ViewKey::Taken;
@@ -143,6 +160,14 @@ impl OntologyView {
             KeyCode::Char('/') => self.typing = Some(String::new()),
             KeyCode::Char('d') if !self.toggle_scope(cl) => return ViewKey::NoData,
             KeyCode::Char('d') => {}
+            KeyCode::Char('h') if self.scope == Scope::Data && self.query.is_none() => {
+                if let Some(id) = self.selected().map(|r| r.id.clone()) {
+                    if !self.hidden.remove(&id) {
+                        self.hidden.insert(id.clone());
+                    }
+                    self.show_data(cl, &id);
+                }
+            }
             _ => return ViewKey::Other,
         }
         ViewKey::Taken
@@ -211,34 +236,68 @@ impl OntologyView {
         left_data
     }
 
+    /// The cursor on `id`, opened on all its children (an opened term is
+    /// never folded): in the data's tree when it lists `id` or `id` is above
+    /// its top (the tree then starts at it), else the whole ontology around it.
+    pub fn open_at(&mut self, cl: &ClTerms, id: &str) {
+        if self.scope == Scope::Data && self.row_of(id).is_none() {
+            let above = self
+                .rows
+                .first()
+                .is_some_and(|t| cl.ancestors_or_self(&t.id).contains(id));
+            if above {
+                self.top = Some(id.to_string());
+            } else {
+                self.scope = Scope::All;
+            }
+        }
+        if self.scope == Scope::Data {
+            self.opened.insert(id.to_string());
+            self.show_data(cl, id);
+        } else {
+            self.refocus(cl, id);
+        }
+    }
+
+    /// Whether `id` shows only the data's terms below it.
+    #[must_use]
+    pub fn is_hiding(&self, id: &str) -> bool {
+        self.hidden.contains(id)
+    }
+
+    /// Whether `id` is opened on all its children in the data's tree.
+    #[must_use]
+    pub fn is_open(&self, id: &str) -> bool {
+        self.opened.contains(id)
+    }
+
     #[must_use]
     pub fn selected(&self) -> Option<&Row> {
         self.rows.get(self.sel)
     }
 
     /// Descend into the selected row's term; in the data's tree, show a
-    /// folded chain term by term.
+    /// folded chain term by term, else open the term in place on all its
+    /// children.
     pub fn enter(&mut self, cl: &ClTerms) {
         let Some(r) = self.selected().cloned() else {
             return;
         };
         if self.scope == Scope::Data {
-            if self.query.is_none() {
-                if !r.chain.is_empty() {
-                    self.expanded.insert(r.id.clone());
-                    self.show_data(cl, &r.id);
-                }
-                return;
+            // A search hit goes back to the tree, on it; a folded chain
+            // unfolds first.
+            if self.query.is_none() && (r.chain.is_empty() || !self.expanded.insert(r.id.clone())) {
+                self.opened.insert(r.id.clone());
             }
-            // A hit in the data's tree: back to the tree, on it.
             return self.show_data(cl, &r.id);
         }
         self.refocus(cl, &r.id);
     }
 
     /// Up to the focus's first parent; out of a search, back to the focus.
-    /// In the data's tree: fold an unfolded chain again, else up to the
-    /// row's parent.
+    /// In the data's tree: close an opened term, else fold an unfolded
+    /// chain again, else up to the row's parent; on the top row, climb to
+    /// the term above it, opened on all its children.
     pub fn up(&mut self, cl: &ClTerms) {
         if self.scope == Scope::Data {
             if self.query.is_some() {
@@ -248,8 +307,17 @@ impl OntologyView {
             let Some(r) = self.selected().cloned() else {
                 return;
             };
-            if self.expanded.remove(&r.id) {
+            if self.opened.remove(&r.id) || self.expanded.remove(&r.id) {
                 return self.show_data(cl, &r.id);
+            }
+            if r.depth == 0 {
+                if let Some(p) = cl.parents(&r.id).first().cloned() {
+                    self.opened.insert(p.clone());
+                    self.top = Some(p);
+                    self.own.insert(r.id.clone());
+                    self.show_data(cl, &r.id);
+                }
+                return;
             }
             if let Some(p) = self.rows[..self.sel]
                 .iter()
@@ -276,9 +344,25 @@ impl OntologyView {
 /// The tree of `data`'s terms: under their lowest common ancestor, each term
 /// below the deepest of its parents in the tree, children by name. A term
 /// not in the data with only one way down is folded into the line of the
-/// term it leads to, unless that term is `expanded`.
-#[must_use]
-pub fn data_rows(cl: &ClTerms, data: &BTreeSet<String>, expanded: &BTreeSet<String>) -> Vec<Row> {
+/// term it leads to, unless that term is `expanded`. An `opened` term lists
+/// all its children, in the data or not; neither it nor an `own` term is
+/// folded. A `top` above the common ancestor starts the tree higher; below a
+/// `hidden` term only the data's terms are listed.
+fn data_rows(cl: &ClTerms, v: &OntologyView) -> Vec<Row> {
+    let data: BTreeSet<String> = v.data.keys().cloned().collect();
+    let (expanded, opened) = (&v.expanded, &v.opened);
+    let rows = tree_rows(cl, &data, expanded, opened, &v.own, v.top.as_deref());
+    hide_unmatched(rows, &data, &v.hidden)
+}
+
+fn tree_rows(
+    cl: &ClTerms,
+    data: &BTreeSet<String>,
+    expanded: &BTreeSet<String>,
+    opened: &BTreeSet<String>,
+    own: &BTreeSet<String>,
+    top: Option<&str>,
+) -> Vec<Row> {
     let above: Vec<BTreeSet<String>> = data.iter().map(|d| cl.ancestors_or_self(d)).collect();
     let Some(first) = above.first() else {
         return Vec::new();
@@ -292,11 +376,13 @@ pub fn data_rows(cl: &ClTerms, data: &BTreeSet<String>, expanded: &BTreeSet<Stri
         .collect();
     let depth_of = |id: &str| ancestors.get(id).map_or(0, BTreeSet::len);
     // The lowest common ancestor: the deepest term above every data term.
-    let top = first
-        .iter()
-        .filter(|t| above.iter().all(|a| a.contains(*t)))
-        .max_by_key(|t| (depth_of(t), std::cmp::Reverse((*t).clone())))
-        .cloned();
+    let top = top.map(String::from).or_else(|| {
+        first
+            .iter()
+            .filter(|t| above.iter().all(|a| a.contains(*t)))
+            .max_by_key(|t| (depth_of(t), std::cmp::Reverse((*t).clone())))
+            .cloned()
+    });
     let nodes: BTreeSet<String> = ancestors
         .iter()
         .filter(|(_, a)| top.as_ref().is_none_or(|top| a.contains(top)))
@@ -317,9 +403,17 @@ pub fn data_rows(cl: &ClTerms, data: &BTreeSet<String>, expanded: &BTreeSet<Stri
             _ => roots.push(n.as_str()),
         }
     }
+    for o in opened {
+        let kids = children.entry(o.as_str()).or_default();
+        for c in cl.children(o) {
+            if !kids.contains(&c.as_str()) {
+                kids.push(c);
+            }
+        }
+    }
     let name = |id: &str| cl.name(id).unwrap_or(id).to_lowercase();
     for kids in children.values_mut() {
-        kids.sort_by_key(|k| name(k));
+        kids.sort_by_cached_key(|k| name(k));
     }
     roots.sort_by_key(|k| name(k));
     let mut rows = Vec::new();
@@ -328,7 +422,7 @@ pub fn data_rows(cl: &ClTerms, data: &BTreeSet<String>, expanded: &BTreeSet<Stri
         // Fold the terms that only lead on, unless the user unfolded them.
         let (mut chain, mut end) = (Vec::new(), n);
         if d > 0 {
-            while !data.contains(end) {
+            while !data.contains(end) && !opened.contains(end) && !own.contains(end) {
                 match children.get(end).map(Vec::as_slice) {
                     Some([only]) => {
                         chain.push(end.to_string());
@@ -358,6 +452,41 @@ pub fn data_rows(cl: &ClTerms, data: &BTreeSet<String>, expanded: &BTreeSet<Stri
         }
     }
     rows
+}
+
+/// Below each row in `hidden`, only the rows of `data`'s terms (their folded
+/// chains dropped), each under the nearest of them above it.
+fn hide_unmatched(rows: Vec<Row>, data: &BTreeSet<String>, hidden: &BTreeSet<String>) -> Vec<Row> {
+    if hidden.is_empty() {
+        return rows;
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    let mut rows = rows.into_iter().peekable();
+    while let Some(row) = rows.next() {
+        if !hidden.contains(&row.id) {
+            out.push(row);
+            continue;
+        }
+        let top = row.depth;
+        out.push(row);
+        // The kept rows above the current one, by their depth in `rows`.
+        let mut above: Vec<usize> = Vec::new();
+        while let Some(r) = rows.next_if(|r| r.depth > top) {
+            if !data.contains(&r.id) {
+                continue;
+            }
+            while above.last().is_some_and(|&d| d >= r.depth) {
+                above.pop();
+            }
+            out.push(Row {
+                depth: top + 1 + above.len(),
+                chain: Vec::new(),
+                ..r
+            });
+            above.push(r.depth);
+        }
+    }
+    out
 }
 
 /// The label a cluster gets from CL term `id`: the panel type sitting on
