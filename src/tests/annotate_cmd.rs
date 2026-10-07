@@ -60,6 +60,8 @@ fn the_susie_stage_parses_back_to_the_same_arguments() {
         "3",
         "--susie-dispersion",
         "0",
+        "--mcmc-chains",
+        "2",
         "--mcmc-samples",
         "200",
         "--mcmc-warmup",

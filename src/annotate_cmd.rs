@@ -145,7 +145,17 @@ pub struct AnnotateCliArgs {
                 estimated across the clusters"
     )]
     pub susie_dispersion: Option<f32>,
-    #[arg(long = "mcmc-samples", default_value_t = 1000)]
+    #[arg(
+        long = "mcmc-chains",
+        default_value_t = 4,
+        help = "SuSiE: independent chains per cluster, pooled (R̂ compares them)"
+    )]
+    pub mcmc_chains: usize,
+    #[arg(
+        long = "mcmc-samples",
+        default_value_t = 500,
+        help = "SuSiE: samples per chain"
+    )]
     pub mcmc_samples: usize,
     #[arg(long = "mcmc-warmup", default_value_t = 500)]
     pub mcmc_warmup: usize,
@@ -222,6 +232,7 @@ impl AnnotateCliArgs {
         val("assign-mad", self.assign_mad.to_string());
         val("ontology-fdr-q", self.ontology_fdr_q.to_string());
         val("susie-effects", self.susie_effects.to_string());
+        val("mcmc-chains", self.mcmc_chains.to_string());
         val("mcmc-samples", self.mcmc_samples.to_string());
         val("mcmc-warmup", self.mcmc_warmup.to_string());
         val("mcmc-thin", self.mcmc_thin.to_string());
@@ -580,6 +591,7 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
 
 fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieConfig {
     let mut cfg = crate::annotate::susie::SusieConfig {
+        chains: args.mcmc_chains,
         samples: args.mcmc_samples,
         warmup: args.mcmc_warmup,
         thin: args.mcmc_thin,

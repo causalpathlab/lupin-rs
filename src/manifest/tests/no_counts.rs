@@ -64,6 +64,7 @@ fn run_with_cached_round(dir: &Path) -> (Loaded, Vec<f64>) {
         batch_labels: vec![0, 1, 1, 0],
         n_batches: 2,
         markers_gc: Mat::zeros(2, 0),
+        marker_support: vec![Vec::new(); 2],
         celltype_names: Vec::new(),
         profile_gk: Mat::zeros(2, 2),
         pb_gene_gp: Mat::from_element(2, 2, 0.5),

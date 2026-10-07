@@ -340,6 +340,16 @@ pub struct RunAnnotate {
     pub extra: Extra,
 }
 
+impl RunAnnotate {
+    /// Drop the SuSiE stage's cluster × type tables: a round whose clusters
+    /// were regrouped (relabel, ask) would otherwise carry the old ones.
+    pub fn drop_susie_tables(&mut self) {
+        self.cluster_celltype_pip = None;
+        self.cluster_celltype_effect = None;
+        self.cluster_celltype_explained = None;
+    }
+}
+
 /// An enrichment pass's sufficient statistics, manifest-relative: the raw
 /// per-cluster gene sums (columns `K{id}` of `annotate.expression_clusters`),
 /// the per-batch profile, the per-gene weights and each cell's batch.

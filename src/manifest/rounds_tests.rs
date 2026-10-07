@@ -900,3 +900,19 @@ fn a_relabel_round_drops_the_susie_tables_of_the_clusters_it_regrouped() {
     assert!(a.cluster_celltype_effect.is_none());
     assert!(a.cluster_celltype_explained.is_none());
 }
+
+#[test]
+fn regrouping_drops_every_cluster_keyed_susie_table() {
+    let mut a = crate::manifest::run::RunAnnotate {
+        cluster_celltype_pip: Some("p".into()),
+        cluster_celltype_effect: Some("e".into()),
+        cluster_celltype_explained: Some("x".into()),
+        argmax: Some("kept".into()),
+        ..Default::default()
+    };
+    a.drop_susie_tables();
+    assert!(a.cluster_celltype_pip.is_none());
+    assert!(a.cluster_celltype_effect.is_none());
+    assert!(a.cluster_celltype_explained.is_none());
+    assert_eq!(a.argmax.as_deref(), Some("kept"));
+}

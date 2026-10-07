@@ -401,6 +401,7 @@ fn rescore_inputs(
         batch_labels: stats.batch_labels,
         n_batches: stats.pb_gene_gp.ncols(),
         markers_gc: annot.membership_ga,
+        marker_support: annot.support,
         celltype_names: annot.annot_names.clone(),
         profile_gk,
         pb_gene_gp: stats.pb_gene_gp,

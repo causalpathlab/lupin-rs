@@ -122,6 +122,7 @@ pub(super) fn inputs(
         batch_labels: e.batch_labels,
         n_batches: e.n_batches,
         markers_gc: panel.markers_gc,
+        marker_support: panel.marker_support,
         celltype_names: panel.celltype_names,
         profile_gk,
         pb_gene_gp: e.pb_gene_gp,

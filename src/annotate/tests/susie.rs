@@ -201,3 +201,114 @@ fn a_cluster_is_called_by_pip_then_by_the_share_it_explains() {
     let f = fit_of(&[0.0, 0.0, 0.0], &[0.0; 3], &[0.0; 3]);
     assert_eq!(f.call(), None);
 }
+
+#[test]
+fn empty_clusters_neither_shift_the_background_nor_get_a_call() {
+    // Clusters 0..9 are real (cluster 0 no type); 10..21 have no cells, as
+    // gaps in cluster ids leave them.
+    let mut planted: Vec<Vec<(usize, f64)>> = vec![vec![]];
+    planted.extend((0..9).map(|k| vec![(k % 4, 4.0)]));
+    let mut sim = simulate(400, &disjoint(), &planted, 9);
+    sim.sums.extend(std::iter::repeat_n(0.0, sim.n_genes * 12));
+    sim.n_clusters += 12;
+    let fits = fit(&sim, 4);
+    assert!(
+        fits.clusters[0].credible_sets.is_empty(),
+        "the null cluster: {:?}",
+        fits.clusters[0].pip
+    );
+    for f in &fits.clusters[10..] {
+        assert!(f.call().is_none() && f.pip.iter().all(|&p| p == 0.0));
+    }
+    for k in 1..10 {
+        assert_eq!(fits.clusters[k].call(), Some((k - 1) % 4), "cluster {k}");
+    }
+}
+
+#[test]
+fn settings_that_leave_no_posterior_are_refused() {
+    let sim = simulate(100, &disjoint(), &[vec![(0, 4.0)], vec![(1, 4.0)]], 10);
+    let run = |cfg: SusieConfig| {
+        fit_all(
+            &sim.sums,
+            sim.n_genes,
+            sim.n_clusters,
+            &sim.markers,
+            4,
+            &cfg,
+        )
+    };
+    let mut no_effects = SusieConfig::default();
+    no_effects.prior.num_effects = 0;
+    assert!(run(no_effects).is_err());
+    assert!(run(SusieConfig {
+        samples: 0,
+        ..Default::default()
+    })
+    .is_err());
+    assert!(run(SusieConfig {
+        dispersion: Some(-0.1),
+        ..Default::default()
+    })
+    .is_err());
+}
+
+#[test]
+fn huge_pseudobulks_still_separate_types_that_share_markers() {
+    // As shared_markers_are_credited_…, at ~10⁶ counts per marker gene,
+    // where f32 terms lose about a nat each.
+    let a: Vec<usize> = (0..50).collect();
+    let b: Vec<usize> = (32..82).collect();
+    let others: Vec<Vec<usize>> = (0..3)
+        .map(|c| (82 + c * 30..82 + (c + 1) * 30).collect())
+        .collect();
+    let mut sets = vec![a, b];
+    sets.extend(others);
+    let mut planted: Vec<Vec<(usize, f64)>> = vec![vec![(0, 4.0)]];
+    planted.extend((0..6).map(|k| vec![(2 + k % 3, 4.0)]));
+    let mut sim = simulate(400, &sets, &planted, 11);
+    sim.sums.iter_mut().for_each(|v| *v *= 2_000.0);
+    let f = &fit(&sim, 5).clusters[0];
+    assert!(f.pip[0] > 0.9, "A: pip {:?}", f.pip);
+    assert!(f.pip[1] < 0.2, "B: pip {:?}", f.pip);
+}
+
+#[test]
+fn chains_that_settle_apart_are_flagged() {
+    let same = vec![vec![1.0f32, 1.1, 0.9, 1.0, 1.05, 0.95]; 4];
+    assert!(between_chain_rhat(&same) < 1.05);
+    let apart = vec![
+        vec![0.0f32, 0.1, -0.1, 0.0, 0.05, -0.05],
+        vec![2.0f32, 2.1, 1.9, 2.0, 2.05, 1.95],
+    ];
+    assert!(between_chain_rhat(&apart) > 2.0);
+}
+
+#[test]
+fn chains_that_number_the_same_effects_differently_agree_on_the_credible_sets() {
+    use model::{Cluster, ClusterCounts, Panel, SusieSample};
+    let panel = Panel::new(vec![vec![0], vec![1], vec![]], 2, &[0.1, 0.1, 0.1]);
+    let cluster = Cluster {
+        y: vec![10.0, 10.0, 10.0],
+        log_mu0: vec![0.0, 0.0, 0.0],
+    };
+    let counts = ClusterCounts {
+        panel: &panel,
+        cluster: &cluster,
+    };
+    let draw = |first: usize| SusieSample {
+        probs: vec![
+            (0..3).map(|j| f32::from(u8::from(j == first))).collect(),
+            (0..3)
+                .map(|j| f32::from(u8::from(j == 1 - first)))
+                .collect(),
+        ],
+        theta: vec![1.0, 1.0],
+    };
+    // Chain 0 numbers the types' effects (0, 1); chain 1, (1, 0).
+    let chains = vec![vec![draw(0); 10], vec![draw(1); 10]];
+    let corr = marker_correlation(&[vec![0], vec![1], vec![]], 2);
+    let mut sets = summarize(&chains, counts, &corr).credible_sets;
+    sets.sort();
+    assert_eq!(sets, vec![vec![0], vec![1]]);
+}

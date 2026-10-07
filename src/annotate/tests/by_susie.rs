@@ -11,9 +11,11 @@ fn inputs() -> EnrichmentInputs {
     let (n_free, n_types, per_type, n_clusters) = (200, 3, 20, 6);
     let n_genes = n_free + n_types * per_type;
     let mut markers_gc = Mat::zeros(n_genes, n_types);
+    let mut marker_support = vec![Vec::new(); n_genes];
     for c in 0..n_types {
         for g in 0..per_type {
             markers_gc[(n_free + c * per_type + g, c)] = 1.0;
+            marker_support[n_free + c * per_type + g].push(c);
         }
     }
     let mut gene_sum_kg = Vec::with_capacity(n_genes * n_clusters);
@@ -34,6 +36,7 @@ fn inputs() -> EnrichmentInputs {
         batch_labels: vec![0; 2 * n_clusters],
         n_batches: 1,
         markers_gc,
+        marker_support,
         celltype_names: names("T", n_types),
         profile_gk: Mat::zeros(n_genes, n_clusters),
         pb_gene_gp: Mat::zeros(n_genes, 1),

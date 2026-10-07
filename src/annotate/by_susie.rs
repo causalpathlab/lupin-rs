@@ -35,20 +35,13 @@ pub fn run(
     anyhow::ensure!(!inputs.celltype_names.is_empty(), "no marker panel");
     let (n_genes, n_clusters) = (inputs.gene_names.len(), inputs.n_clusters);
     let n_types = inputs.celltype_names.len();
-    // The panel's support: which types each gene marks (the IDF weights do
-    // not enter; the regression credits shared markers itself).
-    let markers: Vec<Vec<usize>> = (0..n_genes)
-        .map(|g| {
-            (0..n_types)
-                .filter(|&c| inputs.markers_gc[(g, c)] > 0.0)
-                .collect()
-        })
-        .collect();
+    // The panel's unweighted support: the regression credits shared markers
+    // itself, so the IDF weights do not enter.
     let fits = fit_all(
         &inputs.gene_sum_kg,
         n_genes,
         n_clusters,
-        &markers,
+        &inputs.marker_support,
         n_types,
         cfg,
     )?;
@@ -101,6 +94,22 @@ pub fn run(
         }
     }
 
+    // The tables first: the labels below replace the enrichment's, so they
+    // are written only once everything else is.
+    let written = write_cluster_tables(
+        out,
+        &cluster_names,
+        &inputs.celltype_names,
+        &[
+            (&pip, CLUSTER_CELLTYPE_PIP),
+            (&effect, CLUSTER_CELLTYPE_EFFECT),
+            (&explained, CLUSTER_CELLTYPE_EXPLAINED),
+        ],
+    )?;
+    let sets_path = format!("{out}{CLUSTER_CREDIBLE_SETS}");
+    write_lines(&sets, &sets_path)?;
+    info!("wrote {sets_path}");
+
     // Each cell takes its cluster's PIPs and call.
     let n_cells = inputs.cell_names.len();
     let mut annotation = Mat::zeros(n_cells, n_types);
@@ -142,20 +151,6 @@ pub fn run(
         &labels,
         &probs,
     )?;
-
-    let written = write_cluster_tables(
-        out,
-        &cluster_names,
-        &inputs.celltype_names,
-        &[
-            (&pip, CLUSTER_CELLTYPE_PIP),
-            (&effect, CLUSTER_CELLTYPE_EFFECT),
-            (&explained, CLUSTER_CELLTYPE_EXPLAINED),
-        ],
-    )?;
-    let sets_path = format!("{out}{CLUSTER_CREDIBLE_SETS}");
-    write_lines(&sets, &sets_path)?;
-    info!("wrote {sets_path}");
 
     outputs.argmax = Some(format!("{out}{ARGMAX_TSV}"));
     outputs.annotation = Some(annotation_path);

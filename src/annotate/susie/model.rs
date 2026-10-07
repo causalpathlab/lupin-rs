@@ -101,16 +101,18 @@ pub(super) struct ClusterCounts<'a> {
 }
 
 impl ClusterCounts<'_> {
-    /// Gene g's log-likelihood at linear predictor η, up to constants.
-    fn term(&self, g: usize, eta: f32) -> f32 {
-        let y = self.cluster.y[g];
-        let r = self.panel.nb_size[g];
+    /// Gene g's log-likelihood at linear predictor η, up to constants. In
+    /// f64: on large pseudobulks y·η and (y + r)·log(r + μ) are ~10⁷ and
+    /// nearly cancel, past f32's precision.
+    fn term(&self, g: usize, eta: f32) -> f64 {
+        let (y, eta) = (f64::from(self.cluster.y[g]), f64::from(eta));
+        let r = f64::from(self.panel.nb_size[g]);
         if r.is_infinite() {
             // Poisson: y log μ − μ
             return y * eta - eta.exp();
         }
         // y log μ − (y + r) log(r + μ)
-        y * eta - (y + r) * log_add_exp(self.panel.ln_r[g], eta)
+        y * eta - (y + r) * log_add_exp(f64::from(self.panel.ln_r[g]), eta)
     }
 
     /// Every marker gene's η at θ.
@@ -123,7 +125,7 @@ impl ClusterCounts<'_> {
             .collect()
     }
 
-    fn log_lik(&self, theta: &[f32]) -> f32 {
+    fn log_lik(&self, theta: &[f32]) -> f64 {
         self.etas(theta)
             .iter()
             .enumerate()
@@ -142,18 +144,18 @@ impl ClusterCounts<'_> {
                 if theta[c] <= 0.0 || total <= 0.0 {
                     return 0.0;
                 }
-                let lost: f32 = self.panel.genes_of[c]
+                let lost: f64 = self.panel.genes_of[c]
                     .iter()
                     .map(|&g| self.term(g, etas[g]) - self.term(g, etas[g] - theta[c]))
                     .sum();
-                (lost / total).max(0.0)
+                (lost / total).max(0.0) as f32
             })
             .collect()
     }
 
     /// The change in log-likelihood from adding `effect` to type c's markers,
     /// at the predictors `etas` whose terms are `base`.
-    fn gain(&self, etas: &[f32], base: &[f32], c: usize, effect: f32) -> f32 {
+    fn gain(&self, etas: &[f32], base: &[f64], c: usize, effect: f32) -> f64 {
         self.panel.genes_of[c]
             .iter()
             .map(|&g| self.term(g, etas[g] + effect) - base[g])
@@ -162,7 +164,7 @@ impl ClusterCounts<'_> {
 }
 
 /// log(eᵃ + eᵇ).
-fn log_add_exp(a: f32, b: f32) -> f32 {
+fn log_add_exp(a: f64, b: f64) -> f64 {
     a.max(b) + (-(a - b).abs()).exp().ln_1p()
 }
 
@@ -187,7 +189,7 @@ pub(super) struct SusieState {
     probs: Vec<Vec<f32>>,
     theta: Vec<f32>,
     etas: Vec<f32>,
-    base: Vec<f32>,
+    base: Vec<f64>,
 }
 
 /// One posterior draw.
@@ -208,9 +210,9 @@ impl SusieModel<'_> {
     }
 
     /// Log prior of each choice: the null weight, the rest shared evenly.
-    fn log_prior(&self) -> (f32, f32) {
-        let w = self.prior.null_weight.clamp(1e-6, 1.0 - 1e-6);
-        let c = self.data.panel.n_types() as f32;
+    fn log_prior(&self) -> (f64, f64) {
+        let w = f64::from(self.prior.null_weight).clamp(1e-6, 1.0 - 1e-6);
+        let c = self.data.panel.n_types() as f64;
         (((1.0 - w) / c).ln(), w.ln())
     }
 
@@ -264,15 +266,15 @@ impl McmcModel for SusieModel<'_> {
 
             // The type, exactly from its full conditional.
             let effect = s.effect[l];
-            let gains: Vec<f32> = (0..c)
+            let gains: Vec<f64> = (0..c)
                 .map(|j| self.data.gain(&s.etas, &s.base, j, effect))
                 .collect();
-            let mut p: Vec<f32> = gains.iter().map(|&g| log_type + g).collect();
-            p.push(log_null);
-            let m = p.iter().fold(f32::NEG_INFINITY, |m, &v| m.max(v));
-            p.iter_mut().for_each(|v| *v = (*v - m).exp());
-            let total: f32 = p.iter().sum();
-            p.iter_mut().for_each(|v| *v /= total);
+            let mut logp: Vec<f64> = gains.iter().map(|&g| log_type + g).collect();
+            logp.push(log_null);
+            let m = logp.iter().fold(f64::NEG_INFINITY, |m, &v| m.max(v));
+            let w: Vec<f64> = logp.iter().map(|&v| (v - m).exp()).collect();
+            let total: f64 = w.iter().sum();
+            let p: Vec<f32> = w.iter().map(|&v| (v / total) as f32).collect();
             let u: f32 = rng.random();
             let mut cum = 0.0;
             let j = p
@@ -288,9 +290,12 @@ impl McmcModel for SusieModel<'_> {
             // Its size: ESS on the likelihood of its type's markers (starting
             // from the gain just computed), or a prior draw when it picked none.
             s.z_eff[l] = if j < c {
-                let ll = |z: &DVector<f32>| self.data.gain(&s.etas, &s.base, j, self.effect(z));
+                // ESS takes an f32 log-likelihood; a gain is a sum of f64
+                // differences, small enough for f32 once formed.
+                let ll =
+                    |z: &DVector<f32>| self.data.gain(&s.etas, &s.base, j, self.effect(z)) as f32;
                 let nu = DVector::from_element(1, std_normal(rng));
-                elliptical_slice_step(&s.z_eff[l], &nu, &ll, gains[j], rng).0
+                elliptical_slice_step(&s.z_eff[l], &nu, &ll, gains[j] as f32, rng).0
             } else {
                 DVector::from_element(1, std_normal(rng))
             };
