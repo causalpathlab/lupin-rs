@@ -1391,7 +1391,7 @@ fn a_relabelled_cluster_shows_the_evidence_of_its_new_label() {
     };
     let mut app = app_with_terms(false);
     if let Some(r) = app.round.as_mut() {
-        r.clusters[0].candidates = vec![cand("CT1", 7.0), cand("CT2", 3.0)];
+        r.clusters[0].candidates = vec![cand("CT1", 7.0), cand("CT_2", 3.0)];
     }
     let k0 = |app: &App| {
         drawn(app)
@@ -1415,7 +1415,10 @@ fn a_relabelled_cluster_shows_the_evidence_of_its_new_label() {
             reason: "why".into(),
         }];
     };
-    relabel(&mut app, "CT2");
+    relabel(&mut app, "CT_2");
+    assert!(k0(&app).contains("×3.0"), "{}", k0(&app));
+    // A label is its candidate's however its words are separated.
+    relabel(&mut app, "CT 2");
     assert!(k0(&app).contains("×3.0"), "{}", k0(&app));
     relabel(&mut app, UNASSIGNED_LABEL);
     assert!(!k0(&app).contains('×'), "no call, no fold: {}", k0(&app));
@@ -1430,5 +1433,26 @@ fn the_key_guide_wraps_a_long_description_instead_of_cutting_it() {
     assert!(
         screen.contains("pgup/dn home/end "),
         "the key column fits its keys"
+    );
+}
+
+#[test]
+fn a_label_is_recorded_in_its_canonical_form() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    app.prompt = Some(Prompt {
+        title: String::new(),
+        text: "why".into(),
+        pending: Pending::Label {
+            cluster: 0,
+            label: "CT 2".into(),
+            remember: None,
+        },
+    });
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(&app.edits[..], [Edit::Label { label, .. }] if label == "CT_2"),
+        "{:?}",
+        app.edits
     );
 }

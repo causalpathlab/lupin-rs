@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum Graphics {
     /// The terminal's own, as its environment names it (kitty, Ghostty,
-    /// iTerm2, WezTerm); half-block characters otherwise.
+    /// iTerm2, WezTerm, foot, mlterm); half-block characters otherwise.
     #[default]
     Auto,
     Kitty,
@@ -565,23 +565,24 @@ pub fn picker(graphics: Graphics) -> Picker {
 
 /// The picture protocol the terminal's environment variables (`var`) name.
 pub(crate) fn protocol_from_env(var: impl Fn(&str) -> Option<String>) -> ProtocolType {
-    let is = |k: &str, f: &dyn Fn(&str) -> bool| var(k).is_some_and(|v| f(&v));
+    let v = |k: &str| var(k).unwrap_or_default();
+    let (term, program) = (v("TERM"), v("TERM_PROGRAM"));
     // Through tmux a picture needs passthrough, which `--graphics` can ask for.
     if var("TMUX").is_some() {
-        return ProtocolType::Halfblocks;
-    }
-    if var("KITTY_WINDOW_ID").is_some()
-        || is("TERM", &|t| t.contains("kitty") || t.contains("ghostty"))
-        || is("TERM_PROGRAM", &|t| t.eq_ignore_ascii_case("ghostty"))
+        ProtocolType::Halfblocks
+    } else if var("KITTY_WINDOW_ID").is_some()
+        || term.contains("kitty")
+        || term.contains("ghostty")
+        || program.eq_ignore_ascii_case("ghostty")
     {
-        return ProtocolType::Kitty;
+        ProtocolType::Kitty
+    } else if program == "iTerm.app" || program == "WezTerm" || v("LC_TERMINAL") == "iTerm2" {
+        ProtocolType::Iterm2
+    } else if term.starts_with("foot") || term.starts_with("mlterm") {
+        ProtocolType::Sixel
+    } else {
+        ProtocolType::Halfblocks
     }
-    if is("TERM_PROGRAM", &|t| t == "iTerm.app" || t == "WezTerm")
-        || is("LC_TERMINAL", &|t| t == "iTerm2")
-    {
-        return ProtocolType::Iterm2;
-    }
-    ProtocolType::Halfblocks
 }
 
 /// A cell's size in pixels, from the window's when the terminal reports it.

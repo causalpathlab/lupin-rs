@@ -143,7 +143,8 @@ fn a_pass_still_staged_is_no_member_of_the_family() {
     // What a pass killed before it was promoted leaves.
     fs::copy(
         tmp.path().join("X.L0.senna.json"),
-        tmp.path().join("X.L0.staging.senna.json"),
+        crate::manifest::staging::staging_prefix(&tmp.path().join("X.L0").to_string_lossy())
+            + ".senna.json",
     )
     .unwrap();
     let got = family(&tmp.path().join("X.senna.json"));

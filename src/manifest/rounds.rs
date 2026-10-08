@@ -753,13 +753,10 @@ fn relabel(
 
     let mut next = source.copy_to(manifest_path)?;
     // SuSiE's tables describe the source round's clusters on its panel: kept
-    // while both stand, dropped once a merge regroups the clusters or the
+    // while both stand, dropped once a decision regroups the clusters or the
     // markers change (the call is then the decisions over the enrichment's
     // rescored statistics).
-    let regrouped = p
-        .decisions
-        .iter()
-        .any(|d| matches!(d.action, crate::annotate::rounds::Action::Merge));
+    let regrouped = p.decisions.iter().any(|d| d.action.regroups());
     if regrouped || p.marker_history.is_some() {
         next.manifest.annotate.drop_susie_tables();
     }

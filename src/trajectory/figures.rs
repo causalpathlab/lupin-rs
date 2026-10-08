@@ -314,11 +314,7 @@ impl TrajectoryData {
         let pt_path = at(pt_rel);
         let (cells, types, pseudotime, component, lineage) =
             read_pseudotime(&pt_path).with_context(|| format!("reading {pt_path}"))?;
-        let index: FxHashMap<&str, usize> = cells
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (c.as_ref(), i))
-            .collect();
+        let index = cell_index(&cells);
 
         let diffusion = match t.diffusion.as_deref() {
             Some(rel) => {
@@ -1054,21 +1050,46 @@ fn sole_lineage(weights: &[Vec<f64>], i: usize) -> i32 {
     }
 }
 
+/// Each cell name's cell, and every cell of a name the cells repeat
+/// (merged samples can repeat a barcode), apart: most names are one cell's.
+pub(crate) struct CellIndex<'a> {
+    first: FxHashMap<&'a str, usize>,
+    repeated: FxHashMap<&'a str, Vec<usize>>,
+}
+
+impl CellIndex<'_> {
+    fn contains(&self, name: &str) -> bool {
+        self.first.contains_key(name)
+    }
+}
+
+pub(crate) fn cell_index(cells: &[Box<str>]) -> CellIndex<'_> {
+    let mut first: FxHashMap<&str, usize> = FxHashMap::default();
+    let mut repeated: FxHashMap<&str, Vec<usize>> = FxHashMap::default();
+    for (i, c) in cells.iter().enumerate() {
+        match first.get(c.as_ref()) {
+            None => {
+                first.insert(c.as_ref(), i);
+            }
+            Some(&f) => repeated
+                .entry(c.as_ref())
+                .or_insert_with(|| vec![f])
+                .push(i),
+        }
+    }
+    CellIndex { first, repeated }
+}
+
 /// The layout at `path` as `(x, y)` for each of the `n` cells `index` maps
-/// names into, NaN for a cell the layout lacks; an error when it has none
-/// of them, so the next layout is tried. A name the cells repeat counts
-/// once in `index`, so `n` is the cells', not its size.
-fn read_layout(
-    path: &str,
-    index: &FxHashMap<&str, usize>,
-    n: usize,
-) -> Result<(Vec<f32>, Vec<f32>)> {
+/// names onto, NaN for a cell the layout lacks; an error when it has none
+/// of them, so the next layout is tried.
+fn read_layout(path: &str, index: &CellIndex, n: usize) -> Result<(Vec<f32>, Vec<f32>)> {
     let t = Mat::from_parquet(path)?;
     let col = |name: &str| t.cols.iter().position(|c| c.as_ref() == name);
     let (Some(x), Some(y)) = (col("x"), col("y")) else {
         anyhow::bail!("{path} has no x and y columns");
     };
-    if !t.rows.iter().any(|r| index.contains_key(r.as_ref())) {
+    if !t.rows.iter().any(|r| index.contains(r)) {
         anyhow::bail!("{path} shares no cell with the trajectory");
     }
     let m = aligned(&t.rows, &t.mat, index, n);
@@ -1078,12 +1099,33 @@ fn read_layout(
     ))
 }
 
-/// `mat`'s rows reordered to `cells` by name; a cell the matrix lacks is NaN.
-fn aligned(rows: &[Box<str>], mat: &Mat, index: &FxHashMap<&str, usize>, n: usize) -> Mat {
+/// `mat`'s rows reordered to the `n` cells by name; a cell the matrix
+/// lacks is NaN. A name the cells repeat takes its rows in order when the
+/// matrix repeats it as often, else its one row goes to each of its cells.
+fn aligned(rows: &[Box<str>], mat: &Mat, index: &CellIndex, n: usize) -> Mat {
     let mut out = Mat::from_element(n, mat.ncols(), f32::NAN);
+    let mut times: FxHashMap<&str, usize> = FxHashMap::default();
+    for r in rows
+        .iter()
+        .filter(|r| index.repeated.contains_key(r.as_ref()))
+    {
+        *times.entry(r.as_ref()).or_default() += 1;
+    }
+    let mut seen: FxHashMap<&str, usize> = FxHashMap::default();
     for (i, r) in rows.iter().enumerate() {
-        if let Some(&j) = index.get(r.as_ref()) {
-            out.set_row(j, &mat.row(i));
+        let r = r.as_ref();
+        match index.repeated.get(r) {
+            Some(cells) if times.get(r) == Some(&cells.len()) => {
+                let k = seen.entry(r).or_default();
+                out.set_row(cells[*k], &mat.row(i));
+                *k += 1;
+            }
+            Some(cells) => cells.iter().for_each(|&j| out.set_row(j, &mat.row(i))),
+            None => {
+                if let Some(&j) = index.first.get(r) {
+                    out.set_row(j, &mat.row(i));
+                }
+            }
         }
     }
     out

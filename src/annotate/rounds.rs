@@ -217,6 +217,12 @@ impl Action {
     pub fn edits_markers(self) -> bool {
         matches!(self, Action::MarkersAdd | Action::MarkersDrop)
     }
+
+    /// Changes which cells are together in a cluster (a split is refused).
+    #[must_use]
+    pub fn regroups(self) -> bool {
+        matches!(self, Action::Merge)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]

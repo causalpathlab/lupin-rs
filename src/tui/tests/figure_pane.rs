@@ -213,6 +213,8 @@ fn the_picture_protocol_comes_from_the_environment_without_asking_the_terminal()
     );
     assert_eq!(proto(&[("LC_TERMINAL", "iTerm2")]), ProtocolType::Iterm2);
     assert_eq!(proto(&[("TERM_PROGRAM", "WezTerm")]), ProtocolType::Iterm2);
+    assert_eq!(proto(&[("TERM", "foot")]), ProtocolType::Sixel);
+    assert_eq!(proto(&[("TERM", "mlterm")]), ProtocolType::Sixel);
     assert_eq!(
         proto(&[("TERM_PROGRAM", "Apple_Terminal")]),
         ProtocolType::Halfblocks

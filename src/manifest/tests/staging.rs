@@ -29,13 +29,13 @@ fn a_finished_pass_replaces_the_round_and_its_stale_files_only() {
     write(&d.join("run.L1.notes.txt"), "mine");
     // The new pass, staged.
     write(
-        &d.join("run.L1.staging.senna.json"),
+        &d.join(".run.L1.staging.senna.json"),
         &format!(
-            r#"{{"annotate": {{"argmax": "run.L1.staging.argmax.tsv", "markers": "panel.tsv",
+            r#"{{"annotate": {{"argmax": ".run.L1.staging.argmax.tsv", "markers": "panel.tsv",
                  "settings": {{"enrichment": {{"out": "{staging}"}}}}}}}}"#
         ),
     );
-    write(&d.join("run.L1.staging.argmax.tsv"), "new");
+    write(&d.join(".run.L1.staging.argmax.tsv"), "new");
 
     promote(Path::new("run.senna.json"), &staging, &out).unwrap();
 
@@ -60,7 +60,7 @@ fn a_finished_pass_replaces_the_round_and_its_stale_files_only() {
         .unwrap()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.contains(".staging"))
+        .filter(|n| n.contains("staging"))
         .collect();
     assert!(left.is_empty(), "{left:?}");
 }
@@ -75,10 +75,21 @@ fn a_stopped_pass_leaves_the_round_and_its_leftovers_are_discarded() {
         r#"{"annotate": {"argmax": "run.L1.argmax.tsv"}}"#,
     );
     write(&d.join("run.L1.argmax.tsv"), "old");
-    write(&d.join("run.L1.staging.argmax.tsv"), "half");
-    fs::create_dir(d.join("run.L1.staging.susie-staging")).unwrap();
+    write(&d.join(".run.L1.staging.argmax.tsv"), "half");
+    fs::create_dir(d.join(".run.L1.staging.susie-staging")).unwrap();
     discard(&staging_prefix(&out)).unwrap();
     assert_eq!(read(&d.join("run.L1.argmax.tsv")), "old");
-    assert!(!d.join("run.L1.staging.argmax.tsv").exists());
-    assert!(!d.join("run.L1.staging.susie-staging").exists());
+    assert!(!d.join(".run.L1.staging.argmax.tsv").exists());
+    assert!(!d.join(".run.L1.staging.susie-staging").exists());
+}
+
+#[test]
+fn the_staging_prefix_sits_beside_its_round_as_written() {
+    assert_eq!(staging_prefix("run.L1"), ".run.L1.staging");
+    assert_eq!(staging_prefix("out/run.L1"), "out/.run.L1.staging");
+}
+
+#[test]
+fn a_prefix_written_with_a_trailing_slash_stages_beside_its_round() {
+    assert_eq!(staging_prefix("results/run/"), "results/.run.staging");
 }

@@ -167,8 +167,6 @@ fn manifests_beside(opened: &Path) -> (PathBuf, Vec<String>) {
                 .flatten()
                 .map(|e| e.file_name().to_string_lossy().into_owned())
                 .filter(|n| !n.starts_with('.') && SUFFIXES.iter().any(|s| n.ends_with(s)))
-                // A pass not yet promoted onto its round (`staging`).
-                .filter(|n| !n.contains(".staging."))
                 .collect()
         })
         .unwrap_or_default();

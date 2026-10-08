@@ -303,21 +303,21 @@ impl ClTerms {
                 continue;
             }
             for id in ids {
-                let own = self.name_of.get(id).map(|n| self.rules.normalise(n));
-                let at = match own.as_deref() {
-                    Some(n) if n.starts_with(&q) => 0,
-                    Some(n) if n.contains(&q) => 1,
-                    _ => 2,
-                };
-                let len = self.name_of.get(id).map_or(usize::MAX, String::len);
-                let e = hits.entry(id.clone()).or_insert((false, at, len));
+                let e = hits.entry(id.clone()).or_insert_with(|| {
+                    let own = self.name_of.get(id);
+                    let at = match own.map(|n| self.rules.normalise(n)) {
+                        Some(n) if n.starts_with(&q) => 0,
+                        Some(n) if n.contains(&q) => 1,
+                        _ => 2,
+                    };
+                    (false, at, own.map_or(usize::MAX, String::len))
+                });
                 e.0 |= *name == q;
             }
         }
-        let mut v: Vec<(String, (bool, u8, usize))> = hits.into_iter().collect();
-        v.sort_by(|(a, (ea, pa, la)), (b, (eb, pb, lb))| {
-            eb.cmp(ea).then(pa.cmp(pb)).then(la.cmp(lb)).then(a.cmp(b))
-        });
+        // Stable over the ids' order, which breaks the remaining ties.
+        let mut v: Vec<_> = hits.into_iter().collect();
+        v.sort_by_key(|(_, (exact, at, len))| (!*exact, *at, *len));
         v.into_iter().take(limit).map(|(id, _)| id).collect()
     }
 

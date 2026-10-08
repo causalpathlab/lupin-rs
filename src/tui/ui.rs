@@ -477,7 +477,7 @@ fn draw_guide(f: &mut Frame, trajectory: bool) {
     };
     let mut cols: Vec<Vec<Line>> = vec![Vec::new(); usize::from(columns)];
     for (i, s) in sections.into_iter().enumerate() {
-        let at = usize::from(i >= split && columns == 2);
+        let at = usize::from(i >= split);
         if !cols[at].is_empty() {
             cols[at].push(Line::default());
         }
@@ -597,16 +597,16 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
                 ""
             };
             // The evidence for the label shown, which an edit may have changed.
+            let key = label.as_deref().map(label_key);
             let of_label = c
                 .candidates
                 .iter()
-                .find(|t| Some(&t.label) == label.as_ref());
+                .find(|t| key.as_deref() == Some(label_key(&t.label).as_str()));
             let evidence = match (susie, of_label) {
-                (true, Some(t)) => match t.susie {
-                    Some(e) => vec![format!("{:.2}", e.pip), format!("×{:.1}", e.fold)],
-                    None => vec!["—".into(), "—".into()],
-                },
-                (true, None) => vec!["—".into(), "—".into()],
+                (true, Some(super::round::Candidate { susie: Some(e), .. })) => {
+                    vec![format!("{:.2}", e.pip), format!("×{:.1}", e.fold)]
+                }
+                (true, _) => vec!["—".into(), "—".into()],
                 (false, Some(t)) => vec![format!("{:.2}", t.share)],
                 (false, None) => vec!["—".into()],
             };

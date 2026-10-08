@@ -451,11 +451,7 @@ fn a_layout_is_read_onto_every_cell_even_with_a_name_twice() {
     use legume_numeric::matrix::traits::IoOps as _;
     // Merged samples can repeat a barcode: three cells, two names.
     let cells: Vec<Box<str>> = ["a", "b", "a"].iter().map(|s| Box::from(*s)).collect();
-    let index: FxHashMap<&str, usize> = cells
-        .iter()
-        .enumerate()
-        .map(|(i, c)| (c.as_ref(), i))
-        .collect();
+    let index = cell_index(&cells);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("layout.parquet");
     let rows: Vec<Box<str>> = ["a", "b"].iter().map(|s| Box::from(*s)).collect();
@@ -470,5 +466,21 @@ fn a_layout_is_read_onto_every_cell_even_with_a_name_twice() {
     let (x, y) = read_layout(&path.to_string_lossy(), &index, cells.len()).unwrap();
     assert_eq!(x.len(), 3, "one per cell");
     assert_eq!((x[1], y[1]), (3.0, 4.0));
-    assert_eq!((x[2], y[2]), (1.0, 2.0), "the name's last cell");
+    assert_eq!((x[0], y[0]), (1.0, 2.0), "each cell of the name");
+    assert_eq!((x[2], y[2]), (1.0, 2.0));
+}
+
+#[test]
+fn a_table_that_repeats_a_name_gives_each_cell_its_own_row() {
+    let cells: Vec<Box<str>> = ["a", "b", "a"].iter().map(|s| Box::from(*s)).collect();
+    let index = cell_index(&cells);
+    // The table names its rows as the cells do: the k-th `a` row is the
+    // k-th `a` cell's.
+    let rows: Vec<Box<str>> = ["a", "b", "a"].iter().map(|s| Box::from(*s)).collect();
+    let m = Mat::from_row_slice(3, 1, &[1.0, 2.0, 9.0]);
+    let out = aligned(&rows, &m, &index, 3);
+    assert_eq!(
+        out.column(0).iter().copied().collect::<Vec<_>>(),
+        [1.0, 2.0, 9.0]
+    );
 }

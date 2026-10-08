@@ -2,31 +2,32 @@
 //! onto it when they finish, so a stopped or failed pass leaves the round
 //! it would have replaced as it was.
 
-use super::run::annotated_path;
+use super::run::{annotated_path, parent_dir};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The prefix a pass to `out` writes under until it is promoted.
+/// The prefix a pass to `out` writes under until it is promoted: beside
+/// it, a dotfile, so no listing of runs or files shows a pass in progress.
 #[must_use]
 pub fn staging_prefix(out: &str) -> String {
-    format!("{out}.staging")
+    let (_, base) = split(out);
+    // The directory as `out` writes it, so the prefix records the same way.
+    match Path::new(out).parent().map(Path::to_string_lossy) {
+        Some(dir) if !dir.is_empty() => format!("{dir}/.{base}.staging"),
+        _ => format!(".{base}.staging"),
+    }
 }
 
 /// `prefix`'s directory and file-name part.
 fn split(prefix: &str) -> (PathBuf, String) {
     let p = Path::new(prefix);
-    let dir = match p.parent() {
-        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
     let base = p
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    (dir, base)
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    (parent_dir(p), base)
 }
 
 /// The names in `dir` that start `{base}.`.
@@ -71,15 +72,22 @@ fn map_strings(v: &mut Value, f: &impl Fn(&str) -> String) {
     }
 }
 
-fn strings(v: &Value, out: &mut BTreeSet<String>) {
-    match v {
-        Value::String(s) => {
-            out.insert(s.clone());
+/// The files of the round `{base}` that manifest `v` names: its strings
+/// that are `{base}.*` names beside it.
+fn own_names(v: &Value, base: &str) -> BTreeSet<String> {
+    fn walk(v: &Value, lead: &str, out: &mut BTreeSet<String>) {
+        match v {
+            Value::String(s) if s.starts_with(lead) && !s.contains('/') => {
+                out.insert(s.clone());
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, lead, out)),
+            Value::Object(o) => o.values().for_each(|x| walk(x, lead, out)),
+            _ => {}
         }
-        Value::Array(a) => a.iter().for_each(|x| strings(x, out)),
-        Value::Object(o) => o.values().for_each(|x| strings(x, out)),
-        _ => {}
     }
+    let mut out = BTreeSet::new();
+    walk(v, &format!("{base}."), &mut out);
+    out
 }
 
 fn read_json(p: &Path) -> Result<Value> {
@@ -100,23 +108,11 @@ pub fn promote(source: &Path, staging: &str, out: &str) -> Result<()> {
 
     let mut manifest = read_json(&staged)?;
     map_strings(&mut manifest, &|s| s.replace(&staged_base, &out_base));
-    let own = |names: BTreeSet<String>| -> BTreeSet<String> {
-        let lead = format!("{out_base}.");
-        names
-            .into_iter()
-            .filter(|n| n.starts_with(&lead) && !n.contains('/'))
-            .collect()
-    };
-    let mut new_names = BTreeSet::new();
-    strings(&manifest, &mut new_names);
-    let new_names = own(new_names);
-    let old_names = match target.is_file() {
-        true => {
-            let mut s = BTreeSet::new();
-            strings(&read_json(&target)?, &mut s);
-            own(s)
-        }
-        false => BTreeSet::new(),
+    let new_names = own_names(&manifest, &out_base);
+    let old_names = if target.is_file() {
+        own_names(&read_json(&target)?, &out_base)
+    } else {
+        BTreeSet::new()
     };
 
     let staged_name = staged.file_name().map(|n| n.to_string_lossy().into_owned());

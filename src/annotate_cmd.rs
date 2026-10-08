@@ -318,26 +318,19 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         args.markers = markers.into_boxed_str();
     }
 
-    if let Some(l) = &loaded {
-        apply_level(&mut args, &l.file)?;
-    }
-    // Ask before anything under -o is erased, not when the manifest is saved.
-    if let Some(l) = &loaded {
-        crate::manifest::run::may_replace(&crate::manifest::run::annotated_path(
-            &l.file, &args.out,
-        ))?;
-    }
-
-    // A pass on a run writes under a staging prefix and takes the round's
-    // place only once it is done: stopped or failed, it leaves the old one.
     let Some(l) = &loaded else {
         return run_pass(args, None);
     };
+    apply_level(&mut args, &l.file)?;
+    // Ask before anything under -o is erased, not when the manifest is saved.
+    crate::manifest::run::may_replace(&crate::manifest::run::annotated_path(&l.file, &args.out))?;
+    // A pass on a run writes under a staging prefix and takes the round's
+    // place only once it is done: stopped or failed, it leaves the old one.
     let out = args.out.to_string();
     let staging = crate::manifest::staging::staging_prefix(&out);
     crate::manifest::staging::discard(&staging)?;
-    args.out = staging.clone().into_boxed_str();
-    match run_pass(args, loaded.as_ref()) {
+    args.out = staging.as_str().into();
+    match run_pass(args, Some(l)) {
         Ok(()) => crate::manifest::staging::promote(&l.file, &staging, &out),
         Err(e) => {
             if let Err(d) = crate::manifest::staging::discard(&staging) {
@@ -354,9 +347,7 @@ fn run_pass(
     loaded: Option<&crate::manifest::run::Loaded>,
 ) -> Result<()> {
     if is_ontology_followup(&args) {
-        let loaded = loaded
-            .as_ref()
-            .context("--from required for ontology follow-up")?;
+        let loaded = loaded.context("--from required for ontology follow-up")?;
         return annotate_ontology(&build_ontology_args(&args)?, loaded);
     }
 
@@ -364,7 +355,7 @@ fn run_pass(
     // Ontology, whose walk then runs by default), and call a first round at
     // the coarse level.
     // The run's Cell Ontology data, read once for the grouping and the pass.
-    let cl_data = match &loaded {
+    let cl_data = match loaded {
         Some(l) if !args.markers.is_empty() => Some(crate::manifest::ontology::load(
             Some(&l.dir),
             &args.markers,
@@ -399,9 +390,7 @@ fn run_pass(
                 !args.markers.is_empty() || args.go || args.gaf.is_some() || args.gmt.is_some(),
                 "enrichment needs --markers, --go, --gaf, or --gmt"
             );
-            let loaded = loaded
-                .as_ref()
-                .context("--from is required for enrichment annotation")?;
+            let loaded = loaded.context("--from is required for enrichment annotation")?;
             annotate_by_enrichment(&build_enrichment_args(args), loaded, cl_data.as_ref())?;
         }
         Route::Projection => {
@@ -410,13 +399,11 @@ fn run_pass(
                 !args.go && args.gaf.is_none() && args.gmt.is_none(),
                 "GO terms are scored by the enrichment pass; add --method enrichment"
             );
-            let loaded = loaded
-                .as_ref()
-                .context("--from is required for projection annotation")?;
+            let loaded = loaded.context("--from is required for projection annotation")?;
             annotate_by_projection(&build_projection_args(args), loaded)?;
         }
     }
-    if let (Some(p), Some(l)) = (&prepared, &loaded) {
+    if let (Some(p), Some(l)) = (&prepared, loaded) {
         let coarse = !args.fine && crate::manifest::first_round::is_first_round(l);
         let manifest = crate::manifest::run::annotated_path(&l.file, &args.out);
         crate::manifest::first_round::finish(&manifest, &p.tree, coarse)?;
@@ -589,8 +576,8 @@ pub(crate) fn default_enrichment_args(out: &str) -> AnnotateArgs {
 
 /// Neighbours per cell when `--knn` is not given: the enrichment pass's
 /// clustering graph, and projection's.
-pub(crate) const ENRICHMENT_KNN: usize = 15;
-pub(crate) const PROJECTION_KNN: usize = 30;
+const ENRICHMENT_KNN: usize = 15;
+const PROJECTION_KNN: usize = 30;
 
 /// The `--knn` a pass by `method` uses when none is given.
 pub(crate) fn default_knn(method: AnnotateMethod) -> usize {

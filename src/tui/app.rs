@@ -1157,22 +1157,22 @@ impl App {
         match self.child.as_ref().map(|r| r.job.clone()) {
             Some(job @ (Job::Pass | Job::Trajectory(_))) => {
                 self.after_pass = AfterPass::Nothing;
-                if let Some(mut r) = self.child.take() {
-                    let _ = r.child.kill();
-                    let _ = r.child.wait();
-                    // A pass writes under a staging prefix until it is done:
-                    // stopped, its half goes and the round stays as it was.
-                    self.status = match job {
-                        Job::Pass => {
-                            let staging = crate::manifest::staging::staging_prefix(&self.args.out);
-                            if let Err(e) = crate::manifest::staging::discard(&staging) {
-                                self.push_log(format!("[WARN] the stopped pass's files: {e:#}"));
-                            }
-                            format!("stopped: {} is as it was", self.args.out)
-                        }
-                        _ => "stopped".into(),
-                    };
+                let Some(mut r) = self.child.take() else {
+                    return;
+                };
+                let _ = r.child.kill();
+                let _ = r.child.wait();
+                if job != Job::Pass {
+                    self.status = "stopped".into();
+                    return;
                 }
+                // A pass writes under a staging prefix until it is done:
+                // stopped, its half goes and the round stays as it was.
+                let staging = crate::manifest::staging::staging_prefix(&self.args.out);
+                if let Err(e) = crate::manifest::staging::discard(&staging) {
+                    self.push_log(format!("[WARN] the stopped pass's files: {e:#}"));
+                }
+                self.status = format!("stopped: {} is as it was", self.args.out);
             }
             Some(Job::Save(_)) => self.status = "a save finishes on its own; wait for it".into(),
             None => {}
@@ -1566,9 +1566,10 @@ impl App {
                         label,
                         remember,
                     } => {
+                        // As the panel writes its types, so every pane matches it.
                         self.edits.push(Edit::Label {
                             cluster,
-                            label,
+                            label: label_key(&label),
                             reason,
                         });
                         self.focus = Focus::Clusters;
