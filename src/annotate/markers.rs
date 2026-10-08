@@ -8,8 +8,11 @@ use legume_numeric::matrix::dense_mat_io::Mat;
 /// IDF-weighted gene × cell-type membership plus the sorted cell-type names
 /// indexing its columns.
 pub struct AnnotInfo {
+    /// G × C IDF-weighted membership (0 for a gene every type claims).
     pub membership_ga: Mat,
     pub annot_names: Vec<Box<str>>,
+    /// Each row's cell types (indices into `annot_names`), unweighted.
+    pub support: Vec<Vec<usize>>,
 }
 
 /// A cell-type label's canonical form: words split on whitespace, `,` and
@@ -116,6 +119,13 @@ pub fn annotation_matrix_from_pairs(
         log::info!("{} marker genes not found in dictionary", unmatched.len());
     }
 
+    let support: Vec<Vec<usize>> = (0..membership.nrows())
+        .map(|g| {
+            (0..membership.ncols())
+                .filter(|&a| membership[(g, a)] > 0.0)
+                .collect()
+        })
+        .collect();
     // w_g = ln(C / c_g): genes every type claims drop out of the score.
     let max_idf = enrichment::markers::apply_idf_weights(&mut membership);
     log::info!(
@@ -126,6 +136,7 @@ pub fn annotation_matrix_from_pairs(
     Ok(AnnotInfo {
         membership_ga: membership,
         annot_names,
+        support,
     })
 }
 
@@ -179,3 +190,7 @@ mod tests {
         assert_eq!(got.len(), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "tests/markers.rs"]
+mod support_tests;

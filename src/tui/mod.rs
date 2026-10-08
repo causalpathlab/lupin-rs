@@ -28,7 +28,7 @@ use app::App;
 pub use figure_pane::Graphics;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// This process's own log lines while the screen is up.
@@ -120,6 +120,8 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         args.method = crate::annotate_cmd::AnnotateMethod::Enrichment;
     }
     args.from = Some(loaded.file.to_string_lossy().into());
+    // The run's genes, read once for every marker panel browse.
+    let mut genes: Option<Option<Arc<GeneRows>>> = None;
     if args.markers.is_empty() {
         // The recorded panel, found again if the run moved; one that is gone
         // is picked anew.
@@ -128,7 +130,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
             // The order view needs no marker panel: open on the run's types.
             None if start_in_order => Default::default(),
             None => {
-                let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
+                let index = genes.get_or_insert_with(|| gene_index(&loaded)).clone();
                 let n = index.as_deref().map_or(0, GeneRows::n_genes);
                 let want = picker::Want::Markers(index, n);
                 match picker::pick("Pick a marker panel", &loaded.dir, want)? {
@@ -201,6 +203,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         let (latest, _) = crate::manifest::rounds::chain_rounds(&target);
         app.open(&latest);
     }
+    app.trajectory_tui = start_in_order;
     if start_in_order {
         // A run that is already annotated shows its round in the cluster
         // panes; the trajectory then reads the same labels.
@@ -228,6 +231,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
             let rescoring = app.rescoring.is_some();
             let progress = app.child.as_ref().map(|r| r.progress.reported_at);
             app.tick();
+            dirty |= app.browser.as_mut().is_some_and(|(_, b)| b.poll());
             dirty |= app.log.len() != logged
                 || app.status != status
                 || app.rescoring.is_some() != rescoring
@@ -240,7 +244,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                 // The file browser opens in a popup over what asked for it.
                 let kind = match want {
                     app::FileWant::Markers => {
-                        let index = run_genes(&loaded).map(|g| Box::new(GeneRows::build(&g)));
+                        let index = genes.get_or_insert_with(|| gene_index(&loaded)).clone();
                         let n = index.as_deref().map_or(0, GeneRows::n_genes);
                         picker::Want::Markers(index, n)
                     }
@@ -286,6 +290,11 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         eprintln!("lupin: latest round {}", r.manifest.display());
     }
     result
+}
+
+/// The run's genes, indexed to score marker panels against.
+fn gene_index(loaded: &run::Loaded) -> Option<Arc<GeneRows>> {
+    run_genes(loaded).map(|g| Arc::new(GeneRows::build(&g)))
 }
 
 /// The genes the run was trained on, from its dictionary (else its feature

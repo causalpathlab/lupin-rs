@@ -114,6 +114,11 @@ pub struct AnnotateArgs {
 
     /// Ontology TreeBH: Benjamini–Yekutieli within families (any dependence; more conservative)
     pub ontology_by: bool,
+
+    /// The SuSiE stage that makes the marker call; `None` (`--no-susie`)
+    /// calls by the enrichment's softmax share.
+    #[serde(default)]
+    pub susie: Option<crate::annotate::susie::SusieConfig>,
 }
 
 /// `lupin annotate --method projection` — firm marker-set annotation by projection

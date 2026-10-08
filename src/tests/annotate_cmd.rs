@@ -46,6 +46,40 @@ fn the_argv_parses_back_to_the_same_arguments() {
 }
 
 #[test]
+fn the_susie_stage_parses_back_to_the_same_arguments() {
+    let a = parse(&[
+        "-f",
+        "run.senna.json",
+        "-m",
+        "m.tsv",
+        "-o",
+        "out/x",
+        "--clusters",
+        "c.parquet",
+        "--susie-effects",
+        "3",
+        "--susie-dispersion",
+        "0",
+        "--mcmc-chains",
+        "2",
+        "--mcmc-samples",
+        "200",
+        "--mcmc-warmup",
+        "100",
+        "--mcmc-thin",
+        "2",
+    ]);
+    assert!(build_enrichment_args(&parse(&["-o", "x", "--no-susie"]))
+        .susie
+        .is_none());
+    assert!(build_enrichment_args(&a).susie.is_some());
+    let argv = a.to_argv();
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let b = parse(&argv);
+    assert_eq!(format!("{a:?}"), format!("{b:?}"));
+}
+
+#[test]
 fn a_moved_runs_marker_panel_is_found_by_its_path_tail() {
     let tmp = tempfile::tempdir().unwrap();
     let proj = tmp.path().join("proj");
@@ -65,4 +99,27 @@ fn a_moved_runs_marker_panel_is_found_by_its_path_tail() {
         std::path::Path::new(&found).ends_with("data/panel.tsv"),
         "{found}"
     );
+}
+
+#[test]
+fn susie_samples_a_thousand_draws_per_chain_by_default() {
+    let cfg = build_enrichment_args(&parse(&["-o", "x"])).susie.unwrap();
+    assert_eq!(cfg.samples, 1000);
+    assert_eq!(crate::annotate::susie::SusieConfig::default().samples, 1000);
+}
+
+#[test]
+fn susie_settings_that_leave_no_posterior_fail_the_command() {
+    for bad in [
+        &["--susie-effects", "0"][..],
+        &["--mcmc-chains", "0"],
+        &["--mcmc-samples", "0"],
+        &["--mcmc-thin", "0"],
+        &["--susie-dispersion=-1"],
+    ] {
+        let mut argv = vec!["-o", "x", "-m", "m.tsv"];
+        argv.extend_from_slice(bad);
+        let err = run_annotate(&parse(&argv)).unwrap_err().to_string();
+        assert!(err.contains("SuSiE"), "{bad:?}: {err}");
+    }
 }

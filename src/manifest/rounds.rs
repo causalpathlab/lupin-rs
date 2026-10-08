@@ -84,7 +84,7 @@ pub fn write_clusters(path: &str, cells: &[Box<str>], ids: &[Option<ClusterId>])
 }
 
 /// `cell⇥cell_type⇥probability`, header first.
-pub(super) fn read_argmax(path: &str) -> Result<HashMap<String, (String, f32)>> {
+pub(crate) fn read_argmax(path: &str) -> Result<HashMap<String, (String, f32)>> {
     let raw = fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
     Ok(raw
         .lines()
@@ -752,6 +752,14 @@ fn relabel(
         .transpose()?;
 
     let mut next = source.copy_to(manifest_path)?;
+    // SuSiE's tables describe the source round's clusters on its panel: kept
+    // while both stand, dropped once a decision regroups the clusters or the
+    // markers change (the call is then the decisions over the enrichment's
+    // rescored statistics).
+    let regrouped = p.decisions.iter().any(|d| d.action.regroups());
+    if regrouped || p.marker_history.is_some() {
+        next.manifest.annotate.drop_susie_tables();
+    }
     let rel = |p: &str| Some(rel_to_manifest(&next.dir, p));
     if let Some(t) = &tables {
         let a = &mut next.manifest.annotate;

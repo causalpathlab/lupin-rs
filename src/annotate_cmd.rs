@@ -2,6 +2,7 @@
 
 use crate::annotate::args::{AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs};
 use crate::annotate::by_projection::{self, ProjectionInputs};
+use crate::annotate::susie::SusieConfig;
 use crate::manifest::annotate::{
     annotate_by_enrichment, annotate_by_projection, annotate_ontology,
 };
@@ -126,6 +127,42 @@ pub struct AnnotateCliArgs {
     )]
     pub go_max_overlap: usize,
 
+    // ── enrichment's SuSiE stage ──
+    #[arg(
+        long = "no-susie",
+        help = "Call clusters by the enrichment's softmax share, without the SuSiE stage \
+                (cluster counts regressed on the panel, so types compete for shared markers)"
+    )]
+    pub no_susie: bool,
+    #[arg(
+        long = "susie-effects",
+        default_value_t = SusieConfig::default().prior.num_effects,
+        help = "SuSiE: single effects per cluster (cell types one cluster can be)"
+    )]
+    pub susie_effects: usize,
+    #[arg(
+        long = "susie-dispersion",
+        help = "SuSiE: one NB dispersion for every gene (0: Poisson); default: gene-specific, \
+                estimated across the clusters"
+    )]
+    pub susie_dispersion: Option<f32>,
+    #[arg(
+        long = "mcmc-chains",
+        default_value_t = SusieConfig::default().chains,
+        help = "SuSiE: independent chains per cluster, pooled (R̂ compares them)"
+    )]
+    pub mcmc_chains: usize,
+    #[arg(
+        long = "mcmc-samples",
+        default_value_t = SusieConfig::default().samples,
+        help = "SuSiE: samples per chain"
+    )]
+    pub mcmc_samples: usize,
+    #[arg(long = "mcmc-warmup", default_value_t = SusieConfig::default().warmup)]
+    pub mcmc_warmup: usize,
+    #[arg(long = "mcmc-thin", default_value_t = SusieConfig::default().thin)]
+    pub mcmc_thin: usize,
+
     // ── projection / ORA ──
     #[arg(long = "no-idf")]
     pub no_idf: bool,
@@ -195,7 +232,12 @@ impl AnnotateCliArgs {
         val("min-cluster-size", self.min_cluster_size.to_string());
         val("assign-mad", self.assign_mad.to_string());
         val("ontology-fdr-q", self.ontology_fdr_q.to_string());
-        let opts: [(&str, Option<String>); 15] = [
+        val("susie-effects", self.susie_effects.to_string());
+        val("mcmc-chains", self.mcmc_chains.to_string());
+        val("mcmc-samples", self.mcmc_samples.to_string());
+        val("mcmc-warmup", self.mcmc_warmup.to_string());
+        val("mcmc-thin", self.mcmc_thin.to_string());
+        let opts: [(&str, Option<String>); 16] = [
             ("from", self.from.as_deref().map(String::from)),
             (
                 "feature-embedding",
@@ -224,6 +266,10 @@ impl AnnotateCliArgs {
             ("go-min-overlap", Some(self.go_min_overlap.to_string())),
             ("go-max-overlap", Some(self.go_max_overlap.to_string())),
             ("label-cl", self.label_cl.as_deref().map(String::from)),
+            (
+                "susie-dispersion",
+                self.susie_dispersion.map(|x| x.to_string()),
+            ),
         ];
         for (flag, x) in opts {
             if let Some(x) = x {
@@ -238,6 +284,7 @@ impl AnnotateCliArgs {
             ("use-perm-p", self.use_perm_p),
             ("fine", self.fine),
             ("go", self.go),
+            ("no-susie", self.no_susie),
         ];
         v.extend(
             flags
@@ -252,6 +299,9 @@ impl AnnotateCliArgs {
 pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     if args.opens_tui() {
         return crate::tui::run(args, None);
+    }
+    if let Some(cfg) = build_enrichment_args(args).susie {
+        cfg.validate()?;
     }
     // One manifest load per invocation; every route below reuses it.
     let loaded = args
@@ -268,20 +318,36 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         args.markers = markers.into_boxed_str();
     }
 
-    if let Some(l) = &loaded {
-        apply_level(&mut args, &l.file)?;
-    }
+    let Some(l) = &loaded else {
+        return run_pass(args, None);
+    };
+    apply_level(&mut args, &l.file)?;
     // Ask before anything under -o is erased, not when the manifest is saved.
-    if let Some(l) = &loaded {
-        crate::manifest::run::may_replace(&crate::manifest::run::annotated_path(
-            &l.file, &args.out,
-        ))?;
+    crate::manifest::run::may_replace(&crate::manifest::run::annotated_path(&l.file, &args.out))?;
+    // A pass on a run writes under a staging prefix and takes the round's
+    // place only once it is done: stopped or failed, it leaves the old one.
+    let out = args.out.to_string();
+    let staging = crate::manifest::staging::staging_prefix(&out);
+    crate::manifest::staging::discard(&staging)?;
+    args.out = staging.as_str().into();
+    match run_pass(args, Some(l)) {
+        Ok(()) => crate::manifest::staging::promote(&l.file, &staging, &out),
+        Err(e) => {
+            if let Err(d) = crate::manifest::staging::discard(&staging) {
+                log::warn!("could not remove the failed pass's files: {d:#}");
+            }
+            Err(e)
+        }
     }
+}
 
+/// The pass `args` asks for, on `loaded` when it is a run's.
+fn run_pass(
+    mut args: AnnotateCliArgs,
+    loaded: Option<&crate::manifest::run::Loaded>,
+) -> Result<()> {
     if is_ontology_followup(&args) {
-        let loaded = loaded
-            .as_ref()
-            .context("--from required for ontology follow-up")?;
+        let loaded = loaded.context("--from required for ontology follow-up")?;
         return annotate_ontology(&build_ontology_args(&args)?, loaded);
     }
 
@@ -289,7 +355,7 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     // Ontology, whose walk then runs by default), and call a first round at
     // the coarse level.
     // The run's Cell Ontology data, read once for the grouping and the pass.
-    let cl_data = match &loaded {
+    let cl_data = match loaded {
         Some(l) if !args.markers.is_empty() => Some(crate::manifest::ontology::load(
             Some(&l.dir),
             &args.markers,
@@ -314,19 +380,17 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         args.obo = Some(obo.into_boxed_str());
         args.label_cl = Some(label_cl.into_boxed_str());
     }
-    resolve_go(&mut args, loaded.as_ref())?;
+    resolve_go(&mut args, loaded)?;
     let args = &args;
 
-    match route(args, loaded.as_ref()) {
+    match route(args, loaded) {
         Route::EmbeddingFiles { feat, cell } => run_projection_from_files(args, feat, cell)?,
         Route::Enrichment => {
             anyhow::ensure!(
                 !args.markers.is_empty() || args.go || args.gaf.is_some() || args.gmt.is_some(),
                 "enrichment needs --markers, --go, --gaf, or --gmt"
             );
-            let loaded = loaded
-                .as_ref()
-                .context("--from is required for enrichment annotation")?;
+            let loaded = loaded.context("--from is required for enrichment annotation")?;
             annotate_by_enrichment(&build_enrichment_args(args), loaded, cl_data.as_ref())?;
         }
         Route::Projection => {
@@ -335,13 +399,11 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
                 !args.go && args.gaf.is_none() && args.gmt.is_none(),
                 "GO terms are scored by the enrichment pass; add --method enrichment"
             );
-            let loaded = loaded
-                .as_ref()
-                .context("--from is required for projection annotation")?;
+            let loaded = loaded.context("--from is required for projection annotation")?;
             annotate_by_projection(&build_projection_args(args), loaded)?;
         }
     }
-    if let (Some(p), Some(l)) = (&prepared, &loaded) {
+    if let (Some(p), Some(l)) = (&prepared, loaded) {
         let coarse = !args.fine && crate::manifest::first_round::is_first_round(l);
         let manifest = crate::manifest::run::annotated_path(&l.file, &args.out);
         crate::manifest::first_round::finish(&manifest, &p.tree, coarse)?;
@@ -512,11 +574,25 @@ pub(crate) fn default_enrichment_args(out: &str) -> AnnotateArgs {
     build_enrichment_args(&d.annotate)
 }
 
+/// Neighbours per cell when `--knn` is not given: the enrichment pass's
+/// clustering graph, and projection's.
+const ENRICHMENT_KNN: usize = 15;
+const PROJECTION_KNN: usize = 30;
+
+/// The `--knn` a pass by `method` uses when none is given.
+pub(crate) fn default_knn(method: AnnotateMethod) -> usize {
+    if method == AnnotateMethod::Projection {
+        PROJECTION_KNN
+    } else {
+        ENRICHMENT_KNN
+    }
+}
+
 pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
     AnnotateArgs {
         clusters: args.clusters.clone(),
         level: args.level.clone(),
-        knn: args.knn.unwrap_or(15),
+        knn: args.knn.unwrap_or(ENRICHMENT_KNN),
         resolution: args.resolution,
         num_clusters: args.num_clusters,
         min_cluster_size: args.min_cluster_size,
@@ -539,14 +615,30 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
         label_cl: args.label_cl.clone(),
         ontology_fdr_q: args.ontology_fdr_q,
         ontology_by: args.ontology_by,
+        susie: (!args.no_susie).then(|| build_susie_config(args)),
     }
+}
+
+fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieConfig {
+    let mut cfg = crate::annotate::susie::SusieConfig {
+        chains: args.mcmc_chains,
+        min_markers: args.min_markers,
+        samples: args.mcmc_samples,
+        warmup: args.mcmc_warmup,
+        thin: args.mcmc_thin,
+        seed: args.seed,
+        dispersion: args.susie_dispersion,
+        ..Default::default()
+    };
+    cfg.prior.num_effects = args.susie_effects;
+    cfg
 }
 
 fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
     AnnotateProjectionArgs {
         markers: args.markers.clone(),
         out: args.out.clone(),
-        knn: args.knn.unwrap_or(30),
+        knn: args.knn.unwrap_or(PROJECTION_KNN),
         resolution: args.resolution,
         num_perm: args.num_perm,
         seed: args.seed,

@@ -62,6 +62,8 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
     mkdir_parent(&out)?;
     let mut eargs = crate::annotate_cmd::default_enrichment_args(&out);
     eargs.clusters.clone_from(&args.clusters);
+    // `ask` aggregates and asks; it runs no SuSiE stage, and records none.
+    eargs.susie = None;
     let inputs = load_enrichment_inputs(&eargs, &loaded, None)?;
 
     // The round: clusters, no labels, the profile, and the cache.
@@ -105,6 +107,7 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
         cell_batch: rel(&cache.cell_batch),
     });
     a.settings = Some(serde_json::json!({ "enrichment": eargs }));
+    a.drop_susie_tables();
     for p in [
         &mut a.markers,
         &mut a.log,

@@ -135,3 +135,18 @@ fn the_one_on_screen_is_found_by_file_whatever_the_spelling() {
     assert_eq!(current(&members, &other), Some(1));
     assert!(members[1].pick.labelled);
 }
+
+#[test]
+fn a_pass_still_staged_is_no_member_of_the_family() {
+    let tmp = tempfile::tempdir().unwrap();
+    family_dir(tmp.path());
+    // What a pass killed before it was promoted leaves.
+    fs::copy(
+        tmp.path().join("X.L0.senna.json"),
+        crate::manifest::staging::staging_prefix(&tmp.path().join("X.L0").to_string_lossy())
+            + ".senna.json",
+    )
+    .unwrap();
+    let got = family(&tmp.path().join("X.senna.json"));
+    assert!(got.iter().all(|m| !m.name().contains("staging")));
+}

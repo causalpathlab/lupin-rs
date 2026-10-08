@@ -240,3 +240,55 @@ fn without_cluster_probabilities_each_cell_keeps_its_own_groups_call() {
         "an abstained cell stays unassigned"
     );
 }
+
+#[test]
+fn a_susie_round_is_grouped_by_its_own_call_not_the_softmax_share() {
+    let root = tempfile::tempdir().unwrap();
+    let (obo, markers) = setup(root.path());
+    let out = root.path().join("run").to_string_lossy().into_owned();
+    let p = prepare(&markers, &out, &data(&obo), None).unwrap();
+    // One cluster SuSiE called CT3; the enrichment's softmax shares lean to
+    // group a by their sum.
+    let cells: Vec<Box<str>> = ["a", "b"].iter().map(|s| Box::from(*s)).collect();
+    write_clusters(
+        &format!("{out}.clusters.parquet"),
+        &cells,
+        &[Some(0), Some(0)],
+    )
+    .unwrap();
+    let fine = vec![Some("CT3".to_string()), Some("CT3".to_string())];
+    write_argmax(&format!("{out}.argmax.tsv"), &cells, &fine, &[1.0, 1.0]).unwrap();
+    let rows: Vec<Box<str>> = vec!["K0".into()];
+    let cols: Vec<Box<str>> = vec!["CT1".into(), "CT_2".into(), "CT3".into()];
+    let table = |values: [f32; 3], name: &str| {
+        let mut m = Mat::zeros(1, 3);
+        for (c, v) in values.iter().enumerate() {
+            m[(0, c)] = *v;
+        }
+        m.to_parquet_with_names(
+            &format!("{out}.{name}.parquet"),
+            (Some(&rows), Some("cluster")),
+            Some(&cols),
+        )
+        .unwrap();
+    };
+    table([0.45, 0.45, 0.1], "q");
+    table([1.0, 1.0, 1.0], "pip");
+    let mut m = RunManifest::new(crate::manifest::run::RunKind::Topic, "run");
+    m.cluster.clusters = Some("run.clusters.parquet".into());
+    m.annotate.argmax = Some("run.argmax.tsv".into());
+    m.annotate.cluster_celltype_q = Some("run.q.parquet".into());
+    m.annotate.cluster_celltype_pip = Some("run.pip.parquet".into());
+    let manifest = root.path().join("run.senna.json");
+    m.save(&manifest).unwrap();
+
+    finish(&manifest, &p.tree, true).unwrap();
+
+    let loaded = run::load(&manifest.to_string_lossy()).unwrap();
+    let coarse = read_argmax(&resolve(
+        &loaded.dir,
+        loaded.manifest.annotate.argmax.as_deref().unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(coarse["a"].0, "CT3", "SuSiE's call, not the shares' group");
+}

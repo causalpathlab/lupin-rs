@@ -294,24 +294,30 @@ impl ClTerms {
         if q.is_empty() {
             return Vec::new();
         }
-        let mut hits: BTreeMap<String, (bool, usize)> = BTreeMap::new();
+        // Ranked: a whole-name hit (any name), then by where the term's own
+        // name has the query (at its start, inside, not at all: a synonym's
+        // hit), then shorter names.
+        let mut hits: BTreeMap<String, (bool, u8, usize)> = BTreeMap::new();
         for (name, ids) in &self.by_name {
             if !name.contains(&q) {
                 continue;
             }
             for id in ids {
-                let len = self.name_of.get(id).map_or(usize::MAX, String::len);
-                let e = hits.entry(id.clone()).or_insert((false, len));
+                let e = hits.entry(id.clone()).or_insert_with(|| {
+                    let own = self.name_of.get(id);
+                    let at = match own.map(|n| self.rules.normalise(n)) {
+                        Some(n) if n.starts_with(&q) => 0,
+                        Some(n) if n.contains(&q) => 1,
+                        _ => 2,
+                    };
+                    (false, at, own.map_or(usize::MAX, String::len))
+                });
                 e.0 |= *name == q;
             }
         }
-        let mut v: Vec<(String, (bool, usize))> = hits.into_iter().collect();
-        v.sort_by(|a, b| {
-            b.1 .0
-                .cmp(&a.1 .0)
-                .then(a.1 .1.cmp(&b.1 .1))
-                .then(a.0.cmp(&b.0))
-        });
+        // Stable over the ids' order, which breaks the remaining ties.
+        let mut v: Vec<_> = hits.into_iter().collect();
+        v.sort_by_key(|(_, (exact, at, len))| (!*exact, *at, *len));
         v.into_iter().take(limit).map(|(id, _)| id).collect()
     }
 

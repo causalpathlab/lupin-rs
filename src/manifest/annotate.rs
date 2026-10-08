@@ -73,6 +73,26 @@ pub fn annotate_by_enrichment(
     stages.start(0);
     let inputs = load_enrichment_inputs(args, loaded, data)?;
     let mut outputs = by_enrichment::run(args, &plan, &inputs)?;
+    // SuSiE makes the marker call over the enrichment's statistics, on raw
+    // count sums (a decoder's expectation is none). NON-FATAL, like the
+    // ontology walk: the enrichment's outputs are already written.
+    let from_decoder = inputs
+        .expression_source
+        .as_ref()
+        .is_some_and(|e| e["from"] == "decoder");
+    match (&args.susie, plan.ontology_mode, from_decoder) {
+        (Some(cfg), false, false) => {
+            if let Err(e) = crate::annotate::by_susie::run(&args.out, cfg, &inputs, &mut outputs) {
+                log::error!(
+                    "SuSiE stage failed ({e:#}); the call is the enrichment's softmax share"
+                );
+            }
+        }
+        (Some(_), false, true) => {
+            info!("no raw counts (decoder expression): the call is the enrichment's softmax share");
+        }
+        _ => {}
+    }
     // The ids the cluster tables' `K{id}` rows refer to, so later rounds and
     // viewers key on the same clusters.
     let clusters_path = format!("{}{}", args.out, rounds::CLUSTERS);
@@ -84,11 +104,7 @@ pub fn annotate_by_enrichment(
     rounds::write_clusters(&clusters_path, &inputs.cell_names, &ids)?;
     outputs.clusters = Some(clusters_path);
     // The decoder's expected expression is no count sum: a later pass or
-    // rescoring must not take it for one.
-    let from_decoder = inputs
-        .expression_source
-        .as_ref()
-        .is_some_and(|e| e["from"] == "decoder");
+    // rescoring must not take it for one (`from_decoder`, above).
     if !plan.ontology_mode && !from_decoder {
         outputs.stats_cache = Some(crate::manifest::recalibrate::write_cache(
             &args.out, &inputs,
@@ -103,6 +119,11 @@ pub fn annotate_by_enrichment(
     // are too few batches to shuffle.
     let mut used = settings(args)?;
     if let serde_json::Value::Object(m) = &mut used {
+        // The SuSiE settings that made the call, or none when it was skipped
+        // or failed and the softmax share made it.
+        if outputs.cluster_celltype_pip.is_none() {
+            m.insert("susie".into(), serde_json::Value::Null);
+        }
         let draws = by_enrichment::sample_perm_draws(inputs.n_batches, args.num_perm);
         if let Some(r) = &inputs.cl_record {
             m.insert("cell_ontology".into(), r.clone());
@@ -254,6 +275,9 @@ fn record(
             a.annotation = rel(&out.annotation);
             a.cluster_celltype_q = rel(&out.cluster_celltype_q);
             a.cluster_celltype_es = rel(&out.cluster_celltype_es);
+            a.cluster_celltype_pip = rel(&out.cluster_celltype_pip);
+            a.cluster_celltype_effect = rel(&out.cluster_celltype_effect);
+            a.cluster_celltype_explained = rel(&out.cluster_celltype_explained);
             a.cluster_expression = rel(&out.cluster_expression);
             a.ontology_assignment = rel(&out.ontology_assignment);
             a.ontology_node_mass = rel(&out.ontology_node_mass);
@@ -448,6 +472,7 @@ pub(super) fn load_enrichment_inputs(
         batch_labels,
         n_batches,
         markers_gc: panel.markers_gc,
+        marker_support: panel.marker_support,
         celltype_names: panel.celltype_names,
         profile_gk,
         pb_gene_gp,
@@ -462,6 +487,7 @@ pub(super) fn load_enrichment_inputs(
 /// The marker panel's side of [`EnrichmentInputs`], aligned to `gene_names`.
 pub(super) struct PanelInputs {
     pub markers_gc: Mat,
+    pub marker_support: Vec<Vec<usize>>,
     pub celltype_names: Vec<Box<str>>,
     pub type_tree: Option<enrichment::treebh::TypeTree>,
     pub cl_record: Option<serde_json::Value>,
@@ -478,9 +504,14 @@ pub(super) fn panel_inputs(
     // gene-sets instead of a curated marker TSV, so an empty path yields an empty
     // marker matrix (the marker-enrichment path is skipped by the caller).
     let mut cl_record = None;
-    let (markers_gc, celltype_names, type_tree) = if args.markers.is_empty() {
+    let (markers_gc, marker_support, celltype_names, type_tree) = if args.markers.is_empty() {
         info!("No marker TSV (ontology gene-set mode); skipping marker matrix");
-        (Mat::zeros(gene_names.len(), 0), Vec::new(), None)
+        (
+            Mat::zeros(gene_names.len(), 0),
+            vec![Vec::new(); gene_names.len()],
+            Vec::new(),
+            None,
+        )
     } else {
         let annot = build_annotation_matrix(&args.markers, gene_names)?;
         info!(
@@ -507,11 +538,17 @@ pub(super) fn panel_inputs(
         let tree = super::ontology::panel_tree(data, &panel)?;
         cl_record = Some(data.record(tree.release.as_deref()));
         let type_tree = Some(tree.treebh(&annot.annot_names));
-        (annot.membership_ga, annot.annot_names, type_tree)
+        (
+            annot.membership_ga,
+            annot.support,
+            annot.annot_names,
+            type_tree,
+        )
     };
 
     Ok(PanelInputs {
         markers_gc,
+        marker_support,
         celltype_names,
         type_tree,
         cl_record,

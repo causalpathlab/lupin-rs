@@ -55,13 +55,15 @@ serde_json = "1.0"
 sha2 = "0.11"
 tempfile = "3"
 nalgebra = "0.34"
+rand = "0.10"
+rand_distr = "0.6"
 nalgebra-sparse = "0.11"
 
 # Published legume stack
 data-beans = { version = "0.8", features = ["aux", "alg"] }
 enrichment = { version = "0.5", package = "legume-enrichment" }
 graph-embedding-util = { version = "0.9", package = "legume-graph-embedding" }
-legume-numeric = { version = "0.9", features = ["matrix", "candle"] }
+legume-numeric = { version = "0.9.3", features = ["matrix", "candle", "mcmc"] }
 legume-plot = { version = "0.3.2" }
 # Rasterises figures in memory for the TUI; the version legume-plot uses.
 resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts"] }

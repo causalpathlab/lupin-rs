@@ -250,3 +250,28 @@ fn the_ontology_can_be_walked_and_searched() {
     assert_eq!(t.search("ct", 2).len(), 2, "capped at the limit");
     assert!(t.search("  ", 10).is_empty());
 }
+
+#[test]
+fn a_search_ranks_terms_named_by_the_query_above_synonym_hits() {
+    let obo = "format-version: 1.2
+
+[Term]
+id: CL:1
+name: T cell
+synonym: \"T lymphocyte\" EXACT []
+
+[Term]
+id: CL:2
+name: lymphocyte
+
+[Term]
+id: CL:3
+name: innate lymphoid cell
+";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    assert_eq!(
+        t.search("lympho", 10),
+        ["CL:2", "CL:3", "CL:1"],
+        "a name starting with it, then a name with it, then a synonym"
+    );
+}

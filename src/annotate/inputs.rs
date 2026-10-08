@@ -29,6 +29,9 @@ pub struct EnrichmentInputs {
     pub n_batches: usize,
     /// G × C IDF-weighted marker matrix. Empty (C = 0) in GO/GMT gene-set mode.
     pub markers_gc: Mat,
+    /// Each gene's cell types, unweighted: `markers_gc`'s support, with the
+    /// genes every type claims (IDF weight 0) kept.
+    pub marker_support: Vec<Vec<usize>>,
     pub celltype_names: Vec<Box<str>>,
     /// G × K weighted mean cluster expression.
     pub profile_gk: Mat,

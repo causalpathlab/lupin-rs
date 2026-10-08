@@ -194,3 +194,63 @@ fn the_grid_names_the_tile_it_would_export() {
     p.grid.as_mut().unwrap().sel = 1;
     assert_eq!(p.selected_tile(), Some(Panel::Layout { k: 1 }));
 }
+
+#[test]
+fn the_picture_protocol_comes_from_the_environment_without_asking_the_terminal() {
+    let proto = |vars: &[(&str, &str)]| {
+        protocol_from_env(|k| {
+            vars.iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| (*v).to_string())
+        })
+    };
+    assert_eq!(proto(&[("KITTY_WINDOW_ID", "1")]), ProtocolType::Kitty);
+    assert_eq!(proto(&[("TERM", "xterm-kitty")]), ProtocolType::Kitty);
+    assert_eq!(proto(&[("TERM_PROGRAM", "ghostty")]), ProtocolType::Kitty);
+    assert_eq!(
+        proto(&[("TERM_PROGRAM", "iTerm.app")]),
+        ProtocolType::Iterm2
+    );
+    assert_eq!(proto(&[("LC_TERMINAL", "iTerm2")]), ProtocolType::Iterm2);
+    assert_eq!(proto(&[("TERM_PROGRAM", "WezTerm")]), ProtocolType::Iterm2);
+    assert_eq!(proto(&[("TERM", "foot")]), ProtocolType::Sixel);
+    assert_eq!(proto(&[("TERM", "mlterm")]), ProtocolType::Sixel);
+    assert_eq!(
+        proto(&[("TERM_PROGRAM", "Apple_Terminal")]),
+        ProtocolType::Halfblocks
+    );
+    assert_eq!(proto(&[]), ProtocolType::Halfblocks);
+    // Through tmux a picture needs passthrough: half-blocks unless asked.
+    assert_eq!(
+        proto(&[("TMUX", "/tmp/tmux"), ("KITTY_WINDOW_ID", "1")]),
+        ProtocolType::Halfblocks
+    );
+}
+
+#[test]
+fn a_cells_pixel_size_comes_from_the_window_size() {
+    use ratatui::crossterm::terminal::WindowSize;
+    let size = |columns, rows, width, height| WindowSize {
+        rows,
+        columns,
+        width,
+        height,
+    };
+    assert_eq!(cell_pixels(&size(200, 50, 2000, 1000)), Some((10, 20)));
+    assert_eq!(cell_pixels(&size(200, 50, 0, 0)), None, "not reported");
+    assert_eq!(cell_pixels(&size(0, 0, 2000, 1000)), None);
+}
+
+#[test]
+fn the_axis_keys_say_where_they_work_and_what_they_chose() {
+    let mut p = pane();
+    assert!(
+        p.step_pair(true, true).contains("diffusion map"),
+        "only there"
+    );
+    while !matches!(p.current(), Panel::Diffusion { .. }) {
+        p.next_layout();
+    }
+    let said = p.step_pair(true, false);
+    assert_eq!(said, p.title(p.current()), "the new pair, as titled");
+}
