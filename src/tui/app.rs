@@ -1160,13 +1160,16 @@ impl App {
                 if let Some(mut r) = self.child.take() {
                     let _ = r.child.kill();
                     let _ = r.child.wait();
-                    // A pass writes its outputs as it goes and its manifest
-                    // last: stopped midway, the prefix holds a mix.
+                    // A pass writes under a staging prefix until it is done:
+                    // stopped, its half goes and the round stays as it was.
                     self.status = match job {
-                        Job::Pass => format!(
-                            "stopped: {}'s files may be half-written; r runs the pass again",
-                            self.args.out
-                        ),
+                        Job::Pass => {
+                            let staging = crate::manifest::staging::staging_prefix(&self.args.out);
+                            if let Err(e) = crate::manifest::staging::discard(&staging) {
+                                self.push_log(format!("[WARN] the stopped pass's files: {e:#}"));
+                            }
+                            format!("stopped: {} is as it was", self.args.out)
+                        }
                         _ => "stopped".into(),
                     };
                 }

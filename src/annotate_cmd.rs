@@ -328,6 +328,31 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         ))?;
     }
 
+    // A pass on a run writes under a staging prefix and takes the round's
+    // place only once it is done: stopped or failed, it leaves the old one.
+    let Some(l) = &loaded else {
+        return run_pass(args, None);
+    };
+    let out = args.out.to_string();
+    let staging = crate::manifest::staging::staging_prefix(&out);
+    crate::manifest::staging::discard(&staging)?;
+    args.out = staging.clone().into_boxed_str();
+    match run_pass(args, loaded.as_ref()) {
+        Ok(()) => crate::manifest::staging::promote(&l.file, &staging, &out),
+        Err(e) => {
+            if let Err(d) = crate::manifest::staging::discard(&staging) {
+                log::warn!("could not remove the failed pass's files: {d:#}");
+            }
+            Err(e)
+        }
+    }
+}
+
+/// The pass `args` asks for, on `loaded` when it is a run's.
+fn run_pass(
+    mut args: AnnotateCliArgs,
+    loaded: Option<&crate::manifest::run::Loaded>,
+) -> Result<()> {
     if is_ontology_followup(&args) {
         let loaded = loaded
             .as_ref()
@@ -364,10 +389,10 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
         args.obo = Some(obo.into_boxed_str());
         args.label_cl = Some(label_cl.into_boxed_str());
     }
-    resolve_go(&mut args, loaded.as_ref())?;
+    resolve_go(&mut args, loaded)?;
     let args = &args;
 
-    match route(args, loaded.as_ref()) {
+    match route(args, loaded) {
         Route::EmbeddingFiles { feat, cell } => run_projection_from_files(args, feat, cell)?,
         Route::Enrichment => {
             anyhow::ensure!(

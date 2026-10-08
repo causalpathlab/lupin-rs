@@ -1368,8 +1368,8 @@ fn a_running_jobs_progress_leaves_an_armed_question_on_screen() {
     assert_eq!(app.status, "x again stops it");
     press(&mut app, KeyCode::Char('x'));
     assert!(app.child.is_none());
-    // A pass stopped midway has replaced some of the round's files.
-    assert!(app.status.contains("half-written"), "{}", app.status);
+    // A stopped pass never reached the round.
+    assert!(app.status.contains("as it was"), "{}", app.status);
 
     running(&mut app);
     press(&mut app, KeyCode::Char('q'));
