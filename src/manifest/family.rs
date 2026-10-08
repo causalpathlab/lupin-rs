@@ -104,11 +104,15 @@ impl Kind {
     }
 
     /// What showing a member of this kind does, in a line.
-    pub fn detail(self) -> &'static str {
-        match self {
-            Kind::Run => "the run itself: no clusters on the left until a pass (A); passes start from it",
-            Kind::Round => "show this round's clusters and labels; the order view takes its labels, and passes start from it",
-            Kind::Trajectory => "show this trajectory's figures with the round it carries; passes start from it",
+    /// What showing it does; `figures` when the TUI shows trajectories'
+    /// figures (`lupin trajectory`'s).
+    pub fn detail(self, figures: bool) -> &'static str {
+        match (self, figures) {
+            (Kind::Run, _) => "the run itself: no clusters on the left until a pass (A); passes start from it",
+            (Kind::Round, true) => "show this round's clusters and labels; the order view takes its labels, and passes start from it",
+            (Kind::Round, false) => "show this round's clusters and labels; passes start from it",
+            (Kind::Trajectory, true) => "show this trajectory's figures with the round it carries; passes start from it",
+            (Kind::Trajectory, false) => "show the round this trajectory carries (its figures are lupin trajectory's); passes start from it",
         }
     }
 }

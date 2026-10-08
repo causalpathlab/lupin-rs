@@ -562,11 +562,25 @@ pub(crate) fn default_enrichment_args(out: &str) -> AnnotateArgs {
     build_enrichment_args(&d.annotate)
 }
 
+/// Neighbours per cell when `--knn` is not given: the enrichment pass's
+/// clustering graph, and projection's.
+pub(crate) const ENRICHMENT_KNN: usize = 15;
+pub(crate) const PROJECTION_KNN: usize = 30;
+
+/// The `--knn` a pass by `method` uses when none is given.
+pub(crate) fn default_knn(method: AnnotateMethod) -> usize {
+    if method == AnnotateMethod::Projection {
+        PROJECTION_KNN
+    } else {
+        ENRICHMENT_KNN
+    }
+}
+
 pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
     AnnotateArgs {
         clusters: args.clusters.clone(),
         level: args.level.clone(),
-        knn: args.knn.unwrap_or(15),
+        knn: args.knn.unwrap_or(ENRICHMENT_KNN),
         resolution: args.resolution,
         num_clusters: args.num_clusters,
         min_cluster_size: args.min_cluster_size,
@@ -612,7 +626,7 @@ fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
     AnnotateProjectionArgs {
         markers: args.markers.clone(),
         out: args.out.clone(),
-        knn: args.knn.unwrap_or(30),
+        knn: args.knn.unwrap_or(PROJECTION_KNN),
         resolution: args.resolution,
         num_perm: args.num_perm,
         seed: args.seed,

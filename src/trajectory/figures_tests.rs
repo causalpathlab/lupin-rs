@@ -445,3 +445,30 @@ fn a_missing_umap_or_phate_names_the_senna_command() {
         "{both}"
     );
 }
+
+#[test]
+fn a_layout_is_read_onto_every_cell_even_with_a_name_twice() {
+    use legume_numeric::matrix::traits::IoOps as _;
+    // Merged samples can repeat a barcode: three cells, two names.
+    let cells: Vec<Box<str>> = ["a", "b", "a"].iter().map(|s| Box::from(*s)).collect();
+    let index: FxHashMap<&str, usize> = cells
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.as_ref(), i))
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("layout.parquet");
+    let rows: Vec<Box<str>> = ["a", "b"].iter().map(|s| Box::from(*s)).collect();
+    let cols: Vec<Box<str>> = ["x", "y"].iter().map(|s| Box::from(*s)).collect();
+    let m = Mat::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+    m.to_parquet_with_names(
+        &path.to_string_lossy(),
+        (Some(&rows), Some("cell")),
+        Some(&cols),
+    )
+    .unwrap();
+    let (x, y) = read_layout(&path.to_string_lossy(), &index, cells.len()).unwrap();
+    assert_eq!(x.len(), 3, "one per cell");
+    assert_eq!((x[1], y[1]), (3.0, 4.0));
+    assert_eq!((x[2], y[2]), (1.0, 2.0), "the name's last cell");
+}

@@ -9,19 +9,18 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use image::DynamicImage;
 use ratatui::layout::{Rect, Size};
-use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{FilterType, Resize};
 use rayon::prelude::*;
 use std::cell::{Ref, RefCell};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// How figures reach the terminal, as `senna view` offers it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum Graphics {
-    /// Ask the terminal; half-block characters when it does not answer.
+    /// The terminal's own, as its environment names it (kitty, Ghostty,
+    /// iTerm2, WezTerm); half-block characters otherwise.
     #[default]
     Auto,
     Kitty,
@@ -283,11 +282,13 @@ impl FigurePane {
     }
 
     /// Another pair of diffusion components, when that panel is shown.
-    pub fn step_pair(&mut self, forward: bool, x_axis: bool) {
-        if let Panel::Diffusion { x, y } = self.current() {
-            self.pair = self.data.next_pair(x, y, forward, x_axis);
-            self.view = View::default();
-        }
+    pub fn step_pair(&mut self, forward: bool, x_axis: bool) -> String {
+        let Panel::Diffusion { x, y } = self.current() else {
+            return "the axes step on the diffusion map (m reaches it)".into();
+        };
+        self.pair = self.data.next_pair(x, y, forward, x_axis);
+        self.view = View::default();
+        self.title(self.current())
     }
 
     /// Change the scatter's view by `f`; `None` when the panel on screen is
@@ -532,25 +533,61 @@ impl FigurePane {
     }
 }
 
-/// The terminal's picture protocol, asked for unless `graphics` names one;
-/// half-blocks when the terminal does not answer.
+/// The terminal's picture protocol: the one `graphics` names, else the one
+/// the environment says the terminal has; half-blocks when it says none or
+/// the cell's pixel size is unknown.
+///
+/// The terminal is not asked. ratatui-image's query reads stdin on a thread
+/// that outlives its timeout and restores the terminal mode after it says it
+/// is done, so beside the TUI's own key reader it eats keys and can leave
+/// the terminal out of raw mode.
 pub fn picker(graphics: Graphics) -> Picker {
-    let mut picker = if graphics == Graphics::Blocks {
-        Picker::halfblocks()
-    } else {
-        Picker::from_query_stdio_with_options(QueryStdioOptions {
-            timeout: Duration::from_millis(500),
-            ..Default::default()
-        })
-        .unwrap_or_else(|_| Picker::halfblocks())
+    let cell = ratatui::crossterm::terminal::window_size()
+        .ok()
+        .and_then(|w| cell_pixels(&w));
+    let protocol = match graphics {
+        Graphics::Blocks => ProtocolType::Halfblocks,
+        Graphics::Kitty => ProtocolType::Kitty,
+        Graphics::Sixel => ProtocolType::Sixel,
+        Graphics::Iterm2 => ProtocolType::Iterm2,
+        Graphics::Auto if cell.is_none() => ProtocolType::Halfblocks,
+        Graphics::Auto => protocol_from_env(|k| std::env::var(k).ok()),
     };
-    match graphics {
-        Graphics::Auto | Graphics::Blocks => {}
-        Graphics::Kitty => picker.set_protocol_type(ProtocolType::Kitty),
-        Graphics::Sixel => picker.set_protocol_type(ProtocolType::Sixel),
-        Graphics::Iterm2 => picker.set_protocol_type(ProtocolType::Iterm2),
+    if protocol == ProtocolType::Halfblocks {
+        return Picker::halfblocks();
     }
+    // A protocol named outright, with the cell's size unknown: a common one.
+    #[allow(deprecated)] // in favour of the stdin query, which is what is avoided
+    let mut picker = Picker::from_fontsize(cell.unwrap_or((10, 20)).into());
+    picker.set_protocol_type(protocol);
     picker
+}
+
+/// The picture protocol the terminal's environment variables (`var`) name.
+pub(crate) fn protocol_from_env(var: impl Fn(&str) -> Option<String>) -> ProtocolType {
+    let is = |k: &str, f: &dyn Fn(&str) -> bool| var(k).is_some_and(|v| f(&v));
+    // Through tmux a picture needs passthrough, which `--graphics` can ask for.
+    if var("TMUX").is_some() {
+        return ProtocolType::Halfblocks;
+    }
+    if var("KITTY_WINDOW_ID").is_some()
+        || is("TERM", &|t| t.contains("kitty") || t.contains("ghostty"))
+        || is("TERM_PROGRAM", &|t| t.eq_ignore_ascii_case("ghostty"))
+    {
+        return ProtocolType::Kitty;
+    }
+    if is("TERM_PROGRAM", &|t| t == "iTerm.app" || t == "WezTerm")
+        || is("LC_TERMINAL", &|t| t == "iTerm2")
+    {
+        return ProtocolType::Iterm2;
+    }
+    ProtocolType::Halfblocks
+}
+
+/// A cell's size in pixels, from the window's when the terminal reports it.
+pub(crate) fn cell_pixels(w: &ratatui::crossterm::terminal::WindowSize) -> Option<(u16, u16)> {
+    (w.columns > 0 && w.rows > 0 && w.width > 0 && w.height > 0)
+        .then(|| (w.width / w.columns, w.height / w.rows))
 }
 
 #[cfg(test)]

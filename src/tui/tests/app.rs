@@ -649,6 +649,8 @@ fn esc_closes_the_exports_strip_then_the_grid_before_leaving() {
     press(&mut app, KeyCode::Esc);
     assert!(app.figures.as_ref().unwrap().grid.is_none());
     assert_eq!(app.focus, Focus::Order, "only the grid closed");
+    let v = app.figures.as_ref().unwrap();
+    assert_eq!(app.status, v.title(v.current()), "the grid's keys are gone");
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.focus, Focus::Clusters);
 }
@@ -1240,6 +1242,14 @@ fn the_annotate_tui_has_no_order_view_and_says_nothing_of_it() {
         let bar = super::super::ui::help(&app);
         assert!(!bar.contains("order"), "{focus:?}: {bar}");
     }
+    use crate::manifest::family::Kind;
+    for kind in [Kind::Run, Kind::Round, Kind::Trajectory] {
+        let what = kind.detail(false);
+        assert!(
+            !what.contains("order view") && !what.contains("figures with"),
+            "{what}"
+        );
+    }
     for (section, keys) in super::super::ui::guide(false) {
         for (key, what) in keys {
             let text = format!("{section} {key} {what}");
@@ -1335,4 +1345,90 @@ fn right_on_an_unfolded_panel_branch_goes_on_into_the_ontology() {
     let term = app.tree.nodes[i].cl_id.clone().unwrap();
     assert_eq!(v.selected().unwrap().id, term);
     assert!(v.is_open(&term));
+}
+
+#[test]
+fn the_knn_row_steps_from_the_methods_default_and_back_to_it() {
+    let mut a = cli(&[]);
+    Setting::Knn.adjust(&mut a, true);
+    assert_eq!(a.knn, Some(16));
+    Setting::Knn.adjust(&mut a, false);
+    assert_eq!(a.knn, None, "back on the default: no --knn");
+    a.method = crate::annotate_cmd::AnnotateMethod::Projection;
+    Setting::Knn.adjust(&mut a, false);
+    assert_eq!(a.knn, Some(29), "projection's default is 30");
+}
+
+#[test]
+fn a_running_jobs_progress_leaves_an_armed_question_on_screen() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    press(&mut app, KeyCode::Char('x'));
+    app.tick();
+    assert_eq!(app.status, "x again stops it");
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.child.is_none());
+    // A pass stopped midway has replaced some of the round's files.
+    assert!(app.status.contains("half-written"), "{}", app.status);
+
+    running(&mut app);
+    press(&mut app, KeyCode::Char('q'));
+    app.tick();
+    assert!(app.status.contains("q again"), "{}", app.status);
+    app.stop();
+}
+
+#[test]
+fn a_relabelled_cluster_shows_the_evidence_of_its_new_label() {
+    use super::super::round::{Candidate, Edit, SusieEvidence};
+    let cand = |label: &str, fold| Candidate {
+        label: label.into(),
+        share: 0.5,
+        susie: Some(SusieEvidence { pip: 1.0, fold }),
+        nes: None,
+        p: None,
+        q: None,
+    };
+    let mut app = app_with_terms(false);
+    if let Some(r) = app.round.as_mut() {
+        r.clusters[0].candidates = vec![cand("CT1", 7.0), cand("CT2", 3.0)];
+    }
+    let k0 = |app: &App| {
+        drawn(app)
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(160)
+            .map(|r| r.iter().collect::<String>())
+            .find(|r| r.contains("K0"))
+            .map(|r| {
+                r.chars()
+                    .skip(1)
+                    .take_while(|&c| c != '│')
+                    .collect::<String>()
+            })
+            .unwrap()
+    };
+    let relabel = |app: &mut App, label: &str| {
+        app.edits = vec![Edit::Label {
+            cluster: 0,
+            label: label.into(),
+            reason: "why".into(),
+        }];
+    };
+    relabel(&mut app, "CT2");
+    assert!(k0(&app).contains("×3.0"), "{}", k0(&app));
+    relabel(&mut app, UNASSIGNED_LABEL);
+    assert!(!k0(&app).contains('×'), "no call, no fold: {}", k0(&app));
+}
+
+#[test]
+fn the_key_guide_wraps_a_long_description_instead_of_cutting_it() {
+    let mut app = app_with_terms(false);
+    app.help_open = true;
+    let screen = drawn(&app);
+    assert!(screen.contains("(◈ hiding)"), "the h row's end");
+    assert!(
+        screen.contains("pgup/dn home/end "),
+        "the key column fits its keys"
+    );
 }

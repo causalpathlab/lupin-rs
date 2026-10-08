@@ -436,29 +436,68 @@ pub(super) fn guide(
     })
 }
 
-fn draw_guide(f: &mut Frame, trajectory: bool) {
-    let mut lines: Vec<Line> = Vec::new();
-    for (section, keys) in guide(trajectory) {
-        if !lines.is_empty() {
-            lines.push(Line::default());
-        }
-        lines.push(Line::from(format!(" {section}")).bold().cyan());
-        for (key, what) in keys {
+/// The width of the guide's key column.
+const GUIDE_KEY: usize = 18;
+
+/// One section of the guide as lines `width` wide, each description wrapped
+/// under its key.
+fn guide_section(section: &str, keys: &[(&str, &str)], width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(format!(" {section}")).bold().cyan()];
+    let room = width.saturating_sub(GUIDE_KEY + 3).max(20);
+    for (key, what) in keys {
+        for (i, part) in wrap(what, room, usize::MAX).into_iter().enumerate() {
+            let key = if i == 0 { *key } else { "" };
             lines.push(Line::from(vec![
-                Span::from(format!("   {key:<16}")).bold(),
-                Span::from(*what),
+                Span::from(format!("   {key:<GUIDE_KEY$}")).bold(),
+                Span::from(part),
             ]));
         }
     }
-    let height = (lines.len() as u16 + 2).min(f.area().height);
-    let area = centered(f.area(), 84, height);
+    lines
+}
+
+fn draw_guide(f: &mut Frame, trajectory: bool) {
+    let screen = f.area();
+    // Two columns side by side when the terminal is wide enough.
+    let columns: u16 = if screen.width >= 150 { 2 } else { 1 };
+    let width = screen.width.saturating_sub(4).min(110 * columns);
+    let col = usize::from((width.saturating_sub(2)) / columns);
+    let sections: Vec<Vec<Line>> = guide(trajectory)
+        .map(|(section, keys)| guide_section(section, keys, col))
+        .collect();
+    // The first `split` sections go left, the rest right: the split whose
+    // taller column is shortest.
+    let tall = |part: &[Vec<Line>]| part.iter().map(|s| s.len() + 1).sum::<usize>();
+    let split = if columns == 2 {
+        (0..=sections.len())
+            .min_by_key(|&k| tall(&sections[..k]).max(tall(&sections[k..])))
+            .unwrap_or(0)
+    } else {
+        sections.len()
+    };
+    let mut cols: Vec<Vec<Line>> = vec![Vec::new(); usize::from(columns)];
+    for (i, s) in sections.into_iter().enumerate() {
+        let at = usize::from(i >= split && columns == 2);
+        if !cols[at].is_empty() {
+            cols[at].push(Line::default());
+        }
+        cols[at].extend(s);
+    }
+    let tallest = cols.iter().map(Vec::len).max().unwrap_or(0);
+    let height = (tallest as u16 + 2).min(screen.height);
+    let area = centered(screen, width, height);
     f.render_widget(Clear, area);
-    f.render_widget(
-        Paragraph::new(lines)
-            .style(POPUP)
-            .block(popup(" keys ".into(), " any key closes ")),
-        area,
-    );
+    let block = popup(" keys ".into(), " any key closes ");
+    let inner = block.inner(area);
+    f.render_widget(block.style(POPUP), area);
+    let parts = Layout::horizontal(vec![
+        Constraint::Ratio(1, u32::from(columns));
+        usize::from(columns)
+    ])
+    .split(inner);
+    for (lines, part) in cols.into_iter().zip(parts.iter()) {
+        f.render_widget(Paragraph::new(lines).style(POPUP), *part);
+    }
 }
 
 /// A popup's text: light on a dark ground, apart from the panes under it
@@ -507,7 +546,13 @@ fn bar(share: f32) -> String {
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     // The status first, where it is seen; the run's file last.
     let mut spans = vec![
-        Span::from(" lupin annotate ").bold().reversed(),
+        Span::from(if app.trajectory_tui {
+            " lupin trajectory "
+        } else {
+            " lupin annotate "
+        })
+        .bold()
+        .reversed(),
         Span::from(format!(" {} ", app.status)).bold(),
     ];
     if !app.edits.is_empty() {
@@ -551,10 +596,19 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 ""
             };
-            let evidence = match (susie, c.call_evidence()) {
-                (true, Some(e)) => vec![format!("{:.2}", e.pip), format!("×{:.1}", e.fold)],
+            // The evidence for the label shown, which an edit may have changed.
+            let of_label = c
+                .candidates
+                .iter()
+                .find(|t| Some(&t.label) == label.as_ref());
+            let evidence = match (susie, of_label) {
+                (true, Some(t)) => match t.susie {
+                    Some(e) => vec![format!("{:.2}", e.pip), format!("×{:.1}", e.fold)],
+                    None => vec!["—".into(), "—".into()],
+                },
                 (true, None) => vec!["—".into(), "—".into()],
-                (false, _) => vec![format!("{:.2}", c.top_share())],
+                (false, Some(t)) => vec![format!("{:.2}", t.share)],
+                (false, None) => vec!["—".into()],
             };
             let mut cells = vec![format!("K{}", c.id), c.cells.to_string(), shown];
             cells.extend(evidence);

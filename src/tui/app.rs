@@ -130,7 +130,10 @@ impl Setting {
                 AnnotateMethod::Enrichment => "enrichment".into(),
                 AnnotateMethod::Projection => "projection".into(),
             },
-            Self::Knn => a.knn.map_or("default".into(), |k| k.to_string()),
+            Self::Knn => a.knn.map_or_else(
+                || format!("default ({})", crate::annotate_cmd::default_knn(a.method)),
+                |k| k.to_string(),
+            ),
             Self::Resolution => format!("{:.2}", a.resolution),
             Self::NumClusters => a.num_clusters.map_or("auto".into(), |k| k.to_string()),
             Self::NumPerm => a.num_perm.to_string(),
@@ -162,7 +165,12 @@ impl Setting {
                     (Projection, true) | (Enrichment, false) => Auto,
                 };
             }
-            Self::Knn => a.knn = Some(step(a.knn.unwrap_or(15), 1, 2)),
+            Self::Knn => {
+                // On the method's default it is left unset: no `--knn`.
+                let d = crate::annotate_cmd::default_knn(a.method);
+                let k = step(a.knn.unwrap_or(d), 1, 2);
+                a.knn = (k != d).then_some(k);
+            }
             Self::Resolution => {
                 let r = a.resolution + if up { 0.1 } else { -0.1 };
                 a.resolution = (r.max(0.1) * 100.0).round() / 100.0;
@@ -576,6 +584,8 @@ impl App {
         };
         let (secs, job) = (r.started.elapsed().as_secs(), r.job.clone());
         match r.child.try_wait() {
+            // The progress, unless a key waits to be pressed again.
+            Ok(None) if self.armed.is_some() => {}
             Ok(None) => {
                 let elapsed = r.started.elapsed();
                 self.status = match r.progress.estimate(elapsed) {
@@ -675,7 +685,10 @@ impl App {
                 );
                 self.set_round(Some(r));
             }
-            Err(e) => self.status = format!("could not read {}: {e:#}", manifest.display()),
+            Err(e) => {
+                self.status = format!("could not read {}: {e:#}", manifest.display());
+                self.push_log(format!("[WARN] {}", self.status));
+            }
         }
     }
 
@@ -1142,12 +1155,20 @@ impl App {
     /// which could leave a round half-written: it finishes on its own.
     fn stop(&mut self) {
         match self.child.as_ref().map(|r| r.job.clone()) {
-            Some(Job::Pass | Job::Trajectory(_)) => {
+            Some(job @ (Job::Pass | Job::Trajectory(_))) => {
                 self.after_pass = AfterPass::Nothing;
                 if let Some(mut r) = self.child.take() {
                     let _ = r.child.kill();
                     let _ = r.child.wait();
-                    self.status = "stopped".into();
+                    // A pass writes its outputs as it goes and its manifest
+                    // last: stopped midway, the prefix holds a mix.
+                    self.status = match job {
+                        Job::Pass => format!(
+                            "stopped: {}'s files may be half-written; r runs the pass again",
+                            self.args.out
+                        ),
+                        _ => "stopped".into(),
+                    };
                 }
             }
             Some(Job::Save(_)) => self.status = "a save finishes on its own; wait for it".into(),
@@ -2422,7 +2443,7 @@ impl App {
                     m.holds,
                     super::gallery::ago(m.modified, now)
                 );
-                let detail = m.pick.kind.detail().to_string();
+                let detail = m.pick.kind.detail(self.trajectory_tui).to_string();
                 let action = Action::OpenRun {
                     pick: m.pick,
                     drop_edits: false,
@@ -2486,7 +2507,8 @@ impl App {
             self.args.from = Some(self.source.to_string_lossy().into());
             self.target = annotated_path(&self.source, &self.args.out);
         }
-        let trajectory = pick.kind == Kind::Trajectory;
+        // Only `lupin trajectory`'s TUI shows a trajectory's figures.
+        let trajectory = pick.kind == Kind::Trajectory && self.trajectory_tui;
         if trajectory {
             let picker = self.picker().clone();
             match super::figure_pane::FigurePane::load(&[path], &picker) {
@@ -2987,7 +3009,10 @@ impl App {
                     v.open_tile();
                     self.status = v.title(v.current());
                 }
-                KeyCode::Esc | KeyCode::Char('w') => v.grid = None,
+                KeyCode::Esc | KeyCode::Char('w') => {
+                    v.grid = None;
+                    self.status = v.title(v.current());
+                }
                 KeyCode::Char('V') => {
                     v.grid = None;
                     v.shown = false;
@@ -3029,10 +3054,10 @@ impl App {
                 v.shown = false;
                 v.grid = None;
             }
-            KeyCode::Char(',') if v.shown => v.step_pair(false, false),
-            KeyCode::Char('.') if v.shown => v.step_pair(true, false),
-            KeyCode::Char('[') if v.shown => v.step_pair(false, true),
-            KeyCode::Char(']') if v.shown => v.step_pair(true, true),
+            KeyCode::Char(',') if v.shown => self.status = v.step_pair(false, false),
+            KeyCode::Char('.') if v.shown => self.status = v.step_pair(true, false),
+            KeyCode::Char('[') if v.shown => self.status = v.step_pair(false, true),
+            KeyCode::Char(']') if v.shown => self.status = v.step_pair(true, true),
             // senna view's keys: labels, colouring, layout.
             KeyCode::Char('t') if v.shown => self.status = v.style.cycle_labels(),
             KeyCode::Char('c') if v.shown => {

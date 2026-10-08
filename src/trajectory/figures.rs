@@ -330,7 +330,7 @@ impl TrajectoryData {
         let mut all = Vec::new();
         let (found, run) = layouts_along(manifest, dir, file);
         for (method, path) in &found {
-            match read_layout(path, &index) {
+            match read_layout(path, &index, cells.len()) {
                 Ok((x, y)) => all.push(Layout {
                     method: method.clone(),
                     x,
@@ -1054,10 +1054,15 @@ fn sole_lineage(weights: &[Vec<f64>], i: usize) -> i32 {
     }
 }
 
-/// The layout at `path` as `(x, y)` per cell of `index`, NaN for a cell the
-/// layout lacks; an error when it has none of them, so the next layout is
-/// tried.
-fn read_layout(path: &str, index: &FxHashMap<&str, usize>) -> Result<(Vec<f32>, Vec<f32>)> {
+/// The layout at `path` as `(x, y)` for each of the `n` cells `index` maps
+/// names into, NaN for a cell the layout lacks; an error when it has none
+/// of them, so the next layout is tried. A name the cells repeat counts
+/// once in `index`, so `n` is the cells', not its size.
+fn read_layout(
+    path: &str,
+    index: &FxHashMap<&str, usize>,
+    n: usize,
+) -> Result<(Vec<f32>, Vec<f32>)> {
     let t = Mat::from_parquet(path)?;
     let col = |name: &str| t.cols.iter().position(|c| c.as_ref() == name);
     let (Some(x), Some(y)) = (col("x"), col("y")) else {
@@ -1066,7 +1071,7 @@ fn read_layout(path: &str, index: &FxHashMap<&str, usize>) -> Result<(Vec<f32>, 
     if !t.rows.iter().any(|r| index.contains_key(r.as_ref())) {
         anyhow::bail!("{path} shares no cell with the trajectory");
     }
-    let m = aligned(&t.rows, &t.mat, index, index.len());
+    let m = aligned(&t.rows, &t.mat, index, n);
     Ok((
         m.column(x).iter().copied().collect(),
         m.column(y).iter().copied().collect(),
