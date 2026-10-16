@@ -572,13 +572,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// The cluster list's header: a SuSiE round's calls show their share of the
-/// deviance the types explain and their fold, not their PIP (a type's
-/// inclusion in the cluster's model, near 1 for every type a mixed cluster
-/// holds, which beside the call reads as certainty); otherwise the share.
+/// The cluster list's header: a SuSiE round's calls show the share of the
+/// deviance they explain and their fold, not their PIP (a type's inclusion
+/// in the cluster's model, near 1 for every type a mixed cluster holds,
+/// which beside the call reads as certainty); otherwise the enrichment's
+/// share, named apart so a rescore's switch shows.
 pub(super) fn cluster_list_header(susie: bool) -> Vec<&'static str> {
     if susie {
-        vec!["", "cells", "label", "share", "fold", ""]
+        vec!["", "cells", "label", "explains", "fold", ""]
     } else {
         vec!["", "cells", "label", "share", ""]
     }
@@ -590,10 +591,12 @@ pub(super) fn cluster_list_evidence(
     candidate: Option<&super::round::Candidate>,
 ) -> Vec<String> {
     match (susie, candidate) {
-        (true, Some(t @ super::round::Candidate { susie: Some(e), .. })) => {
-            vec![format!("{:.2}", t.share), format!("×{:.1}", e.fold)]
-        }
-        (true, _) => vec!["—".into(), "—".into()],
+        (true, Some(t)) => vec![
+            format!("{:.2}", t.share),
+            t.susie
+                .map_or_else(|| "—".into(), |e| format!("×{:.1}", e.fold)),
+        ],
+        (true, None) => vec!["—".into(), "—".into()],
         (false, Some(t)) => vec![format!("{:.2}", t.share)],
         (false, None) => vec!["—".into()],
     }
@@ -648,7 +651,7 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(5),
             Constraint::Length(6),
             Constraint::Min(20),
-            Constraint::Length(5),
+            Constraint::Length(8),
             Constraint::Length(6),
             Constraint::Length(1),
         ]
