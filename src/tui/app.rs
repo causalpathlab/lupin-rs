@@ -41,6 +41,15 @@ pub struct Form {
     pub expression: Option<String>,
 }
 
+impl Form {
+    /// The setting on the cursor's row of `args`'s form ([`settings`]).
+    #[must_use]
+    pub fn setting(&self, args: &AnnotateCliArgs) -> Setting {
+        let rows = settings(args);
+        rows[self.row.min(rows.len() - 1)]
+    }
+}
+
 /// What follows a pass.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AfterPass {
@@ -85,9 +94,9 @@ pub enum Setting {
     Run,
 }
 
-/// The form's rows for `a`'s method: the enrichment's own (permutations,
-/// GO, SuSiE) only when it may run, projection's way of calling only when
-/// projection may.
+/// The form's rows for `a`'s method: the enrichment's own (GO, SuSiE) only
+/// when it may run, projection's way of calling only when projection may,
+/// and permutations when a null permutes (the enrichment's, the ORA's).
 #[must_use]
 pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
     use Setting::{
@@ -95,6 +104,7 @@ pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
     };
     let enrichment = a.method != AnnotateMethod::Projection;
     let projection = a.method != AnnotateMethod::Enrichment;
+    let permutes = enrichment || a.projection == ProjectionMethod::Ora;
     [
         (Markers, true),
         (Output, true),
@@ -103,7 +113,7 @@ pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
         (Knn, true),
         (Resolution, true),
         (NumClusters, true),
-        (NumPerm, enrichment),
+        (NumPerm, permutes),
         (Go, enrichment),
         (Susie, enrichment),
         (Run, true),
@@ -149,10 +159,7 @@ impl Setting {
                 AnnotateMethod::Enrichment => "enrichment".into(),
                 AnnotateMethod::Projection => "projection".into(),
             },
-            Self::Projection => match a.projection {
-                ProjectionMethod::Score => "score".into(),
-                ProjectionMethod::Ora => "ora".into(),
-            },
+            Self::Projection => a.projection.as_str().into(),
             Self::Knn => a.knn.map_or_else(
                 || format!("default ({})", crate::annotate_cmd::default_knn(a.method)),
                 |k| k.to_string(),
@@ -1877,7 +1884,7 @@ impl App {
         let code = k.code;
         let Some(form) = &mut self.form else { return };
         let rows = settings(&self.args);
-        let at = rows[form.row.min(rows.len() - 1)];
+        let at = form.setting(&self.args);
         match code {
             KeyCode::Esc | KeyCode::Char('r' | 'q') => self.close_form(),
             KeyCode::Up

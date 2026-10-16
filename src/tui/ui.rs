@@ -673,7 +673,7 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
     let summary = lines(&summary);
     let note = form.note.as_deref().map(lines).unwrap_or_default();
     let rows_shown = settings(&app.args);
-    let explain = lines(rows_shown[form.row.min(rows_shown.len() - 1)].explain());
+    let explain = lines(form.setting(&app.args).explain());
     let (sum_h, note_h, explain_h) = (
         summary.len() as u16,
         note.len() as u16,
