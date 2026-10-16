@@ -812,6 +812,41 @@ mod route_tests {
     }
 
     #[test]
+    fn an_unset_projection_takes_the_ora_for_settings_the_score_cannot_honour() {
+        let bge = run_with(RunKind::Bge, true, true);
+        let p = |more: &[&str]| resolve_projection(&cli(more), Some(&bge));
+        assert_eq!(p(&["--no-idf"]), ProjectionMethod::Ora);
+        assert_eq!(p(&["--min-markers", "5"]), ProjectionMethod::Ora);
+        assert_eq!(
+            p(&["--projection", "score", "--no-idf"]),
+            ProjectionMethod::Score,
+            "asked"
+        );
+    }
+
+    #[test]
+    fn the_command_lines_marker_floor_is_the_scores() {
+        use graph_embedding_util::type_annotation::embedding_score::MIN_MARKERS;
+        assert_eq!(
+            cli(&[]).min_markers,
+            MIN_MARKERS,
+            "a default pass must not be refused"
+        );
+    }
+
+    #[test]
+    fn auto_with_go_terms_does_not_take_the_embedding_files_route() {
+        let a = cli(&[
+            "--go",
+            "--feature-embedding",
+            "f.parquet",
+            "--cell-embedding",
+            "c.parquet",
+        ]);
+        assert!(matches!(route(&a, None), Route::Enrichment));
+    }
+
+    #[test]
     fn projection_scores_where_the_run_decodes_and_falls_back_to_the_ora() {
         let bge = run_with(RunKind::Bge, true, true);
         let fne = run_with(RunKind::Fne, true, false);

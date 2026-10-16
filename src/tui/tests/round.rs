@@ -411,3 +411,38 @@ fn a_merged_score_round_lists_its_types_from_the_cells_calls() {
         "the merged cluster's cells, by their calls"
     );
 }
+
+#[test]
+fn a_score_round_whose_table_is_gone_opens_without_shares() {
+    use crate::annotate::marker_score::toy;
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, panel) = toy::write_run(dir.path());
+    let loaded = run::load(&manifest).unwrap();
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::annotate::annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
+    std::fs::remove_file(format!(
+        "{out}{}",
+        crate::annotate::outputs::MARKER_SCORE_PARQUET
+    ))
+    .unwrap();
+    let view = RoundView::load(&crate::manifest::run::annotated_path(&loaded.file, &out)).unwrap();
+    assert!(view.clusters.iter().all(|c| c.candidates.is_empty()));
+}
+
+#[test]
+fn call_shares_table_each_clusters_calls_with_uncalled_cells_in_its_size() {
+    let clusters = [Some(3), Some(3), Some(3), Some(3), None, Some(5)];
+    let calls = [
+        Some("A"),
+        Some("A"),
+        Some("unassigned"),
+        None,
+        Some("A"),
+        Some("B"),
+    ];
+    let t = crate::annotate::rounds::call_shares(&clusters, &calls);
+    assert_eq!(t.rows, [3, 5]);
+    assert_eq!(t.cols, ["A", "B"], "unassigned is not a call");
+    assert_eq!(t.row(3).unwrap(), [0.5, 0.0]);
+    assert_eq!(t.row(5).unwrap(), [0.0, 1.0]);
+}
