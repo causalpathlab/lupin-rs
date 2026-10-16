@@ -608,7 +608,6 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         );
         return;
     };
-    // A SuSiE round shows its calls' share and fold; otherwise the share.
     let susie = r.clusters.iter().any(|c| c.call_evidence().is_some());
     let rows: Vec<Row> = r
         .clusters
@@ -643,31 +642,25 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
             }
         })
         .collect();
-    let (header, widths) = if susie {
-        (
-            Row::new(cluster_list_header(true)),
-            vec![
-                Constraint::Length(5),
-                Constraint::Length(6),
-                Constraint::Min(20),
-                Constraint::Length(5),
-                Constraint::Length(6),
-                Constraint::Length(1),
-            ],
-        )
+    let header = Row::new(cluster_list_header(susie)).bold();
+    let widths = if susie {
+        vec![
+            Constraint::Length(5),
+            Constraint::Length(6),
+            Constraint::Min(20),
+            Constraint::Length(5),
+            Constraint::Length(6),
+            Constraint::Length(1),
+        ]
     } else {
-        (
-            Row::new(cluster_list_header(false)),
-            vec![
-                Constraint::Length(5),
-                Constraint::Length(6),
-                Constraint::Min(20),
-                Constraint::Length(5),
-                Constraint::Length(1),
-            ],
-        )
+        vec![
+            Constraint::Length(5),
+            Constraint::Length(6),
+            Constraint::Min(20),
+            Constraint::Length(5),
+            Constraint::Length(1),
+        ]
     };
-    let header = header.bold();
     let done = r.clusters.iter().filter(|c| app.edited(c.id)).count();
     let mut state = TableState::default().with_selected(Some(app.cluster_sel));
     let t = Table::new(rows, widths)
