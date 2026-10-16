@@ -657,7 +657,7 @@ fn esc_closes_the_exports_strip_then_the_grid_before_leaving() {
 
 #[test]
 fn a_grid_tile_opens_with_its_number_or_space() {
-    use crate::trajectory::figures::Panel;
+    use crate::figures::Panel;
     let dir = tempfile::tempdir().unwrap();
     let mut app = figures_app(dir.path());
     press(&mut app, KeyCode::Char('w'));

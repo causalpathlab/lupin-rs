@@ -3,8 +3,8 @@
 //! (`docs/trajectory-plan.md` §6).
 
 use super::gallery::{Gallery, Status};
+use crate::figures::{self, CellFigures, Panel, Style, View};
 use crate::manifest::run::load;
-use crate::trajectory::figures::{self, Panel, Style, TrajectoryData, View};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use image::DynamicImage;
@@ -194,7 +194,7 @@ pub fn grid_cols(n: usize) -> usize {
 }
 
 pub struct FigurePane {
-    pub data: TrajectoryData,
+    pub data: CellFigures,
     pub panels: Vec<Panel>,
     pub sel: usize,
     /// Show the figure instead of the order table.
@@ -225,14 +225,14 @@ impl FigurePane {
             let Ok(loaded) = load(&m.to_string_lossy()) else {
                 continue;
             };
-            if let Some(data) = TrajectoryData::load(&loaded.manifest, &loaded.dir, &loaded.file)? {
+            if let Some(data) = CellFigures::load(&loaded.manifest, &loaded.dir, &loaded.file)? {
                 return Ok(Some(Self::new(data, picker)));
             }
         }
         Ok(None)
     }
 
-    fn new(data: TrajectoryData, picker: &Picker) -> Self {
+    fn new(data: CellFigures, picker: &Picker) -> Self {
         let exports = Exports::new(data.prefix());
         Self {
             panels: data.panels(),

@@ -1,6 +1,6 @@
 use super::*;
 
-fn data() -> TrajectoryData {
+fn data() -> CellFigures {
     let n = 40;
     let types: Vec<Box<str>> = (0..n)
         .map(|i| if i < 20 { "A" } else { "B" }.into())
@@ -14,7 +14,7 @@ fn data() -> TrajectoryData {
         d[(i, 1)] = x[i];
         d[(i, 2)] = y[i];
     }
-    TrajectoryData {
+    CellFigures {
         manifest: "run.senna.json".into(),
         pseudotime,
         types,
@@ -30,12 +30,12 @@ fn data() -> TrajectoryData {
             verdict: Some(Verdict::Supported),
             order_agreement: 0.9,
         }],
-        ..TrajectoryData::default()
+        ..CellFigures::default()
     }
 }
 
 /// `t`'s figure of `panel` at 320 × 240 in `style`, whole.
-fn draw(t: &TrajectoryData, panel: Panel, style: &Style) -> Figure {
+fn draw(t: &CellFigures, panel: Panel, style: &Style) -> Figure {
     t.figure(panel, 320, 240, style, View::default()).unwrap()
 }
 

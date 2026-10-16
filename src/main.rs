@@ -5,6 +5,7 @@ mod annotate_cmd;
 mod cell_labels;
 mod describe;
 mod docs;
+mod figures;
 mod gene_text;
 mod manifest;
 mod marker_embedding;

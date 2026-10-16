@@ -1,12 +1,13 @@
-//! Figures of a trajectory run, from the outputs its manifest records
-//! (`docs/trajectory-plan.md` §6): the layout coloured by pseudotime with the
-//! prior's edges as arrows, the diffusion map, the types in pseudotime order,
-//! and the connectivity between types. Each is an SVG that legume-plot
-//! renders to PNG for the terminal or writes as a figure file; the TUI's
-//! figure pane is where they are shown and exported.
+//! Figures of a run's cells, from the outputs its manifest records: its 2D
+//! layouts coloured by what the run says of each cell, and, for a trajectory
+//! run (`docs/trajectory-plan.md` §6), the prior's edges as arrows, the
+//! diffusion map, the types in pseudotime order and the connectivity between
+//! types. Each is an SVG that legume-plot renders to PNG for the terminal or
+//! writes as a figure file; the TUI's figure pane is where they are shown and
+//! exported.
 
-use super::edges::{self, EdgeRow, Verdict};
 use crate::manifest::run::{derive_out_prefix, resolve, RunManifest};
+use crate::trajectory::edges::{self, EdgeRow, Verdict};
 use anyhow::{Context, Result};
 use enrichment::UNASSIGNED_LABEL;
 use legume_numeric::matrix::dense_mat_io::Mat;
@@ -69,7 +70,7 @@ impl Colouring {
         }
     }
 
-    /// Its slot in [`TrajectoryData`]'s colour cache.
+    /// Its slot in [`CellFigures`]'s colour cache.
     fn slot(self) -> usize {
         self as usize
     }
@@ -193,7 +194,7 @@ impl View {
 /// Which figure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Panel {
-    /// One of the run's 2D layouts (an index into `TrajectoryData::layouts`),
+    /// One of the run's 2D layouts (an index into `CellFigures::layouts`),
     /// the prior's edges as arrows.
     Layout { k: usize },
     /// Two diffusion components.
@@ -257,7 +258,7 @@ pub(crate) struct Export {
 
 /// A trajectory run's outputs, aligned to its cells.
 #[derive(Default)]
-pub(crate) struct TrajectoryData {
+pub(crate) struct CellFigures {
     /// The manifest the outputs were read from; export names derive from it.
     pub(crate) manifest: PathBuf,
     /// Per cell; NaN for cells no root reaches.
@@ -302,7 +303,7 @@ pub(crate) struct Layout {
     pub(crate) y: Vec<f32>,
 }
 
-impl TrajectoryData {
+impl CellFigures {
     /// The outputs `manifest` (read from `file`, in `dir`) records; `None`
     /// when it has no `trajectory.pseudotime`.
     pub(crate) fn load(manifest: &RunManifest, dir: &Path, file: &Path) -> Result<Option<Self>> {
@@ -356,7 +357,7 @@ impl TrajectoryData {
                 .settings
                 .as_ref()
                 .and_then(|s| s.get("dc_min_share")?.as_f64())
-                .map_or(super::diffusion::DC_MIN_SHARE, |v| v as f32),
+                .map_or(crate::trajectory::diffusion::DC_MIN_SHARE, |v| v as f32),
             edges,
             ..Self::default()
         }))
@@ -1341,7 +1342,7 @@ pub(crate) fn render(fig: &Figure) -> Result<image::RgbaImage> {
 /// barely attached group show that group against a line of every other cell.
 /// DC1 × DC2 when fewer than two are.
 fn first_spread_pair(d: &Mat, min_share: f32) -> Panel {
-    use super::diffusion::participation;
+    use crate::trajectory::diffusion::participation;
     let spread: Vec<usize> = (1..d.ncols())
         .filter(|&j| {
             participation(d.column(j).iter().map(|&v| f64::from(v))) >= f64::from(min_share)
@@ -1355,5 +1356,5 @@ fn first_spread_pair(d: &Mat, min_share: f32) -> Panel {
 }
 
 #[cfg(test)]
-#[path = "figures_tests.rs"]
+#[path = "tests.rs"]
 mod tests;

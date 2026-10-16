@@ -330,8 +330,8 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     let written = write(&inputs, &t, out)?;
     record(&loaded, &manifest_out, &written, args)?;
     STAGES.finish();
-    let (found, run) = super::figures::layouts_along(&loaded.manifest, &loaded.dir, &loaded.file);
-    if let Some(h) = super::figures::layout_hint(found.iter().map(|(m, _)| m.as_deref()), &run) {
+    let (found, run) = crate::figures::layouts_along(&loaded.manifest, &loaded.dir, &loaded.file);
+    if let Some(h) = crate::figures::layout_hint(found.iter().map(|(m, _)| m.as_deref()), &run) {
         warn!("{h}");
     }
     info!(
