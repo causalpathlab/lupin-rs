@@ -102,9 +102,7 @@ impl Exports {
         let name = pdf
             .file_stem()
             .map_or(String::new(), |s| s.to_string_lossy().into_owned());
-        let stem = Path::new(&self.prefix)
-            .file_name()
-            .map_or(String::new(), |s| format!("{}.", s.to_string_lossy()));
+        let stem = super::gallery::figure_stem(&self.prefix);
         let panel = name.strip_prefix(&stem).unwrap_or(&name);
         self.gallery.add(&files, &name, panel, manifest)?;
         self.refresh();
@@ -214,7 +212,7 @@ pub enum FigureKey {
 
 /// What the thumbnail grid's keys do.
 pub const GRID_KEYS: &str =
-    "arrows choose · Enter, space or 1-9 opens · p exports it · f exports · t c restyle · V table · T tree · esc or w closes";
+    "arrows choose · Enter, space or 1-9 opens · p exports it · f exports · t c restyle · V leaves the figures · esc or w closes";
 
 pub struct FigurePane {
     pub data: CellFigures,
@@ -275,20 +273,11 @@ impl FigurePane {
         }
     }
 
-    /// A round's cells on its run's layouts, shown at once; `None` when the
-    /// run has no layout.
-    pub fn of_round(manifest: &Path, picker: &Picker) -> Result<Option<Self>> {
-        let loaded = load(&manifest.to_string_lossy())?;
-        Ok(CellFigures::of_round(&loaded)?.map(|data| {
-            let mut p = Self::new(data, picker);
-            p.shown = true;
-            p
-        }))
-    }
-
-    /// Light cluster `k`'s cells over the rest in grey, or none.
-    pub fn focus_on(&mut self, k: Option<i32>) {
-        self.style.focus = k;
+    /// `data`'s figures, shown at once.
+    pub fn showing(data: CellFigures, picker: &Picker) -> Self {
+        let mut p = Self::new(data, picker);
+        p.shown = true;
+        p
     }
 
     /// The pane's keys and its exports strip's.
@@ -351,34 +340,39 @@ impl FigurePane {
         let shown = self.shown;
         match code {
             // Esc closes the exports strip before it leaves the pane.
-            KeyCode::Esc if strip => self.exports.open = false,
+            KeyCode::Esc if strip => {
+                self.exports.open = false;
+                Took
+            }
             // The strip and its check belong to the figures.
             KeyCode::Char('f' | 'R') if !shown => {
-                return Say("v shows the figures, then f lists their exports".into());
+                Say("v shows the figures, then f lists their exports".into())
             }
-            KeyCode::Char('v') => self.next_panel(),
+            KeyCode::Char('v') => {
+                self.next_panel();
+                Took
+            }
             KeyCode::Char('V') => {
                 self.shown = false;
                 self.grid = None;
+                Took
             }
-            KeyCode::Char(',') if shown => return Say(self.step_pair(false, false)),
-            KeyCode::Char('.') if shown => return Say(self.step_pair(true, false)),
-            KeyCode::Char('[') if shown => return Say(self.step_pair(false, true)),
-            KeyCode::Char(']') if shown => return Say(self.step_pair(true, true)),
+            KeyCode::Char(',') if shown => Say(self.step_pair(false, false)),
+            KeyCode::Char('.') if shown => Say(self.step_pair(true, false)),
+            KeyCode::Char('[') if shown => Say(self.step_pair(false, true)),
+            KeyCode::Char(']') if shown => Say(self.step_pair(true, true)),
             // senna view's keys: labels, colouring, layout.
-            KeyCode::Char('t') if shown => return Say(self.style.cycle_labels()),
-            KeyCode::Char('c') if shown => {
-                return Say(self.style.cycle_colouring(&self.data.colourings()));
-            }
-            KeyCode::Char('m') if shown => return Say(self.next_layout()),
+            KeyCode::Char('t') if shown => Say(self.style.cycle_labels()),
+            KeyCode::Char('c') if shown => Say(self.style.cycle_colouring(&self.data.colourings())),
+            KeyCode::Char('m') if shown => Say(self.next_layout()),
             // senna view's navigation: the grid, zoom and pan.
             KeyCode::Char('w') if shown => {
                 self.open_grid();
-                return Say(GRID_KEYS.into());
+                Say(GRID_KEYS.into())
             }
-            KeyCode::Char('+' | '=') if shown => return Say(self.zoom(true)),
-            KeyCode::Char('-' | '_') if shown => return Say(self.zoom(false)),
-            KeyCode::Char('0') if shown => return Say(self.reset_view()),
+            KeyCode::Char('+' | '=') if shown => Say(self.zoom(true)),
+            KeyCode::Char('-' | '_') if shown => Say(self.zoom(false)),
+            KeyCode::Char('0') if shown => Say(self.reset_view()),
             KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if shown => {
                 let (dx, dy) = match code {
                     KeyCode::Left => (-1.0, 0.0),
@@ -387,51 +381,51 @@ impl FigurePane {
                     _ => (0.0, -1.0),
                 };
                 let note = self.pan(dx, dy);
-                return if note.is_empty() { Took } else { Say(note) };
+                if note.is_empty() {
+                    Took
+                } else {
+                    Say(note)
+                }
             }
-            KeyCode::Char('p') if shown => {
-                return Say(self
-                    .export()
-                    .unwrap_or_else(|e| format!("export failed: {e:#}")));
+            KeyCode::Char('p') if shown => Say(self
+                .export()
+                .unwrap_or_else(|e| format!("export failed: {e:#}"))),
+            KeyCode::Char('f') => {
+                self.exports.open = !self.exports.open;
+                Took
             }
-            KeyCode::Char('f') => self.exports.open = !self.exports.open,
             KeyCode::Char('R') => {
                 let x = &mut self.exports;
                 x.refresh();
-                return Say(format!(
+                Say(format!(
                     "{} export(s) checked, {} not listed",
                     x.gallery.entries.len(),
                     x.not_listed.len()
-                ));
+                ))
             }
-            KeyCode::Enter if strip => {
-                return Say(self
-                    .exports
-                    .adopt(&self.data.manifest)
-                    .unwrap_or_else(|e| format!("{e:#}")));
-            }
-            KeyCode::Char('d') if strip => {
-                return Say(self
-                    .exports
-                    .remove(false)
-                    .unwrap_or_else(|e| format!("{e:#}")));
-            }
+            KeyCode::Enter if strip => Say(self
+                .exports
+                .adopt(&self.data.manifest)
+                .unwrap_or_else(|e| format!("{e:#}"))),
+            KeyCode::Char('d') if strip => Say(self
+                .exports
+                .remove(false)
+                .unwrap_or_else(|e| format!("{e:#}"))),
             KeyCode::Char('D') if strip => {
                 let x = &mut self.exports;
-                return Say(match x.arm_delete() {
+                Say(match x.arm_delete() {
                     Some(name) => format!("D again deletes {name} (svg and pdf)"),
                     None => x.remove(true).unwrap_or_else(|e| format!("{e:#}")),
-                });
+                })
             }
             KeyCode::Char('M') if strip => {
-                return match self.exports.gallery.entries.get(self.exports.sel) {
+                match self.exports.gallery.entries.get(self.exports.sel) {
                     Some(e) => Relocate(e.path.clone()),
                     None => Took,
-                };
+                }
             }
-            _ => return Ignored,
+            _ => Ignored,
         }
-        Took
     }
 
     /// The panel on screen; the diffusion map at the pair chosen.

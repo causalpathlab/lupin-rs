@@ -44,6 +44,7 @@ fn round() -> RoundView {
         loose_cells: 1,
         decided: BTreeSet::new(),
         rescorable: false,
+        figures: Default::default(),
     }
 }
 

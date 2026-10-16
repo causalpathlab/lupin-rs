@@ -70,6 +70,7 @@ fn app_with_terms(terms: bool) -> App {
         loose_cells: 0,
         decided: std::collections::BTreeSet::new(),
         rescorable: false,
+        figures: Default::default(),
     });
     app.focus = Focus::Genes;
     app

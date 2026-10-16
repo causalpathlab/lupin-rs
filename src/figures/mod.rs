@@ -6,7 +6,7 @@
 //! writes as a figure file; the TUI's figure pane is where they are shown and
 //! exported.
 
-use crate::manifest::rounds::read_cells;
+use crate::manifest::rounds::Cells;
 use crate::manifest::run::{derive_out_prefix, resolve, Loaded, RunManifest};
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
 use anyhow::{Context, Result};
@@ -23,6 +23,7 @@ use legume_plot::rasterize::{
 use legume_plot::svg_emit::{emit_svg, escape_xml, SvgOpts, TopicLayer};
 use legume_plot::FigureFormats;
 use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -276,6 +277,8 @@ pub(crate) struct Export {
 /// round's labels (as `types`) and clusters. What a run lacks stays empty.
 #[derive(Default)]
 pub(crate) struct CellFigures {
+    /// What made the outputs, which names the figures' exports.
+    pub(crate) source: Source,
     /// The manifest the outputs were read from; export names derive from it.
     pub(crate) manifest: PathBuf,
     /// Per cell; NaN for cells no root reaches.
@@ -311,6 +314,22 @@ pub(crate) struct CellFigures {
 /// Each cell's colour (`None` for grey) and the legend of a categorical
 /// colouring.
 type CellColours = (Vec<Option<Rgb>>, Vec<(String, Rgb)>);
+/// What made a [`CellFigures`]' outputs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Source {
+    #[default]
+    Trajectory,
+    Round,
+}
+
+/// A cluster's name on figures, as the TUI and `review` name it.
+pub(crate) fn cluster_name(k: i32) -> String {
+    format!("K{k}")
+}
+
+/// Each cell's colour on a scatter and the legend of those colours.
+type Shown<'a> = (Cow<'a, [Option<Rgb>]>, Cow<'a, [(String, Rgb)]>);
+
 /// Each label's median position on a scatter.
 type Medians = BTreeMap<Box<str>, (f32, f32)>;
 
@@ -379,10 +398,10 @@ impl CellFigures {
         }))
     }
 
-    /// A round's labels and clusters on its layouts; `None` when the run has
-    /// no layout to draw them on.
-    pub(crate) fn of_round(loaded: &Loaded) -> Result<Option<Self>> {
-        let cells = read_cells(loaded)?;
+    /// A round's labels and clusters (`cells`, read from `loaded`) on its
+    /// run's layouts; none when the run has no layout, with what to run for
+    /// one in `layout_hint`.
+    pub(crate) fn of_round(loaded: &Loaded, cells: &Cells) -> Self {
         let index = cell_index(&cells.names);
         let (layouts, layout_hint) = read_layouts(
             &loaded.manifest,
@@ -391,15 +410,13 @@ impl CellFigures {
             &index,
             cells.names.len(),
         );
-        if layouts.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(Self {
+        Self {
+            source: Source::Round,
             manifest: loaded.file.clone(),
             types: cells
                 .labels
-                .into_iter()
-                .map(|l| l.map_or(UNASSIGNED_LABEL.into(), String::into_boxed_str))
+                .iter()
+                .map(|l| l.as_deref().unwrap_or(UNASSIGNED_LABEL).into())
                 .collect(),
             cluster: cells
                 .clusters
@@ -409,16 +426,15 @@ impl CellFigures {
             layouts,
             layout_hint,
             ..Self::default()
-        }))
+        }
     }
 
     /// What the figures are of, in export names: `trajectory` for a
     /// trajectory run's, `cells` for a round's.
     pub(crate) fn kind(&self) -> &'static str {
-        if self.pseudotime.is_empty() {
-            "cells"
-        } else {
-            "trajectory"
+        match self.source {
+            Source::Trajectory => "trajectory",
+            Source::Round => "cells",
         }
     }
 
@@ -430,7 +446,9 @@ impl CellFigures {
     /// A panel's title, naming the layout drawn and, on a scatter, the
     /// colouring and the cluster in focus.
     pub(crate) fn title(&self, panel: Panel, style: &Style) -> String {
-        let focus = style.focus.map_or(String::new(), |k| format!(" · K{k}"));
+        let focus = style
+            .focus
+            .map_or(String::new(), |k| format!(" · {}", cluster_name(k)));
         let colouring = format!("{}{focus}", style.colouring.name());
         match panel {
             Panel::Layout { k } => {
@@ -649,8 +667,7 @@ impl CellFigures {
                 && (bounds.ymin..=bounds.ymax).contains(&y[*i])
         };
         let shown: Vec<usize> = finite.iter().copied().filter(inside).collect();
-        let legend = &self.cell_colours(style.colouring).1;
-        let colour_of = self.shown_colours(style);
+        let (colour_of, legend) = self.shown_colours(style);
         let order = self.draw_order(&shown, style.colouring, &colour_of);
         let pts: Vec<(f32, f32)> = order
             .iter()
@@ -688,21 +705,7 @@ impl CellFigures {
         // Text over the layers, as legume-plot draws its labels. Spliced in:
         // legume-plot's labels come with an image per layer.
         let base_font = (w.min(h) as f32 / 48.0).max(6.0);
-        // In focus, the legend names only the colours the lit cells show.
-        let focused: Vec<(String, Rgb)>;
-        let legend = if style.focus.is_some() {
-            let lit: std::collections::HashSet<Rgb> =
-                shown.iter().filter_map(|&i| colour_of[i]).collect();
-            focused = legend
-                .iter()
-                .filter(|(_, c)| lit.contains(c))
-                .cloned()
-                .collect();
-            &focused
-        } else {
-            legend
-        };
-        let mut text = legend_svg(legend, base_font, h);
+        let mut text = legend_svg(&legend, base_font, h);
         if let Some(k) = style.labels {
             let font = base_font * TEXT_SCALES[k];
             // Coloured by cluster, the labels name the clusters; else the
@@ -740,9 +743,7 @@ impl CellFigures {
         colour_of: &[Option<Rgb>],
     ) -> Vec<usize> {
         if colouring != Colouring::Pseudotime {
-            let mut order = cells.to_vec();
-            order.sort_by_key(|&i| colour_of[i].is_some());
-            return order;
+            return grey_first(cells.iter().copied(), colour_of);
         }
         // Every cell sorted once; each figure keeps the cells it shows.
         let all = self.by_pseudotime.get_or_init(|| {
@@ -757,23 +758,42 @@ impl CellFigures {
         for &i in cells {
             shown[i] = true;
         }
-        let mut order: Vec<usize> = all.iter().copied().filter(|&i| shown[i]).collect();
-        order.sort_by_key(|&i| colour_of.get(i).is_some_and(Option::is_some));
-        order
+        grey_first(all.iter().copied().filter(|&i| shown[i]), colour_of)
     }
 
-    /// Each cell's colour in the style's colouring; outside the cluster in
-    /// focus, none (grey).
-    pub(crate) fn shown_colours(&self, style: &Style) -> std::borrow::Cow<'_, [Option<Rgb>]> {
-        let all = &self.cell_colours(style.colouring).0;
-        match style.focus {
-            Some(k) if !self.cluster.is_empty() => all
-                .iter()
-                .zip(&self.cluster)
-                .map(|(&c, &at)| c.filter(|_| at == k))
-                .collect(),
-            _ => all.into(),
+    /// Each cell's colour in the style's colouring and the legend: outside
+    /// the cluster in focus, no colour (grey), and the legend of the colours
+    /// left. A categorical colouring gives each entry its own colour.
+    pub(crate) fn shown_colours(&self, style: &Style) -> Shown<'_> {
+        let (all, legend) = self.cell_colours(style.colouring);
+        let Some(k) = style.focus.filter(|_| !self.cluster.is_empty()) else {
+            return (all.into(), legend.into());
+        };
+        let lit: Vec<Option<Rgb>> = all
+            .iter()
+            .zip(&self.cluster)
+            .map(|(&c, &at)| c.filter(|_| at == k))
+            .collect();
+        let mut seen = vec![false; legend.len()];
+        let mut left = legend.len();
+        for c in lit.iter().flatten() {
+            if left == 0 {
+                break;
+            }
+            if let Some(j) = legend.iter().position(|(_, l)| l == c) {
+                if !seen[j] {
+                    seen[j] = true;
+                    left -= 1;
+                }
+            }
         }
+        let kept = legend
+            .iter()
+            .zip(seen)
+            .filter(|&(_, s)| s)
+            .map(|(e, _)| e.clone())
+            .collect();
+        (lit.into(), Cow::Owned(kept))
     }
 
     /// Each cell's colour in `colouring` and its legend, made once.
@@ -798,7 +818,7 @@ impl CellFigures {
             Colouring::Component => {
                 categorical(&codes(&self.component), |c| format!("component {c}"))
             }
-            Colouring::Cluster => categorical(&codes(&self.cluster), |c| format!("K{c}")),
+            Colouring::Cluster => categorical(&codes(&self.cluster), cluster_name),
         })
     }
 
@@ -898,15 +918,13 @@ impl CellFigures {
                 .into_iter()
                 .map(|(t, at)| (t.into(), at))
                 .collect(),
-            LabelBy::Cluster => medians_by(
-                cells,
-                |i| self.cluster.get(i).copied().filter(|&c| c >= 0),
-                x,
-                y,
-            )
-            .into_iter()
-            .map(|(c, at)| (format!("K{c}").into(), at))
-            .collect(),
+            LabelBy::Cluster => {
+                let codes = codes(&self.cluster);
+                medians_by(cells, |i| codes[i], x, y)
+                    .into_iter()
+                    .map(|(c, at)| (cluster_name(c).into(), at))
+                    .collect()
+            }
         }
     }
 
@@ -1105,19 +1123,6 @@ pub(crate) fn layout_hint<'a>(
     ))
 }
 
-/// The layouts to draw pseudotime on, best first: senna's PHATE (`senna
-/// layout phate`, recorded under `layout.methods.phate`), as PHATE is built
-/// to show trajectories, then the run's current layout, then the other
-/// layouts it records. Each with its method's name, when known, and its
-/// manifest-relative path.
-/// What to run for a layout of the round at `manifest`, when its run has
-/// none; `None` when it has one or cannot be read.
-pub(crate) fn round_layout_hint(manifest: &Path) -> Option<String> {
-    let l = crate::manifest::run::load(&manifest.to_string_lossy()).ok()?;
-    let (found, run) = layouts_along(&l.manifest, &l.dir, &l.file);
-    layout_hint(found.iter().map(|(m, _)| m.as_deref()), &run)
-}
-
 /// The layouts recorded along `file`'s run that read onto its `n` cells
 /// (`index`), and what to run for the ones it lacks.
 fn read_layouts(
@@ -1144,6 +1149,11 @@ fn read_layouts(
     (all, hint)
 }
 
+/// The layouts to draw pseudotime on, best first: senna's PHATE (`senna
+/// layout phate`, recorded under `layout.methods.phate`), as PHATE is built
+/// to show trajectories, then the run's current layout, then the other
+/// layouts it records. Each with its method's name, when known, and its
+/// manifest-relative path.
 fn layouts(manifest: &RunManifest) -> Vec<(Option<String>, String)> {
     let l = &manifest.layout;
     let methods = l.extra.get("methods").and_then(|m| m.as_object());
@@ -1376,6 +1386,14 @@ fn hsl(h: f32, s: f32, l: f32) -> Rgb {
 }
 
 /// Lineage or component codes as keys, -1 (none) as `None`.
+/// `cells` in order, the grey ones (no colour in `colour_of`) first.
+fn grey_first(cells: impl Iterator<Item = usize> + Clone, colour_of: &[Option<Rgb>]) -> Vec<usize> {
+    let coloured = |i: &usize| colour_of.get(*i).is_some_and(Option::is_some);
+    let mut order: Vec<usize> = cells.clone().filter(|i| !coloured(i)).collect();
+    order.extend(cells.filter(coloured));
+    order
+}
+
 fn codes(v: &[i32]) -> Vec<Option<i32>> {
     v.iter().map(|&c| (c >= 0).then_some(c)).collect()
 }

@@ -485,6 +485,11 @@ fn a_table_that_repeats_a_name_gives_each_cell_its_own_row() {
     );
 }
 
+/// The figures of the round `l`.
+fn of_round(l: &crate::manifest::run::Loaded) -> CellFigures {
+    CellFigures::of_round(l, &crate::manifest::rounds::read_cells(l).unwrap())
+}
+
 /// A round on four cells in two clusters, labelled A and B, with a UMAP.
 fn round_with_layout(dir: &Path) -> crate::manifest::run::Loaded {
     round(dir, true)
@@ -538,9 +543,7 @@ pub(crate) fn round(dir: &Path, layout: bool) -> crate::manifest::run::Loaded {
 #[test]
 fn a_rounds_cells_come_with_its_labels_clusters_and_layout() {
     let dir = tempfile::tempdir().unwrap();
-    let f = CellFigures::of_round(&round_with_layout(dir.path()))
-        .unwrap()
-        .expect("a layout");
+    let f = of_round(&round_with_layout(dir.path()));
     assert_eq!(
         f.types.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
         ["A", "A", "B", UNASSIGNED_LABEL]
@@ -562,24 +565,28 @@ fn a_rounds_cells_come_with_its_labels_clusters_and_layout() {
 }
 
 #[test]
-fn a_round_without_a_layout_has_no_figures() {
+fn a_round_without_a_layout_has_no_figures_but_names_the_senna_command() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(CellFigures::of_round(&round(dir.path(), false))
-        .unwrap()
-        .is_none());
+    let f = of_round(&round(dir.path(), false));
+    assert!(f.layouts.is_empty());
+    assert!(
+        f.layout_hint
+            .as_deref()
+            .is_some_and(|h| h.contains("senna layout")),
+        "{:?}",
+        f.layout_hint
+    );
 }
 
 #[test]
 fn a_focused_cluster_keeps_its_colours_and_draws_over_the_greyed_rest() {
     let dir = tempfile::tempdir().unwrap();
-    let f = CellFigures::of_round(&round_with_layout(dir.path()))
-        .unwrap()
-        .unwrap();
+    let f = of_round(&round_with_layout(dir.path()));
     let style = Style {
         focus: Some(0),
         ..Style::opening(&f)
     };
-    let colours = f.shown_colours(&style);
+    let (colours, _) = f.shown_colours(&style);
     assert!(
         colours[0].is_some() && colours[1].is_some(),
         "cluster 0 in colour"
@@ -599,9 +606,7 @@ fn a_focused_cluster_keeps_its_colours_and_draws_over_the_greyed_rest() {
 #[test]
 fn a_rounds_figures_export_as_cells_not_trajectory() {
     let dir = tempfile::tempdir().unwrap();
-    let f = CellFigures::of_round(&round_with_layout(dir.path()))
-        .unwrap()
-        .unwrap();
+    let f = of_round(&round_with_layout(dir.path()));
     assert_eq!(f.kind(), "cells");
     assert_eq!(data().kind(), "trajectory");
     let e = f
@@ -617,9 +622,7 @@ fn a_rounds_figures_export_as_cells_not_trajectory() {
 #[test]
 fn coloured_by_cluster_the_labels_name_the_clusters() {
     let dir = tempfile::tempdir().unwrap();
-    let f = CellFigures::of_round(&round_with_layout(dir.path()))
-        .unwrap()
-        .unwrap();
+    let f = of_round(&round_with_layout(dir.path()));
     let by = |colouring| {
         let style = Style {
             colouring,
@@ -644,9 +647,7 @@ fn coloured_by_cluster_the_labels_name_the_clusters() {
 #[test]
 fn with_a_cluster_in_focus_the_legend_lists_only_its_colours() {
     let dir = tempfile::tempdir().unwrap();
-    let f = CellFigures::of_round(&round_with_layout(dir.path()))
-        .unwrap()
-        .unwrap();
+    let f = of_round(&round_with_layout(dir.path()));
     let style = Style {
         labels: None,
         focus: Some(1),

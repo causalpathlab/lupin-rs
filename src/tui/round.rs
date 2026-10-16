@@ -263,6 +263,9 @@ pub struct RoundView {
     pub decided: BTreeSet<ClusterId>,
     /// The pass cached its statistics, so marker edits can be rescored.
     pub rescorable: bool,
+    /// The round's cells on its run's layouts, for the cell map; taken by
+    /// the app when it shows the round.
+    pub figures: crate::figures::CellFigures,
 }
 
 impl RoundView {
@@ -363,8 +366,10 @@ impl RoundView {
                 }
             })
             .collect();
+        let figures = crate::figures::CellFigures::of_round(&loaded, &cells);
         Ok(Self {
             manifest: manifest.to_path_buf(),
+            figures,
             clusters,
             cell_names: cells.names,
             cell_clusters: cells.clusters,

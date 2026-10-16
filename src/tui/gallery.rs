@@ -229,9 +229,7 @@ impl Gallery {
         let Some(dir) = Path::new(figures).parent() else {
             return Vec::new();
         };
-        let stem = Path::new(figures)
-            .file_name()
-            .map_or(String::new(), |s| format!("{}.", s.to_string_lossy()));
+        let stem = figure_stem(figures);
         let listed: std::collections::BTreeSet<PathBuf> =
             self.entries.iter().map(|e| e.path.clone()).collect();
         let Ok(read) = std::fs::read_dir(if dir.as_os_str().is_empty() {
@@ -412,6 +410,14 @@ pub fn ago(when: u64, now: u64) -> String {
         3600..=86399 => format!("{} h ago", d / 3600),
         _ => format!("{} d ago", d / 86400),
     }
+}
+
+/// The start of a figure file's name for `figures` (the run's prefix and
+/// the figures' kind, `dir/run.trajectory`): `run.trajectory.`.
+pub fn figure_stem(figures: &str) -> String {
+    Path::new(figures)
+        .file_name()
+        .map_or(String::new(), |s| format!("{}.", s.to_string_lossy()))
 }
 
 #[cfg(test)]

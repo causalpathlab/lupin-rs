@@ -707,7 +707,8 @@ impl App {
         self.stop_rescoring();
         self.recorded = None;
         self.scored_for.clear();
-        self.load_cell_map(r.as_ref().map(|r| r.manifest.as_path()));
+        let mut r = r;
+        self.load_cell_map(r.as_mut().map(|r| std::mem::take(&mut r.figures)));
         self.round = r;
         self.edits.clear();
         self.marked.clear();
@@ -718,19 +719,17 @@ impl App {
         self.sync_map_focus();
     }
 
-    /// The cells of the round from `manifest` on its run's layout, shown in
-    /// the tree pane; the panel's tree when the run has no layout.
-    fn load_cell_map(&mut self, manifest: Option<&Path>) {
+    /// The round's cells (`figures`) on its run's layout, shown in the tree
+    /// pane; the panel's tree when the run has no layout.
+    fn load_cell_map(&mut self, figures: Option<crate::figures::CellFigures>) {
         self.cell_map = None;
         self.map_hint = None;
-        if let Some(m) = manifest.filter(|m| !m.as_os_str().is_empty()) {
-            let picker = self.picker().clone();
-            match super::figure_pane::FigurePane::of_round(m, &picker) {
-                Ok(map) => self.cell_map = map,
-                Err(e) => self.push_log(format!("[WARN] cell map: {e:#}")),
-            }
-            if self.cell_map.is_none() {
-                self.map_hint = crate::figures::round_layout_hint(m);
+        if let Some(data) = figures {
+            if data.layouts.is_empty() {
+                self.map_hint = data.layout_hint;
+            } else {
+                let picker = self.picker().clone();
+                self.cell_map = Some(super::figure_pane::FigurePane::showing(data, &picker));
             }
         }
         match (&self.tree_mode, self.cell_map.is_some()) {
@@ -744,7 +743,7 @@ impl App {
     fn sync_map_focus(&mut self) {
         let k = self.selected().map(|c| c.id as i32);
         if let Some(m) = &mut self.cell_map {
-            m.focus_on(k);
+            m.style.focus = k;
         }
     }
 
@@ -3064,6 +3063,9 @@ impl App {
     /// again; the rest are the figure pane's.
     fn cell_map_key(&mut self, code: KeyCode) -> bool {
         if code == KeyCode::Char('V') {
+            if let Some(m) = &mut self.cell_map {
+                m.grid = None;
+            }
             self.tree_mode = TreeMode::Panel;
             self.status = "the panel's tree · v shows the cells again".into();
             return true;
@@ -3222,13 +3224,14 @@ impl App {
 
     /// Focus the tree on the selected cluster's label (or its top candidate).
     fn jump_to_tree(&mut self) {
-        // The cell map gives way to the tree; only the panel tree on screen
-        // is moved: another view leaves its selection where the user left it.
-        if matches!(self.tree_mode, TreeMode::Cells) {
-            self.tree_mode = TreeMode::Panel;
-        }
+        // Only the panel tree on screen is moved, the cell map giving way to
+        // it: another view leaves its selection where the user left it.
         if let Some(back) = match self.tree_mode {
-            TreeMode::Panel | TreeMode::Cells => None,
+            TreeMode::Panel => None,
+            TreeMode::Cells => {
+                self.tree_mode = TreeMode::Panel;
+                None
+            }
             TreeMode::Ontology(_) => Some("o on the tree"),
             TreeMode::Order(_) => Some("T"),
         } {
