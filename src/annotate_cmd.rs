@@ -28,7 +28,7 @@ pub struct AnnotateCliArgs {
         long,
         value_enum,
         default_value_t = AnnotateMethod::Auto,
-        help = "Annotation backend: enrichment (topic/svd), projection (co-embed), or auto"
+        help = "Annotation backend: enrichment (raw counts), projection (the run's embeddings; see --projection), or auto"
     )]
     pub method: AnnotateMethod,
 
