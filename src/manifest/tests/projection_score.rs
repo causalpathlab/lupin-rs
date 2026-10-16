@@ -32,11 +32,15 @@ fn the_score_pass_calls_each_cell_and_records_its_round() {
     let a = &round.manifest.annotate;
     assert!(a.argmax.is_some());
     assert!(
-        a.annotation
+        a.marker_score
             .as_deref()
             .is_some_and(|p| p.ends_with(MARKER_SCORE_PARQUET)),
         "the score's own per-cell table: {:?}",
-        a.annotation
+        a.marker_score
+    );
+    assert!(
+        a.annotation.is_none(),
+        "`annotation` is a cell × type posterior, which the score has none of"
     );
     assert!(
         round.manifest.cluster.clusters.is_some(),
