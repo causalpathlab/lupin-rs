@@ -112,3 +112,22 @@ fn the_score_pass_calls_each_cell_and_records_its_round() {
         "the round's cluster table"
     );
 }
+
+#[test]
+fn a_score_round_lists_each_clusters_types_by_share_in_the_round_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let (loaded, _) = toy_run(dir.path());
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    let panel = dir.path().join("panel.tsv").to_string_lossy().into_owned();
+    annotate_by_projection(&score_args(&panel, &out), &loaded).unwrap();
+    let view = crate::tui::round::RoundView::load(&annotated_path(&loaded.file, &out)).unwrap();
+    for (c, want) in view.clusters.iter().zip(["A", "B"]) {
+        let top = c.candidates.first().expect("a candidate");
+        assert_eq!(
+            (top.label.as_str(), top.share),
+            (want, 1.0),
+            "cluster {}",
+            c.id
+        );
+    }
+}
