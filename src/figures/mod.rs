@@ -305,14 +305,21 @@ pub(crate) struct CellFigures {
     /// first pair it kept.
     pub(crate) dc_min_share: f32,
     /// Each scatter's type medians over all its cells, made on first use.
-    pub(crate) medians: Mutex<Vec<(Panel, Arc<Medians>)>>,
+    pub(crate) medians: Mutex<Vec<((Panel, LabelBy), Arc<Medians>)>>,
 }
 
 /// Each cell's colour (`None` for grey) and the legend of a categorical
 /// colouring.
 type CellColours = (Vec<Option<Rgb>>, Vec<(String, Rgb)>);
-/// Each type's median position on a scatter.
+/// Each label's median position on a scatter.
 type Medians = BTreeMap<Box<str>, (f32, f32)>;
+
+/// What a scatter's labels name: the cells' types or their clusters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LabelBy {
+    Type,
+    Cluster,
+}
 
 /// A 2D layout of the run's cells, NaN where a cell has none.
 pub(crate) struct Layout {
@@ -659,12 +666,11 @@ impl CellFigures {
             0.85,
             PointShape::Circle,
         )?)];
-        // The medians over all cells anchor the arrows, and the labels of
-        // the whole scatter; only made when one of them is drawn.
-        let whole_labels = style.labels.is_some() && view.is_whole();
-        let all = (arrows || whole_labels).then(|| self.medians(panel, x, y, &finite));
-        if let (true, Some(all)) = (arrows, &all) {
-            layers.extend(self.arrow_layers(all, &bounds, ext, radius)?);
+        // The type medians over all cells anchor the arrows; only made when
+        // they are drawn.
+        if arrows {
+            let all = self.medians(panel, LabelBy::Type, x, y, &finite);
+            layers.extend(self.arrow_layers(&all, &bounds, ext, radius)?);
         }
         let mut svg = emit_svg(
             &layers,
@@ -679,18 +685,37 @@ impl CellFigures {
         // Text over the layers, as legume-plot draws its labels. Spliced in:
         // legume-plot's labels come with an image per layer.
         let base_font = (w.min(h) as f32 / 48.0).max(6.0);
+        // In focus, the legend names only the colours the lit cells show.
+        let focused: Vec<(String, Rgb)>;
+        let legend = if style.focus.is_some() {
+            let lit: std::collections::HashSet<Rgb> =
+                shown.iter().filter_map(|&i| colour_of[i]).collect();
+            focused = legend
+                .iter()
+                .filter(|(_, c)| lit.contains(c))
+                .cloned()
+                .collect();
+            &focused
+        } else {
+            legend
+        };
         let mut text = legend_svg(legend, base_font, h);
         if let Some(k) = style.labels {
             let font = base_font * TEXT_SCALES[k];
-            let on_screen;
-            let medians = match &all {
-                Some(all) if view.is_whole() => &**all,
-                _ => {
-                    on_screen = self.type_medians(x, y, &shown);
-                    &on_screen
-                }
+            // Coloured by cluster, the labels name the clusters; else the
+            // types. The whole scatter's are kept; a zoomed one's are of the
+            // cells on screen.
+            let by = if style.colouring == Colouring::Cluster {
+                LabelBy::Cluster
+            } else {
+                LabelBy::Type
             };
-            for (t, &at) in medians {
+            let medians = if view.is_whole() {
+                self.medians(panel, by, x, y, &finite)
+            } else {
+                Arc::new(self.label_medians(by, x, y, &shown))
+            };
+            for (t, &at) in medians.iter() {
                 if t.as_ref() != UNASSIGNED_LABEL {
                     let xy = keep_inside(to_pixel(at, &bounds, ext), font, t, ext);
                     text += &svg_text(xy, font, Some("middle"), true, t);
@@ -777,19 +802,27 @@ impl CellFigures {
     /// The type medians over all of `cells` on the scatter `panel`, kept for
     /// the next figure of it. They are made outside the lock, so figures
     /// drawn in parallel do not wait on each other.
-    fn medians(&self, panel: Panel, x: &[f32], y: &[f32], cells: &[usize]) -> Arc<Medians> {
-        let kept = |m: &Vec<(Panel, Arc<Medians>)>| {
-            m.iter().find(|(p, _)| *p == panel).map(|(_, m)| m.clone())
+    fn medians(
+        &self,
+        panel: Panel,
+        by: LabelBy,
+        x: &[f32],
+        y: &[f32],
+        cells: &[usize],
+    ) -> Arc<Medians> {
+        let key = (panel, by);
+        let kept = |m: &Vec<((Panel, LabelBy), Arc<Medians>)>| {
+            m.iter().find(|(k, _)| *k == key).map(|(_, m)| m.clone())
         };
         if let Some(m) = kept(&self.medians.lock().expect("not poisoned")) {
             return m;
         }
-        let made = Arc::new(self.type_medians(x, y, cells));
+        let made = Arc::new(self.label_medians(by, x, y, cells));
         let mut all = self.medians.lock().expect("not poisoned");
         if let Some(m) = kept(&all) {
             return m;
         }
-        all.push((panel, made.clone()));
+        all.push((key, made.clone()));
         made
     }
 
@@ -838,17 +871,40 @@ impl CellFigures {
     }
 
     /// Each type's median position among `cells`.
-    fn type_medians(&self, x: &[f32], y: &[f32], cells: &[usize]) -> Medians {
-        let mut by_type: BTreeMap<&str, (Vec<f32>, Vec<f32>)> = BTreeMap::new();
-        for &i in cells {
-            let e = by_type.entry(self.types[i].as_ref()).or_default();
-            e.0.push(x[i]);
-            e.1.push(y[i]);
+    fn label_medians(&self, by: LabelBy, x: &[f32], y: &[f32], cells: &[usize]) -> Medians {
+        fn medians_by<K: Ord>(
+            cells: &[usize],
+            key: impl Fn(usize) -> Option<K>,
+            x: &[f32],
+            y: &[f32],
+        ) -> BTreeMap<K, (f32, f32)> {
+            let mut by: BTreeMap<K, (Vec<f32>, Vec<f32>)> = BTreeMap::new();
+            for &i in cells {
+                if let Some(k) = key(i) {
+                    let e = by.entry(k).or_default();
+                    e.0.push(x[i]);
+                    e.1.push(y[i]);
+                }
+            }
+            by.into_iter()
+                .map(|(k, (xs, ys))| (k, (median(&xs), median(&ys))))
+                .collect()
         }
-        by_type
+        match by {
+            LabelBy::Type => medians_by(cells, |i| Some(self.types[i].as_ref()), x, y)
+                .into_iter()
+                .map(|(t, at)| (t.into(), at))
+                .collect(),
+            LabelBy::Cluster => medians_by(
+                cells,
+                |i| self.cluster.get(i).copied().filter(|&c| c >= 0),
+                x,
+                y,
+            )
             .into_iter()
-            .map(|(t, (xs, ys))| (t.into(), (median(&xs), median(&ys))))
-            .collect()
+            .map(|(c, at)| (format!("K{c}").into(), at))
+            .collect(),
+        }
     }
 
     /// The types with a finite pseudotime, in order of their median.
