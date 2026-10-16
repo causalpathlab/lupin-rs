@@ -486,7 +486,7 @@ fn annotating_from_the_labels_menu_opens_the_form_on_the_panel() {
     assert!(summary.contains("then the trajectory"), "{summary}");
     assert_eq!(
         app.form.as_ref().unwrap().row,
-        setting_row(Setting::Markers)
+        setting_row(&app.args, Setting::Markers)
     );
     assert!(app.child.is_none(), "the form starts nothing on its own");
 }
@@ -519,14 +519,14 @@ fn the_form_refuses_to_run_without_a_panel_and_enter_on_it_asks_for_one() {
     let mut app = form_app(dir.path());
     app.focus = Focus::Clusters;
     press(&mut app, KeyCode::Char('A'));
-    app.form.as_mut().unwrap().row = setting_row(Setting::Run);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Run);
     press(&mut app, KeyCode::Enter);
     assert!(app.form.is_some() && app.child.is_none());
     let note = app.form.as_ref().unwrap().note.clone().unwrap_or_default();
     assert!(note.contains("marker panel"), "{note}");
     assert_eq!(
         app.form.as_ref().unwrap().row,
-        setting_row(Setting::Markers),
+        setting_row(&app.args, Setting::Markers),
         "back on the panel row"
     );
     // Enter there picks the panel in the file browser, and nothing starts.
@@ -535,7 +535,7 @@ fn the_form_refuses_to_run_without_a_panel_and_enter_on_it_asks_for_one() {
     assert_eq!(app.want_file, Some(FileWant::Markers));
     assert!(app.form.is_some() && app.child.is_none());
     // Enter on a value row only says how to run.
-    app.form.as_mut().unwrap().row = setting_row(Setting::Knn);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
     press(&mut app, KeyCode::Enter);
     assert!(app.form.is_some() && app.child.is_none());
 }
@@ -554,7 +554,7 @@ fn a_pass_that_replaces_a_round_asks_in_the_form_before_it_runs() {
     press(&mut app, KeyCode::Char('A'));
     assert_eq!(
         app.form.as_ref().unwrap().row,
-        setting_row(Setting::Run),
+        setting_row(&app.args, Setting::Run),
         "a panel: on the run row"
     );
     assert!(app.form_summary().0.contains("replaces run.L1.senna.json"));
@@ -926,8 +926,8 @@ fn a_susie_candidate_shows_its_pip_and_fold() {
 
 #[test]
 fn the_susie_setting_toggles_the_stage() {
-    assert!(SETTINGS.contains(&Setting::Susie));
     let mut a = cli(&[]);
+    assert!(settings(&a).contains(&Setting::Susie));
     assert_eq!(Setting::Susie.value(&a), "on");
     Setting::Susie.adjust(&mut a, true);
     assert!(a.no_susie);
@@ -979,12 +979,12 @@ fn arrows_on_a_form_row_that_changes_nothing_leave_the_round_current() {
     let mut app = app_with_terms(false);
     app.form = Some(Form::default());
     for s in [Setting::Run, Setting::Markers, Setting::Output] {
-        app.form.as_mut().unwrap().row = setting_row(s);
+        app.form.as_mut().unwrap().row = setting_row(&app.args, s);
         press(&mut app, KeyCode::Left);
         press(&mut app, KeyCode::Right);
         assert!(!app.stale, "{s:?} changed nothing");
     }
-    app.form.as_mut().unwrap().row = setting_row(Setting::Knn);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
     press(&mut app, KeyCode::Right);
     assert!(app.stale, "knn changed");
 }
@@ -1211,13 +1211,13 @@ fn in_the_form_enter_picks_the_panel_and_shift_enter_runs_from_any_row() {
     app.focus = Focus::Clusters;
     press(&mut app, KeyCode::Char('r'));
     assert!(app.form.is_some());
-    app.form.as_mut().unwrap().row = setting_row(Setting::Markers);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Markers);
     press(&mut app, KeyCode::Enter);
     assert!(matches!(app.want_file, Some(FileWant::Markers)));
     app.want_file = None;
 
     // Plain Enter on another row only says how to run.
-    app.form.as_mut().unwrap().row = setting_row(Setting::Susie);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Susie);
     press(&mut app, KeyCode::Enter);
     assert!(app.status.ends_with("starts the pass"), "{}", app.status);
     // Shift+Enter runs from there, where the terminal tells it apart: with
@@ -1225,7 +1225,7 @@ fn in_the_form_enter_picks_the_panel_and_shift_enter_runs_from_any_row() {
     app.shift_enter = true;
     app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
     let form = app.form.as_ref().unwrap();
-    assert_eq!(form.row, setting_row(Setting::Markers));
+    assert_eq!(form.row, setting_row(&app.args, Setting::Markers));
     assert!(form.note.as_deref().unwrap_or("").contains("marker panel"));
 }
 
@@ -1455,4 +1455,39 @@ fn a_label_is_recorded_in_its_canonical_form() {
         "{:?}",
         app.edits
     );
+}
+
+#[test]
+fn the_form_lists_the_rows_of_its_method() {
+    use crate::annotate_cmd::AnnotateMethod;
+    let mut a = cli(&[]);
+    a.method = AnnotateMethod::Enrichment;
+    let rows = settings(&a);
+    assert!(rows.contains(&Setting::Susie) && rows.contains(&Setting::Go));
+    assert!(!rows.contains(&Setting::Projection));
+    a.method = AnnotateMethod::Projection;
+    let rows = settings(&a);
+    assert!(rows.contains(&Setting::Projection));
+    for s in [Setting::Susie, Setting::Go, Setting::NumPerm] {
+        assert!(!rows.contains(&s), "{s:?} is the enrichment's");
+    }
+    assert_eq!(
+        rows.iter().position(|&s| s == Setting::Method),
+        settings(&cli(&[]))
+            .iter()
+            .position(|&s| s == Setting::Method),
+        "changing the method keeps the cursor on its row"
+    );
+}
+
+#[test]
+fn the_projection_row_toggles_the_score_and_the_ora() {
+    use crate::annotate::args::ProjectionMethod;
+    let mut a = cli(&[]);
+    assert_eq!(Setting::Projection.value(&a), "score");
+    Setting::Projection.adjust(&mut a, true);
+    assert_eq!(a.projection, ProjectionMethod::Ora);
+    assert_eq!(Setting::Projection.value(&a), "ora");
+    Setting::Projection.adjust(&mut a, false);
+    assert_eq!(a.projection, ProjectionMethod::Score);
 }
