@@ -26,7 +26,8 @@ const CANDIDATES: usize = 6;
 pub struct Candidate {
     pub label: String,
     /// Its share of the cluster's evidence: in a SuSiE round, of the deviance
-    /// the types explain; otherwise the enrichment's Q, a softmax of
+    /// the types explain; in a projection score round, of the cluster's cells
+    /// called the type; otherwise the enrichment's Q, a softmax of
     /// z = Φ⁻¹(1 − p) over the types that pass FDR.
     pub share: f32,
     /// SuSiE's reading, when it made the round's call.
@@ -274,8 +275,12 @@ impl RoundView {
 
         let table = |rel: &Option<String>| at(rel).map(|p| read_table(&p)).transpose();
         // Q: how the cluster's evidence splits over the types; and the
-        // statistics it came from.
-        let share = table(&a.cluster_celltype_q)?;
+        // statistics it came from. A projection score round has no Q: the
+        // share of the cluster's cells called each type stands in.
+        let share = match table(&a.cluster_celltype_q)? {
+            Some(q) => Some(q),
+            None => table(&a.cluster_celltype_share)?,
+        };
         // SuSiE's tables, when it made the call: its ranking replaces Q's.
         let susie = match (
             table(&a.cluster_celltype_pip)?,
