@@ -136,6 +136,45 @@ fn a_label_that_leaves_off_cell_matches_the_term_that_ends_in_it() {
 }
 
 #[test]
+fn an_unmatched_type_joins_the_group_holding_its_specific_markers() {
+    // X shares three markers that most types hold with B and with C, and one
+    // marker held by A alone: A explains it, though raw overlap favours C.
+    let pairs = panel(&[
+        ("S1", "A1"),
+        ("a1", "A1"),
+        ("a2", "A1"),
+        ("P1", "B1"),
+        ("P2", "B1"),
+        ("P3", "B1"),
+        ("b1", "B1"),
+        ("P1", "B2"),
+        ("P2", "B2"),
+        ("P3", "B2"),
+        ("b2", "B2"),
+        ("P1", "C1"),
+        ("P2", "C1"),
+        ("P3", "C1"),
+        ("c1", "C1"),
+        ("P1", "X"),
+        ("P2", "X"),
+        ("P3", "X"),
+        ("S1", "X"),
+    ]);
+    let group = |name: &str, members: &[&str]| TypeGroup {
+        name: name.to_string(),
+        cl_id: Some(format!("CL:{name}")),
+        members: members.iter().map(|m| (*m).to_string()).collect(),
+    };
+    let mut groups = vec![
+        group("a", &["A1"]),
+        group("b", &["B1", "B2"]),
+        group("c", &["C1"]),
+    ];
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    assert_eq!(groups[0].members, ["A1", "X"]);
+}
+
+#[test]
 fn ontology_groups_are_the_nearest_shared_classes() {
     let t = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
     let p = panel(&[
