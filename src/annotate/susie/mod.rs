@@ -216,7 +216,7 @@ pub fn fit_all(
                         .zip(&lib)
                         .map(|(&y, &n)| log_fold(y, n * p))
                         .unzip();
-                    misfit_scale2(&x, mean(&v)) as f32
+                    misfit_scale2(&x, &v) as f32
                 })
             })
             .collect();
@@ -262,12 +262,7 @@ pub fn fit_all(
         data.par_iter()
             .zip(&present)
             .map(|(cluster, &k)| {
-                let inv_scale = panel.inv_scale(cluster);
-                let lik = ClusterLogFold {
-                    panel,
-                    cluster,
-                    inv_scale: &inv_scale,
-                };
+                let lik = ClusterLogFold { panel, cluster };
                 let model = SusieModel {
                     data: lik,
                     prior: cfg.prior,
@@ -343,7 +338,7 @@ pub fn fit_all(
                 .map(|(c, eta)| c.x[i] - eta[i])
                 .collect();
             let v: Vec<f32> = first_data.iter().map(|c| c.sampling[i]).collect();
-            misfit_scale2(&r, mean(&v))
+            misfit_scale2(&r, &v)
         })
         .collect();
     let scale2 = shrunk_scale2(&raw, present.len());
@@ -364,25 +359,32 @@ pub fn fit_all(
 }
 
 /// A gene's misfit variance on the log scale: the squared MAD-based spread of
-/// its log-folds `x` across clusters, less their mean sampling variance,
-/// clamped to [`SCALE2_RANGE`]. The MAD keeps the clusters the gene is truly
-/// up in from setting its spread.
-fn misfit_scale2(x: &[f32], mean_sampling: f64) -> f64 {
+/// its log-folds `x` across clusters, less the median of their sampling
+/// variances `v`, clamped to [`SCALE2_RANGE`]. Both sides robust: the MAD
+/// keeps the clusters the gene is truly up in from setting its spread, the
+/// median keeps a few clusters where it reads zero from cancelling it.
+fn misfit_scale2(x: &[f32], v: &[f32]) -> f64 {
     let centre = median(x);
     let dev: Vec<f32> = x.iter().map(|&a| (a - centre).abs()).collect();
     let sd = MAD_TO_SD * f64::from(median(&dev));
-    (sd * sd - mean_sampling).clamp(SCALE2_RANGE.0, SCALE2_RANGE.1)
+    (sd * sd - f64::from(median(v))).clamp(SCALE2_RANGE.0, SCALE2_RANGE.1)
 }
 
-fn mean(v: &[f32]) -> f64 {
-    v.iter().map(|&a| f64::from(a)).sum::<f64>() / v.len().max(1) as f64
-}
-
-/// Per-gene s² shrunk on the log scale towards the genes' median, with
-/// [`SCALE_SHRINKAGE`] pseudo-clusters of weight against `n_clusters`.
+/// Per-gene s² shrunk on the log scale towards the median of the genes
+/// measured above the floor (genes too sparse to measure sit at it and say
+/// nothing about the rest), with [`SCALE_SHRINKAGE`] pseudo-clusters of
+/// weight against `n_clusters`.
 fn shrunk_scale2(raw: &[f64], n_clusters: usize) -> Vec<f32> {
-    let as_f32: Vec<f32> = raw.iter().map(|&d| d as f32).collect();
-    let center = f64::from(median(&as_f32)).ln();
+    let measured: Vec<f32> = raw
+        .iter()
+        .filter(|&&d| d > SCALE2_RANGE.0)
+        .map(|&d| d as f32)
+        .collect();
+    let center = if measured.is_empty() {
+        SCALE2_RANGE.0.ln()
+    } else {
+        f64::from(median(&measured)).ln()
+    };
     let (k, w) = (n_clusters as f64, SCALE_SHRINKAGE);
     raw.iter()
         .map(|&d| {
@@ -437,16 +439,21 @@ fn aligned_choice_means(chains: &[Vec<SusieSample>]) -> Vec<Vec<f32>> {
     };
     let (effects, choices) = (first.len(), first.first().map_or(0, Vec::len));
     let mut reference: Vec<Vec<f32>> = (*first).clone();
+    // Summed in f64 and divided once: thousands of f32 terms of x/n drift.
+    let n = draws.len() as f64;
     for _ in 0..2 {
-        let mut total = vec![vec![0.0f32; choices]; effects];
+        let mut total = vec![vec![0.0f64; choices]; effects];
         for probs in &draws {
             for (r, c) in match_effects(&reference, probs) {
                 for (v, &x) in total[r].iter_mut().zip(&probs[c]) {
-                    *v += x / draws.len() as f32;
+                    *v += f64::from(x);
                 }
             }
         }
-        reference = total;
+        reference = total
+            .iter()
+            .map(|row| row.iter().map(|&v| (v / n) as f32).collect())
+            .collect();
     }
     reference
 }
@@ -492,10 +499,7 @@ fn summarize(
             theta_sum[c] += f64::from(s.theta[c]);
         }
     }
-    let pip: Vec<f32> = pip_sum
-        .iter()
-        .map(|&v| (v / t).clamp(0.0, 1.0) as f32)
-        .collect();
+    let pip: Vec<f32> = pip_sum.iter().map(|&v| (v / t) as f32).collect();
     let theta: Vec<f32> = theta_sum.iter().map(|&v| (v / t) as f32).collect();
     let alpha_bar = aligned_choice_means(chains);
     let mut credible_sets: Vec<Vec<usize>> = Vec::new();

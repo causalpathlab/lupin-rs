@@ -140,6 +140,10 @@ pub struct AnnotateCliArgs {
         help = "SuSiE: single effects per cluster (cell types one cluster can be)"
     )]
     pub susie_effects: usize,
+    /// Retired with the NB likelihood (0.5.0 shipped it); accepted so saved
+    /// commands keep working, and ignored with a warning.
+    #[arg(long = "susie-dispersion", hide = true)]
+    pub susie_dispersion: Option<f32>,
     #[arg(
         long = "mcmc-chains",
         default_value_t = SusieConfig::default().chains,
@@ -610,6 +614,12 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
 }
 
 fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieConfig {
+    if args.susie_dispersion.is_some() {
+        log::warn!(
+            "--susie-dispersion is retired: the SuSiE stage no longer uses an NB dispersion \
+             (it now estimates each marker's log-fold misfit); ignoring it"
+        );
+    }
     let mut cfg = crate::annotate::susie::SusieConfig {
         chains: args.mcmc_chains,
         min_markers: args.min_markers,

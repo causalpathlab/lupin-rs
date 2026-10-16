@@ -2,14 +2,19 @@
 //!
 //! ```text
 //! x_g = ln((y_g + ½) / (μ⁰_g + ½))     marker gene g's count against its background
-//! x_g ~ t_ν(Σ_c A_gc θ_c, v_g)          v_g = s²_g + 1/(y_g + ½)
+//! η_g = Σ_c A_gc θ_c                    its predicted log-fold
+//! x_g ~ t_ν(η_g, v_g)                   v_g = s²_g + 1/(y_g + ½)
 //! θ = Σ_l e_l · 1[γ_l]                  e_l = exp(b_l) > 0
 //! γ_l ∈ {1..C, null}                    one cell type per single effect, or none
 //! ```
 //!
 //! `μ⁰_g` is the gene's background in this cluster (library size × background
 //! rate). `s²_g` is how far the gene strays from any fit across clusters, and
-//! `1/(y + ½)` the sampling variance of a log count. The Student-t (ν =
+//! `1/(y + ½)` the sampling variance of the observed log count. (The variance
+//! at the predicted count, which would weigh a silent marker fully against a
+//! type predicting it high, was measured and lost accuracy on real data, so a
+//! type whose own markers are mostly near zero can still be credited for a
+//! few shared genes; a test records that gap.) The Student-t (ν =
 //! [`NU`]) bounds what one gene can contribute (Lange, Little & Taylor 1989,
 //! "Robust statistical modeling using the t distribution", JASA 84:881–896,
 //! doi:10.1080/01621459.1989.10478852): a type's effect is then the typical
@@ -99,17 +104,6 @@ impl Panel {
             .map(|types| types.iter().map(|&c| theta[c]).sum::<f32>())
             .collect()
     }
-
-    /// 1/(ν·v_g) for `cluster`'s marker genes, v_g = s²_g + its sampling
-    /// variance: the one per-gene constant of [`ClusterLogFold`]'s terms,
-    /// computed once per cluster rather than on every call.
-    pub(super) fn inv_scale(&self, cluster: &Cluster) -> Vec<f64> {
-        self.scale2
-            .iter()
-            .zip(&cluster.sampling)
-            .map(|(&s2, &v)| 1.0 / (NU * (f64::from(s2) + f64::from(v))))
-            .collect()
-    }
 }
 
 /// A count `y` against its background expectation `mu0`: the log-fold
@@ -125,7 +119,7 @@ pub(super) fn log_fold(y: f64, mu0: f64) -> (f32, f32) {
 pub(super) struct Cluster {
     /// ln((y + ½) / (μ⁰ + ½)) per marker gene.
     pub(super) x: Vec<f32>,
-    /// 1/(y + ½): the sampling variance of each log count.
+    /// 1/(y + ½): the sampling variance of each observed log count.
     pub(super) sampling: Vec<f32>,
 }
 
@@ -142,15 +136,14 @@ impl Cluster {
 pub(super) struct ClusterLogFold<'a> {
     pub(super) panel: &'a Panel,
     pub(super) cluster: &'a Cluster,
-    /// [`Panel::inv_scale`] of this cluster.
-    pub(super) inv_scale: &'a [f64],
 }
 
 impl ClusterLogFold<'_> {
     /// Gene g's Student-t log-likelihood at predictor η, up to constants.
     fn term(&self, g: usize, eta: f32) -> f64 {
+        let v = f64::from(self.panel.scale2[g]) + f64::from(self.cluster.sampling[g]);
         let r = f64::from(self.cluster.x[g]) - f64::from(eta);
-        -0.5 * (NU + 1.0) * (r * r * self.inv_scale[g]).ln_1p()
+        -0.5 * (NU + 1.0) * (r * r / (NU * v)).ln_1p()
     }
 
     fn log_lik(&self, theta: &[f32]) -> f64 {

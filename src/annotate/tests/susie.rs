@@ -261,24 +261,14 @@ fn two_type_cluster() -> (model::Panel, model::Cluster) {
     (panel, cluster)
 }
 
-fn two_type_lik<'a>(
-    panel: &'a model::Panel,
-    cluster: &'a model::Cluster,
-    inv_scale: &'a [f64],
-) -> model::ClusterLogFold<'a> {
-    model::ClusterLogFold {
-        panel,
-        cluster,
-        inv_scale,
-    }
-}
-
 #[test]
 fn chains_that_number_the_same_effects_differently_agree_on_the_credible_sets() {
     use model::SusieSample;
     let (panel, cluster) = two_type_cluster();
-    let inv = panel.inv_scale(&cluster);
-    let counts = two_type_lik(&panel, &cluster, &inv);
+    let counts = model::ClusterLogFold {
+        panel: &panel,
+        cluster: &cluster,
+    };
     let draw = |first: usize| SusieSample {
         probs: vec![
             (0..3).map(|j| f32::from(u8::from(j == first))).collect(),
@@ -300,8 +290,10 @@ fn chains_that_number_the_same_effects_differently_agree_on_the_credible_sets() 
 fn a_type_that_moves_between_effects_within_a_chain_keeps_its_credible_set() {
     use model::SusieSample;
     let (panel, cluster) = two_type_cluster();
-    let inv = panel.inv_scale(&cluster);
-    let counts = two_type_lik(&panel, &cluster, &inv);
+    let counts = model::ClusterLogFold {
+        panel: &panel,
+        cluster: &cluster,
+    };
     let null = vec![0.0, 0.0, 1.0];
     let type0 = vec![1.0, 0.0, 0.0];
     let draw = |probs: Vec<Vec<f32>>| SusieSample {
@@ -399,7 +391,15 @@ fn decoy_sim(seed: u64) -> Sim {
 
 #[test]
 fn a_few_shared_genes_on_in_a_minority_of_clusters_do_not_call_the_decoy() {
-    let f = &fit(&decoy_sim(11), 5).clusters[0];
+    let fits = fit(&decoy_sim(11), 5);
+    for (k, f) in fits.clusters.iter().enumerate() {
+        assert!(
+            f.pip.iter().all(|&p| (0.0..=1.0).contains(&p)),
+            "cluster {k}: pip {:?}",
+            f.pip
+        );
+    }
+    let f = &fits.clusters[0];
     assert_eq!(f.call(), Some(0), "pip {:?} theta {:?}", f.pip, f.theta);
     assert!(
         f.credible_sets.iter().all(|s| !s.contains(&1)),
@@ -411,17 +411,6 @@ fn a_few_shared_genes_on_in_a_minority_of_clusters_do_not_call_the_decoy() {
 }
 
 #[test]
-fn pips_are_probabilities() {
-    for (k, f) in fit(&decoy_sim(11), 5).clusters.iter().enumerate() {
-        assert!(
-            f.pip.iter().all(|&p| (0.0..=1.0).contains(&p)),
-            "cluster {k}: pip {:?}",
-            f.pip
-        );
-    }
-}
-
-#[test]
 fn a_config_recorded_with_the_old_dispersion_field_still_reads() {
     // Manifests written before the log-fold likelihood carry `dispersion`.
     let old = r#"{"prior":{"num_effects":5,"null_weight":0.5,"effect_mean":0.0,"effect_sd":1.0},
@@ -429,4 +418,87 @@ fn a_config_recorded_with_the_old_dispersion_field_still_reads() {
                   "dispersion":0.2}"#;
     let cfg: SusieConfig = serde_json::from_str(old).unwrap();
     assert_eq!(cfg.samples, 1000);
+}
+
+#[test]
+fn a_few_silent_clusters_do_not_floor_a_genes_misfit() {
+    // 36 clusters spread with sd 0.3 at a few hundred counts; 4 read zero.
+    let mut rng = SmallRng::seed_from_u64(21);
+    let spread = rand_distr::Normal::new(0.0f32, 0.3).unwrap();
+    let mut x: Vec<f32> = (0..36).map(|_| spread.sample(&mut rng)).collect();
+    let mut v = vec![1.0 / 300.5; 36];
+    x.extend([(0.5f32 / 300.5).ln(); 4]);
+    v.extend([2.0; 4]);
+    let s2 = misfit_scale2(&x, &v);
+    // Not floored (the old estimate gave the 1e-3 floor); the MAD of 36
+    // draws is itself noisy, so the band is wide.
+    assert!((0.03..0.2).contains(&s2), "s² {s2}");
+}
+
+#[test]
+fn genes_at_the_floor_do_not_set_the_shrinkage_centre() {
+    // Most markers too sparse to measure (at the floor), the rest at 0.5.
+    let mut raw = vec![SCALE2_RANGE.0; 60];
+    raw.extend([0.5; 40]);
+    let shrunk = shrunk_scale2(&raw, 40);
+    assert!(
+        shrunk[99] > 0.35,
+        "a well-measured gene shrunk to {}",
+        shrunk[99]
+    );
+}
+
+#[test]
+#[ignore = "known gap: the variance at the predicted count closes it but lost accuracy on real data"]
+fn silent_own_markers_count_against_a_decoy() {
+    // As decoy_sim, with the decoy's own 54 markers at a twentieth of their
+    // rate everywhere: low counts, many zeros, still flat in the target.
+    let n_free = 600;
+    let mut sets: Vec<Vec<usize>> = vec![(0..40).collect(), (40..100).collect()];
+    sets.extend((0..3).map(|c| (100 + c * 40..140 + c * 40).collect()));
+    let planted: Vec<Vec<(usize, f64)>> = (0..9)
+        .map(|k| match k {
+            0 => vec![(0, 4.0)],
+            5..=8 => vec![(2 + k % 3, 4.0)],
+            _ => vec![],
+        })
+        .collect();
+    let biology = LogNormal::new(0.0, 0.8).unwrap();
+    let (shared, own) = (n_free + 40..n_free + 46, n_free + 46..n_free + 100);
+    let sim = simulate_with(n_free, &sets, &planted, 13, |k, g, rng| {
+        let on = if shared.contains(&g) {
+            if k <= 3 {
+                50.0
+            } else {
+                0.01
+            }
+        } else if own.contains(&g) {
+            0.05
+        } else {
+            1.0
+        };
+        biology.sample(rng) * on
+    });
+    let f = &fit(&sim, 5).clusters[0];
+    assert_eq!(f.call(), Some(0), "pip {:?} theta {:?}", f.pip, f.theta);
+    assert!(
+        f.credible_sets.iter().all(|s| !s.contains(&1)),
+        "decoy in a credible set: {:?}, pip {:?}",
+        f.credible_sets,
+        f.pip
+    );
+}
+
+#[test]
+fn choice_means_over_many_draws_stay_normalised() {
+    use model::SusieSample;
+    let draw = SusieSample {
+        probs: vec![vec![0.1, 0.2, 0.7]],
+        theta: vec![0.0, 0.0],
+    };
+    let chains = vec![vec![draw; 4000]; 4];
+    let bar = aligned_choice_means(&chains);
+    let total: f64 = bar[0].iter().map(|&v| f64::from(v)).sum();
+    assert!((total - 1.0).abs() < 1e-6, "sum {total}");
+    assert!((f64::from(bar[0][2]) - 0.7).abs() < 1e-6, "{:?}", bar[0]);
 }

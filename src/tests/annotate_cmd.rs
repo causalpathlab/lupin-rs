@@ -120,3 +120,10 @@ fn susie_settings_that_leave_no_posterior_fail_the_command() {
         assert!(err.contains("SuSiE"), "{bad:?}: {err}");
     }
 }
+
+#[test]
+fn the_retired_susie_dispersion_flag_is_still_accepted() {
+    // 0.5.0 shipped it; saved commands that pass it must keep working.
+    let a = parse(&["-o", "x", "-m", "m.tsv", "--susie-dispersion", "0"]);
+    assert!(!a.to_argv().iter().any(|s| s.contains("susie-dispersion")));
+}
