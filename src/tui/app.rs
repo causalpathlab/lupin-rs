@@ -802,7 +802,12 @@ impl App {
         }
         if !round.rescorable {
             self.scored_for = want;
-            self.status = "this round cached no statistics: marker edits are scored on save".into();
+            self.status = if round.score_calls {
+                "a projection score round has no statistics to rescore: a new pass scores the edited panel"
+            } else {
+                "this round cached no statistics: marker edits are scored on save"
+            }
+            .into();
             return;
         }
         let file = std::env::temp_dir().join(format!(
@@ -1144,7 +1149,13 @@ impl App {
             AfterPass::Offer => "; then a choice to run the trajectory",
             AfterPass::Nothing => "",
         };
-        match self.form.as_ref().and_then(|f| f.expression.as_deref()) {
+        // The note on missing counts is about the enrichment's input.
+        let note = self
+            .form
+            .as_ref()
+            .and_then(|f| f.expression.as_deref())
+            .filter(|_| self.args.method != AnnotateMethod::Projection);
+        match note {
             Some(e) => (format!("{what}{then}. {e}"), true),
             None => (format!("{what}{then}"), warns),
         }

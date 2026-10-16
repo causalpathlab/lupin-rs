@@ -264,6 +264,9 @@ pub struct RoundView {
     pub decided: BTreeSet<ClusterId>,
     /// The pass cached its statistics, so marker edits can be rescored.
     pub rescorable: bool,
+    /// The candidates are the projection score's per-cell calls: a marker
+    /// edit needs a new pass to be scored.
+    pub score_calls: bool,
 }
 
 /// A score round's shares: each current cluster's share of its cells called
@@ -304,12 +307,16 @@ impl RoundView {
         let table = |rel: &Option<String>| at(rel).map(|p| read_table(&p)).transpose();
         // How the cluster's evidence splits over the types: the enrichment's
         // Q, else (a score round) its cells' calls over the current clusters.
-        let share = match table(&a.cluster_celltype_q)? {
-            Some(q) => Some(q),
-            None => match at(&a.annotation) {
-                Some(p) => cell_call_shares(&p, &cells)?,
-                None => None,
-            },
+        let (share, score_calls) = match table(&a.cluster_celltype_q)? {
+            Some(q) => (Some(q), false),
+            None => {
+                let calls = match at(&a.annotation) {
+                    Some(p) => cell_call_shares(&p, &cells)?,
+                    None => None,
+                };
+                let found = calls.is_some();
+                (calls, found)
+            }
         };
         // SuSiE's tables, when it made the call: its ranking replaces Q's.
         let susie = match (
@@ -408,6 +415,7 @@ impl RoundView {
             loose_cells,
             decided,
             rescorable: a.stats_cache.is_some() && a.expression_clusters.is_some(),
+            score_calls,
         })
     }
 
