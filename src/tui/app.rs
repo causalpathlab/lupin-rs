@@ -5,6 +5,7 @@
 //! or none), each with a reason. Genes can be added to a cell type's
 //! markers. Saving writes the edits as the next round.
 
+use super::figure_pane::FigureKey;
 use super::menu::{numbered, Action, Menu, Outcome};
 use super::ontology::ViewKey;
 use super::round::{decisions, Edit, RoundView};
@@ -216,6 +217,8 @@ pub enum TreeMode {
     Ontology(Box<super::ontology::OntologyView>),
     /// Which cell types precede which: the prior `lupin trajectory` builds.
     Order(Box<super::order::OrderView>),
+    /// The round's cells on the run's layout, the selected cluster lit.
+    Cells,
 }
 
 /// What the genes pane lists.
@@ -478,6 +481,10 @@ pub struct App {
     pub quit: bool,
     /// The trajectory figures of the manifests on screen, when they have any.
     pub figures: Option<super::figure_pane::FigurePane>,
+    /// The round's cells on its run's layout, when the run has one.
+    pub cell_map: Option<super::figure_pane::FigurePane>,
+    /// What to run for a layout, when the round's run has none.
+    map_hint: Option<String>,
     /// The output prefix was given or confirmed; until then the first pass
     /// asks for it.
     pub out_chosen: bool,
@@ -542,6 +549,8 @@ impl App {
             quit: false,
             shift_enter: false,
             figures: None,
+            cell_map: None,
+            map_hint: None,
             out_chosen: true,
             trajectory: super::order::TrajectoryRun::default(),
             trajectory_tui: false,
@@ -698,6 +707,7 @@ impl App {
         self.stop_rescoring();
         self.recorded = None;
         self.scored_for.clear();
+        self.load_cell_map(r.as_ref().map(|r| r.manifest.as_path()));
         self.round = r;
         self.edits.clear();
         self.marked.clear();
@@ -705,6 +715,37 @@ impl App {
         self.gene_sel = 0;
         self.stale = false;
         self.cluster_sel = self.cluster_sel.min(self.n_clusters().saturating_sub(1));
+        self.sync_map_focus();
+    }
+
+    /// The cells of the round from `manifest` on its run's layout, shown in
+    /// the tree pane; the panel's tree when the run has no layout.
+    fn load_cell_map(&mut self, manifest: Option<&Path>) {
+        self.cell_map = None;
+        self.map_hint = None;
+        if let Some(m) = manifest.filter(|m| !m.as_os_str().is_empty()) {
+            let picker = self.picker().clone();
+            match super::figure_pane::FigurePane::of_round(m, &picker) {
+                Ok(map) => self.cell_map = map,
+                Err(e) => self.push_log(format!("[WARN] cell map: {e:#}")),
+            }
+            if self.cell_map.is_none() {
+                self.map_hint = crate::figures::round_layout_hint(m);
+            }
+        }
+        match (&self.tree_mode, self.cell_map.is_some()) {
+            (TreeMode::Panel, true) => self.tree_mode = TreeMode::Cells,
+            (TreeMode::Cells, false) => self.tree_mode = TreeMode::Panel,
+            _ => {}
+        }
+    }
+
+    /// Light the selected cluster on the cell map.
+    fn sync_map_focus(&mut self) {
+        let k = self.selected().map(|c| c.id as i32);
+        if let Some(m) = &mut self.cell_map {
+            m.focus_on(k);
+        }
     }
 
     /// The unsaved marker edits, in order.
@@ -1696,6 +1737,11 @@ impl App {
     }
 
     pub fn key(&mut self, k: KeyEvent) {
+        self.key_unsynced(k);
+        self.sync_map_focus();
+    }
+
+    fn key_unsynced(&mut self, k: KeyEvent) {
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             let armed = self.armed.take();
             return self.request_quit(armed, "ctrl-c");
@@ -2024,6 +2070,22 @@ impl App {
             }
             Focus::Tree if self.trajectory_tui && matches!(code, KeyCode::Char('t' | 'T')) => {
                 self.toggle_order(false);
+            }
+            Focus::Tree if matches!(self.tree_mode, TreeMode::Cells) => {
+                return self.cell_map_key(code);
+            }
+            Focus::Tree
+                if code == KeyCode::Char('v') && matches!(self.tree_mode, TreeMode::Panel) =>
+            {
+                if self.cell_map.is_some() {
+                    self.tree_mode = TreeMode::Cells;
+                    self.status = "the round's cells · V shows the tree".into();
+                } else {
+                    self.status = self
+                        .map_hint
+                        .clone()
+                        .unwrap_or_else(|| "no layout to draw the cells on".into());
+                }
             }
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
             // A search is of the ontology: open it there.
@@ -2989,150 +3051,43 @@ impl App {
             }
             return false;
         };
-        if code != KeyCode::Char('D') {
-            v.exports.disarm();
-        }
-        // The thumbnail grid is modal: arrows choose, Enter opens, p exports
-        // the tile chosen, and only the app's own keys (quit, run, stop,
-        // save, export the round, panes, the tree) go by.
-        if let Some(g) = &mut v.grid {
-            if g.step(code) {
-                return true;
-            }
-            // As in senna view, space or a tile's number opens it too.
-            if let KeyCode::Char(c @ '1'..='9') = code {
-                let k = c as usize - '1' as usize;
-                if k >= g.tiles.len() {
-                    self.status = format!("{} tile(s)", g.tiles.len());
-                    return true;
-                }
-                g.sel = k;
-            }
-            match code {
-                KeyCode::Enter | KeyCode::Char(' ' | '1'..='9') => {
-                    v.open_tile();
-                    self.status = v.title(v.current());
-                }
-                KeyCode::Esc | KeyCode::Char('w') => {
-                    v.grid = None;
-                    self.status = v.title(v.current());
-                }
-                KeyCode::Char('V') => {
-                    v.grid = None;
-                    v.shown = false;
-                }
-                KeyCode::Char('t') => self.status = v.style.cycle_labels(),
-                KeyCode::Char('c') => self.status = v.style.cycle_colouring(&v.data.colourings()),
-                KeyCode::Char('p') => {
-                    self.status = v
-                        .export()
-                        .unwrap_or_else(|e| format!("export failed: {e:#}"));
-                }
-                KeyCode::Char('f') => v.exports.open = !v.exports.open,
-                KeyCode::Char(c) if !"qrxseT".contains(c) => {
-                    self.status = GRID_KEYS.into();
-                }
-                _ => return false,
-            }
+        // The table is hidden behind the figures: its marks wait for `V`.
+        if v.shown && v.grid.is_none() && code == KeyCode::Char(' ') {
+            self.status = "V shows the order table to mark types".into();
             return true;
         }
-        let x = &mut v.exports;
-        // The strip's keys act only while it is on screen; the arrows it
-        // does not take pan.
-        let strip = v.shown && x.open;
-        if strip {
-            let rows = x.rows();
-            if step(&mut x.sel, rows, code) {
-                return true;
-            }
+        let k = v.key(code);
+        self.took_figure_key(k)
+    }
+
+    /// Keys of the round's cell map, in the tree pane: `V` shows the tree
+    /// again; the rest are the figure pane's.
+    fn cell_map_key(&mut self, code: KeyCode) -> bool {
+        if code == KeyCode::Char('V') {
+            self.tree_mode = TreeMode::Panel;
+            self.status = "the panel's tree · v shows the cells again".into();
+            return true;
         }
-        match code {
-            // Esc closes the exports strip before it leaves the pane.
-            KeyCode::Esc if strip => x.open = false,
-            // The strip and its check belong to the figures.
-            KeyCode::Char('f' | 'R') if !v.shown => {
-                self.status = "v shows the figures, then f lists their exports".into();
+        let Some(v) = &mut self.cell_map else {
+            return false;
+        };
+        let k = v.key(code);
+        self.took_figure_key(k)
+    }
+
+    /// Act on what a figure pane's key did; whether it took the key.
+    fn took_figure_key(&mut self, k: FigureKey) -> bool {
+        match k {
+            FigureKey::Ignored => return false,
+            FigureKey::Took => {}
+            FigureKey::Say(s) => self.status = s,
+            FigureKey::Relocate(pdf) => {
+                self.prompt = Some(Prompt {
+                    title: " move the export to (base name, no extension): ".into(),
+                    text: pdf.with_extension("").to_string_lossy().into_owned(),
+                    pending: Pending::Relocate { pdf },
+                });
             }
-            KeyCode::Char('v') => v.next_panel(),
-            KeyCode::Char('V') => {
-                v.shown = false;
-                v.grid = None;
-            }
-            KeyCode::Char(',') if v.shown => self.status = v.step_pair(false, false),
-            KeyCode::Char('.') if v.shown => self.status = v.step_pair(true, false),
-            KeyCode::Char('[') if v.shown => self.status = v.step_pair(false, true),
-            KeyCode::Char(']') if v.shown => self.status = v.step_pair(true, true),
-            // senna view's keys: labels, colouring, layout.
-            KeyCode::Char('t') if v.shown => self.status = v.style.cycle_labels(),
-            KeyCode::Char('c') if v.shown => {
-                self.status = v.style.cycle_colouring(&v.data.colourings());
-            }
-            // The table is hidden behind the figures: its marks wait for `V`.
-            KeyCode::Char(' ') if v.shown => {
-                self.status = "V shows the order table to mark types".into();
-            }
-            KeyCode::Char('m') if v.shown => self.status = v.next_layout(),
-            // senna view's navigation: the grid, zoom and pan.
-            KeyCode::Char('w') if v.shown => {
-                v.open_grid();
-                self.status = GRID_KEYS.into();
-            }
-            KeyCode::Char('+' | '=') if v.shown => self.status = v.zoom(true),
-            KeyCode::Char('-' | '_') if v.shown => self.status = v.zoom(false),
-            KeyCode::Char('0') if v.shown => self.status = v.reset_view(),
-            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if v.shown => {
-                let (dx, dy) = match code {
-                    KeyCode::Left => (-1.0, 0.0),
-                    KeyCode::Right => (1.0, 0.0),
-                    KeyCode::Up => (0.0, 1.0),
-                    _ => (0.0, -1.0),
-                };
-                let note = v.pan(dx, dy);
-                if !note.is_empty() {
-                    self.status = note;
-                }
-            }
-            KeyCode::Char('p') if v.shown => {
-                self.status = v
-                    .export()
-                    .unwrap_or_else(|e| format!("export failed: {e:#}"));
-            }
-            KeyCode::Char('f') => x.open = !x.open,
-            KeyCode::Char('R') => {
-                x.refresh();
-                self.status = format!(
-                    "{} export(s) checked, {} not listed",
-                    x.gallery.entries.len(),
-                    x.not_listed.len()
-                );
-            }
-            KeyCode::Enter if strip => {
-                self.status = x
-                    .adopt(&v.data.manifest)
-                    .unwrap_or_else(|e| format!("{e:#}"));
-            }
-            KeyCode::Char('d') if strip => {
-                self.status = x.remove(false).unwrap_or_else(|e| format!("{e:#}"));
-            }
-            KeyCode::Char('D') if strip => {
-                self.status = match x.arm_delete() {
-                    Some(name) => format!("D again deletes {name} (svg and pdf)"),
-                    None => x.remove(true).unwrap_or_else(|e| format!("{e:#}")),
-                };
-                return true;
-            }
-            KeyCode::Char('M') if strip => {
-                if let Some(e) = x.gallery.entries.get(x.sel) {
-                    self.prompt = Some(Prompt {
-                        title: " move the export to (base name, no extension): ".into(),
-                        text: e.path.with_extension("").to_string_lossy().into_owned(),
-                        pending: Pending::Relocate {
-                            pdf: e.path.clone(),
-                        },
-                    });
-                }
-            }
-            _ => return false,
         }
         true
     }
@@ -3267,10 +3222,13 @@ impl App {
 
     /// Focus the tree on the selected cluster's label (or its top candidate).
     fn jump_to_tree(&mut self) {
-        // Only the panel tree on screen is moved: another view leaves its
-        // selection where the user left it.
+        // The cell map gives way to the tree; only the panel tree on screen
+        // is moved: another view leaves its selection where the user left it.
+        if matches!(self.tree_mode, TreeMode::Cells) {
+            self.tree_mode = TreeMode::Panel;
+        }
         if let Some(back) = match self.tree_mode {
-            TreeMode::Panel => None,
+            TreeMode::Panel | TreeMode::Cells => None,
             TreeMode::Ontology(_) => Some("o on the tree"),
             TreeMode::Order(_) => Some("T"),
         } {
@@ -3300,10 +3258,6 @@ impl Drop for App {
 
 /// The status line when a trajectory menu is closed without a choice.
 const NOT_STARTED: &str = "no trajectory run started";
-
-/// What the thumbnail grid's keys do.
-const GRID_KEYS: &str =
-    "arrows choose · Enter, space or 1-9 opens · p exports it · f exports · t c restyle · V table · T tree · esc or w closes";
 
 /// The labels file a trajectory run on `loaded` recorded in its settings,
 /// resolved against the manifest's directory, when it is still there.

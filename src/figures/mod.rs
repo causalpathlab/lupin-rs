@@ -1051,6 +1051,14 @@ pub(crate) fn layout_hint<'a>(
 /// to show trajectories, then the run's current layout, then the other
 /// layouts it records. Each with its method's name, when known, and its
 /// manifest-relative path.
+/// What to run for a layout of the round at `manifest`, when its run has
+/// none; `None` when it has one or cannot be read.
+pub(crate) fn round_layout_hint(manifest: &Path) -> Option<String> {
+    let l = crate::manifest::run::load(&manifest.to_string_lossy()).ok()?;
+    let (found, run) = layouts_along(&l.manifest, &l.dir, &l.file);
+    layout_hint(found.iter().map(|(m, _)| m.as_deref()), &run)
+}
+
 /// The layouts recorded along `file`'s run that read onto its `n` cells
 /// (`index`), and what to run for the ones it lacks.
 fn read_layouts(

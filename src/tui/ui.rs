@@ -288,11 +288,14 @@ fn pane_keys(app: &App) -> &'static str {
         Focus::Order => {
             " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab ontology · T tree"
         }
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Cells) => {
+            " ? keys · the selected cluster lit · c colour · t labels · m layout · +-0 zoom · ←↑→↓ pan · w all · p export · f exports · V tree"
+        }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Ontology(_)) => {
             " ? keys · ↑↓ term · enter label · space mark · + mixed label · → children · ← parents · h hide / show unmatched below · d in the data / all · / search · o panel"
         }
         Focus::Tree => {
-            " ? keys · ↑↓ node · enter label · space mark · + mixed label · → into the ontology · o ontology · / search"
+            " ? keys · ↑↓ node · enter label · space mark · + mixed label · → into the ontology · o ontology · / search · v cells"
         }
         Focus::Go => " ? keys · ↑↓ term · ← → read a long name · tab pane · esc clusters",
     }
@@ -345,6 +348,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("← →", "fold / unfold; → on a panel leaf goes on into the Cell Ontology at its term (ontology: up / into a term; in the data: → opens a folded chain, then the term in place on all its Cell Ontology children, ▸ more to show, ← closes)"),
             ("h", "in the data's tree: hide / show the terms not in the data below the selected term (◈ hiding)"),
             ("o", "panel tree ↔ the Cell Ontology"),
+            ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, p export) / the tree again"),
             ("d", "Cell Ontology: the terms in the data (the labels, under their common ancestor) ↔ all"),
             (
                 "/",
@@ -1086,6 +1090,9 @@ fn wrap(text: &str, width: usize, max: usize) -> Vec<String> {
 fn draw_tree(f: &mut Frame, area: Rect, app: &App) {
     if let (TreeMode::Ontology(v), Some(cl)) = (&app.tree_mode, &app.cl) {
         return draw_ontology(f, area, app, v, cl);
+    }
+    if let (TreeMode::Cells, Some(map)) = (&app.tree_mode, &app.cell_map) {
+        return draw_figures(f, area, app, map);
     }
     let title = match (&app.tree.source, &app.tree.release) {
         (TreeSource::CellOntology, r) => format!(
