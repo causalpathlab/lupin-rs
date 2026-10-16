@@ -376,3 +376,100 @@ fn a_type_in_most_clusters_is_still_called() {
         assert_eq!(fits.clusters[k].call(), Some(t), "cluster {k}");
     }
 }
+
+/// Real marrow: a few genes a decoy type lists (HLA class II, say) are on in a
+/// minority of clusters, the target's among them, and near silent elsewhere,
+/// while every gene varies between clusters for reasons no type explains. The
+/// decoy's own 54 specific markers never rise.
+fn decoy_sim(seed: u64) -> (Vec<f64>, Vec<Vec<usize>>, usize, usize) {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let (n_free, n_clusters) = (600usize, 9usize);
+    // Types: 0 target (40 markers), 1 decoy (6 shared + 54 own), 2..=4 others (40 each).
+    let mut sets: Vec<Vec<usize>> = vec![(0..40).collect(), (40..100).collect()];
+    sets.extend((0..3).map(|c| (100 + c * 40..140 + c * 40).collect()));
+    let shared: Vec<usize> = (40..46).collect();
+    let n_marker = 220;
+    let n_genes = n_free + n_marker;
+    let mut markers = vec![Vec::new(); n_genes];
+    for (c, set) in sets.iter().enumerate() {
+        for &g in set {
+            markers[n_free + g].push(c);
+        }
+    }
+    let base_rate = LogNormal::new(0.0, 1.0).unwrap();
+    let biology = LogNormal::new(0.0, 0.8).unwrap();
+    let base: Vec<f64> = (0..n_genes).map(|_| base_rate.sample(&mut rng)).collect();
+    let z: f64 = base.iter().sum();
+    let phi = 0.05;
+    let mut sums = Vec::with_capacity(n_genes * n_clusters);
+    for k in 0..n_clusters {
+        // Target in cluster 0; the others in 5..; clusters 1..=3 are target-like neighbours.
+        let planted: Vec<usize> = match k {
+            0 => vec![0],
+            5..=8 => vec![2 + k % 3],
+            _ => vec![],
+        };
+        for g in 0..n_genes {
+            let mut mu = 2e5 * base[g] / z * biology.sample(&mut rng);
+            for &c in &planted {
+                if markers[g].contains(&c) {
+                    mu *= 4.0;
+                }
+            }
+            if g >= n_free && shared.contains(&(g - n_free)) {
+                mu *= if k <= 3 { 50.0 } else { 0.01 };
+            }
+            let lam = Gamma::new(1.0 / phi, mu * phi).unwrap().sample(&mut rng);
+            sums.push(Poisson::new(lam.max(1e-9)).unwrap().sample(&mut rng));
+        }
+    }
+    (sums, markers, n_genes, n_clusters)
+}
+
+#[test]
+fn a_few_shared_genes_on_in_a_minority_of_clusters_do_not_call_the_decoy() {
+    let (sums, markers, n_genes, n_clusters) = decoy_sim(11);
+    let cfg = SusieConfig {
+        samples: 400,
+        warmup: 300,
+        ..Default::default()
+    };
+    let fits = fit_all(&sums, n_genes, n_clusters, &markers, 5, &cfg).unwrap();
+    let f = &fits.clusters[0];
+    assert_eq!(f.call(), Some(0), "pip {:?} theta {:?}", f.pip, f.theta);
+    assert!(
+        f.credible_sets.iter().all(|s| !s.contains(&1)),
+        "decoy in a credible set: {:?}, pip {:?}, theta {:?}",
+        f.credible_sets,
+        f.pip,
+        f.theta
+    );
+}
+
+#[test]
+fn pips_are_probabilities() {
+    let (sums, markers, n_genes, n_clusters) = decoy_sim(11);
+    let cfg = SusieConfig {
+        samples: 200,
+        warmup: 100,
+        ..Default::default()
+    };
+    let fits = fit_all(&sums, n_genes, n_clusters, &markers, 5, &cfg).unwrap();
+    for (k, f) in fits.clusters.iter().enumerate() {
+        assert!(
+            f.pip.iter().all(|&p| (0.0..=1.0).contains(&p)),
+            "cluster {k}: pip {:?}",
+            f.pip
+        );
+    }
+}
+
+#[test]
+fn a_config_recorded_with_the_old_dispersion_field_still_reads() {
+    // Manifests written before the log-fold likelihood carry `dispersion`.
+    let old = r#"{"prior":{"num_effects":5,"null_weight":0.5,"effect_mean":0.0,"effect_sd":1.0},
+                  "chains":4,"samples":1000,"warmup":500,"thin":1,"seed":42,"min_markers":3,
+                  "dispersion":0.2}"#;
+    let cfg: SusieConfig = serde_json::from_str(old).unwrap();
+    assert_eq!(cfg.samples, 1000);
+}
