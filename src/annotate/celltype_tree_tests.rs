@@ -117,9 +117,6 @@ fn a_label_that_leaves_off_cell_matches_the_term_that_ends_in_it() {
     assert_eq!(mapped["Pro-CT2"], "CL:2", "a hyphen parts two words");
     assert_eq!(mapped["CT3"], "CL:3", "a name as written wins");
     assert_eq!(unmapped, ["CT9"]);
-    // The implied word completes a term's name, not a synonym: stacked on a
-    // synonym's looser link it names too much (`alpha cell` is a retinal
-    // ganglion cell's synonym, but a pancreas panel's Alpha is not one).
     let names_only =
         "[Term]\nid: CL:5\nname: alpha retinal ganglion cell\nsynonym: \"alpha cell\" EXACT []\n\n\
                       [Term]\nid: CL:6\nname: endothelial cell\n";
@@ -172,6 +169,44 @@ fn an_unmatched_type_joins_the_group_holding_its_specific_markers() {
     ];
     attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
     assert_eq!(groups[0].members, ["A1", "X"]);
+}
+
+#[test]
+fn an_implied_word_prefers_the_term_it_names_over_one_it_is_a_synonym_of() {
+    let obo = "[Term]\nid: CL:1\nname: pro CT8 cell\n\n\
+               [Term]\nid: CL:2\nname: early CT8 cell\nsynonym: \"pro CT8 cell\" EXACT []\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    assert_eq!(t.map_labels(["Pro_CT8"]).0["Pro_CT8"], "CL:1");
+}
+
+#[test]
+fn marker_groups_are_not_made_by_markers_most_types_hold() {
+    // P1..P4 are held by six of seven types (HLA-like); B1 shares only `b`
+    // with B2, but four P markers with each D and E type.
+    let mut rows = vec![
+        ("b", "B1"),
+        ("b", "B2"),
+        ("x1", "B2"),
+        ("d", "D1"),
+        ("d", "D2"),
+        ("d1", "D1"),
+        ("d2", "D2"),
+    ];
+    for t in ["B1", "D1", "D2", "E1", "E2", "E3"] {
+        for p in ["P1", "P2", "P3", "P4"] {
+            rows.push((p, t));
+        }
+    }
+    rows.extend([("e1", "E1"), ("e2", "E2"), ("e3", "E3")]);
+    let tree = TypeTree::from_markers(&panel(&rows));
+    let group_of = |t: &str| {
+        tree.groups
+            .iter()
+            .position(|g| g.members.iter().any(|m| m == t))
+            .unwrap()
+    };
+    assert_eq!(group_of("B1"), group_of("B2"), "{:?}", tree.groups);
+    assert_ne!(group_of("B1"), group_of("D1"), "{:?}", tree.groups);
 }
 
 #[test]
