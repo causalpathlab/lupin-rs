@@ -967,7 +967,7 @@ fn a_susie_rounds_cluster_list_shows_the_calls_share_and_fold() {
         .expect("the cluster list's header");
     // The list pane: from its left border to its right one.
     let list: String = header.chars().skip(1).take_while(|&c| c != '│').collect();
-    assert!(list.contains("share") && list.contains("fold"), "{list}");
+    assert!(list.contains("explains") && list.contains("fold"), "{list}");
     assert!(
         !list.contains("PIP"),
         "a PIP beside the call reads as certainty: {list}"
@@ -1480,6 +1480,16 @@ fn the_cluster_list_shows_a_susie_calls_share_not_its_pip() {
     assert_eq!(cluster_list_evidence(true, Some(&cand)), ["0.20", "×12.0"]);
     assert_eq!(
         cluster_list_header(true),
-        ["", "cells", "label", "share", "fold", ""]
+        ["", "cells", "label", "explains", "fold", ""],
+        "named apart from the enrichment's share, which a rescore puts in its place"
+    );
+    let no_susie = Candidate {
+        susie: None,
+        ..cand
+    };
+    assert_eq!(
+        cluster_list_evidence(true, Some(&no_susie)),
+        ["0.20", "—"],
+        "a known share is shown; only the fold is missing"
     );
 }
