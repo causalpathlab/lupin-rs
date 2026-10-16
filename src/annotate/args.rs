@@ -136,12 +136,11 @@ impl AnnotateArgs {
 }
 
 /// How `--method projection` calls cell types.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectionMethod {
-    /// The embedding marker score on the run's feature embedding: each cell's
-    /// best type and its margin over the runner-up.
-    #[default]
+    /// The embedding marker score on the run's decoder gene table: each
+    /// cell's best type and its margin over the runner-up.
     Score,
     /// Term over-representation on the co-embedding (kept one release, for
     /// comparison).

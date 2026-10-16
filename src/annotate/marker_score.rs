@@ -1,10 +1,10 @@
 //! The embedding marker score on a run's matrices: each cell's best panel
-//! type and its margin over the runner-up, and each cluster's share of cells
-//! called each type. The score is legume-graph-embedding's
-//! `type_annotation::embedding_score`, a module score (Tirosh et al. 2016,
-//! *Science* 352:189; SCANPY, Wolf et al. 2018, *Genome Biology* 19:15) read
-//! in closed form on the run's feature and cell embeddings, centred at the
-//! balanced centre of its clusters.
+//! type and its margin over the runner-up. The score is
+//! legume-graph-embedding's `type_annotation::embedding_score`, a module
+//! score (Tirosh et al. 2016, *Science* 352:189; SCANPY, Wolf et al. 2018,
+//! *Genome Biology* 19:15) read in closed form on the run's feature and cell
+//! embeddings, centred at the balanced centre of its clusters. A round tables
+//! the per-cell calls by cluster ([`crate::annotate::rounds::call_shares`]).
 
 use crate::annotate::args::MarkerScoreArgs;
 use crate::annotate::outputs::{

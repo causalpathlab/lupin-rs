@@ -770,6 +770,11 @@ fn relabel(
     if regrouped || p.marker_history.is_some() {
         next.manifest.annotate.drop_susie_tables();
     }
+    // The score's per-cell calls hold over new clusters, but not over a new
+    // panel: they were made on the old one.
+    if p.marker_history.is_some() {
+        next.manifest.annotate.marker_score = None;
+    }
     let rel = |p: &str| Some(rel_to_manifest(&next.dir, p));
     if let Some(t) = &tables {
         let a = &mut next.manifest.annotate;

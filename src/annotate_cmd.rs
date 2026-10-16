@@ -317,6 +317,10 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     if let Some(cfg) = build_enrichment_args(args).susie {
         cfg.validate()?;
     }
+    // Refused before any prompt or download, as SuSiE's settings are.
+    if args.projection == Some(ProjectionMethod::Score) {
+        build_score_args(args)?;
+    }
     // One manifest load per invocation; every route below reuses it.
     let loaded = args
         .from
@@ -535,7 +539,9 @@ fn route<'a>(
         args.feature_embedding.as_deref(),
         args.cell_embedding.as_deref(),
     ) {
-        if args.method != AnnotateMethod::Enrichment {
+        // Auto with GO terms or no panel is the enrichment's, files or not.
+        let auto_enrichment = args.method == AnnotateMethod::Auto && enrichment_only(args);
+        if args.method != AnnotateMethod::Enrichment && !auto_enrichment {
             return Route::EmbeddingFiles { feat, cell };
         }
     }
@@ -552,11 +558,9 @@ fn route<'a>(
 /// else enrichment (and without a run).
 #[must_use]
 pub fn resolve_method(args: &AnnotateCliArgs, manifest: Option<&RunManifest>) -> AnnotateMethod {
-    let enrichment_only =
-        args.go || args.gaf.is_some() || args.gmt.is_some() || args.markers.is_empty();
     match args.method {
         AnnotateMethod::Auto
-            if !enrichment_only
+            if !enrichment_only(args)
                 && manifest.is_some_and(|m| {
                     manifest_prefers_projection(m, resolve_projection(args, Some(m)))
                 }) =>
@@ -568,16 +572,26 @@ pub fn resolve_method(args: &AnnotateCliArgs, manifest: Option<&RunManifest>) ->
     }
 }
 
+/// GO terms asked for, or no panel: what only the enrichment does.
+fn enrichment_only(args: &AnnotateCliArgs) -> bool {
+    args.go || args.gaf.is_some() || args.gmt.is_some() || args.markers.is_empty()
+}
+
 /// How a projection pass calls: the `--projection` given, else the score
 /// where the run decodes cells through its gene table and the ORA otherwise
-/// (also without a run: embedding files do not say which table they are).
+/// (also without a run: embedding files do not say which table they are;
+/// and when `--no-idf` or another `--min-markers` asks for what only the
+/// ORA honours).
 #[must_use]
 pub fn resolve_projection(
     args: &AnnotateCliArgs,
     manifest: Option<&RunManifest>,
 ) -> ProjectionMethod {
+    use graph_embedding_util::type_annotation::embedding_score::MIN_MARKERS;
+    // Settings only the ORA honours steer an unset choice to it.
+    let ora_only = args.no_idf || args.min_markers != MIN_MARKERS;
     args.projection.unwrap_or_else(|| match manifest {
-        Some(m) if manifest_prefers_projection(m, ProjectionMethod::Score) => {
+        Some(m) if !ora_only && manifest_prefers_projection(m, ProjectionMethod::Score) => {
             ProjectionMethod::Score
         }
         _ => ProjectionMethod::Ora,

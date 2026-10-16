@@ -270,13 +270,11 @@ pub struct RoundView {
 }
 
 /// A score round's shares: each current cluster's share of its cells called
-/// each type, from the per-cell `call` column of the score's table at `path`.
+/// each type, from the per-cell `call` column of the score's table at
+/// `path`; none when the table is gone.
 fn cell_call_shares(path: &str, cells: &crate::manifest::rounds::Cells) -> Result<Option<Table>> {
-    use legume_numeric::matrix::parquet::{peek_parquet_field_names, read_table_columns};
-    if !peek_parquet_field_names(path)?
-        .iter()
-        .any(|f| f.as_ref() == "call")
-    {
+    use legume_numeric::matrix::parquet::read_table_columns;
+    if !Path::new(path).is_file() {
         return Ok(None);
     }
     let (strings, _) = read_table_columns(path, &["cell", "call"], &[])?;
