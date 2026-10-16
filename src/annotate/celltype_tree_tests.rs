@@ -128,12 +128,9 @@ fn a_label_that_leaves_off_cell_matches_the_term_that_ends_in_it() {
     let names_only = "[Term]\nid: CL:5\nname: alpha retinal ganglion cell\nsynonym: \"alpha type cell\" EXACT []\n\n\
                       [Term]\nid: CL:6\nname: endothelial cell\n";
     let t1 = ClTerms::parse(names_only, &crate::annotate::cl_rules::shipped());
-    let (_, u1) = t1.map_labels(["Alpha_Type", "Endothelial"]);
-    assert_eq!(
-        u1,
-        ["Alpha_Type", "Endothelial"],
-        "not a synonym; not one word"
-    );
+    let (m1, u1) = t1.map_labels(["Alpha_Type", "Endothelial"]);
+    assert_eq!(m1["Endothelial"], "CL:6", "one word completes a name");
+    assert_eq!(u1, ["Alpha_Type"], "but not a synonym");
     let literal = ClTerms::parse(obo, &crate::annotate::cl_rules::MatchRules::default());
     assert_eq!(
         literal.map_labels(["Immature_CT1"]).1,
@@ -226,11 +223,104 @@ fn a_marker_almost_every_type_holds_does_not_stop_the_split() {
 }
 
 #[test]
-fn two_types_sharing_a_marker_stay_one_group() {
-    let tree = TypeTree::from_markers(&panel(&[("g", "A"), ("g", "B")]));
-    assert_eq!(tree.groups.len(), 1);
+fn types_linked_only_by_a_marker_all_hold_stay_apart() {
+    let tree = TypeTree::from_markers(&panel(&[
+        ("U", "A"),
+        ("a", "A"),
+        ("U", "B"),
+        ("b", "B"),
+        ("U", "C"),
+        ("c", "C"),
+    ]));
+    assert_eq!(tree.groups.len(), 3, "{:?}", tree.groups);
 }
 
+#[test]
+fn every_component_is_split_not_only_a_whole_panel() {
+    // E holds only its own marker, so the panel is not one component; the
+    // other four are still split by what they specifically share.
+    let tree = TypeTree::from_markers(&panel(&[
+        ("P", "A"),
+        ("x", "A"),
+        ("P", "B"),
+        ("x", "B"),
+        ("P", "C"),
+        ("y", "C"),
+        ("P", "D"),
+        ("y", "D"),
+        ("e", "E"),
+    ]));
+    let groups: Vec<Vec<String>> = tree.groups.iter().map(|g| g.members.clone()).collect();
+    assert!(
+        groups.contains(&vec!["A".to_string(), "B".to_string()]),
+        "{groups:?}"
+    );
+    assert!(
+        groups.contains(&vec!["C".to_string(), "D".to_string()]),
+        "{groups:?}"
+    );
+}
+
+#[test]
+fn a_dilute_broad_group_still_takes_a_near_copy_of_its_member() {
+    // X is nearly T1, whose group is otherwise unlike X; N1 shares one marker.
+    let mut rows = vec![
+        ("x1", "T1"),
+        ("x2", "T1"),
+        ("x3", "T1"),
+        ("t", "T1"),
+        ("x1", "X"),
+        ("x2", "X"),
+        ("x3", "X"),
+        ("t", "X"),
+        ("n1", "X"),
+        ("n1", "N1"),
+        ("m", "N1"),
+    ];
+    let others = ["T2", "T3", "T4", "T5", "T6"];
+    for (o, own) in others.iter().zip(["o2", "o3", "o4", "o5", "o6"]) {
+        rows.push(("t", o));
+        rows.push((own, o));
+    }
+    let pairs = panel(&rows);
+    let mut members = vec!["T1"];
+    members.extend(others);
+    let mut groups = vec![group("t", &members), group("n", &["N1"])];
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    assert!(groups[0].members.iter().any(|m| m == "X"), "{groups:?}");
+}
+
+#[test]
+fn the_original_overlap_case_still_joins_its_specific_group() {
+    let pairs = panel(&[
+        ("S1", "A1"),
+        ("a1", "A1"),
+        ("a2", "A1"),
+        ("P1", "B1"),
+        ("P2", "B1"),
+        ("P3", "B1"),
+        ("b1", "B1"),
+        ("P1", "B2"),
+        ("P2", "B2"),
+        ("P3", "B2"),
+        ("b2", "B2"),
+        ("P1", "C1"),
+        ("P2", "C1"),
+        ("P3", "C1"),
+        ("c1", "C1"),
+        ("P1", "X"),
+        ("P2", "X"),
+        ("P3", "X"),
+        ("S1", "X"),
+    ]);
+    let mut groups = vec![
+        group("a", &["A1"]),
+        group("b", &["B1", "B2"]),
+        group("c", &["C1"]),
+    ];
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    assert_eq!(groups[0].members, ["A1", "X"]);
+}
 #[test]
 fn marker_groups_are_not_made_by_markers_most_types_hold() {
     // P1..P4 are held by six of seven types (HLA-like); B1 shares only `b`
@@ -262,27 +352,25 @@ fn marker_groups_are_not_made_by_markers_most_types_hold() {
 }
 
 #[test]
-fn an_implied_word_needs_a_label_of_two_or_more_words() {
+fn an_implied_word_needs_a_word_to_complete() {
     let obo = "[Term]\nid: CL:0\nname: cell\n\n\
-               [Term]\nid: CL:1\nname: progenitor cell\n\n\
-               [Term]\nid: CL:2\nname: early progenitor cell\n";
+               [Term]\nid: CL:1\nname: progenitor cell\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    let (mapped, unmapped) = t.map_labels(["", "-", "Progenitor", "Early_Progenitor"]);
-    assert_eq!(mapped["Early_Progenitor"], "CL:2");
+    let (mapped, unmapped) = t.map_labels(["", "-", "Progenitor"]);
     assert_eq!(
-        unmapped,
-        ["", "-", "Progenitor"],
-        "no word, or one generic word"
+        mapped["Progenitor"], "CL:1",
+        "a general label, a general term"
     );
+    assert_eq!(unmapped, ["", "-"], "no word to complete");
 }
-
 #[test]
 fn a_terms_own_name_beats_another_terms_synonym_in_every_tier() {
     let obo = "[Term]\nid: CL:1\nname: pro CT8 cell\n\n\
                [Term]\nid: CL:2\nname: early CT8 cell\nsynonym: \"pro CT8 cell\" EXACT []\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    let (mapped, _) = t.map_labels(["Pro_CT8", "Pro_CT8_cell", "Pro CT8 cells"]);
-    for l in ["Pro_CT8", "Pro_CT8_cell", "Pro CT8 cells"] {
+    let labels = ["Pro_CT8", "Pro_CT8_cell", "Pros CT8 cell", "CT8 cell pro"];
+    let (mapped, _) = t.map_labels(labels);
+    for l in labels {
         assert_eq!(mapped.get(l).map(String::as_str), Some("CL:1"), "{l}");
     }
 }
