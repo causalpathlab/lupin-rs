@@ -67,11 +67,12 @@ pub struct MatchRules {
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct ImpliedRules {
-    /// A label that matches no term is tried again with each of these
-    /// appended (`Immature_B` → `immature B cell`), taken only when it then
-    /// completes a term's name: on a synonym, already a looser link, it names
-    /// too much (`alpha cell` is a retinal ganglion cell's synonym; a pancreas
-    /// panel's Alpha is not one).
+    /// A label of two or more words that matches no term is tried again with
+    /// each of these appended (`Immature_B` → `immature B cell`), taking the
+    /// first that completes exactly one term's name. Not a synonym, already a
+    /// looser link (`alpha cell` is a retinal ganglion cell's synonym; a
+    /// pancreas panel's Alpha is not one), and not a one-word label, where a
+    /// generic word would name a shallow term (`Progenitor`).
     pub suffixes: Vec<String>,
 }
 

@@ -202,9 +202,10 @@ impl ClTerms {
 
     /// Match panel labels to terms by name or exact synonym, as written or
     /// with plural words made singular, else by the same words in any order
-    /// (hyphens as spaces), else with an implied trailing word completing a
-    /// term's name. A label that matches no term, or several, stays unmapped
-    /// rather than guessed.
+    /// (hyphens as spaces), else, for a label of two or more words, with an
+    /// implied trailing word completing a term's name. Where a text names
+    /// several terms, a term's own name wins over another's synonym; a label
+    /// still matching several, or none, stays unmapped rather than guessed.
     #[must_use]
     pub fn map_labels<'a>(
         &self,
@@ -218,29 +219,49 @@ impl ClTerms {
                 mapped.insert(label.to_string(), id.to_string());
                 continue;
             }
-            // As written, else made singular, else with an implied trailing
-            // word completing a term's name (see `ImpliedRules`).
+            // As written, else made singular, else in any word order, else
+            // with an implied trailing word completing a term's name (see
+            // `ImpliedRules`). Where a text names several terms, the one it
+            // is the own name of wins over those it is a synonym of.
             let exact = self.rules.normalise(label);
             let single = self.rules.singular(&exact);
-            let found = self
-                .by_name
-                .get(&exact)
-                .or_else(|| self.by_name.get(&single))
-                .or_else(|| self.by_words.get(&word_bag(&single)))
-                .or_else(|| {
-                    self.rules.implied.suffixes.iter().find_map(|w| {
-                        self.by_term_name
-                            .get(&self.name_key(&format!("{single} {w}")))
-                    })
-                });
-            match found {
-                Some(ids) if ids.len() == 1 => {
-                    mapped.insert(
-                        label.to_string(),
-                        ids.iter().next().cloned().unwrap_or_default(),
-                    );
+            let one = |ids: &BTreeSet<String>, text: &str| -> Option<String> {
+                if ids.len() == 1 {
+                    return ids.iter().next().cloned();
                 }
-                _ => unmapped.push(label.to_string()),
+                let named = self.by_term_name.get(&self.name_key(text))?;
+                let mut own = ids.intersection(named);
+                match (own.next(), own.next()) {
+                    (Some(id), None) => Some(id.clone()),
+                    _ => None,
+                }
+            };
+            let several_words = single
+                .split([' ', '-'])
+                .filter(|w| !w.is_empty())
+                .nth(1)
+                .is_some();
+            let found = if let Some(ids) = self.by_name.get(&exact) {
+                one(ids, &exact)
+            } else if let Some(ids) = self.by_name.get(&single) {
+                one(ids, &single)
+            } else if let Some(ids) = self.by_words.get(&word_bag(&single)) {
+                one(ids, &single)
+            } else if several_words {
+                self.rules.implied.suffixes.iter().find_map(|w| {
+                    let ids = self
+                        .by_term_name
+                        .get(&self.name_key(&format!("{single} {w}")))?;
+                    (ids.len() == 1).then(|| ids.iter().next().cloned())?
+                })
+            } else {
+                None
+            };
+            match found {
+                Some(id) => {
+                    mapped.insert(label.to_string(), id);
+                }
+                None => unmapped.push(label.to_string()),
             }
         }
         (mapped, unmapped)
@@ -494,13 +515,10 @@ impl TypeTree {
         let types = panel_types(panel);
         let sets = marker_sets(panel);
         let n = types.len();
-        // A marker every type holds (IDF 0) joins nothing.
-        let idf = marker_idf(&sets);
         let mut uf = UnionFind::new(n);
         for i in 0..n {
             for j in (i + 1)..n {
-                let (a, b) = (&sets[&types[i]], &sets[&types[j]]);
-                if a.intersection(b).any(|g| idf[g.as_str()] > 0.0) {
+                if !sets[&types[i]].is_disjoint(&sets[&types[j]]) {
                     uf.union(i, j);
                 }
             }
@@ -634,8 +652,9 @@ fn group_name(members: &[String]) -> String {
     }
 }
 
-/// Put each unmapped type in the group whose members hold the most of its
-/// markers' IDF weight ([`marker_idf`]), or in a group of its own.
+/// Put each unmapped type in the group whose members are, on average, most
+/// like it by IDF-weighted Jaccard ([`marker_idf`]; the first such group on
+/// a tie), or in a group of its own.
 fn attach_by_sharing(
     groups: &mut Vec<TypeGroup>,
     unmapped: Vec<String>,
@@ -649,21 +668,17 @@ fn attach_by_sharing(
             .iter()
             .enumerate()
             .map(|(i, grp)| {
-                let union: BTreeSet<&String> = grp
-                    .members
+                let held: Vec<&BTreeSet<String>> =
+                    grp.members.iter().filter_map(|m| sets.get(m)).collect();
+                let mean = held
                     .iter()
-                    .filter_map(|m| sets.get(m))
-                    .flatten()
-                    .collect();
-                let held: f64 = own
-                    .iter()
-                    .filter(|g| union.contains(g))
-                    .map(|g| idf[g.as_str()])
-                    .sum();
-                (i, held)
+                    .map(|m| weighted_jaccard(own, m, &idf))
+                    .sum::<f64>()
+                    / held.len().max(1) as f64;
+                (i, mean)
             })
-            .filter(|(_, held)| *held > 0.0)
-            .max_by(|a, b| a.1.total_cmp(&b.1));
+            .filter(|(_, mean)| *mean > 0.0)
+            .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)));
         match best {
             Some((i, _)) => {
                 groups[i].members.push(t);
