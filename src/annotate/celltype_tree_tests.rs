@@ -59,6 +59,14 @@ fn panel(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         .collect()
 }
 
+fn group(name: &str, members: &[&str]) -> TypeGroup {
+    TypeGroup {
+        name: name.to_string(),
+        cl_id: Some(format!("CL:{name}")),
+        members: members.iter().map(|m| (*m).to_string()).collect(),
+    }
+}
+
 fn members(tree: &TypeTree, group: &str) -> Vec<String> {
     tree.groups
         .iter()
@@ -117,13 +125,15 @@ fn a_label_that_leaves_off_cell_matches_the_term_that_ends_in_it() {
     assert_eq!(mapped["Pro-CT2"], "CL:2", "a hyphen parts two words");
     assert_eq!(mapped["CT3"], "CL:3", "a name as written wins");
     assert_eq!(unmapped, ["CT9"]);
-    let names_only =
-        "[Term]\nid: CL:5\nname: alpha retinal ganglion cell\nsynonym: \"alpha cell\" EXACT []\n\n\
+    let names_only = "[Term]\nid: CL:5\nname: alpha retinal ganglion cell\nsynonym: \"alpha type cell\" EXACT []\n\n\
                       [Term]\nid: CL:6\nname: endothelial cell\n";
     let t1 = ClTerms::parse(names_only, &crate::annotate::cl_rules::shipped());
-    let (m1, u1) = t1.map_labels(["Alpha", "Endothelial"]);
-    assert_eq!(m1["Endothelial"], "CL:6", "one word completes a name");
-    assert_eq!(u1, ["Alpha"], "but not a synonym");
+    let (_, u1) = t1.map_labels(["Alpha_Type", "Endothelial"]);
+    assert_eq!(
+        u1,
+        ["Alpha_Type", "Endothelial"],
+        "not a synonym; not one word"
+    );
     let literal = ClTerms::parse(obo, &crate::annotate::cl_rules::MatchRules::default());
     assert_eq!(
         literal.map_labels(["Immature_CT1"]).1,
@@ -134,12 +144,12 @@ fn a_label_that_leaves_off_cell_matches_the_term_that_ends_in_it() {
 
 #[test]
 fn an_unmatched_type_joins_the_group_holding_its_specific_markers() {
-    // X shares three markers that most types hold with B and with C, and one
-    // marker held by A alone: A explains it, though raw overlap favours C.
+    // X shares three markers most types hold with B and C, and two specific
+    // markers with A: A explains it, though raw overlap favours B and C.
     let pairs = panel(&[
         ("S1", "A1"),
+        ("S2", "A1"),
         ("a1", "A1"),
-        ("a2", "A1"),
         ("P1", "B1"),
         ("P2", "B1"),
         ("P3", "B1"),
@@ -156,12 +166,8 @@ fn an_unmatched_type_joins_the_group_holding_its_specific_markers() {
         ("P2", "X"),
         ("P3", "X"),
         ("S1", "X"),
+        ("S2", "X"),
     ]);
-    let group = |name: &str, members: &[&str]| TypeGroup {
-        name: name.to_string(),
-        cl_id: Some(format!("CL:{name}")),
-        members: members.iter().map(|m| (*m).to_string()).collect(),
-    };
     let mut groups = vec![
         group("a", &["A1"]),
         group("b", &["B1", "B2"]),
@@ -172,11 +178,57 @@ fn an_unmatched_type_joins_the_group_holding_its_specific_markers() {
 }
 
 #[test]
-fn an_implied_word_prefers_the_term_it_names_over_one_it_is_a_synonym_of() {
-    let obo = "[Term]\nid: CL:1\nname: pro CT8 cell\n\n\
-               [Term]\nid: CL:2\nname: early CT8 cell\nsynonym: \"pro CT8 cell\" EXACT []\n";
-    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    assert_eq!(t.map_labels(["Pro_CT8"]).0["Pro_CT8"], "CL:1");
+fn a_broad_group_does_not_outbid_a_near_copy() {
+    // X's two markers are A1's; B1 and B2 hold one each between them.
+    let pairs = panel(&[
+        ("x1", "A1"),
+        ("x2", "A1"),
+        ("a", "A1"),
+        ("x1", "B1"),
+        ("b1", "B1"),
+        ("x2", "B2"),
+        ("b2", "B2"),
+        ("x1", "X"),
+        ("x2", "X"),
+    ]);
+    let mut groups = vec![group("a", &["A1"]), group("b", &["B1", "B2"])];
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    assert_eq!(groups[0].members, ["A1", "X"]);
+}
+
+#[test]
+fn a_marker_almost_every_type_holds_does_not_stop_the_split() {
+    let tree = TypeTree::from_markers(&panel(&[
+        ("U", "A"),
+        ("P", "A"),
+        ("x", "A"),
+        ("U", "B"),
+        ("P", "B"),
+        ("x", "B"),
+        ("U", "C"),
+        ("P", "C"),
+        ("y", "C"),
+        ("U", "D"),
+        ("P", "D"),
+        ("y", "D"),
+        ("U", "E"),
+        ("e", "E"),
+    ]));
+    let groups: Vec<Vec<String>> = tree.groups.iter().map(|g| g.members.clone()).collect();
+    assert!(
+        groups.contains(&vec!["A".to_string(), "B".to_string()]),
+        "{groups:?}"
+    );
+    assert!(
+        groups.contains(&vec!["C".to_string(), "D".to_string()]),
+        "{groups:?}"
+    );
+}
+
+#[test]
+fn two_types_sharing_a_marker_stay_one_group() {
+    let tree = TypeTree::from_markers(&panel(&[("g", "A"), ("g", "B")]));
+    assert_eq!(tree.groups.len(), 1);
 }
 
 #[test]
@@ -207,6 +259,47 @@ fn marker_groups_are_not_made_by_markers_most_types_hold() {
     };
     assert_eq!(group_of("B1"), group_of("B2"), "{:?}", tree.groups);
     assert_ne!(group_of("B1"), group_of("D1"), "{:?}", tree.groups);
+}
+
+#[test]
+fn an_implied_word_needs_a_label_of_two_or_more_words() {
+    let obo = "[Term]\nid: CL:0\nname: cell\n\n\
+               [Term]\nid: CL:1\nname: progenitor cell\n\n\
+               [Term]\nid: CL:2\nname: early progenitor cell\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels(["", "-", "Progenitor", "Early_Progenitor"]);
+    assert_eq!(mapped["Early_Progenitor"], "CL:2");
+    assert_eq!(
+        unmapped,
+        ["", "-", "Progenitor"],
+        "no word, or one generic word"
+    );
+}
+
+#[test]
+fn a_terms_own_name_beats_another_terms_synonym_in_every_tier() {
+    let obo = "[Term]\nid: CL:1\nname: pro CT8 cell\n\n\
+               [Term]\nid: CL:2\nname: early CT8 cell\nsynonym: \"pro CT8 cell\" EXACT []\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let (mapped, _) = t.map_labels(["Pro_CT8", "Pro_CT8_cell", "Pro CT8 cells"]);
+    for l in ["Pro_CT8", "Pro_CT8_cell", "Pro CT8 cells"] {
+        assert_eq!(mapped.get(l).map(String::as_str), Some("CL:1"), "{l}");
+    }
+}
+
+#[test]
+fn an_ambiguous_implied_word_gives_way_to_the_next() {
+    use crate::annotate::cl_rules::MatchRules;
+    let rules = MatchRules::from_layers(&[serde_json::json!({
+        "synonyms": {"EXACT": []},
+        "implied": {"suffixes": ["cell", "lymphocyte"]}
+    })])
+    .unwrap();
+    let obo = "[Term]\nid: CL:1\nname: memory CT9 cell\n\n\
+               [Term]\nid: CL:2\nname: memory CT9 cell\n\n\
+               [Term]\nid: CL:3\nname: memory CT9 lymphocyte\n";
+    let t = ClTerms::parse(obo, &rules);
+    assert_eq!(t.map_labels(["Memory_CT9"]).0["Memory_CT9"], "CL:3");
 }
 
 #[test]
