@@ -1461,4 +1461,4 @@ fn first_spread_pair(d: &Mat, min_share: f32) -> Panel {
 
 #[cfg(test)]
 #[path = "tests.rs"]
-mod tests;
+pub(crate) mod tests;

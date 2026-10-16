@@ -492,7 +492,7 @@ fn round_with_layout(dir: &Path) -> crate::manifest::run::Loaded {
 
 /// A round on four cells in two clusters, labelled A and B; a UMAP when
 /// `layout`.
-fn round(dir: &Path, layout: bool) -> crate::manifest::run::Loaded {
+pub(crate) fn round(dir: &Path, layout: bool) -> crate::manifest::run::Loaded {
     use legume_numeric::matrix::traits::IoOps as _;
     let at = |n: &str| dir.join(n).to_string_lossy().into_owned();
     let names: Vec<Box<str>> = ["c0", "c1", "c2", "c3"]
