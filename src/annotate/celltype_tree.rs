@@ -3,12 +3,16 @@
 //! first call is the group its evidence adds up to.
 //!
 //! The groups come from the Cell Ontology when there is one: the panel's
-//! types are matched to CL terms by name or exact synonym, and each goes
+//! types are matched to CL terms by name or exact synonym (as the matching
+//! rules allow: plurals, word order, an implied trailing word), and each goes
 //! under its nearest ancestor among the ontology's analysis classes (its
 //! curated `*_upper_slim` subsets and `cellxgene_subset`) that it shares with
-//! another panel type. A fine panel collapses to lineage classes; a broad
-//! one stays about as it is. Without an ontology, or when too few types match, types
-//! that share marker genes are grouped together. Nothing here names a cell
+//! another panel type. A type that matches no term joins the group holding
+//! most of its markers, each marker weighed by its IDF over the panel's types,
+//! so markers most types hold decide little. A fine panel collapses to
+//! lineage classes; a broad one stays about as it is. Without an ontology, or
+//! when too few types match, types that share marker genes are grouped
+//! together. Nothing here names a cell
 //! type; every group is derived from the panel and the ontology at run time.
 //!
 //! Pure: [`crate::manifest`] finds the ontology and the evidence.
@@ -604,30 +608,47 @@ fn group_name(members: &[String]) -> String {
     }
 }
 
-/// Put each unmapped type in the group whose members share most markers
-/// with it, or in a group of its own.
+/// Put each unmapped type in the group whose members hold the largest share
+/// of its markers, each weighed by its IDF over the panel's types, or in a
+/// group of its own.
 fn attach_by_sharing(
     groups: &mut Vec<TypeGroup>,
     unmapped: Vec<String>,
     panel: &[(String, String)],
 ) {
     let sets = marker_sets(panel);
+    // A marker most types hold says little about where a type belongs: weigh
+    // each by its IDF over the panel's types, ln(types / types holding it).
+    let mut holders: HashMap<&str, usize> = HashMap::new();
+    for set in sets.values() {
+        for g in set {
+            *holders.entry(g.as_str()).or_default() += 1;
+        }
+    }
+    let n_types = sets.len() as f64;
+    let idf = |g: &str| holders.get(g).map_or(0.0, |&n| (n_types / n as f64).ln());
     for t in unmapped {
         let own = &sets[&t];
+        let own_weight: f64 = own.iter().map(|g| idf(g)).sum();
+        // The group whose markers hold most of this type's weight.
         let best = groups
             .iter()
             .enumerate()
             .map(|(i, g)| {
-                let union: BTreeSet<String> = g
+                let union: BTreeSet<&String> = g
                     .members
                     .iter()
                     .filter_map(|m| sets.get(m))
                     .flatten()
-                    .cloned()
                     .collect();
-                (i, jaccard(own, &union))
+                let held: f64 = own
+                    .iter()
+                    .filter(|g| union.contains(g))
+                    .map(|g| idf(g))
+                    .sum();
+                (i, held / own_weight)
             })
-            .filter(|(_, j)| *j > 0.0)
+            .filter(|(_, share)| *share > 0.0)
             .max_by(|a, b| a.1.total_cmp(&b.1));
         match best {
             Some((i, _)) => {
