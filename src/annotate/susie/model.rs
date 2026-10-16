@@ -38,6 +38,9 @@ use rand_distr::{Distribution, StandardNormal};
 /// Degrees of freedom of the Student-t on the log-folds.
 pub(super) const NU: f64 = 4.0;
 
+/// The largest size one effect can take (a log-fold of 5).
+pub(super) const MAX_EFFECT: f32 = 148.413_16;
+
 /// The prior of the single effects.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SusiePrior {
@@ -95,6 +98,11 @@ impl Panel {
 
     pub(super) fn n_types(&self) -> usize {
         self.genes_of.len()
+    }
+
+    /// The marker genes of type c.
+    pub(super) fn genes_of(&self, c: usize) -> &[usize] {
+        &self.genes_of[c]
     }
 
     /// Every marker gene's predicted log-fold at θ.
@@ -271,6 +279,27 @@ impl SusieState {
         &self.theta
     }
 
+    /// The effects that picked type c.
+    pub(super) fn effects_on(&self, c: usize) -> Vec<usize> {
+        (0..self.gamma.len())
+            .filter(|&l| self.gamma[l] == c)
+            .collect()
+    }
+
+    /// Effect l's size.
+    pub(super) fn effect_size(&self, l: usize) -> f32 {
+        self.effect[l]
+    }
+
+    /// Set effect l's size to `e` (within (0, [`MAX_EFFECT`]]), its raw value
+    /// under `prior` and θ in step.
+    pub(super) fn set_effect(&mut self, l: usize, e: f32, prior: &SusiePrior) {
+        let c = self.gamma[l];
+        self.theta[c] += e - self.effect[l];
+        self.effect[l] = e;
+        self.z_eff[l] = (e.ln() - prior.effect_mean) / prior.effect_sd;
+    }
+
     /// This state as a posterior draw.
     pub(super) fn sample(&self) -> SusieSample {
         SusieSample {
@@ -293,7 +322,7 @@ pub(super) struct SusieSample {
 impl<D: GeneTerms> SusieModel<D> {
     fn effect(&self, z: f32) -> f32 {
         (self.prior.effect_mean + self.prior.effect_sd * z)
-            .min(5.0)
+            .min(MAX_EFFECT.ln())
             .exp()
     }
 

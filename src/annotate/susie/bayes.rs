@@ -19,7 +19,9 @@
 //! (conjugate Normal), log σ² (elliptical slice on its standardized value)
 //! and the hyper-parameters (conjugate).
 
-use super::model::{ClusterGauss, ClusterT, Panel, SusieModel, SusieSample, SusieState, NU};
+use super::model::{
+    ClusterGauss, ClusterT, Panel, SusieModel, SusieSample, SusieState, MAX_EFFECT, NU,
+};
 use super::{summarize, ClusterFit, SusieConfig};
 use legume_numeric::matrix::rand_util::mix_seed;
 use legume_numeric::matrix::utils::median;
@@ -55,6 +57,9 @@ pub(super) struct Start {
     pub(super) beta: Vec<f32>,
     pub(super) scale2: Vec<f32>,
 }
+
+/// Standard deviation of a joint baseline–effect shift (log scale).
+const SHIFT_SD: f64 = 0.3;
 
 /// Jitter of a chain's starting baseline and log misfit variance.
 const START_JITTER: (f64, f64) = (0.1, 0.2);
@@ -132,6 +137,80 @@ impl JointModel<'_> {
 }
 
 impl JointModel<'_> {
+    /// A Metropolis–Hastings move along the baseline–effect trade-off, per
+    /// type c: the baselines of c's marker genes up by d and c's effect down
+    /// by d in every cluster where one effect holds c. Those clusters' fit is
+    /// unchanged, so the move crosses the ridge a type present in many
+    /// clusters leaves between the baselines and its effects; the clusters
+    /// without c, the baselines' prior and the effects' log-normal prior
+    /// decide it. The shift is symmetric and volume-preserving in (β, e).
+    /// Skipped for a type two effects share in one cluster.
+    fn shift_moves(&self, s: &mut JointState, s2: &[f64], rng: &mut SmallRng) {
+        let (mb, sb) = (
+            f64::from(self.prior.effect_mean),
+            f64::from(self.prior.effect_sd),
+        );
+        let log_effect_prior = |e: f64| -(e.ln() - mb).powi(2) / (2.0 * sb * sb) - e.ln();
+        let mut etas: Vec<Vec<f32>> = s
+            .clusters
+            .iter()
+            .map(|st| self.panel.etas(st.theta()))
+            .collect();
+        for c in 0..self.panel.n_types() {
+            let genes = self.panel.genes_of(c);
+            if genes.is_empty() {
+                continue;
+            }
+            let on: Vec<Vec<usize>> = s.clusters.iter().map(|st| st.effects_on(c)).collect();
+            if on.iter().any(|l| l.len() > 1) || on.iter().all(Vec::is_empty) {
+                continue;
+            }
+            let d = SHIFT_SD * normal(rng);
+            let mut delta = 0.0;
+            let mut feasible = true;
+            for (k, l) in on.iter().enumerate() {
+                if let Some(&l) = l.first() {
+                    let e = f64::from(s.clusters[k].effect_size(l));
+                    let e2 = e - d;
+                    if e2 <= 0.0 || e2 > f64::from(MAX_EFFECT) {
+                        feasible = false;
+                        break;
+                    }
+                    delta += log_effect_prior(e2) - log_effect_prior(e);
+                }
+            }
+            if !feasible {
+                continue;
+            }
+            for &g in genes {
+                let b = f64::from(s.beta[g]);
+                delta += ((b - self.beta_mean).powi(2) - (b + d - self.beta_mean).powi(2))
+                    / (2.0 * BETA_VAR);
+                for (k, eta) in etas.iter().enumerate() {
+                    if !on[k].is_empty() {
+                        continue; // +d and −d cancel
+                    }
+                    let w = (s2[g] + f64::from(self.delta[k][g])) / f64::from(s.lambda[k][g]);
+                    let r = f64::from(self.u[k][g] - s.beta[g] - eta[g]);
+                    delta += (r * r - (r - d) * (r - d)) / (2.0 * w);
+                }
+            }
+            let accept: f64 = rng.random();
+            if accept.ln() < delta {
+                for &g in genes {
+                    s.beta[g] = (f64::from(s.beta[g]) + d) as f32;
+                }
+                for (k, l) in on.iter().enumerate() {
+                    if let Some(&l) = l.first() {
+                        let e = f64::from(s.clusters[k].effect_size(l));
+                        s.clusters[k].set_effect(l, (e - d) as f32, &self.prior);
+                        etas[k] = self.panel.etas(s.clusters[k].theta());
+                    }
+                }
+            }
+        }
+    }
+
     /// Every precision λ_kg from its conjugate Gamma at the current β, σ², η.
     fn draw_lambda(&self, s: &mut JointState, s2: &[f64], etas: &[Vec<f32>], rng: &mut SmallRng) {
         let shape = (NU + 1.0) / 2.0;
@@ -266,6 +345,15 @@ impl McmcModel for JointModel<'_> {
                 s.beta[g] = (num / prec + normal(rng) / prec.sqrt()) as f32;
             }
         }
+
+        if self.fixed.beta.is_none() {
+            self.shift_moves(s, &s2, rng);
+        }
+        let etas: Vec<Vec<f32>> = s
+            .clusters
+            .iter()
+            .map(|st| self.panel.etas(st.theta()))
+            .collect();
 
         // log σ²: elliptical slice on the standardized z_g under the Student-t
         // with λ integrated out (σ² and the gene's λs otherwise trade off, a

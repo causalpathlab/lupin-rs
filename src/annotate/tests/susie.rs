@@ -756,8 +756,10 @@ fn chains_started_from_plug_in_estimates_agree_with_the_baseline_free() {
             .collect::<Vec<Vec<usize>>>(),
         3,
     );
+    // The joint baseline–effect move explores the ridge the start sits on,
+    // which is broad here, so the chains take more draws to agree.
     let cfg = SusieConfig {
-        samples: 1000,
+        samples: 2000,
         warmup: 500,
         ..Default::default()
     };
@@ -774,6 +776,48 @@ fn chains_started_from_plug_in_estimates_agree_with_the_baseline_free() {
     for (k, want) in [(0, 0), (1, 1), (2, 2), (3, 0), (4, 1)] {
         assert_eq!(joint.clusters[k].call(), Some(want), "cluster {k}");
     }
+    for (k, f) in joint.clusters.iter().enumerate() {
+        assert!(
+            f.max_rhat < 1.1,
+            "cluster {k}: chains disagree, R̂ {}",
+            f.max_rhat
+        );
+    }
+}
+
+#[test]
+fn a_joint_baseline_effect_move_mixes_without_a_plug_in_start() {
+    // As chains_started_from_plug_in_…, from the default start: the move that
+    // shifts a type's marker baselines up and its effects down together must
+    // carry the chains along that trade-off on its own.
+    let (panel, x, delta) = log_fold_clusters(41);
+    let mut rng = SmallRng::seed_from_u64(42);
+    let base = rand_distr::Normal::new(-8.0f32, 1.5).unwrap();
+    let beta: Vec<f32> = (0..48).map(|_| base.sample(&mut rng)).collect();
+    let u: Vec<Vec<f32>> = x
+        .iter()
+        .map(|xk| xk.iter().zip(&beta).map(|(a, b)| a + b).collect())
+        .collect();
+    let corr = marker_correlation(
+        &(0..48)
+            .map(|g| {
+                (0..3)
+                    .filter(|&c| [0..20, 8..28, 28..48][c].contains(&g))
+                    .collect()
+            })
+            .collect::<Vec<Vec<usize>>>(),
+        3,
+    );
+    let cfg = SusieConfig {
+        samples: 1000,
+        warmup: 500,
+        ..Default::default()
+    };
+    let held = bayes::Fixed {
+        beta: None,
+        scale2: Some(vec![0.11; 48]),
+    };
+    let joint = bayes::fit_joint(&panel, &u, &delta, &held, None, &cfg, &corr);
     for (k, f) in joint.clusters.iter().enumerate() {
         assert!(
             f.max_rhat < 1.1,
