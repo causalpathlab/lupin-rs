@@ -307,7 +307,7 @@ pub(crate) struct CellFigures {
     /// which the run left it out of pseudotime; the figure opens on the
     /// first pair it kept.
     pub(crate) dc_min_share: f32,
-    /// Each scatter's type medians over all its cells, made on first use.
+    /// Each scatter's label medians over all its cells, made on first use.
     pub(crate) medians: Mutex<Vec<(MediansKey, Arc<Medians>)>>,
 }
 
@@ -323,7 +323,7 @@ pub(crate) enum Source {
 }
 
 /// A cluster's name on figures, as the TUI and `review` name it.
-pub(crate) fn cluster_name(k: i32) -> String {
+pub(crate) fn cluster_name(k: impl std::fmt::Display) -> String {
     format!("K{k}")
 }
 
@@ -604,7 +604,7 @@ impl CellFigures {
         }
     }
 
-    /// Write `panel` as `{prefix}.trajectory.{panel}.svg` and `.pdf`, moved
+    /// Write `panel` as `{prefix}.{kind}.{panel}.svg` and `.pdf`, moved
     /// past existing files as `-2`, `-3` …, a scatter as it is on screen.
     pub(crate) fn export(&self, panel: Panel, style: &Style, view: View) -> Result<Export> {
         let base = free_base(&format!(
@@ -688,7 +688,7 @@ impl CellFigures {
         )?)];
         // The type medians over all cells anchor the arrows; only made when
         // they are drawn.
-        if arrows {
+        if arrows && !self.edges.is_empty() {
             let all = self.medians(panel, LabelBy::Type, x, y, &finite);
             layers.extend(self.arrow_layers(&all, &bounds, ext, radius)?);
         }
@@ -742,7 +742,7 @@ impl CellFigures {
         colouring: Colouring,
         colour_of: &[Option<Rgb>],
     ) -> Vec<usize> {
-        if colouring != Colouring::Pseudotime {
+        if colouring != Colouring::Pseudotime || self.pseudotime.is_empty() {
             return grey_first(cells.iter().copied(), colour_of);
         }
         // Every cell sorted once; each figure keeps the cells it shows.
@@ -774,24 +774,20 @@ impl CellFigures {
             .zip(&self.cluster)
             .map(|(&c, &at)| c.filter(|_| at == k))
             .collect();
-        let mut seen = vec![false; legend.len()];
-        let mut left = legend.len();
-        for c in lit.iter().flatten() {
-            if left == 0 {
+        // The distinct lit colours, until every entry's is found.
+        let mut colours: Vec<Rgb> = Vec::new();
+        for &c in lit.iter().flatten() {
+            if colours.len() == legend.len() {
                 break;
             }
-            if let Some(j) = legend.iter().position(|(_, l)| l == c) {
-                if !seen[j] {
-                    seen[j] = true;
-                    left -= 1;
-                }
+            if !colours.contains(&c) {
+                colours.push(c);
             }
         }
         let kept = legend
             .iter()
-            .zip(seen)
-            .filter(|&(_, s)| s)
-            .map(|(e, _)| e.clone())
+            .filter(|(_, c)| colours.contains(c))
+            .cloned()
             .collect();
         (lit.into(), Cow::Owned(kept))
     }
@@ -799,6 +795,10 @@ impl CellFigures {
     /// Each cell's colour in `colouring` and its legend, made once.
     fn cell_colours(&self, colouring: Colouring) -> &CellColours {
         self.colours[colouring.slot()].get_or_init(|| match colouring {
+            // A round has no pseudotime: its cells are grey.
+            Colouring::Pseudotime if self.pseudotime.is_empty() => {
+                (vec![None; self.types.len()], Vec::new())
+            }
             Colouring::Pseudotime => (
                 self.pseudotime
                     .iter()
@@ -822,8 +822,8 @@ impl CellFigures {
         })
     }
 
-    /// The type medians over all of `cells` on the scatter `panel`, kept for
-    /// the next figure of it. They are made outside the lock, so figures
+    /// The label medians (`by`) over all of `cells` on the scatter `panel`,
+    /// kept for the next figure of it. They are made outside the lock, so figures
     /// drawn in parallel do not wait on each other.
     fn medians(
         &self,
@@ -893,7 +893,7 @@ impl CellFigures {
         Ok(layers)
     }
 
-    /// Each type's median position among `cells`.
+    /// Each type's, or each cluster's (`by`), median position among `cells`.
     fn label_medians(&self, by: LabelBy, x: &[f32], y: &[f32], cells: &[usize]) -> Medians {
         fn medians_by<K: Ord>(
             cells: &[usize],
@@ -1118,7 +1118,7 @@ pub(crate) fn layout_hint<'a>(
     };
     let shown: Vec<String> = missing.iter().map(|m| m.to_uppercase()).collect();
     Some(format!(
-        "no {} for this run: `senna layout {which} --from {name}` adds it, and the figures pick it up when they reopen",
+        "no {} for this run: `senna layout {which} --from {name}` adds it, and the figures pick it up when the run is opened again",
         shown.join(" or ")
     ))
 }
@@ -1272,7 +1272,7 @@ fn read_layout(path: &str, index: &CellIndex, n: usize) -> Result<(Vec<f32>, Vec
         anyhow::bail!("{path} has no x and y columns");
     };
     if !t.rows.iter().any(|r| index.contains(r)) {
-        anyhow::bail!("{path} shares no cell with the trajectory");
+        anyhow::bail!("{path} shares no cell with the run's outputs");
     }
     let m = aligned(&t.rows, &t.mat, index, n);
     Ok((
@@ -1385,7 +1385,6 @@ fn hsl(h: f32, s: f32, l: f32) -> Rgb {
     (byte(r), byte(g), byte(b))
 }
 
-/// Lineage or component codes as keys, -1 (none) as `None`.
 /// `cells` in order, the grey ones (no colour in `colour_of`) first.
 fn grey_first(cells: impl Iterator<Item = usize> + Clone, colour_of: &[Option<Rgb>]) -> Vec<usize> {
     let coloured = |i: &usize| colour_of.get(*i).is_some_and(Option::is_some);
@@ -1394,6 +1393,7 @@ fn grey_first(cells: impl Iterator<Item = usize> + Clone, colour_of: &[Option<Rg
     order
 }
 
+/// Lineage, component or cluster codes as keys, -1 (none) as `None`.
 fn codes(v: &[i32]) -> Vec<Option<i32>> {
     v.iter().map(|&c| (c >= 0).then_some(c)).collect()
 }

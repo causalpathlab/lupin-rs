@@ -657,3 +657,11 @@ fn with_a_cluster_in_focus_the_legend_lists_only_its_colours() {
     assert!(svg.contains(">B</text>"), "cluster 1's label");
     assert!(!svg.contains(">A</text>"), "not cluster 0's");
 }
+
+#[test]
+fn a_round_drawn_by_pseudotime_it_lacks_is_grey_not_a_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = of_round(&round_with_layout(dir.path()));
+    let fig = draw(&f, Panel::Layout { k: 0 }, &Style::default());
+    assert!(fig.svg.contains("<svg"));
+}

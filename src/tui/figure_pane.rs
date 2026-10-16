@@ -273,6 +273,22 @@ impl FigurePane {
         }
     }
 
+    /// Draw as `before` did: its labels, colouring (when this data has it),
+    /// view and exports strip; a new round of the same run looks the same.
+    pub fn keep_look(&mut self, before: &FigurePane) {
+        let colouring = before.style.colouring;
+        self.style.labels = before.style.labels;
+        if self.data.colourings().contains(&colouring) {
+            self.style.colouring = colouring;
+        }
+        if before.data.layouts.len() == self.data.layouts.len() {
+            self.panels = before.panels.clone();
+            self.sel = before.sel.min(self.panels.len().saturating_sub(1));
+        }
+        self.view = before.view;
+        self.exports.open = before.exports.open;
+    }
+
     /// `data`'s figures, shown at once.
     pub fn showing(data: CellFigures, picker: &Picker) -> Self {
         let mut p = Self::new(data, picker);

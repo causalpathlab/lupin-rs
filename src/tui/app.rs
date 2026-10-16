@@ -265,8 +265,9 @@ pub enum Pending {
         to: String,
         relation: Relation,
     },
-    /// Move the export of `pdf` to the base name typed.
-    Relocate { pdf: PathBuf },
+    /// Move the export of `pdf` to the base name typed; from the round's
+    /// cell map when `cells`, else the order view's figures.
+    Relocate { pdf: PathBuf, cells: bool },
     /// The output prefix (the text) for passes.
     Output,
     /// Run `lupin trajectory` with the output prefix typed; `replace` is the
@@ -485,6 +486,8 @@ pub struct App {
     pub cell_map: Option<super::figure_pane::FigurePane>,
     /// What to run for a layout, when the round's run has none.
     map_hint: Option<String>,
+    /// The user put the tree in the cell map's place (`V`).
+    map_off: bool,
     /// The output prefix was given or confirmed; until then the first pass
     /// asks for it.
     pub out_chosen: bool,
@@ -551,6 +554,7 @@ impl App {
             figures: None,
             cell_map: None,
             map_hint: None,
+            map_off: false,
             out_chosen: true,
             trajectory: super::order::TrajectoryRun::default(),
             trajectory_tui: false,
@@ -721,19 +725,25 @@ impl App {
 
     /// The round's cells (`figures`) on its run's layout, shown in the tree
     /// pane; the panel's tree when the run has no layout.
+    /// A new round of the same run keeps the map's look and the user's
+    /// choice of the tree over it.
     fn load_cell_map(&mut self, figures: Option<crate::figures::CellFigures>) {
-        self.cell_map = None;
+        let before = self.cell_map.take();
         self.map_hint = None;
         if let Some(data) = figures {
             if data.layouts.is_empty() {
                 self.map_hint = data.layout_hint;
             } else {
                 let picker = self.picker().clone();
-                self.cell_map = Some(super::figure_pane::FigurePane::showing(data, &picker));
+                let mut map = super::figure_pane::FigurePane::showing(data, &picker);
+                if let Some(b) = &before {
+                    map.keep_look(b);
+                }
+                self.cell_map = Some(map);
             }
         }
         match (&self.tree_mode, self.cell_map.is_some()) {
-            (TreeMode::Panel, true) => self.tree_mode = TreeMode::Cells,
+            (TreeMode::Panel, true) if !self.map_off => self.tree_mode = TreeMode::Cells,
             (TreeMode::Cells, false) => self.tree_mode = TreeMode::Panel,
             _ => {}
         }
@@ -1678,8 +1688,13 @@ impl App {
                         }
                     }
                     // Handled above, key by key.
-                    Pending::Relocate { pdf } => {
-                        self.status = match &mut self.figures {
+                    Pending::Relocate { pdf, cells } => {
+                        let pane = if cells {
+                            &mut self.cell_map
+                        } else {
+                            &mut self.figures
+                        };
+                        self.status = match pane {
                             Some(v) => v
                                 .exports
                                 .relocate(&pdf, &reason)
@@ -2067,16 +2082,21 @@ impl App {
             Focus::Tree if self.in_order() => {
                 return self.order_tree_key(code);
             }
+            // The cell map takes its keys first; T still leaves for the order.
+            Focus::Tree
+                if matches!(self.tree_mode, TreeMode::Cells) && code != KeyCode::Char('T') =>
+            {
+                return self.cell_map_key(code);
+            }
             Focus::Tree if self.trajectory_tui && matches!(code, KeyCode::Char('t' | 'T')) => {
                 self.toggle_order(false);
-            }
-            Focus::Tree if matches!(self.tree_mode, TreeMode::Cells) => {
-                return self.cell_map_key(code);
             }
             Focus::Tree
                 if code == KeyCode::Char('v') && matches!(self.tree_mode, TreeMode::Panel) =>
             {
-                if self.cell_map.is_some() {
+                if let Some(m) = &mut self.cell_map {
+                    m.exports.disarm();
+                    self.map_off = false;
                     self.tree_mode = TreeMode::Cells;
                     self.status = "the round's cells · V shows the tree".into();
                 } else {
@@ -3052,33 +3072,44 @@ impl App {
         };
         // The table is hidden behind the figures: its marks wait for `V`.
         if v.shown && v.grid.is_none() && code == KeyCode::Char(' ') {
+            v.exports.disarm();
             self.status = "V shows the order table to mark types".into();
             return true;
         }
         let k = v.key(code);
-        self.took_figure_key(k)
+        self.took_figure_key(k, false)
     }
 
     /// Keys of the round's cell map, in the tree pane: `V` shows the tree
-    /// again; the rest are the figure pane's.
+    /// again, `o` the Cell Ontology, Esc the clusters; the rest are the
+    /// figure pane's.
     fn cell_map_key(&mut self, code: KeyCode) -> bool {
+        let Some(v) = &mut self.cell_map else {
+            return false;
+        };
         if code == KeyCode::Char('V') {
-            if let Some(m) = &mut self.cell_map {
-                m.grid = None;
-            }
+            v.exports.disarm();
+            v.grid = None;
+            self.map_off = true;
             self.tree_mode = TreeMode::Panel;
             self.status = "the panel's tree · v shows the cells again".into();
             return true;
         }
-        let Some(v) = &mut self.cell_map else {
-            return false;
-        };
         let k = v.key(code);
-        self.took_figure_key(k)
+        if self.took_figure_key(k, true) {
+            return true;
+        }
+        match code {
+            KeyCode::Char('o') => self.toggle_ontology(),
+            KeyCode::Esc => self.focus = Focus::Clusters,
+            _ => return false,
+        }
+        true
     }
 
-    /// Act on what a figure pane's key did; whether it took the key.
-    fn took_figure_key(&mut self, k: FigureKey) -> bool {
+    /// Act on what a figure pane's key did, the round's cell map's when
+    /// `cells`; whether it took the key.
+    fn took_figure_key(&mut self, k: FigureKey, cells: bool) -> bool {
         match k {
             FigureKey::Ignored => return false,
             FigureKey::Took => {}
@@ -3087,7 +3118,7 @@ impl App {
                 self.prompt = Some(Prompt {
                     title: " move the export to (base name, no extension): ".into(),
                     text: pdf.with_extension("").to_string_lossy().into_owned(),
-                    pending: Pending::Relocate { pdf },
+                    pending: Pending::Relocate { pdf, cells },
                 });
             }
         }

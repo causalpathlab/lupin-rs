@@ -614,7 +614,11 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
                 (false, Some(t)) => vec![format!("{:.2}", t.share)],
                 (false, None) => vec!["—".into()],
             };
-            let mut cells = vec![format!("K{}", c.id), c.cells.to_string(), shown];
+            let mut cells = vec![
+                crate::figures::cluster_name(c.id),
+                c.cells.to_string(),
+                shown,
+            ];
             cells.extend(evidence);
             cells.push(flag.to_string());
             let row = Row::new(cells);
@@ -1631,7 +1635,7 @@ fn draw_grid(
 ) {
     let block = pane(
         format!(
-            " figures ({}) · arrows choose · enter opens · p exports · V table · esc closes ",
+            " figures ({}) · arrows choose · enter opens · p exports · V leaves · esc closes ",
             g.tiles.len()
         ),
         focused,

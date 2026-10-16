@@ -1519,3 +1519,38 @@ fn a_round_without_a_layout_keeps_the_tree_and_v_names_the_senna_command() {
     press(&mut app, KeyCode::Char('v'));
     assert!(app.status.contains("senna layout"), "{}", app.status);
 }
+
+#[test]
+fn on_the_map_t_restyles_even_in_the_trajectory_tui_and_esc_leaves() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.trajectory_tui = true;
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('t'));
+    assert!(
+        matches!(app.tree_mode, TreeMode::Cells),
+        "t stays on the map"
+    );
+    assert!(app.status.starts_with("labels"), "{}", app.status);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.focus, Focus::Clusters);
+}
+
+#[test]
+fn a_new_round_keeps_the_tree_chosen_over_the_map_and_the_maps_look() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('c'));
+    let file = app.round.as_ref().unwrap().manifest.clone();
+    app.open(&file);
+    let style = app.cell_map.as_ref().unwrap().style;
+    assert_eq!(
+        style.colouring,
+        crate::figures::Colouring::Cluster,
+        "the colouring kept"
+    );
+    press(&mut app, KeyCode::Char('V'));
+    app.open(&file);
+    assert!(matches!(app.tree_mode, TreeMode::Panel), "the tree kept");
+}
