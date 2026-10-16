@@ -85,7 +85,7 @@ fn phate_is_drawn_when_senna_made_one() {
     let mut t = data();
     t.layouts[0].method = Some("phate".into());
     assert_eq!(
-        t.title(Panel::Layout { k: 0 }, Colouring::Pseudotime),
+        t.title(Panel::Layout { k: 0 }, &Style::default()),
         "PHATE · pseudotime"
     );
     assert_eq!(t.slug(Panel::Layout { k: 0 }), "layout_phate");
@@ -222,7 +222,7 @@ fn colourings_cycle_over_what_the_outputs_support() {
         "a legend"
     );
     assert_eq!(
-        t.title(Panel::Layout { k: 0 }, style.colouring),
+        t.title(Panel::Layout { k: 0 }, &style),
         "layout · cell type"
     );
     assert_eq!(
@@ -487,6 +487,12 @@ fn a_table_that_repeats_a_name_gives_each_cell_its_own_row() {
 
 /// A round on four cells in two clusters, labelled A and B, with a UMAP.
 fn round_with_layout(dir: &Path) -> crate::manifest::run::Loaded {
+    round(dir, true)
+}
+
+/// A round on four cells in two clusters, labelled A and B; a UMAP when
+/// `layout`.
+fn round(dir: &Path, layout: bool) -> crate::manifest::run::Loaded {
     use legume_numeric::matrix::traits::IoOps as _;
     let at = |n: &str| dir.join(n).to_string_lossy().into_owned();
     let names: Vec<Box<str>> = ["c0", "c1", "c2", "c3"]
@@ -512,12 +518,18 @@ fn round_with_layout(dir: &Path) -> crate::manifest::run::Loaded {
             Some(&cols),
         )
         .unwrap();
+    let layout = if layout {
+        r#", "layout": {"cell_coords": "r.umap.parquet", "current": "umap"}"#
+    } else {
+        ""
+    };
     std::fs::write(
         at("r.senna.json"),
-        r#"{"version": 2, "kind": "bge", "prefix": "r",
-            "cluster": {"clusters": "r.clusters.parquet"},
-            "annotate": {"argmax": "r.argmax.tsv"},
-            "layout": {"cell_coords": "r.umap.parquet", "current": "umap"}}"#,
+        format!(
+            r#"{{"version": 2, "kind": "bge", "prefix": "r",
+                "cluster": {{"clusters": "r.clusters.parquet"}},
+                "annotate": {{"argmax": "r.argmax.tsv"}}{layout}}}"#
+        ),
     )
     .unwrap();
     crate::manifest::run::load(&at("r.senna.json")).unwrap()
@@ -552,12 +564,9 @@ fn a_rounds_cells_come_with_its_labels_clusters_and_layout() {
 #[test]
 fn a_round_without_a_layout_has_no_figures() {
     let dir = tempfile::tempdir().unwrap();
-    let l = round_with_layout(dir.path());
-    let mut m = l.manifest.clone();
-    m.layout = Default::default();
-    m.save(&l.file).unwrap();
-    let l = crate::manifest::run::load(&l.file.to_string_lossy()).unwrap();
-    assert!(CellFigures::of_round(&l).unwrap().is_none());
+    assert!(CellFigures::of_round(&round(dir.path(), false))
+        .unwrap()
+        .is_none());
 }
 
 #[test]

@@ -6,7 +6,8 @@
 //! writes as a figure file; the TUI's figure pane is where they are shown and
 //! exported.
 
-use crate::manifest::run::{derive_out_prefix, resolve, RunManifest};
+use crate::manifest::rounds::read_cells;
+use crate::manifest::run::{derive_out_prefix, resolve, Loaded, RunManifest};
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
 use anyhow::{Context, Result};
 use enrichment::UNASSIGNED_LABEL;
@@ -58,6 +59,8 @@ pub(crate) enum Colouring {
     Type,
     Lineage,
     Component,
+    /// A round's clusters.
+    Cluster,
 }
 
 impl Colouring {
@@ -67,6 +70,7 @@ impl Colouring {
             Self::Type => "cell type",
             Self::Lineage => "lineage",
             Self::Component => "component",
+            Self::Cluster => "cluster",
         }
     }
 
@@ -77,11 +81,13 @@ impl Colouring {
 }
 
 /// How the scatters are drawn: the label size (an index into
-/// [`TEXT_SCALES`], `None` for no labels) and the colouring.
+/// [`TEXT_SCALES`], `None` for no labels), the colouring, and the cluster in
+/// focus, whose cells keep their colours over the others in grey.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Style {
     pub(crate) labels: Option<usize>,
     pub(crate) colouring: Colouring,
+    pub(crate) focus: Option<i32>,
 }
 
 impl Default for Style {
@@ -89,11 +95,20 @@ impl Default for Style {
         Self {
             labels: Some(1),
             colouring: Colouring::Pseudotime,
+            focus: None,
         }
     }
 }
 
 impl Style {
+    /// The style a figure pane opens in: the first colouring `data` has.
+    pub(crate) fn opening(data: &CellFigures) -> Self {
+        Self {
+            colouring: data.colourings()[0],
+            ..Self::default()
+        }
+    }
+
     /// Labels in turn: small, medium, large, largest, off (`t`, as
     /// `senna view` does); the note for the status line.
     pub(crate) fn cycle_labels(&mut self) -> String {
@@ -256,7 +271,9 @@ pub(crate) struct Export {
     pub(crate) what: String,
 }
 
-/// A trajectory run's outputs, aligned to its cells.
+/// A run's per-cell outputs, aligned to its cells: a trajectory run's
+/// pseudotime, types, lineages, components, diffusion map and edges, or a
+/// round's labels (as `types`) and clusters. What a run lacks stays empty.
 #[derive(Default)]
 pub(crate) struct CellFigures {
     /// The manifest the outputs were read from; export names derive from it.
@@ -273,11 +290,13 @@ pub(crate) struct CellFigures {
     pub(crate) diffusion: Option<Mat>,
     /// The run's layouts that share cells with it, best first.
     pub(crate) layouts: Vec<Layout>,
+    /// Per cell: a round's cluster, -1 for none.
+    pub(crate) cluster: Vec<i32>,
     /// What to run for the layouts of [`WANTED_LAYOUTS`] it lacks, if any.
     pub(crate) layout_hint: Option<String>,
     pub(crate) edges: Vec<EdgeRow>,
     /// Each colouring's cell colours and legend, made on first use.
-    pub(crate) colours: [OnceLock<CellColours>; 4],
+    pub(crate) colours: [OnceLock<CellColours>; 5],
     /// Every cell, grey first, then by pseudotime: the draw order, made on
     /// first use.
     pub(crate) by_pseudotime: OnceLock<Vec<usize>>,
@@ -324,20 +343,7 @@ impl CellFigures {
             }
             None => None,
         };
-        let mut all = Vec::new();
-        let (found, run) = layouts_along(manifest, dir, file);
-        for (method, path) in &found {
-            match read_layout(path, &index, cells.len()) {
-                Ok((x, y)) => all.push(Layout {
-                    method: method.clone(),
-                    x,
-                    y,
-                }),
-                Err(e) => log::warn!("layout {path}: {e:#}"),
-            }
-        }
-        // Shown on `m`; a run says it once, when it ends.
-        let layout_hint = layout_hint(all.iter().map(|l| l.method.as_deref()), &run);
+        let (all, layout_hint) = read_layouts(manifest, dir, file, &index, cells.len());
         let edges = match t.edges.as_deref() {
             Some(rel) => edges::read(&at(rel))?,
             None => Vec::new(),
@@ -363,15 +369,59 @@ impl CellFigures {
         }))
     }
 
+    /// A round's labels and clusters on its layouts; `None` when the run has
+    /// no layout to draw them on.
+    pub(crate) fn of_round(loaded: &Loaded) -> Result<Option<Self>> {
+        let cells = read_cells(loaded)?;
+        let index = cell_index(&cells.names);
+        let (layouts, layout_hint) = read_layouts(
+            &loaded.manifest,
+            &loaded.dir,
+            &loaded.file,
+            &index,
+            cells.names.len(),
+        );
+        if layouts.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            manifest: loaded.file.clone(),
+            types: cells
+                .labels
+                .into_iter()
+                .map(|l| l.map_or(UNASSIGNED_LABEL.into(), String::into_boxed_str))
+                .collect(),
+            cluster: cells
+                .clusters
+                .iter()
+                .map(|k| k.map_or(-1, |k| k as i32))
+                .collect(),
+            layouts,
+            layout_hint,
+            ..Self::default()
+        }))
+    }
+
+    /// What the figures are of, in export names: `trajectory` for a
+    /// trajectory run's, `cells` for a round's.
+    pub(crate) fn kind(&self) -> &'static str {
+        if self.pseudotime.is_empty() {
+            "cells"
+        } else {
+            "trajectory"
+        }
+    }
+
     /// The run's output prefix, which export names start from.
     pub(crate) fn prefix(&self) -> String {
         derive_out_prefix(&self.manifest.to_string_lossy())
     }
 
     /// A panel's title, naming the layout drawn and, on a scatter, the
-    /// colouring.
-    pub(crate) fn title(&self, panel: Panel, colouring: Colouring) -> String {
-        let colouring = colouring.name();
+    /// colouring and the cluster in focus.
+    pub(crate) fn title(&self, panel: Panel, style: &Style) -> String {
+        let focus = style.focus.map_or(String::new(), |k| format!(" · K{k}"));
+        let colouring = format!("{}{focus}", style.colouring.name());
         match panel {
             Panel::Layout { k } => {
                 let method = self.layouts.get(k).and_then(|l| l.method.as_deref());
@@ -431,7 +481,14 @@ impl CellFigures {
             let mut seen = v.iter().filter(|&&c| c >= 0);
             seen.next().is_some_and(|&a| seen.any(|&b| b != a))
         };
-        let mut out = vec![Colouring::Pseudotime, Colouring::Type];
+        let mut out = Vec::new();
+        if !self.pseudotime.is_empty() {
+            out.push(Colouring::Pseudotime);
+        }
+        out.push(Colouring::Type);
+        if several(&self.cluster) {
+            out.push(Colouring::Cluster);
+        }
         if several(&self.lineage) {
             out.push(Colouring::Lineage);
         }
@@ -445,7 +502,9 @@ impl CellFigures {
     /// best layout, else the diffusion map), the order and the connectivity.
     pub(crate) fn panels(&self) -> Vec<Panel> {
         let mut out: Vec<Panel> = self.scatters().into_iter().take(1).collect();
-        out.push(Panel::Order);
+        if !self.pseudotime.is_empty() {
+            out.push(Panel::Order);
+        }
         if !self.edges.is_empty() {
             out.push(Panel::Connectivity);
         }
@@ -521,8 +580,9 @@ impl CellFigures {
     /// past existing files as `-2`, `-3` …, a scatter as it is on screen.
     pub(crate) fn export(&self, panel: Panel, style: &Style, view: View) -> Result<Export> {
         let base = free_base(&format!(
-            "{}.trajectory.{}",
+            "{}.{}.{}",
             self.prefix(),
+            self.kind(),
             self.slug(panel)
         ));
         let w = (EXPORT_WIDTH_IN * EXPORT_DPI) as u32;
@@ -548,7 +608,7 @@ impl CellFigures {
             files,
             what: format!(
                 "{}{zoomed} · {EXPORT_WIDTH_IN:.0} in · {EXPORT_DPI:.0} dpi",
-                self.title(panel, style.colouring),
+                self.title(panel, style),
             ),
         })
     }
@@ -579,8 +639,9 @@ impl CellFigures {
                 && (bounds.ymin..=bounds.ymax).contains(&y[*i])
         };
         let shown: Vec<usize> = finite.iter().copied().filter(inside).collect();
-        let (colour_of, legend) = self.cell_colours(style.colouring);
-        let order = self.draw_order(&shown, style.colouring, colour_of);
+        let legend = &self.cell_colours(style.colouring).1;
+        let colour_of = self.shown_colours(style);
+        let order = self.draw_order(&shown, style.colouring, &colour_of);
         let pts: Vec<(f32, f32)> = order
             .iter()
             .map(|&i| to_pixel((x[i], y[i]), &bounds, ext))
@@ -668,7 +729,23 @@ impl CellFigures {
         for &i in cells {
             shown[i] = true;
         }
-        all.iter().copied().filter(|&i| shown[i]).collect()
+        let mut order: Vec<usize> = all.iter().copied().filter(|&i| shown[i]).collect();
+        order.sort_by_key(|&i| colour_of.get(i).is_some_and(Option::is_some));
+        order
+    }
+
+    /// Each cell's colour in the style's colouring; outside the cluster in
+    /// focus, none (grey).
+    pub(crate) fn shown_colours(&self, style: &Style) -> std::borrow::Cow<'_, [Option<Rgb>]> {
+        let all = &self.cell_colours(style.colouring).0;
+        match style.focus {
+            Some(k) if !self.cluster.is_empty() => all
+                .iter()
+                .zip(&self.cluster)
+                .map(|(&c, &at)| c.filter(|_| at == k))
+                .collect(),
+            _ => all.into(),
+        }
     }
 
     /// Each cell's colour in `colouring` and its legend, made once.
@@ -693,6 +770,7 @@ impl CellFigures {
             Colouring::Component => {
                 categorical(&codes(&self.component), |c| format!("component {c}"))
             }
+            Colouring::Cluster => categorical(&codes(&self.cluster), |c| format!("K{c}")),
         })
     }
 
@@ -973,6 +1051,32 @@ pub(crate) fn layout_hint<'a>(
 /// to show trajectories, then the run's current layout, then the other
 /// layouts it records. Each with its method's name, when known, and its
 /// manifest-relative path.
+/// The layouts recorded along `file`'s run that read onto its `n` cells
+/// (`index`), and what to run for the ones it lacks.
+fn read_layouts(
+    manifest: &RunManifest,
+    dir: &Path,
+    file: &Path,
+    index: &CellIndex,
+    n: usize,
+) -> (Vec<Layout>, Option<String>) {
+    let mut all = Vec::new();
+    let (found, run) = layouts_along(manifest, dir, file);
+    for (method, path) in &found {
+        match read_layout(path, index, n) {
+            Ok((x, y)) => all.push(Layout {
+                method: method.clone(),
+                x,
+                y,
+            }),
+            Err(e) => log::warn!("layout {path}: {e:#}"),
+        }
+    }
+    // Shown on `m`; a run says it once, when it ends.
+    let hint = layout_hint(all.iter().map(|l| l.method.as_deref()), &run);
+    (all, hint)
+}
+
 fn layouts(manifest: &RunManifest) -> Vec<(Option<String>, String)> {
     let l = &manifest.layout;
     let methods = l.extra.get("methods").and_then(|m| m.as_object());

@@ -33,7 +33,8 @@ pub enum Graphics {
 /// The exports strip: the gallery, checked against the files, and the
 /// figure files beside the run that it does not list.
 pub struct Exports {
-    /// The run's output prefix, whose figures are looked for.
+    /// The run's output prefix and the figures' kind (`run.trajectory`),
+    /// whose figures are looked for.
     prefix: String,
     pub gallery: Gallery,
     pub open: bool,
@@ -99,7 +100,10 @@ impl Exports {
         let name = pdf
             .file_stem()
             .map_or(String::new(), |s| s.to_string_lossy().into_owned());
-        let panel = name.rsplit(".trajectory.").next().unwrap_or("");
+        let stem = Path::new(&self.prefix)
+            .file_name()
+            .map_or(String::new(), |s| format!("{}.", s.to_string_lossy()));
+        let panel = name.strip_prefix(&stem).unwrap_or(&name);
         self.gallery.add(&files, &name, panel, manifest)?;
         self.refresh();
         Ok(format!("listed {}", pdf.display()))
@@ -233,13 +237,14 @@ impl FigurePane {
     }
 
     fn new(data: CellFigures, picker: &Picker) -> Self {
-        let exports = Exports::new(data.prefix());
+        let exports = Exports::new(format!("{}.{}", data.prefix(), data.kind()));
+        let style = Style::opening(&data);
         Self {
             panels: data.panels(),
             data,
             sel: 0,
             shown: false,
-            style: Style::default(),
+            style,
             view: View::default(),
             pair: (1, 2),
             picker: picker.clone(),
@@ -269,7 +274,7 @@ impl FigurePane {
 
     /// A panel's title, naming the layout and, on a scatter, the colouring.
     pub fn title(&self, panel: Panel) -> String {
-        self.data.title(panel, self.style.colouring)
+        self.data.title(panel, &self.style)
     }
 
     /// Show the figures, or move to the next panel when they are shown.
