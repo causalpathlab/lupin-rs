@@ -114,9 +114,12 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     let loaded = run::load(&from)?;
     let mut args = args.clone();
     crate::annotate_cmd::apply_level(&mut args, &loaded.file)?;
-    // As the command line would: projection where the run has its gene
-    // table, enrichment otherwise.
-    args.method = crate::annotate_cmd::resolve_method(&args, Some(&loaded.manifest));
+    // The screen's genes, NES, p and q, GO terms and live rescoring all come
+    // from an enrichment pass, so auto opens on it; projection is a choice
+    // in the form.
+    if args.method == crate::annotate_cmd::AnnotateMethod::Auto {
+        args.method = crate::annotate_cmd::AnnotateMethod::Enrichment;
+    }
     args.from = Some(loaded.file.to_string_lossy().into());
     // The run's genes, read once for every marker panel browse.
     let mut genes: Option<Option<Arc<GeneRows>>> = None;

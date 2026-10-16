@@ -126,7 +126,16 @@ fn susie_settings_that_leave_no_posterior_fail_the_command() {
 
 #[test]
 fn projection_leaves_its_method_to_the_run_unless_given_and_the_choice_parses_back() {
-    let base = ["-f", "run.senna.json", "-m", "m.tsv", "-o", "out/x", "--method", "projection"];
+    let base = [
+        "-f",
+        "run.senna.json",
+        "-m",
+        "m.tsv",
+        "-o",
+        "out/x",
+        "--method",
+        "projection",
+    ];
     assert_eq!(parse(&base).projection, None);
     let mut ora = base.to_vec();
     ora.extend(["--projection", "ora"]);
@@ -138,7 +147,7 @@ fn projection_leaves_its_method_to_the_run_unless_given_and_the_choice_parses_ba
 }
 
 #[test]
-fn projection_from_embedding_files_runs_the_score_by_default() {
+fn projection_from_embedding_files_runs_the_ora_unless_the_score_is_asked_for() {
     use legume_numeric::matrix::traits::IoOps;
     let dir = tempfile::tempdir().unwrap();
     let (feat, cells, _) = crate::annotate::marker_score::toy::matrices();
@@ -160,21 +169,34 @@ fn projection_from_embedding_files_runs_the_score_by_default() {
         .unwrap();
     let panel = crate::annotate::marker_score::toy::panel(dir.path());
     let out = at("files");
-    let a = parse(&[
-        "-m",
-        &panel,
-        "-o",
-        &out,
-        "--method",
-        "projection",
-        "--feature-embedding",
+    let argv = |more: &[&str]| {
+        let mut v = vec![
+            "-m",
+            &panel,
+            "-o",
+            &out,
+            "--method",
+            "projection",
+            "--feature-embedding",
+            &at("feat.parquet"),
+            "--cell-embedding",
+            &at("cells.parquet"),
+        ];
+        v.extend(more);
+        parse(&v)
+    };
+    assert_eq!(
+        resolve_projection(&argv(&[]), None),
+        ProjectionMethod::Ora,
+        "files say no table"
+    );
+    run_projection_from_files(
+        &argv(&["--projection", "score"]),
         &at("feat.parquet"),
-        "--cell-embedding",
         &at("cells.parquet"),
-    ]);
-    run_projection_from_files(&a, &at("feat.parquet"), &at("cells.parquet")).unwrap();
-    let fields =
-        legume_numeric::matrix::parquet::peek_parquet_field_names(&format!("{out}.annot.parquet"))
-            .unwrap();
+    )
+    .unwrap();
+    let table = format!("{out}{}", crate::annotate::outputs::MARKER_SCORE_PARQUET);
+    let fields = legume_numeric::matrix::parquet::peek_parquet_field_names(&table).unwrap();
     assert!(fields.iter().any(|f| f.as_ref() == "margin"), "{fields:?}");
 }

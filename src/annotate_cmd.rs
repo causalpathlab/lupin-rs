@@ -170,11 +170,11 @@ pub struct AnnotateCliArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t,
-        help = "Projection: score (the embedding marker score on the run's feature embedding, \
-                per cell with its margin) or ora (term over-representation on the co-embedding)"
+        help = "Projection: score (the embedding marker score on the run's decoder gene table, \
+                per cell with its margin) or ora (term over-representation on the co-embedding); \
+                default: the score where the run decodes cells, else the ORA"
     )]
-    pub projection: ProjectionMethod,
+    pub projection: Option<ProjectionMethod>,
     #[arg(long = "no-idf")]
     pub no_idf: bool,
     #[arg(long = "no-assign-qc")]
@@ -232,7 +232,9 @@ impl AnnotateCliArgs {
             AnnotateMethod::Projection => "projection",
         };
         val("method", method.into());
-        val("projection", self.projection.as_str().into());
+        if let Some(p) = self.projection {
+            val("projection", p.as_str().into());
+        }
         val("markers", self.markers.to_string());
         val("out", self.out.to_string());
         val("resolution", self.resolution.to_string());
@@ -412,7 +414,7 @@ fn run_pass(
                 "GO terms are scored by the enrichment pass; add --method enrichment"
             );
             let loaded = loaded.context("--from is required for projection annotation")?;
-            match args.projection {
+            match resolve_projection(args, Some(&loaded.manifest)) {
                 ProjectionMethod::Score => {
                     annotate_by_marker_score(&build_score_args(args), loaded)?
                 }
@@ -544,20 +546,42 @@ fn route<'a>(
     }
 }
 
-/// The method a pass runs: the one chosen, or for `auto`, projection when
-/// the run has the gene table its projection method reads and enrichment
-/// otherwise (or without a run). The TUI resolves `auto` the same way.
+/// The method a pass runs: the one chosen; for `auto`, enrichment when GO
+/// terms are asked for or no panel is given (both the enrichment's), else
+/// projection when the run has the gene table its projection method reads,
+/// else enrichment (and without a run).
 #[must_use]
 pub fn resolve_method(args: &AnnotateCliArgs, manifest: Option<&RunManifest>) -> AnnotateMethod {
+    let enrichment_only =
+        args.go || args.gaf.is_some() || args.gmt.is_some() || args.markers.is_empty();
     match args.method {
         AnnotateMethod::Auto
-            if manifest.is_some_and(|m| manifest_prefers_projection(m, args.projection)) =>
+            if !enrichment_only
+                && manifest.is_some_and(|m| {
+                    manifest_prefers_projection(m, resolve_projection(args, Some(m)))
+                }) =>
         {
             AnnotateMethod::Projection
         }
         AnnotateMethod::Auto => AnnotateMethod::Enrichment,
         chosen => chosen,
     }
+}
+
+/// How a projection pass calls: the `--projection` given, else the score
+/// where the run decodes cells through its gene table and the ORA otherwise
+/// (also without a run: embedding files do not say which table they are).
+#[must_use]
+pub fn resolve_projection(
+    args: &AnnotateCliArgs,
+    manifest: Option<&RunManifest>,
+) -> ProjectionMethod {
+    args.projection.unwrap_or_else(|| match manifest {
+        Some(m) if manifest_prefers_projection(m, ProjectionMethod::Score) => {
+            ProjectionMethod::Score
+        }
+        _ => ProjectionMethod::Ora,
+    })
 }
 
 /// A run annotates by projection when it has the gene table its projection
@@ -579,7 +603,7 @@ fn run_projection_from_files(
         .with_context(|| format!("reading feature embedding {feat_path}"))?;
     let cell = DMatrix::<f32>::from_parquet(cell_path)
         .with_context(|| format!("reading cell embedding {cell_path}"))?;
-    match args.projection {
+    match resolve_projection(args, None) {
         // Without a run there are no clusters but `--clusters`: else the
         // score is centred at the mean cell, one group.
         ProjectionMethod::Score => {
@@ -738,10 +762,20 @@ mod route_tests {
     #[test]
     fn auto_resolves_to_the_method_the_run_and_the_request_allow() {
         let bge = run_with(RunKind::Bge, true, false);
-        let svd = run_with(RunKind::Svd, true, false);
-        assert_eq!(resolve_method(&cli(&[]), Some(&bge)), AnnotateMethod::Projection);
-        assert_eq!(resolve_method(&cli(&[]), Some(&svd)), AnnotateMethod::Enrichment);
-        assert_eq!(resolve_method(&cli(&[]), None), AnnotateMethod::Enrichment, "no run");
+        let svd = run_with(RunKind::Svd, false, false);
+        assert_eq!(
+            resolve_method(&cli(&[]), Some(&bge)),
+            AnnotateMethod::Projection
+        );
+        assert_eq!(
+            resolve_method(&cli(&[]), Some(&svd)),
+            AnnotateMethod::Enrichment
+        );
+        assert_eq!(
+            resolve_method(&cli(&[]), None),
+            AnnotateMethod::Enrichment,
+            "no run"
+        );
         assert_eq!(
             resolve_method(&cli(&["--go"]), Some(&bge)),
             AnnotateMethod::Enrichment,
@@ -749,7 +783,10 @@ mod route_tests {
         );
         let mut no_panel = cli(&[]);
         no_panel.markers = "".into();
-        assert_eq!(resolve_method(&no_panel, Some(&bge)), AnnotateMethod::Enrichment);
+        assert_eq!(
+            resolve_method(&no_panel, Some(&bge)),
+            AnnotateMethod::Enrichment
+        );
         assert_eq!(
             resolve_method(&cli(&["--projection", "ora"]), Some(&bge)),
             AnnotateMethod::Enrichment,
@@ -769,12 +806,28 @@ mod route_tests {
         let pinto = run_with(RunKind::Other("pinto-cage".into()), false, true);
         let p = |more: &[&str], m: Option<&RunManifest>| resolve_projection(&cli(more), m);
         assert_eq!(p(&[], Some(&bge)), ProjectionMethod::Score);
-        assert_eq!(p(&[], Some(&fne)), ProjectionMethod::Ora, "no decoder table");
+        assert_eq!(
+            p(&[], Some(&fne)),
+            ProjectionMethod::Ora,
+            "no decoder table"
+        );
         assert_eq!(p(&[], Some(&pinto)), ProjectionMethod::Ora);
-        assert_eq!(p(&[], None), ProjectionMethod::Ora, "files: the table is unknown");
-        assert_eq!(p(&["--projection", "score"], None), ProjectionMethod::Score, "asked");
-        assert_eq!(resolve_method(&cli(&[]), Some(&pinto)), AnnotateMethod::Projection);
-    }}
+        assert_eq!(
+            p(&[], None),
+            ProjectionMethod::Ora,
+            "files: the table is unknown"
+        );
+        assert_eq!(
+            p(&["--projection", "score"], None),
+            ProjectionMethod::Score,
+            "asked"
+        );
+        assert_eq!(
+            resolve_method(&cli(&[]), Some(&pinto)),
+            AnnotateMethod::Projection
+        );
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/annotate_cmd.rs"]

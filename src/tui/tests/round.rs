@@ -371,3 +371,42 @@ fn a_score_round_lists_each_clusters_types_by_share() {
         );
     }
 }
+
+#[test]
+fn a_merged_score_round_lists_its_types_from_the_cells_calls() {
+    use crate::annotate::marker_score::toy;
+    use crate::manifest::rounds::{run_relabel, RelabelArgs};
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, panel) = toy::write_run(dir.path());
+    let loaded = run::load(&manifest).unwrap();
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::annotate::annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
+    let round = crate::manifest::run::annotated_path(&loaded.file, &out);
+    let decisions = dir.path().join("d.jsonl");
+    std::fs::write(
+        &decisions,
+        r#"{"clusters": [0, 1], "action": "merge", "label": "AB", "rationale": "one", "decided_by": "user"}"#,
+    )
+    .unwrap();
+    let next = dir.path().join("run.L2");
+    run_relabel(&RelabelArgs {
+        from: round.to_string_lossy().into(),
+        decisions: decisions.to_string_lossy().into(),
+        out: Some(next.to_string_lossy().into()),
+        ..RelabelArgs::default()
+    })
+    .unwrap();
+    let view = RoundView::load(&dir.path().join("run.L2.senna.json")).unwrap();
+    let merged = &view.clusters[0];
+    let mut shares: Vec<(&str, f32)> = merged
+        .candidates
+        .iter()
+        .map(|c| (c.label.as_str(), c.share))
+        .collect();
+    shares.sort_by(|a, b| a.0.cmp(b.0));
+    assert_eq!(
+        shares,
+        [("A", 0.5), ("B", 0.5)],
+        "the merged cluster's cells, by their calls"
+    );
+}

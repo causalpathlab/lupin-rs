@@ -104,7 +104,7 @@ pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
     };
     let enrichment = a.method != AnnotateMethod::Projection;
     let projection = a.method != AnnotateMethod::Enrichment;
-    let permutes = enrichment || a.projection == ProjectionMethod::Ora;
+    let permutes = enrichment || a.projection != Some(ProjectionMethod::Score);
     [
         (Markers, true),
         (Output, true),
@@ -159,7 +159,13 @@ impl Setting {
                 AnnotateMethod::Enrichment => "enrichment".into(),
                 AnnotateMethod::Projection => "projection".into(),
             },
-            Self::Projection => a.projection.as_str().into(),
+            Self::Projection => a
+                .projection
+                .map_or(
+                    "auto (score where the run decodes)",
+                    ProjectionMethod::as_str,
+                )
+                .into(),
             Self::Knn => a.knn.map_or_else(
                 || format!("default ({})", crate::annotate_cmd::default_knn(a.method)),
                 |k| k.to_string(),
@@ -196,9 +202,11 @@ impl Setting {
                 };
             }
             Self::Projection => {
-                a.projection = match a.projection {
-                    ProjectionMethod::Score => ProjectionMethod::Ora,
-                    ProjectionMethod::Ora => ProjectionMethod::Score,
+                use ProjectionMethod::{Ora, Score};
+                a.projection = match (a.projection, up) {
+                    (None, true) | (Some(Ora), false) => Some(Score),
+                    (Some(Score), true) | (None, false) => Some(Ora),
+                    (Some(Ora), true) | (Some(Score), false) => None,
                 };
             }
             Self::Knn => {

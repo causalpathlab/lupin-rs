@@ -3,9 +3,9 @@
 
 use super::*;
 use crate::annotate::marker_score::toy;
+use crate::annotate::outputs::MARKER_SCORE_PARQUET;
 use crate::manifest::rounds::read_argmax;
 use crate::manifest::run;
-use legume_numeric::matrix::traits::IoOps;
 
 #[test]
 fn the_score_pass_calls_each_cell_and_records_its_round() {
@@ -21,7 +21,8 @@ fn the_score_pass_calls_each_cell_and_records_its_round() {
         assert_eq!(label, if i < 10 { "A" } else { "B" }, "c{i:02}");
         assert!(p.is_nan(), "the score has no probability");
     }
-    let (_, nums) = read_table_columns(&format!("{out}{ANNOT_PARQUET}"), &[], &["margin"]).unwrap();
+    let (_, nums) =
+        read_table_columns(&format!("{out}{MARKER_SCORE_PARQUET}"), &[], &["margin"]).unwrap();
     assert!(
         nums[0].iter().all(|&m| m > 0.0),
         "every planted call has a margin"
@@ -29,11 +30,14 @@ fn the_score_pass_calls_each_cell_and_records_its_round() {
 
     let round = run::load(&annotated_path(&loaded.file, &out).to_string_lossy()).unwrap();
     let a = &round.manifest.annotate;
-    assert!(a.argmax.is_some() && a.annotation.is_some());
-    let share = a.cluster_celltype_share.as_deref().expect("a share table");
-    let share = Mat::from_parquet(&resolve(&round.dir, share)).unwrap();
-    assert_eq!(share.rows, ["K0".into(), "K1".into()] as [Box<str>; 2]);
-    assert_eq!((share.mat[(0, 0)], share.mat[(1, 1)]), (1.0, 1.0));
+    assert!(a.argmax.is_some());
+    assert!(
+        a.annotation
+            .as_deref()
+            .is_some_and(|p| p.ends_with(MARKER_SCORE_PARQUET)),
+        "the score's own per-cell table: {:?}",
+        a.annotation
+    );
     assert!(
         round.manifest.cluster.clusters.is_some(),
         "the round's cluster table"
