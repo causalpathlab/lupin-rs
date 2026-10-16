@@ -441,7 +441,13 @@ pub(super) fn load_enrichment_inputs(
     let gene_names = data_vec.row_names()?;
     info!("Raw counts: {n_genes} genes × {n_cells} cells");
 
-    let (cluster_labels, n_clusters) = resolve_clusters(args, manifest, manifest_dir, &cell_names)?;
+    let (cluster_labels, n_clusters) = resolve_clusters(
+        args.clusters.as_deref(),
+        &args.leiden(),
+        manifest,
+        manifest_dir,
+        &cell_names,
+    )?;
     anyhow::ensure!(
         n_clusters >= 2,
         "annotate needs ≥ 2 clusters, found {n_clusters}"
@@ -562,7 +568,8 @@ pub(super) fn panel_inputs(
 ///      we can re-cluster from the same latent the manifest points at.
 ///   3. Internal Leiden on `manifest.outputs.latent`.
 pub(super) fn resolve_clusters(
-    args: &AnnotateArgs,
+    clusters: Option<&str>,
+    leiden: &LeidenArgs,
     manifest: &RunManifest,
     manifest_dir: &Path,
     cell_names: &[Box<str>],
@@ -572,7 +579,7 @@ pub(super) fn resolve_clusters(
         .clusters
         .as_deref()
         .map(|rel| resolve(manifest_dir, rel));
-    let resolved_path = args.clusters.as_deref().map(String::from).or_else(|| {
+    let resolved_path = clusters.map(String::from).or_else(|| {
         manifest_cluster_path.filter(|p| {
             let exists = Path::new(p).is_file();
             if !exists {
@@ -593,14 +600,7 @@ pub(super) fn resolve_clusters(
         "Resolving cluster source: internal Leiden on manifest's cell embedding ({:?})",
         manifest.outputs.geometry_latent()
     );
-    let leiden_args = LeidenArgs {
-        knn: args.knn,
-        resolution: args.resolution,
-        num_clusters: args.num_clusters,
-        min_cluster_size: args.min_cluster_size,
-        seed: args.cluster_seed,
-    };
-    compute_clusters_from_latent(manifest, manifest_dir, cell_names, &leiden_args)
+    compute_clusters_from_latent(manifest, manifest_dir, cell_names, leiden)
 }
 
 /// Per-gene NB-Fisher weights: the cached parquet from training first, falling

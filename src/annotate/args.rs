@@ -125,6 +125,20 @@ pub struct AnnotateArgs {
 /// onto a co-embedded feature space (bge / fne / resolve-embedding-space).
 /// Embedding-grounded (no raw-count re-read), complementary to
 /// `annotate --method enrichment`. Drives the shared firm term-ORA core.
+impl AnnotateArgs {
+    /// The internal Leiden settings, for a run whose clusters are not given.
+    #[must_use]
+    pub fn leiden(&self) -> crate::manifest::annotate::LeidenArgs {
+        crate::manifest::annotate::LeidenArgs {
+            knn: self.knn,
+            resolution: self.resolution,
+            num_clusters: self.num_clusters,
+            min_cluster_size: self.min_cluster_size,
+            seed: self.cluster_seed,
+        }
+    }
+}
+
 /// How `--method projection` calls cell types.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
