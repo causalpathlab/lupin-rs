@@ -206,14 +206,35 @@ impl ClTerms {
                 mapped.insert(label.to_string(), id.to_string());
                 continue;
             }
-            // As written, else with plural words made singular.
+            // As written, else with plural words made singular, else with a
+            // word the label left off its end. The implied word completes a
+            // term's name only, never a synonym: stacked on a synonym's
+            // looser link it names too much (`alpha cell` is a retinal
+            // ganglion cell's synonym; a pancreas panel's Alpha is not one).
             let exact = self.rules.normalise(label);
             let single = self.rules.singular(&exact);
+            let lookup = |name: &str| {
+                self.by_name
+                    .get(name)
+                    .or_else(|| self.by_words.get(&word_bag(name)))
+            };
+            let names = |ids: &BTreeSet<String>, name: &str| {
+                ids.iter().all(|id| {
+                    self.name_of
+                        .get(id)
+                        .is_some_and(|n| word_bag(&self.rules.normalise(n)) == word_bag(name))
+                })
+            };
             let found = self
                 .by_name
                 .get(&exact)
-                .or_else(|| self.by_name.get(&single))
-                .or_else(|| self.by_words.get(&word_bag(&single)));
+                .or_else(|| lookup(&single))
+                .or_else(|| {
+                    self.rules.implied.suffixes.iter().find_map(|w| {
+                        let name = format!("{single} {w}");
+                        lookup(&name).filter(|ids| names(ids, &name))
+                    })
+                });
             match found {
                 Some(ids) if ids.len() == 1 => {
                     mapped.insert(
