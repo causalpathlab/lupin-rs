@@ -70,6 +70,7 @@ fn app_with_terms(terms: bool) -> App {
         loose_cells: 0,
         decided: std::collections::BTreeSet::new(),
         rescorable: false,
+        score_calls: false,
     });
     app.focus = Focus::Genes;
     app
@@ -1500,4 +1501,33 @@ fn the_projection_row_cycles_the_runs_choice_the_score_and_the_ora() {
     assert_eq!(a.projection, Some(ProjectionMethod::Ora));
     Setting::Projection.adjust(&mut a, true);
     assert_eq!(a.projection, None, "back to the run's choice");
+}
+
+#[test]
+fn the_counts_note_is_the_enrichments_and_not_shown_for_projection() {
+    use crate::annotate_cmd::AnnotateMethod;
+    let mut app = app_with_terms(false);
+    app.form = Some(Form {
+        expression: Some("The raw counts are not here".into()),
+        ..Form::default()
+    });
+    assert!(app.form_summary().0.contains("raw counts"));
+    app.args.method = AnnotateMethod::Projection;
+    let (summary, _) = app.form_summary();
+    assert!(!summary.contains("raw counts"), "{summary}");
+}
+
+#[test]
+fn a_score_rounds_marker_edits_wait_for_a_new_pass() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    app.round.as_mut().unwrap().score_calls = true;
+    app.edits.push(Edit::Markers {
+        label: "CT1".into(),
+        genes: vec!["GENE1".into()],
+        add: true,
+        reason: String::new(),
+    });
+    app.tick();
+    assert!(app.status.contains("new pass"), "{}", app.status);
 }
