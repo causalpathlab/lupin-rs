@@ -572,6 +572,33 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// The cluster list's header: a SuSiE round's calls show their share of the
+/// deviance the types explain and their fold, not their PIP (a type's
+/// inclusion in the cluster's model, near 1 for every type a mixed cluster
+/// holds, which beside the call reads as certainty); otherwise the share.
+pub(super) fn cluster_list_header(susie: bool) -> Vec<&'static str> {
+    if susie {
+        vec!["", "cells", "label", "share", "fold", ""]
+    } else {
+        vec!["", "cells", "label", "share", ""]
+    }
+}
+
+/// The evidence the cluster list shows for the label's candidate.
+pub(super) fn cluster_list_evidence(
+    susie: bool,
+    candidate: Option<&super::round::Candidate>,
+) -> Vec<String> {
+    match (susie, candidate) {
+        (true, Some(t @ super::round::Candidate { susie: Some(e), .. })) => {
+            vec![format!("{:.2}", t.share), format!("×{:.1}", e.fold)]
+        }
+        (true, _) => vec!["—".into(), "—".into()],
+        (false, Some(t)) => vec![format!("{:.2}", t.share)],
+        (false, None) => vec!["—".into()],
+    }
+}
+
 fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
     let focused = app.focus == Focus::Clusters;
     let Some(r) = &app.round else {
@@ -581,7 +608,7 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         );
         return;
     };
-    // A SuSiE round shows its calls' PIP and fold; otherwise the share.
+    // A SuSiE round shows its calls' share and fold; otherwise the share.
     let susie = r.clusters.iter().any(|c| c.call_evidence().is_some());
     let rows: Vec<Row> = r
         .clusters
@@ -602,14 +629,7 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
                 .candidates
                 .iter()
                 .find(|t| key.as_deref() == Some(label_key(&t.label).as_str()));
-            let evidence = match (susie, of_label) {
-                (true, Some(super::round::Candidate { susie: Some(e), .. })) => {
-                    vec![format!("{:.2}", e.pip), format!("×{:.1}", e.fold)]
-                }
-                (true, _) => vec!["—".into(), "—".into()],
-                (false, Some(t)) => vec![format!("{:.2}", t.share)],
-                (false, None) => vec!["—".into()],
-            };
+            let evidence = cluster_list_evidence(susie, of_label);
             let mut cells = vec![format!("K{}", c.id), c.cells.to_string(), shown];
             cells.extend(evidence);
             cells.push(flag.to_string());
@@ -625,7 +645,7 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         .collect();
     let (header, widths) = if susie {
         (
-            Row::new(["", "cells", "label", "PIP", "fold", ""]),
+            Row::new(cluster_list_header(true)),
             vec![
                 Constraint::Length(5),
                 Constraint::Length(6),
@@ -637,7 +657,7 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         )
     } else {
         (
-            Row::new(["", "cells", "label", "share", ""]),
+            Row::new(cluster_list_header(false)),
             vec![
                 Constraint::Length(5),
                 Constraint::Length(6),

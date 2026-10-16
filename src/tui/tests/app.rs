@@ -937,7 +937,7 @@ fn the_susie_setting_toggles_the_stage() {
 }
 
 #[test]
-fn a_susie_rounds_cluster_list_shows_the_calls_pip_and_fold() {
+fn a_susie_rounds_cluster_list_shows_the_calls_share_and_fold() {
     use super::super::round::{Candidate, SusieEvidence};
     let mut app = app_with_terms(false);
     if let Some(r) = app.round.as_mut() {
@@ -967,11 +967,14 @@ fn a_susie_rounds_cluster_list_shows_the_calls_pip_and_fold() {
         .expect("the cluster list's header");
     // The list pane: from its left border to its right one.
     let list: String = header.chars().skip(1).take_while(|&c| c != '│').collect();
-    assert!(list.contains("PIP") && list.contains("fold"), "{list}");
-    assert!(!list.contains("share"), "{list}");
+    assert!(list.contains("share") && list.contains("fold"), "{list}");
+    assert!(
+        !list.contains("PIP"),
+        "a PIP beside the call reads as certainty: {list}"
+    );
     let k0 = rows.iter().find(|r| r.contains("K0")).unwrap();
     let k0: String = k0.chars().skip(1).take_while(|&c| c != '│').collect();
-    assert!(k0.contains("×7.0"), "{k0}");
+    assert!(k0.contains("0.85") && k0.contains("×7.0"), "{k0}");
 }
 
 #[test]
@@ -1466,11 +1469,17 @@ fn the_cluster_list_shows_a_susie_calls_share_not_its_pip() {
     let cand = Candidate {
         label: "CT1".into(),
         share: 0.20,
-        susie: Some(SusieEvidence { pip: 1.0, fold: 12.0 }),
+        susie: Some(SusieEvidence {
+            pip: 1.0,
+            fold: 12.0,
+        }),
         nes: None,
         p: None,
         q: None,
     };
     assert_eq!(cluster_list_evidence(true, Some(&cand)), ["0.20", "×12.0"]);
-    assert_eq!(cluster_list_header(true), ["", "cells", "label", "share", "fold", ""]);
+    assert_eq!(
+        cluster_list_header(true),
+        ["", "cells", "label", "share", "fold", ""]
+    );
 }
