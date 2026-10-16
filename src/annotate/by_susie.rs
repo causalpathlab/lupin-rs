@@ -45,14 +45,14 @@ pub fn run(
         n_types,
         cfg,
     )?;
-    let phi = quantiles(&fits.dispersion, &[0.0, 0.5, 1.0]);
+    let s = quantiles(&fits.scale, &[0.0, 0.5, 1.0]);
     info!(
         "SuSiE: {n_clusters} clusters × {n_types} cell types over {} marker genes; \
-         dispersion median {:.3} (range {:.3}–{:.3})",
-        fits.dispersion.len(),
-        phi[1],
-        phi[0],
-        phi[2]
+         log-fold misfit scale median {:.3} (range {:.3}–{:.3})",
+        fits.scale.len(),
+        s[1],
+        s[0],
+        s[2]
     );
 
     let cluster_names = axis_id_names("K", n_clusters);

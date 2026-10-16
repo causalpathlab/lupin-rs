@@ -58,8 +58,6 @@ fn the_susie_stage_parses_back_to_the_same_arguments() {
         "c.parquet",
         "--susie-effects",
         "3",
-        "--susie-dispersion",
-        "0",
         "--mcmc-chains",
         "2",
         "--mcmc-samples",
@@ -115,7 +113,6 @@ fn susie_settings_that_leave_no_posterior_fail_the_command() {
         &["--mcmc-chains", "0"],
         &["--mcmc-samples", "0"],
         &["--mcmc-thin", "0"],
-        &["--susie-dispersion=-1"],
     ] {
         let mut argv = vec!["-o", "x", "-m", "m.tsv"];
         argv.extend_from_slice(bad);

@@ -134,31 +134,6 @@ fn a_cluster_with_no_type_has_no_credible_set() {
 }
 
 #[test]
-fn the_poisson_limit_finds_the_planted_types_too() {
-    let planted: Vec<Vec<(usize, f64)>> = (0..8).map(|k| vec![(k % 4, 4.0)]).collect();
-    let sim = simulate(400, &disjoint(), &planted, 5);
-    let cfg = SusieConfig {
-        samples: 400,
-        warmup: 300,
-        dispersion: Some(0.0),
-        ..Default::default()
-    };
-    let fits = fit_all(
-        &sim.sums,
-        sim.n_genes,
-        sim.n_clusters,
-        &sim.markers,
-        4,
-        &cfg,
-    )
-    .unwrap();
-    assert!(fits.dispersion.iter().all(|&d| d == 0.0));
-    for (k, f) in fits.clusters.iter().enumerate() {
-        assert!(f.pip[k % 4] > 0.9, "cluster {k}: pip {:?}", f.pip);
-    }
-}
-
-#[test]
 fn the_planted_type_explains_most_of_its_cluster() {
     // Cluster 0: type 0 up strongly, type 1 up a little.
     let mut planted: Vec<Vec<(usize, f64)>> = vec![vec![(0, 6.0), (1, 1.5)]];
@@ -246,11 +221,6 @@ fn settings_that_leave_no_posterior_are_refused() {
         ..Default::default()
     })
     .is_err());
-    assert!(run(SusieConfig {
-        dispersion: Some(-0.1),
-        ..Default::default()
-    })
-    .is_err());
 }
 
 #[test]
@@ -275,13 +245,10 @@ fn huge_pseudobulks_still_separate_types_that_share_markers() {
 
 #[test]
 fn chains_that_number_the_same_effects_differently_agree_on_the_credible_sets() {
-    use model::{Cluster, ClusterCounts, Panel, SusieSample};
+    use model::{Cluster, ClusterLogFold, Panel, SusieSample};
     let panel = Panel::new(vec![vec![0], vec![1], vec![]], 2, &[0.1, 0.1, 0.1]);
-    let cluster = Cluster {
-        y: vec![10.0, 10.0, 10.0],
-        log_mu0: vec![0.0, 0.0, 0.0],
-    };
-    let counts = ClusterCounts {
+    let cluster = Cluster::new([10.0; 3].into_iter(), [10.0; 3].into_iter());
+    let counts = ClusterLogFold {
         panel: &panel,
         cluster: &cluster,
     };
@@ -304,13 +271,10 @@ fn chains_that_number_the_same_effects_differently_agree_on_the_credible_sets() 
 
 #[test]
 fn a_type_that_moves_between_effects_within_a_chain_keeps_its_credible_set() {
-    use model::{Cluster, ClusterCounts, Panel, SusieSample};
+    use model::{Cluster, ClusterLogFold, Panel, SusieSample};
     let panel = Panel::new(vec![vec![0], vec![1], vec![]], 2, &[0.1, 0.1, 0.1]);
-    let cluster = Cluster {
-        y: vec![10.0, 10.0, 10.0],
-        log_mu0: vec![0.0, 0.0, 0.0],
-    };
-    let counts = ClusterCounts {
+    let cluster = Cluster::new([10.0; 3].into_iter(), [10.0; 3].into_iter());
+    let counts = ClusterLogFold {
         panel: &panel,
         cluster: &cluster,
     };
