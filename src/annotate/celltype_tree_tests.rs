@@ -106,6 +106,36 @@ fn labels_match_terms_whose_words_come_in_another_order() {
 }
 
 #[test]
+fn a_label_that_leaves_off_cell_matches_the_term_that_ends_in_it() {
+    let obo = "[Term]\nid: CL:1\nname: immature CT1 cell\n\n\
+               [Term]\nid: CL:2\nname: pro-CT2 cell\n\n\
+               [Term]\nid: CL:3\nname: CT3\n\n\
+               [Term]\nid: CL:4\nname: CT3 cell\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels(["Immature_CT1", "Pro-CT2", "CT3", "CT9"]);
+    assert_eq!(mapped["Immature_CT1"], "CL:1");
+    assert_eq!(mapped["Pro-CT2"], "CL:2", "a hyphen parts two words");
+    assert_eq!(mapped["CT3"], "CL:3", "a name as written wins");
+    assert_eq!(unmapped, ["CT9"]);
+    // The implied word completes a term's name, not a synonym: stacked on a
+    // synonym's looser link it names too much (`alpha cell` is a retinal
+    // ganglion cell's synonym, but a pancreas panel's Alpha is not one).
+    let names_only =
+        "[Term]\nid: CL:5\nname: alpha retinal ganglion cell\nsynonym: \"alpha cell\" EXACT []\n\n\
+                      [Term]\nid: CL:6\nname: endothelial cell\n";
+    let t1 = ClTerms::parse(names_only, &crate::annotate::cl_rules::shipped());
+    let (m1, u1) = t1.map_labels(["Alpha", "Endothelial"]);
+    assert_eq!(m1["Endothelial"], "CL:6", "one word completes a name");
+    assert_eq!(u1, ["Alpha"], "but not a synonym");
+    let literal = ClTerms::parse(obo, &crate::annotate::cl_rules::MatchRules::default());
+    assert_eq!(
+        literal.map_labels(["Immature_CT1"]).1,
+        ["Immature_CT1"],
+        "only when the rules say so"
+    );
+}
+
+#[test]
 fn ontology_groups_are_the_nearest_shared_classes() {
     let t = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
     let p = panel(&[
