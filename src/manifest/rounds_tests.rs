@@ -879,6 +879,7 @@ fn a_relabel_round_drops_the_susie_tables_of_the_clusters_it_regrouped() {
         Some("run.cluster_celltype_effect.parquet".into());
     m.manifest.annotate.cluster_celltype_explained =
         Some("run.cluster_celltype_explained.parquet".into());
+    m.manifest.annotate.cluster_celltype_share = Some("run.cluster_celltype_share.parquet".into());
     m.manifest.save(&src).unwrap();
 
     let decisions = root.path().join("d.jsonl");
@@ -898,23 +899,36 @@ fn a_relabel_round_drops_the_susie_tables_of_the_clusters_it_regrouped() {
         a.cluster_celltype_pip
     );
     assert!(a.cluster_celltype_effect.is_none());
+    assert!(a.cluster_celltype_share.is_none(), "the score's shares are of the old clusters");
     assert!(a.cluster_celltype_explained.is_none());
 }
 
 #[test]
-fn regrouping_drops_every_cluster_keyed_susie_table() {
+fn regrouping_drops_every_cluster_keyed_call_table() {
     let mut a = crate::manifest::run::RunAnnotate {
         cluster_celltype_pip: Some("p".into()),
         cluster_celltype_effect: Some("e".into()),
         cluster_celltype_explained: Some("x".into()),
+        cluster_celltype_share: Some("s".into()),
         argmax: Some("kept".into()),
         ..Default::default()
     };
-    a.drop_susie_tables();
+    a.drop_call_tables();
     assert!(a.cluster_celltype_pip.is_none());
     assert!(a.cluster_celltype_effect.is_none());
     assert!(a.cluster_celltype_explained.is_none());
+    assert!(a.cluster_celltype_share.is_none(), "the score's share table too");
     assert_eq!(a.argmax.as_deref(), Some("kept"));
+}
+
+#[test]
+fn a_rounds_cluster_shares_are_the_enrichments_q_else_the_scores_share() {
+    let mut a = crate::manifest::run::RunAnnotate::default();
+    assert_eq!(a.cluster_shares(), None);
+    a.cluster_celltype_share = Some("share".into());
+    assert_eq!(a.cluster_shares(), Some("share"));
+    a.cluster_celltype_q = Some("q".into());
+    assert_eq!(a.cluster_shares(), Some("q"));
 }
 
 #[test]
