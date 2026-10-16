@@ -139,6 +139,20 @@ impl AnnotateArgs {
     }
 }
 
+impl AnnotateProjectionArgs {
+    /// The internal Leiden settings, for a run whose clusters are not given.
+    #[must_use]
+    pub fn leiden(&self) -> crate::manifest::annotate::LeidenArgs {
+        crate::manifest::annotate::LeidenArgs {
+            knn: self.knn,
+            resolution: self.resolution,
+            num_clusters: self.num_clusters,
+            min_cluster_size: self.min_cluster_size,
+            seed: self.cluster_seed,
+        }
+    }
+}
+
 /// How `--method projection` calls cell types.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -163,11 +177,24 @@ pub struct AnnotateProjectionArgs {
     /// Output prefix
     pub out: Box<str>,
 
+    /// Cluster parquet to centre the score on and table the round by (score only;
+    /// else the run's `cluster.clusters`, else internal Leiden)
+    pub clusters: Option<Box<str>>,
+
     /// k for the cosine cell kNN graph fed to Leiden clustering
     pub knn: usize,
 
     /// Leiden resolution for cell clustering (higher → more, finer clusters)
     pub resolution: f64,
+
+    /// Leiden: aim for this many clusters (score only)
+    pub num_clusters: Option<usize>,
+
+    /// Clusters smaller than this are left unassigned (score only)
+    pub min_cluster_size: usize,
+
+    /// Leiden seed (score only)
+    pub cluster_seed: Option<u64>,
 
     /// Permutation draws calibrating the over-representation null (0 = analytic p only)
     pub num_perm: usize,

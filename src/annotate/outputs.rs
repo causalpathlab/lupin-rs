@@ -11,6 +11,8 @@ use std::path::Path;
 pub const ARGMAX_TSV: &str = ".argmax.tsv";
 /// `{out}.annot.parquet`: projection's per-cell table (`community`, `coarse_label`, …).
 pub const ANNOT_PARQUET: &str = ".annot.parquet";
+/// Projection score pass: cluster × cell type share of the cluster's cells called each type.
+pub const CLUSTER_CELLTYPE_SHARE: &str = ".cluster_celltype_share.parquet";
 /// `{out}.cluster_term_q.parquet`: projection's cluster × term FDR q.
 pub const CLUSTER_TERM_Q: &str = ".cluster_term_q.parquet";
 /// `{out}.cluster_celltype_q_values.parquet`: enrichment's cluster × cell-type FDR q.
@@ -110,6 +112,8 @@ pub struct AnnotationOutputs {
     pub argmax: Option<String>,
     pub annotation: Option<String>,
     pub cluster_celltype_q: Option<String>,
+    /// Cluster × cell type share of each cluster's cells called each type.
+    pub cluster_celltype_share: Option<String>,
     pub cluster_celltype_es: Option<String>,
     /// The SuSiE stage's PIP, effect and explained-share tables, when it made the call.
     pub cluster_celltype_pip: Option<String>,

@@ -8,21 +8,27 @@
 //! cluster × gene expression.
 
 use crate::annotate::args::{
-    fixed_settings, AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, BLOCK_SIZE,
+    fixed_settings, AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, ProjectionMethod,
+    BLOCK_SIZE,
 };
 use crate::annotate::by_enrichment;
 use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
+use crate::annotate::marker_score;
 use crate::annotate::ontology;
-use crate::annotate::outputs::{AnnotationOutputs, ANNOT_PARQUET};
+use crate::annotate::outputs::{
+    clean_outputs, write_cluster_tables, AnnotationOutputs, ANNOT_PARQUET, ARGMAX_TSV,
+    CLUSTER_CELLTYPE_SHARE,
+};
 use crate::manifest::rounds;
 use crate::manifest::run::{annotated_path, resolve, Loaded};
+use enrichment::UNASSIGNED_LABEL;
 use legume_numeric::matrix::parquet::read_table_columns;
 
 use crate::annotate::aggregate::{accumulate_gene_sum_pair, weighted_mean_profile};
 use crate::annotate::markers::build_annotation_matrix;
 use crate::manifest::run::{CellSpace, RunManifest};
-use crate::marker_embedding::load_marker_feature_embedding;
+use crate::marker_embedding::{load_feature_embedding, load_marker_feature_embedding};
 use data_beans::aux::data_loading::{
     read_data_on_shared_rows, ReadSharedRowsArgs, SparseDataWithBatch,
 };
@@ -147,9 +153,119 @@ pub fn annotate_by_enrichment(
     Ok(())
 }
 
-/// `lupin annotate --method projection`: score the run's co-embedded gene
-/// space and cell embedding against the marker panel, and record what it wrote.
+/// `lupin annotate --method projection`: call each cell against the marker
+/// panel on the run's embeddings, by the embedding marker score or the
+/// co-embedding ORA, and record what it wrote.
 pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &Loaded) -> Result<()> {
+    match args.projection {
+        ProjectionMethod::Score => annotate_by_marker_score(args, loaded),
+        ProjectionMethod::Ora => annotate_by_coembedding_ora(args, loaded),
+    }
+}
+
+/// The embedding marker score ([`crate::annotate::marker_score`]) on the
+/// run's decoder gene table and cell embedding, centred on its clusters
+/// (`--clusters`, else the run's, else internal Leiden), which also become
+/// the round's cluster table.
+fn annotate_by_marker_score(args: &AnnotateProjectionArgs, loaded: &Loaded) -> Result<()> {
+    let run = loaded.file.display().to_string();
+    let feat = load_feature_embedding(&loaded.manifest, &loaded.dir, &run)?;
+    let cell_path = loaded.geometry_latent_path()?;
+    let cells = Mat::from_parquet(&cell_path)
+        .with_context(|| format!("reading cell embedding {cell_path}"))?;
+    let (groups, _) = resolve_clusters(
+        args.clusters.as_deref(),
+        &args.leiden(),
+        &loaded.manifest,
+        &loaded.dir,
+        &cells.rows,
+    )?;
+    let score = marker_score::score_cells(&feat, &cells.mat, &groups, &args.markers)?;
+    let outputs = write_marker_score(&args.out, &cells.rows, &groups, &score, args.no_clean)?;
+    record(
+        loaded,
+        &args.out,
+        Pass::Markers(&args.markers),
+        &outputs,
+        "projection",
+        settings(args)?,
+    )
+}
+
+/// The score pass's files: per-cell calls (`argmax.tsv`, probability NaN as
+/// the score has none), per-cell cluster, call and margin (`annot.parquet`),
+/// the round's cluster table, and each cluster's share of each type.
+fn write_marker_score(
+    out: &str,
+    cells: &[Box<str>],
+    groups: &[usize],
+    score: &marker_score::MarkerScore,
+    no_clean: bool,
+) -> Result<AnnotationOutputs> {
+    use legume_numeric::matrix::parquet::{write_named_table, Column};
+    let suffixes = [
+        ARGMAX_TSV,
+        ANNOT_PARQUET,
+        CLUSTER_CELLTYPE_SHARE,
+        rounds::CLUSTERS,
+    ];
+    legume_numeric::matrix::common_io::mkdir_parent(out)?;
+    if !no_clean {
+        clean_outputs(out, &suffixes);
+    }
+    let labels: Vec<Option<String>> = score
+        .calls
+        .iter()
+        .map(|c| c.map(|t| score.types[t].to_string()))
+        .collect();
+    let argmax = format!("{out}{ARGMAX_TSV}");
+    rounds::write_argmax(&argmax, cells, &labels, &vec![f32::NAN; cells.len()])?;
+
+    let ids: Vec<Option<u32>> = groups
+        .iter()
+        .map(|&k| (k != marker_score::UNASSIGNED).then(|| k as u32))
+        .collect();
+    let clusters = format!("{out}{}", rounds::CLUSTERS);
+    rounds::write_clusters(&clusters, cells, &ids)?;
+
+    let annot = format!("{out}{ANNOT_PARQUET}");
+    let cluster: Vec<i32> = ids.iter().map(|k| k.map_or(-1, |k| k as i32)).collect();
+    let call: Vec<Box<str>> = labels
+        .iter()
+        .map(|l| l.as_deref().unwrap_or(UNASSIGNED_LABEL).into())
+        .collect();
+    let margin: Vec<f32> = score.margins.iter().map(|&m| m as f32).collect();
+    write_named_table(
+        &annot,
+        "cell",
+        cells,
+        &[
+            ("cluster".into(), Column::I32(&cluster)),
+            ("call".into(), Column::Str(&call)),
+            ("margin".into(), Column::F32(&margin)),
+        ],
+    )?;
+
+    let (ks, share) = marker_score::share_by_cluster(&score.calls, groups, score.types.len());
+    let rows: Vec<Box<str>> = ks.iter().map(|k| format!("K{k}").into()).collect();
+    let share_path = write_cluster_tables(
+        out,
+        &rows,
+        &score.types,
+        &[(&share, CLUSTER_CELLTYPE_SHARE)],
+    )?;
+    Ok(AnnotationOutputs {
+        argmax: Some(argmax),
+        annotation: Some(annot),
+        cluster_celltype_share: share_path.into_iter().next(),
+        clusters: Some(clusters),
+        ..AnnotationOutputs::default()
+    })
+}
+
+/// The co-embedding ORA: score the run's co-embedded gene space and cell
+/// embedding against the marker panel (kept one release, for comparison).
+fn annotate_by_coembedding_ora(args: &AnnotateProjectionArgs, loaded: &Loaded) -> Result<()> {
     let run = loaded.file.display().to_string();
     // Genes on the cell manifold; for a `gem` run only the spliced rows,
     // re-keyed by gene — see [`crate::marker_embedding`].
@@ -274,6 +390,7 @@ fn record(
             a.argmax = rel(&out.argmax);
             a.annotation = rel(&out.annotation);
             a.cluster_celltype_q = rel(&out.cluster_celltype_q);
+            a.cluster_celltype_share = rel(&out.cluster_celltype_share);
             a.cluster_celltype_es = rel(&out.cluster_celltype_es);
             a.cluster_celltype_pip = rel(&out.cluster_celltype_pip);
             a.cluster_celltype_effect = rel(&out.cluster_celltype_effect);
