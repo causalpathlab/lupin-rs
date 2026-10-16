@@ -533,17 +533,29 @@ fn route<'a>(
             return Route::EmbeddingFiles { feat, cell };
         }
     }
-    let projection = match args.method {
-        AnnotateMethod::Enrichment => false,
-        AnnotateMethod::Projection => true,
-        AnnotateMethod::Auto => {
-            loaded.is_some_and(|l| manifest_prefers_projection(&l.manifest, args.projection))
-        }
+    let method = match loaded {
+        Some(l) => resolve_method(args, &l.manifest),
+        None if args.method == AnnotateMethod::Projection => AnnotateMethod::Projection,
+        None => AnnotateMethod::Enrichment,
     };
-    if projection {
+    if method == AnnotateMethod::Projection {
         Route::Projection
     } else {
         Route::Enrichment
+    }
+}
+
+/// The method a pass on `manifest` runs: the one chosen, or for `auto`,
+/// projection when the run has the gene table its projection method reads
+/// and enrichment otherwise. The TUI resolves `auto` the same way.
+#[must_use]
+pub fn resolve_method(args: &AnnotateCliArgs, manifest: &RunManifest) -> AnnotateMethod {
+    match args.method {
+        AnnotateMethod::Auto if manifest_prefers_projection(manifest, args.projection) => {
+            AnnotateMethod::Projection
+        }
+        AnnotateMethod::Auto => AnnotateMethod::Enrichment,
+        chosen => chosen,
     }
 }
 
@@ -689,6 +701,28 @@ fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
 mod route_tests {
     use super::*;
     use crate::manifest::run::RunKind;
+
+    #[test]
+    fn auto_resolves_to_the_method_the_runs_tables_allow() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            annotate: AnnotateCliArgs,
+        }
+        let mut args = <Cli as clap::Parser>::parse_from(["lupin", "-o", "x"]).annotate;
+        let mut bge = RunManifest::new(RunKind::Bge, "run");
+        bge.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
+        assert_eq!(resolve_method(&args, &bge), AnnotateMethod::Projection);
+        let mut svd = RunManifest::new(RunKind::Svd, "run");
+        svd.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
+        assert_eq!(resolve_method(&args, &svd), AnnotateMethod::Enrichment);
+        args.method = AnnotateMethod::Enrichment;
+        assert_eq!(
+            resolve_method(&args, &bge),
+            AnnotateMethod::Enrichment,
+            "a choice stands"
+        );
+    }
 
     #[test]
     fn a_run_annotates_by_projection_when_it_has_the_methods_gene_table() {

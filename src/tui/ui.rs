@@ -1,6 +1,6 @@
 //! Drawing the screen from an [`App`].
 
-use super::app::{App, Focus, GeneView, Setting, TreeMode, CONTESTED, SETTINGS};
+use super::app::{settings, App, Focus, GeneView, Setting, TreeMode, CONTESTED};
 use super::ontology::{OntologyView, Role, Scope};
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::celltype_tree::TreeSource;
@@ -672,14 +672,15 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
     let (summary, warns) = app.form_summary();
     let summary = lines(&summary);
     let note = form.note.as_deref().map(lines).unwrap_or_default();
-    let explain = lines(SETTINGS[form.row].explain());
+    let rows_shown = settings(&app.args);
+    let explain = lines(rows_shown[form.row.min(rows_shown.len() - 1)].explain());
     let (sum_h, note_h, explain_h) = (
         summary.len() as u16,
         note.len() as u16,
         explain.len() as u16,
     );
     let height =
-        (2 + sum_h + 1 + SETTINGS.len() as u16 + 1 + note_h + explain_h).min(f.area().height);
+        (2 + sum_h + 1 + rows_shown.len() as u16 + 1 + note_h + explain_h).min(f.area().height);
     let area = centered(f.area(), width, height);
     let source = if app.fixed_clusters {
         "clusters from the manifest"
@@ -697,7 +698,7 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
     let [sum_a, _, table_a, _, note_a, explain_a] = Layout::vertical([
         Constraint::Length(sum_h),
         Constraint::Length(1),
-        Constraint::Length(SETTINGS.len() as u16),
+        Constraint::Length(rows_shown.len() as u16),
         Constraint::Length(1),
         Constraint::Length(note_h),
         Constraint::Min(1),
@@ -707,7 +708,7 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
     let bad = Style::new().fg(Color::LightRed);
     let summary_style = if warns { POPUP.patch(warn) } else { POPUP };
     f.render_widget(Paragraph::new(summary).style(summary_style), sum_a);
-    let rows: Vec<Row> = SETTINGS
+    let rows: Vec<Row> = rows_shown
         .iter()
         .map(|&s| {
             let value = Cell::from(s.value(&app.args));

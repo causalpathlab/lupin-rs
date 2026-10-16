@@ -9,6 +9,7 @@ use super::menu::{numbered, Action, Menu, Outcome};
 use super::ontology::ViewKey;
 use super::round::{decisions, Edit, RoundView};
 use super::runner;
+use crate::annotate::args::ProjectionMethod;
 use crate::annotate::markers::label_key;
 use crate::annotate::panel_tree::PanelTree;
 use crate::annotate::rounds::ClusterId;
@@ -71,6 +72,8 @@ pub enum Setting {
     /// The output prefix of passes; Enter edits it.
     Output,
     Method,
+    /// Projection's way of calling: the embedding marker score or the ORA.
+    Projection,
     Knn,
     Resolution,
     NumClusters,
@@ -82,22 +85,37 @@ pub enum Setting {
     Run,
 }
 
-pub const SETTINGS: [Setting; 10] = [
-    Setting::Markers,
-    Setting::Output,
-    Setting::Method,
-    Setting::Knn,
-    Setting::Resolution,
-    Setting::NumClusters,
-    Setting::NumPerm,
-    Setting::Go,
-    Setting::Susie,
-    Setting::Run,
-];
+/// The form's rows for `a`'s method: the enrichment's own (permutations,
+/// GO, SuSiE) only when it may run, projection's way of calling only when
+/// projection may.
+#[must_use]
+pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
+    use Setting::{
+        Go, Knn, Markers, Method, NumClusters, NumPerm, Output, Projection, Resolution, Run, Susie,
+    };
+    let enrichment = a.method != AnnotateMethod::Projection;
+    let projection = a.method != AnnotateMethod::Enrichment;
+    [
+        (Markers, true),
+        (Output, true),
+        (Method, true),
+        (Projection, projection),
+        (Knn, true),
+        (Resolution, true),
+        (NumClusters, true),
+        (NumPerm, enrichment),
+        (Go, enrichment),
+        (Susie, enrichment),
+        (Run, true),
+    ]
+    .into_iter()
+    .filter_map(|(s, shown)| shown.then_some(s))
+    .collect()
+}
 
-/// Where `s` sits in [`SETTINGS`].
-pub fn setting_row(s: Setting) -> usize {
-    SETTINGS.iter().position(|&t| t == s).unwrap_or(0)
+/// Where `s` sits in `a`'s form ([`settings`]).
+pub fn setting_row(a: &AnnotateCliArgs, s: Setting) -> usize {
+    settings(a).iter().position(|&t| t == s).unwrap_or(0)
 }
 
 impl Setting {
@@ -107,6 +125,7 @@ impl Setting {
             Self::Run => "▶ run",
             Self::Output => "output",
             Self::Method => "method",
+            Self::Projection => "projection",
             Self::Knn => "knn",
             Self::Resolution => "resolution",
             Self::NumClusters => "clusters (k)",
@@ -129,6 +148,10 @@ impl Setting {
                 AnnotateMethod::Auto => "auto".into(),
                 AnnotateMethod::Enrichment => "enrichment".into(),
                 AnnotateMethod::Projection => "projection".into(),
+            },
+            Self::Projection => match a.projection {
+                ProjectionMethod::Score => "score".into(),
+                ProjectionMethod::Ora => "ora".into(),
             },
             Self::Knn => a.knn.map_or_else(
                 || format!("default ({})", crate::annotate_cmd::default_knn(a.method)),
@@ -165,6 +188,12 @@ impl Setting {
                     (Projection, true) | (Enrichment, false) => Auto,
                 };
             }
+            Self::Projection => {
+                a.projection = match a.projection {
+                    ProjectionMethod::Score => ProjectionMethod::Ora,
+                    ProjectionMethod::Ora => ProjectionMethod::Score,
+                };
+            }
             Self::Knn => {
                 // On the method's default it is left unset: no `--knn`.
                 let d = crate::annotate_cmd::default_knn(a.method);
@@ -197,6 +226,7 @@ impl Setting {
             Self::Markers => "the marker panel the pass scores the clusters' cell types with; enter picks a file",
             Self::Output => "the prefix the new round is written under; enter edits it",
             Self::Method => "how clusters get their cell types: enrichment of the panel's markers, projection, or auto",
+            Self::Projection => "projection calls each cell: the marker score on the run's embedding (with its margin), or the co-embedding ORA",
             Self::Knn => "neighbours per cell in the clustering graph",
             Self::Resolution => "Leiden resolution: higher gives more, smaller clusters",
             Self::NumClusters => "a fixed number of clusters, or auto from the resolution",
@@ -1031,11 +1061,14 @@ impl App {
             self.args.out = out.into();
         }
         self.form = Some(Form {
-            row: setting_row(if self.args.markers.is_empty() {
-                Setting::Markers
-            } else {
-                Setting::Run
-            }),
+            row: setting_row(
+                &self.args,
+                if self.args.markers.is_empty() {
+                    Setting::Markers
+                } else {
+                    Setting::Run
+                },
+            ),
             expression: self.expression_note(),
             ..Form::default()
         });
@@ -1117,7 +1150,7 @@ impl App {
             form.confirm = false;
             form.note =
                 Some("a pass needs a marker panel: enter on the first row picks one".into());
-            form.row = setting_row(Setting::Markers);
+            form.row = setting_row(&self.args, Setting::Markers);
             return;
         }
         self.out_chosen = true;
@@ -1843,7 +1876,8 @@ impl App {
     fn settings_key(&mut self, k: KeyEvent) {
         let code = k.code;
         let Some(form) = &mut self.form else { return };
-        let at = SETTINGS[form.row];
+        let rows = settings(&self.args);
+        let at = rows[form.row.min(rows.len() - 1)];
         match code {
             KeyCode::Esc | KeyCode::Char('r' | 'q') => self.close_form(),
             KeyCode::Up
@@ -1852,7 +1886,7 @@ impl App {
             | KeyCode::End
             | KeyCode::PageUp
             | KeyCode::PageDown => {
-                step(&mut form.row, SETTINGS.len(), code);
+                step(&mut form.row, rows.len(), code);
             }
             KeyCode::Left | KeyCode::Right => {
                 // Stale only when the pass's arguments really changed.
@@ -2721,7 +2755,7 @@ impl App {
                 self.args.markers = p.into();
                 if let Some(f) = &mut self.form {
                     f.note = None;
-                    f.row = setting_row(Setting::Run);
+                    f.row = setting_row(&self.args, Setting::Run);
                 }
             }
             Err(e) => self.status = format!("{e:#}"),
