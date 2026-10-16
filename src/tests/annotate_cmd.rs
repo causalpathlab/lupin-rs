@@ -204,7 +204,16 @@ fn projection_from_embedding_files_runs_the_ora_unless_the_score_is_asked_for() 
 
 #[test]
 fn the_score_refuses_settings_it_cannot_honour() {
-    let base = ["-f", "run.senna.json", "-m", "m.tsv", "-o", "out/x", "--projection", "score"];
+    let base = [
+        "-f",
+        "run.senna.json",
+        "-m",
+        "m.tsv",
+        "-o",
+        "out/x",
+        "--projection",
+        "score",
+    ];
     let with = |more: &[&str]| {
         let mut v = base.to_vec();
         v.extend(more);
@@ -213,6 +222,9 @@ fn the_score_refuses_settings_it_cannot_honour() {
     assert!(with(&[]).is_ok());
     let err = with(&["--no-idf"]).err().expect("refused").to_string();
     assert!(err.contains("IDF"), "{err}");
-    let err = with(&["--min-markers", "5"]).err().expect("refused").to_string();
+    let err = with(&["--min-markers", "5"])
+        .err()
+        .expect("refused")
+        .to_string();
     assert!(err.contains("min-markers"), "{err}");
 }

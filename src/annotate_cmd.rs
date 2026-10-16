@@ -416,7 +416,7 @@ fn run_pass(
             let loaded = loaded.context("--from is required for projection annotation")?;
             match resolve_projection(args, Some(&loaded.manifest)) {
                 ProjectionMethod::Score => {
-                    annotate_by_marker_score(&build_score_args(args), loaded)?
+                    annotate_by_marker_score(&build_score_args(args)?, loaded)?
                 }
                 ProjectionMethod::Ora => {
                     annotate_by_projection(&build_projection_args(args), loaded)?
@@ -611,7 +611,7 @@ fn run_projection_from_files(
                 Some(p) => crate::annotate::inputs::load_cluster_labels(p, &cell.rows)?.0,
                 None => vec![0; cell.rows.len()],
             };
-            crate::annotate::marker_score::run(&build_score_args(args), &feat, &cell, &groups)?;
+            crate::annotate::marker_score::run(&build_score_args(args)?, &feat, &cell, &groups)?;
         }
         ProjectionMethod::Ora => {
             by_projection::run(
@@ -698,8 +698,20 @@ fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieCo
     cfg
 }
 
-fn build_score_args(args: &AnnotateCliArgs) -> MarkerScoreArgs {
-    MarkerScoreArgs {
+/// The score's arguments; `--no-idf` and a `--min-markers` other than the
+/// score's own are refused, as the score cannot honour them.
+fn build_score_args(args: &AnnotateCliArgs) -> Result<MarkerScoreArgs> {
+    use graph_embedding_util::type_annotation::embedding_score::MIN_MARKERS;
+    anyhow::ensure!(
+        !args.no_idf,
+        "the marker score always weighs markers by IDF; drop --no-idf (or use --projection ora)"
+    );
+    anyhow::ensure!(
+        args.min_markers == MIN_MARKERS,
+        "the marker score keeps types with at least {MIN_MARKERS} live markers; drop --min-markers \
+         (or use --projection ora)"
+    );
+    Ok(MarkerScoreArgs {
         markers: args.markers.clone(),
         out: args.out.clone(),
         clusters: args.clusters.clone(),
@@ -711,7 +723,7 @@ fn build_score_args(args: &AnnotateCliArgs) -> MarkerScoreArgs {
             seed: args.cluster_seed,
         },
         no_clean: args.no_clean,
-    }
+    })
 }
 
 fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
