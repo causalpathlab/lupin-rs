@@ -3,17 +3,15 @@
 //! first call is the group its evidence adds up to.
 //!
 //! The groups come from the Cell Ontology when there is one: the panel's
-//! types are matched to CL terms by name or exact synonym (as the matching
-//! rules allow: plurals, word order, an implied trailing word), and each goes
+//! types are matched to CL terms under the matching rules, and each goes
 //! under its nearest ancestor among the ontology's analysis classes (its
 //! curated `*_upper_slim` subsets and `cellxgene_subset`) that it shares with
-//! another panel type. A type that matches no term joins the group holding
-//! most of its markers, each marker weighed by its IDF over the panel's types,
-//! so markers most types hold decide little. A fine panel collapses to
-//! lineage classes; a broad one stays about as it is. Without an ontology, or
-//! when too few types match, types that share marker genes are grouped
-//! together. Nothing here names a cell
-//! type; every group is derived from the panel and the ontology at run time.
+//! another panel type; a type that matches no term joins the group sharing
+//! its most specific markers. A fine panel collapses to lineage classes; a
+//! broad one stays about as it is. Without an ontology, or when too few
+//! types match, types that share specific markers are grouped together.
+//! Nothing here names a cell type; every group is derived from the panel and
+//! the ontology at run time.
 //!
 //! Pure: [`crate::manifest`] finds the ontology and the evidence.
 
@@ -35,6 +33,9 @@ pub struct ClTerms {
     /// The same names by [`word_bag`], for labels whose words come in
     /// another order (`CT1 cells memory` for `memory CT1 cell`).
     by_words: HashMap<String, BTreeSet<String>>,
+    /// Each term's own name (no synonyms) by [`ClTerms::name_key`]: what an
+    /// implied trailing word may complete.
+    by_term_name: HashMap<String, BTreeSet<String>>,
     name_of: HashMap<String, String>,
     parents: HashMap<String, Vec<String>>,
     /// `is_a` children, the reverse of `parents`.
@@ -76,6 +77,12 @@ impl Stanza {
             terms.by_name.entry(n).or_default().insert(self.id.clone());
         }
         if let Some(first) = self.names.first() {
+            let key = terms.name_key(first);
+            terms
+                .by_term_name
+                .entry(key)
+                .or_default()
+                .insert(self.id.clone());
             terms.name_of.insert(self.id.clone(), first.clone());
         }
         if terms.rules.classes.is_class(&self.subsets) {
@@ -195,8 +202,9 @@ impl ClTerms {
 
     /// Match panel labels to terms by name or exact synonym, as written or
     /// with plural words made singular, else by the same words in any order
-    /// (hyphens as spaces). A label that matches no term, or several, stays
-    /// unmapped rather than guessed.
+    /// (hyphens as spaces), else with an implied trailing word completing a
+    /// term's name. A label that matches no term, or several, stays unmapped
+    /// rather than guessed.
     #[must_use]
     pub fn map_labels<'a>(
         &self,
@@ -210,33 +218,19 @@ impl ClTerms {
                 mapped.insert(label.to_string(), id.to_string());
                 continue;
             }
-            // As written, else with plural words made singular, else with a
-            // word the label left off its end. The implied word completes a
-            // term's name only, never a synonym: stacked on a synonym's
-            // looser link it names too much (`alpha cell` is a retinal
-            // ganglion cell's synonym; a pancreas panel's Alpha is not one).
+            // As written, else made singular, else with an implied trailing
+            // word completing a term's name (see `ImpliedRules`).
             let exact = self.rules.normalise(label);
             let single = self.rules.singular(&exact);
-            let lookup = |name: &str| {
-                self.by_name
-                    .get(name)
-                    .or_else(|| self.by_words.get(&word_bag(name)))
-            };
-            let names = |ids: &BTreeSet<String>, name: &str| {
-                ids.iter().all(|id| {
-                    self.name_of
-                        .get(id)
-                        .is_some_and(|n| word_bag(&self.rules.normalise(n)) == word_bag(name))
-                })
-            };
             let found = self
                 .by_name
                 .get(&exact)
-                .or_else(|| lookup(&single))
+                .or_else(|| self.by_name.get(&single))
+                .or_else(|| self.by_words.get(&word_bag(&single)))
                 .or_else(|| {
                     self.rules.implied.suffixes.iter().find_map(|w| {
-                        let name = format!("{single} {w}");
-                        lookup(&name).filter(|ids| names(ids, &name))
+                        self.by_term_name
+                            .get(&self.name_key(&format!("{single} {w}")))
                     })
                 });
             match found {
@@ -250,6 +244,17 @@ impl ClTerms {
             }
         }
         (mapped, unmapped)
+    }
+
+    /// A name as [`Self::by_term_name`] keys it: normalised, made singular,
+    /// and its words sorted when the rules allow any word order.
+    fn name_key(&self, name: &str) -> String {
+        let single = self.rules.singular(&self.rules.normalise(name));
+        if self.rules.any_word_order {
+            word_bag(&single)
+        } else {
+            single
+        }
     }
 
     /// Check `aliases` before any name when matching labels.
@@ -489,10 +494,13 @@ impl TypeTree {
         let types = panel_types(panel);
         let sets = marker_sets(panel);
         let n = types.len();
+        // A marker every type holds (IDF 0) joins nothing.
+        let idf = marker_idf(&sets);
         let mut uf = UnionFind::new(n);
         for i in 0..n {
             for j in (i + 1)..n {
-                if !sets[&types[i]].is_disjoint(&sets[&types[j]]) {
+                let (a, b) = (&sets[&types[i]], &sets[&types[j]]);
+                if a.intersection(b).any(|g| idf[g.as_str()] > 0.0) {
                     uf.union(i, j);
                 }
             }
@@ -544,13 +552,30 @@ fn marker_sets(panel: &[(String, String)]) -> BTreeMap<String, BTreeSet<String>>
     sets
 }
 
-fn jaccard(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
-    let inter = a.intersection(b).count();
-    let union = a.union(b).count();
-    if union == 0 {
-        0.0
+/// Each marker's IDF over the panel's types, `ln(types / types holding it)`,
+/// the weighting `enrichment::markers::apply_idf_weights` gives the scoring
+/// pass: a marker most types hold says little about which a type is.
+fn marker_idf(sets: &BTreeMap<String, BTreeSet<String>>) -> HashMap<&str, f64> {
+    let mut holders: HashMap<&str, usize> = HashMap::new();
+    for g in sets.values().flatten() {
+        *holders.entry(g.as_str()).or_default() += 1;
+    }
+    let n = sets.len() as f64;
+    holders
+        .into_iter()
+        .map(|(g, k)| (g, (n / k as f64).ln()))
+        .collect()
+}
+
+/// Jaccard with each marker weighed by its IDF.
+fn weighted_jaccard(a: &BTreeSet<String>, b: &BTreeSet<String>, idf: &HashMap<&str, f64>) -> f64 {
+    let w = |g: &String| idf[g.as_str()];
+    let shared: f64 = a.intersection(b).map(w).sum();
+    let either: f64 = a.union(b).map(w).sum();
+    if either > 0.0 {
+        shared / either
     } else {
-        inter as f64 / union as f64
+        0.0
     }
 }
 
@@ -560,12 +585,13 @@ fn split_by_linkage(
     types: &[String],
     sets: &BTreeMap<String, BTreeSet<String>>,
 ) -> Vec<Vec<String>> {
+    let idf = marker_idf(sets);
     let mut clusters: Vec<Vec<usize>> = (0..types.len()).map(|i| vec![i]).collect();
     let dist = |a: &[usize], b: &[usize]| {
         let total: f64 = a
             .iter()
             .flat_map(|&i| b.iter().map(move |&j| (i, j)))
-            .map(|(i, j)| 1.0 - jaccard(&sets[&types[i]], &sets[&types[j]]))
+            .map(|(i, j)| 1.0 - weighted_jaccard(&sets[&types[i]], &sets[&types[j]], &idf))
             .sum();
         total / (a.len() * b.len()) as f64
     };
@@ -608,34 +634,22 @@ fn group_name(members: &[String]) -> String {
     }
 }
 
-/// Put each unmapped type in the group whose members hold the largest share
-/// of its markers, each weighed by its IDF over the panel's types, or in a
-/// group of its own.
+/// Put each unmapped type in the group whose members hold the most of its
+/// markers' IDF weight ([`marker_idf`]), or in a group of its own.
 fn attach_by_sharing(
     groups: &mut Vec<TypeGroup>,
     unmapped: Vec<String>,
     panel: &[(String, String)],
 ) {
     let sets = marker_sets(panel);
-    // A marker most types hold says little about where a type belongs: weigh
-    // each by its IDF over the panel's types, ln(types / types holding it).
-    let mut holders: HashMap<&str, usize> = HashMap::new();
-    for set in sets.values() {
-        for g in set {
-            *holders.entry(g.as_str()).or_default() += 1;
-        }
-    }
-    let n_types = sets.len() as f64;
-    let idf = |g: &str| holders.get(g).map_or(0.0, |&n| (n_types / n as f64).ln());
+    let idf = marker_idf(&sets);
     for t in unmapped {
         let own = &sets[&t];
-        let own_weight: f64 = own.iter().map(|g| idf(g)).sum();
-        // The group whose markers hold most of this type's weight.
         let best = groups
             .iter()
             .enumerate()
-            .map(|(i, g)| {
-                let union: BTreeSet<&String> = g
+            .map(|(i, grp)| {
+                let union: BTreeSet<&String> = grp
                     .members
                     .iter()
                     .filter_map(|m| sets.get(m))
@@ -644,11 +658,11 @@ fn attach_by_sharing(
                 let held: f64 = own
                     .iter()
                     .filter(|g| union.contains(g))
-                    .map(|g| idf(g))
+                    .map(|g| idf[g.as_str()])
                     .sum();
-                (i, held / own_weight)
+                (i, held)
             })
-            .filter(|(_, share)| *share > 0.0)
+            .filter(|(_, held)| *held > 0.0)
             .max_by(|a, b| a.1.total_cmp(&b.1));
         match best {
             Some((i, _)) => {

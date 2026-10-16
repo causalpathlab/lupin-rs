@@ -68,8 +68,10 @@ pub struct MatchRules {
 #[serde(default)]
 pub struct ImpliedRules {
     /// A label that matches no term is tried again with each of these
-    /// appended, taken only when it then completes a term's name, not a
-    /// synonym (`Immature_B` → `immature B cell`).
+    /// appended (`Immature_B` → `immature B cell`), taken only when it then
+    /// completes a term's name: on a synonym, already a looser link, it names
+    /// too much (`alpha cell` is a retinal ganglion cell's synonym; a pancreas
+    /// panel's Alpha is not one).
     pub suffixes: Vec<String>,
 }
 
