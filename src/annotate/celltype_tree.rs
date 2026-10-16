@@ -98,11 +98,13 @@ impl Stanza {
 }
 
 /// A normalised name's words, hyphenated ones split, in sorted order.
+/// A normalised name's words: spaces and hyphens part them.
+fn words(normalised: &str) -> impl Iterator<Item = &str> {
+    normalised.split([' ', '-']).filter(|w| !w.is_empty())
+}
+
 fn word_bag(normalised: &str) -> String {
-    let mut words: Vec<&str> = normalised
-        .split([' ', '-'])
-        .filter(|w| !w.is_empty())
-        .collect();
+    let mut words: Vec<&str> = words(normalised).collect();
     words.sort_unstable();
     words.join(" ")
 }
@@ -202,10 +204,10 @@ impl ClTerms {
 
     /// Match panel labels to terms by name or exact synonym, as written or
     /// with plural words made singular, else by the same words in any order
-    /// (hyphens as spaces), else, for a label of two or more words, with an
-    /// implied trailing word completing a term's name. Where a text names
-    /// several terms, a term's own name wins over another's synonym; a label
-    /// still matching several, or none, stays unmapped rather than guessed.
+    /// (hyphens as spaces), else with an implied trailing word completing a
+    /// term's name. Where a text names several terms, a term's own name wins
+    /// over another's synonym; a label still matching several, or none,
+    /// stays unmapped rather than guessed.
     #[must_use]
     pub fn map_labels<'a>(
         &self,
@@ -225,34 +227,27 @@ impl ClTerms {
             // is the own name of wins over those it is a synonym of.
             let exact = self.rules.normalise(label);
             let single = self.rules.singular(&exact);
-            let one = |ids: &BTreeSet<String>, text: &str| -> Option<String> {
-                if ids.len() == 1 {
-                    return ids.iter().next().cloned();
-                }
-                let named = self.by_term_name.get(&self.name_key(text))?;
-                let mut own = ids.intersection(named);
-                match (own.next(), own.next()) {
-                    (Some(id), None) => Some(id.clone()),
-                    _ => None,
-                }
+            let only = |ids: &BTreeSet<String>| -> Option<String> {
+                (ids.len() == 1).then(|| ids.iter().next().cloned())?
             };
-            let several_words = single
-                .split([' ', '-'])
-                .filter(|w| !w.is_empty())
-                .nth(1)
-                .is_some();
+            let one = |ids: &BTreeSet<String>, text: &str| -> Option<String> {
+                only(ids).or_else(|| {
+                    let named = self.by_term_name.get(&self.name_key(text))?;
+                    only(&ids.intersection(named).cloned().collect())
+                })
+            };
             let found = if let Some(ids) = self.by_name.get(&exact) {
                 one(ids, &exact)
             } else if let Some(ids) = self.by_name.get(&single) {
                 one(ids, &single)
             } else if let Some(ids) = self.by_words.get(&word_bag(&single)) {
                 one(ids, &single)
-            } else if several_words {
+            } else if words(&single).next().is_some() {
                 self.rules.implied.suffixes.iter().find_map(|w| {
-                    let ids = self
-                        .by_term_name
-                        .get(&self.name_key(&format!("{single} {w}")))?;
-                    (ids.len() == 1).then(|| ids.iter().next().cloned())?
+                    only(
+                        self.by_term_name
+                            .get(&self.name_key(&format!("{single} {w}")))?,
+                    )
                 })
             } else {
                 None
@@ -515,10 +510,15 @@ impl TypeTree {
         let types = panel_types(panel);
         let sets = marker_sets(panel);
         let n = types.len();
+        // Types share a group through a marker some type lacks; a marker
+        // every type holds (IDF 0) tells none apart. Each part is then split
+        // where its types stop sharing specific markers.
+        let idf = marker_idf(&sets);
         let mut uf = UnionFind::new(n);
         for i in 0..n {
             for j in (i + 1)..n {
-                if !sets[&types[i]].is_disjoint(&sets[&types[j]]) {
+                let (a, b) = (&sets[&types[i]], &sets[&types[j]]);
+                if a.intersection(b).any(|g| idf[g.as_str()] > 0.0) {
                     uf.union(i, j);
                 }
             }
@@ -527,10 +527,16 @@ impl TypeTree {
         for (i, t) in types.iter().enumerate() {
             comps.entry(uf.find(i)).or_default().push(t.clone());
         }
-        let mut members: Vec<Vec<String>> = comps.into_values().collect();
-        if members.len() == 1 && n >= 3 {
-            members = split_by_linkage(&types, &sets);
-        }
+        let members: Vec<Vec<String>> = comps
+            .into_values()
+            .flat_map(|c| {
+                if c.len() >= 3 {
+                    split_by_linkage(&c, &sets, &idf)
+                } else {
+                    vec![c]
+                }
+            })
+            .collect();
         TypeTree {
             source: TreeSource::MarkerSharing,
             release: None,
@@ -597,19 +603,20 @@ fn weighted_jaccard(a: &BTreeSet<String>, b: &BTreeSet<String>, idf: &HashMap<&s
     }
 }
 
-/// Average-linkage agglomeration on `1 - jaccard`, cut where successive
-/// merge heights jump the most.
+/// Average-linkage agglomeration on `1 -` IDF-weighted Jaccard, cut where
+/// successive merge heights jump the most; with no jump at all, the types
+/// stay one group.
 fn split_by_linkage(
     types: &[String],
     sets: &BTreeMap<String, BTreeSet<String>>,
+    idf: &HashMap<&str, f64>,
 ) -> Vec<Vec<String>> {
-    let idf = marker_idf(sets);
     let mut clusters: Vec<Vec<usize>> = (0..types.len()).map(|i| vec![i]).collect();
     let dist = |a: &[usize], b: &[usize]| {
         let total: f64 = a
             .iter()
             .flat_map(|&i| b.iter().map(move |&j| (i, j)))
-            .map(|(i, j)| 1.0 - weighted_jaccard(&sets[&types[i]], &sets[&types[j]], &idf))
+            .map(|(i, j)| 1.0 - weighted_jaccard(&sets[&types[i]], &sets[&types[j]], idf))
             .sum();
         total / (a.len() * b.len()) as f64
     };
@@ -631,10 +638,14 @@ fn split_by_linkage(
     }
     // The partition just before the largest jump in merge height, keeping at
     // least two groups.
-    let cut = history
-        .windows(2)
+    // No jump at all: nothing in the component sets types apart.
+    let jumps = history.windows(2).map(|w| w[1].0 - w[0].0);
+    if jumps.clone().fold(0.0, f64::max) <= 0.0 {
+        return vec![types.to_vec()];
+    }
+    let cut = jumps
         .enumerate()
-        .max_by(|(_, a), (_, b)| (a[1].0 - a[0].0).total_cmp(&(b[1].0 - b[0].0)))
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
         .map_or(history.len().saturating_sub(1), |(i, _)| i + 1);
     let (_, partition) = &history[cut.min(history.len() - 1)];
     partition
@@ -652,9 +663,9 @@ fn group_name(members: &[String]) -> String {
     }
 }
 
-/// Put each unmapped type in the group whose members are, on average, most
-/// like it by IDF-weighted Jaccard ([`marker_idf`]; the first such group on
-/// a tie), or in a group of its own.
+/// Put each unmapped type in the group with the member that holds most of
+/// its markers' IDF weight ([`marker_idf`]; the first such group on a tie),
+/// or in a group of its own.
 fn attach_by_sharing(
     groups: &mut Vec<TypeGroup>,
     unmapped: Vec<String>,
@@ -668,16 +679,15 @@ fn attach_by_sharing(
             .iter()
             .enumerate()
             .map(|(i, grp)| {
-                let held: Vec<&BTreeSet<String>> =
-                    grp.members.iter().filter_map(|m| sets.get(m)).collect();
-                let mean = held
+                let held = grp
+                    .members
                     .iter()
-                    .map(|m| weighted_jaccard(own, m, &idf))
-                    .sum::<f64>()
-                    / held.len().max(1) as f64;
-                (i, mean)
+                    .filter_map(|m| sets.get(m))
+                    .map(|m| own.intersection(m).map(|g| idf[g.as_str()]).sum::<f64>())
+                    .fold(0.0, f64::max);
+                (i, held)
             })
-            .filter(|(_, mean)| *mean > 0.0)
+            .filter(|(_, held)| *held > 0.0)
             .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)));
         match best {
             Some((i, _)) => {
