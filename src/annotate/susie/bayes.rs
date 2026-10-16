@@ -19,7 +19,7 @@
 //! (conjugate Normal), log σ² (elliptical slice on its standardized value)
 //! and the hyper-parameters (conjugate).
 
-use super::model::{ClusterGauss, Panel, SusieModel, SusieSample, SusieState, NU};
+use super::model::{ClusterGauss, ClusterT, Panel, SusieModel, SusieSample, SusieState, NU};
 use super::{summarize, ClusterFit, SusieConfig};
 use legume_numeric::matrix::rand_util::mix_seed;
 use legume_numeric::matrix::utils::median;
@@ -119,6 +119,20 @@ impl JointModel<'_> {
     }
 }
 
+impl JointModel<'_> {
+    /// Every precision λ_kg from its conjugate Gamma at the current β, σ², η.
+    fn draw_lambda(&self, s: &mut JointState, s2: &[f64], etas: &[Vec<f32>], rng: &mut SmallRng) {
+        let shape = (NU + 1.0) / 2.0;
+        for (k, eta) in etas.iter().enumerate() {
+            for (g, &e) in eta.iter().enumerate() {
+                let r = f64::from(self.u[k][g] - s.beta[g] - e);
+                let rate = (NU + r * r / (s2[g] + f64::from(self.delta[k][g]))) / 2.0;
+                s.lambda[k][g] = Gamma::new(shape, 1.0 / rate).unwrap().sample(rng) as f32;
+            }
+        }
+    }
+}
+
 impl McmcModel for JointModel<'_> {
     type State = JointState;
     type Sample = JointSample;
@@ -164,25 +178,30 @@ impl McmcModel for JointModel<'_> {
         let m = self.n_genes();
         let s2 = self.scale2(s);
 
-        // Every cluster's SuSiE step, in parallel, each on its own stream.
+        // Every cluster's SuSiE step, in parallel, each on its own stream,
+        // under the Student-t: λ integrated out, so the effects are not held
+        // to the last draw of the precisions (that data augmentation mixes
+        // slowly where a few genes are outlying). λ is drawn right after.
         let seeds: Vec<u64> = (0..self.u.len()).map(|_| rng.random()).collect();
-        let JointState {
-            clusters,
-            beta,
-            lambda,
-            ..
-        } = s;
+        let JointState { clusters, beta, .. } = s;
         clusters
             .par_iter_mut()
             .enumerate()
             .zip(seeds)
             .for_each(|((k, st), seed)| {
-                let (x, w) = self.gauss_inputs(k, beta, &s2, &lambda[k]);
+                let x: Vec<f32> = self.u[k]
+                    .iter()
+                    .zip(beta.iter())
+                    .map(|(&u, &b)| u - b)
+                    .collect();
+                let v: Vec<f64> = (0..m)
+                    .map(|g| s2[g] + f64::from(self.delta[k][g]))
+                    .collect();
                 let model = SusieModel {
-                    data: ClusterGauss {
+                    data: ClusterT {
                         panel: self.panel,
                         x: &x,
-                        w: &w,
+                        v: &v,
                     },
                     prior: self.prior,
                 };
@@ -194,40 +213,35 @@ impl McmcModel for JointModel<'_> {
             .map(|st| self.panel.etas(st.theta()))
             .collect();
 
-        // λ: conjugate Gamma.
-        let shape = (NU + 1.0) / 2.0;
-        for k in 0..self.u.len() {
-            for g in 0..m {
-                let r = f64::from(self.u[k][g] - s.beta[g] - etas[k][g]);
-                let rate = (NU + r * r / (s2[g] + f64::from(self.delta[k][g]))) / 2.0;
-                s.lambda[k][g] = Gamma::new(shape, 1.0 / rate).unwrap().sample(rng) as f32;
-            }
-        }
+        self.draw_lambda(s, &s2, &etas, rng);
 
-        // β: conjugate Normal, pooled over the clusters.
+        // β: conjugate Normal given λ, pooled over the clusters.
         if self.fixed.beta.is_none() {
             for g in 0..m {
                 let (mut prec, mut num) = (1.0 / BETA_VAR, self.beta_mean / BETA_VAR);
-                for k in 0..self.u.len() {
+                for (k, eta) in etas.iter().enumerate() {
                     let p = f64::from(s.lambda[k][g]) / (s2[g] + f64::from(self.delta[k][g]));
                     prec += p;
-                    num += p * f64::from(self.u[k][g] - etas[k][g]);
+                    num += p * f64::from(self.u[k][g] - eta[g]);
                 }
                 s.beta[g] = (num / prec + normal(rng) / prec.sqrt()) as f32;
             }
         }
 
-        // log σ²: elliptical slice on the standardized z_g, then the
-        // hyper-parameters, conjugate given log σ².
+        // log σ²: elliptical slice on the standardized z_g under the Student-t
+        // with λ integrated out (σ² and the gene's λs otherwise trade off, a
+        // ridge the chain crawls along), then the hyper-parameters, conjugate
+        // given log σ²; λ is drawn after, given the new σ².
         if self.fixed.scale2.is_none() {
             for g in 0..m {
                 let terms = |z: f32| -> f64 {
                     let v = (s.mu_s + s.omega * f64::from(z)).exp();
-                    (0..self.u.len())
-                        .map(|k| {
-                            let (lam, d) = (f64::from(s.lambda[k][g]), f64::from(self.delta[k][g]));
-                            let r = f64::from(self.u[k][g] - s.beta[g] - etas[k][g]);
-                            -0.5 * ((v + d) / lam).ln() - lam * r * r / (2.0 * (v + d))
+                    etas.iter()
+                        .enumerate()
+                        .map(|(k, eta)| {
+                            let total = v + f64::from(self.delta[k][g]);
+                            let r = f64::from(self.u[k][g] - s.beta[g] - eta[g]);
+                            -0.5 * total.ln() - 0.5 * (NU + 1.0) * (r * r / (NU * total)).ln_1p()
                         })
                         .sum()
                 };
@@ -254,6 +268,10 @@ impl McmcModel for JointModel<'_> {
                 *z = ((l - s.mu_s) / s.omega) as f32;
             }
         }
+
+        // λ again, given the σ² just drawn with λ integrated out.
+        let s2 = self.scale2(s);
+        self.draw_lambda(s, &s2, &etas, rng);
     }
 
     fn collect(&self, s: &JointState) -> JointSample {

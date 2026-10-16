@@ -200,6 +200,27 @@ impl GeneTerms for ClusterLogFold<'_> {
     }
 }
 
+/// One cluster under the Student-t at given log-folds and variances: `x_g ~
+/// t_ν(η_g, v_g)`, the precision integrated out (as [`ClusterLogFold`], with
+/// x and v supplied rather than built from the panel).
+#[derive(Clone, Copy)]
+pub(super) struct ClusterT<'a> {
+    pub(super) panel: &'a Panel,
+    pub(super) x: &'a [f32],
+    pub(super) v: &'a [f64],
+}
+
+impl GeneTerms for ClusterT<'_> {
+    fn panel(&self) -> &Panel {
+        self.panel
+    }
+
+    fn term(&self, g: usize, eta: f32) -> f64 {
+        let r = f64::from(self.x[g]) - f64::from(eta);
+        -0.5 * (NU + 1.0) * (r * r / (NU * self.v[g])).ln_1p()
+    }
+}
+
 /// One cluster under a Gaussian with given per-gene variances: `x_g ~ N(η_g,
 /// w_g)`.
 #[derive(Clone, Copy)]

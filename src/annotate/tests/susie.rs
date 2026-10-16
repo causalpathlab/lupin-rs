@@ -587,15 +587,147 @@ fn the_bayesian_sampler_with_fixed_scales_matches_the_plug_in_student_t() {
         scale2: Some(vec![0.1; 48]),
     };
     let joint = bayes::fit_joint(&panel, &x, &delta, &fixed, &cfg, &corr);
-    for k in 0..6 {
+    for (k, (pf, jf)) in plug_in.iter().zip(&joint.clusters).enumerate() {
         for c in 0..3 {
-            let (p, q) = (plug_in[k].pip[c], joint.clusters[k].pip[c]);
+            let (p, q) = (pf.pip[c], jf.pip[c]);
             assert!((p - q).abs() < 0.05, "cluster {k} type {c}: pip {p} vs {q}");
-            let (a, b) = (plug_in[k].theta[c], joint.clusters[k].theta[c]);
+            let (a, b) = (pf.theta[c], jf.theta[c]);
             assert!(
                 (a - b).abs() < 0.1,
                 "cluster {k} type {c}: theta {a} vs {b}"
             );
         }
+    }
+}
+
+#[test]
+fn the_fully_bayesian_sampler_recovers_planted_types_and_gene_baselines() {
+    // The clusters of `log_fold_clusters` on gene baselines β_g spread over
+    // a few log units: the joint model must find each cluster's type and the
+    // baselines, with chains that agree.
+    let (panel, x, delta) = log_fold_clusters(41);
+    let mut rng = SmallRng::seed_from_u64(42);
+    let base = rand_distr::Normal::new(-8.0f32, 1.5).unwrap();
+    let beta: Vec<f32> = (0..48).map(|_| base.sample(&mut rng)).collect();
+    let u: Vec<Vec<f32>> = x
+        .iter()
+        .map(|xk| xk.iter().zip(&beta).map(|(a, b)| a + b).collect())
+        .collect();
+    let corr = marker_correlation(
+        &(0..48)
+            .map(|g| {
+                (0..3)
+                    .filter(|&c| [0..20, 8..28, 28..48][c].contains(&g))
+                    .collect()
+            })
+            .collect::<Vec<Vec<usize>>>(),
+        3,
+    );
+    let cfg = SusieConfig {
+        samples: 1000,
+        warmup: 500,
+        ..Default::default()
+    };
+    let free = bayes::Fixed {
+        beta: None,
+        scale2: None,
+    };
+    let joint = bayes::fit_joint(&panel, &u, &delta, &free, &cfg, &corr);
+    for (k, want) in [
+        (0, Some(0)),
+        (1, Some(1)),
+        (2, Some(2)),
+        (3, Some(0)),
+        (4, Some(1)),
+    ] {
+        assert_eq!(
+            joint.clusters[k].call(),
+            want,
+            "cluster {k}: pip {:?}",
+            joint.clusters[k].pip
+        );
+    }
+    for (k, f) in joint.clusters.iter().enumerate() {
+        assert!(
+            f.max_rhat < 1.1,
+            "cluster {k}: chains disagree, R̂ {}",
+            f.max_rhat
+        );
+    }
+    let err: f32 = joint
+        .beta
+        .iter()
+        .zip(&beta)
+        .map(|(a, b)| (a - b).abs())
+        .sum::<f32>()
+        / beta.len() as f32;
+    assert!(err < 0.3, "mean |β̂ − β| {err}");
+}
+
+#[test]
+#[ignore = "diagnostic: R̂ under each stage on the recovery data"]
+fn diag_rhat_by_stage() {
+    let (panel, x, delta) = log_fold_clusters(41);
+    let mut rng = SmallRng::seed_from_u64(42);
+    let base = rand_distr::Normal::new(-8.0f32, 1.5).unwrap();
+    let beta: Vec<f32> = (0..48).map(|_| base.sample(&mut rng)).collect();
+    let u: Vec<Vec<f32>> = x
+        .iter()
+        .map(|xk| xk.iter().zip(&beta).map(|(a, b)| a + b).collect())
+        .collect();
+    let corr = marker_correlation(
+        &(0..48)
+            .map(|g| {
+                (0..3)
+                    .filter(|&c| [0..20, 8..28, 28..48][c].contains(&g))
+                    .collect()
+            })
+            .collect::<Vec<Vec<usize>>>(),
+        3,
+    );
+    let cfg = SusieConfig {
+        samples: 1000,
+        warmup: 500,
+        ..Default::default()
+    };
+    for (name, fb, fs) in [
+        ("both fixed", Some(beta.clone()), Some(vec![0.11f32; 48])),
+        ("beta fixed", Some(beta.clone()), None),
+        ("s2 fixed", None, Some(vec![0.11f32; 48])),
+        ("free", None, None),
+    ] {
+        let joint = bayes::fit_joint(
+            &panel,
+            &u,
+            &delta,
+            &bayes::Fixed {
+                beta: fb,
+                scale2: fs,
+            },
+            &cfg,
+            &corr,
+        );
+        let r: Vec<String> = joint
+            .clusters
+            .iter()
+            .map(|f| format!("{:.2}", f.max_rhat))
+            .collect();
+        let th: Vec<String> = joint
+            .clusters
+            .iter()
+            .map(|f| {
+                format!(
+                    "{:?}",
+                    f.theta
+                        .iter()
+                        .map(|t| (t * 100.0).round() / 100.0)
+                        .collect::<Vec<_>>()
+                )
+            })
+            .collect();
+        eprintln!(
+            "{name:11} R̂ {r:?}\n            θ {th:?}\n            s2 median {:.3}",
+            median(&joint.scale2)
+        );
     }
 }
