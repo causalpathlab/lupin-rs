@@ -111,6 +111,8 @@ pub fn clean_outputs(prefix: &str, suffixes: &[&str]) {
 pub struct AnnotationOutputs {
     pub argmax: Option<String>,
     pub annotation: Option<String>,
+    /// The projection score's per-cell cluster, call and margin.
+    pub marker_score: Option<String>,
     pub cluster_celltype_q: Option<String>,
     pub cluster_celltype_es: Option<String>,
     /// The SuSiE stage's PIP, effect and explained-share tables, when it made the call.

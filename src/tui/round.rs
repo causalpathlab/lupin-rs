@@ -270,8 +270,7 @@ pub struct RoundView {
 }
 
 /// A score round's shares: each current cluster's share of its cells called
-/// each type, from the per-cell `call` column of the pass's table at `path`;
-/// `None` for a per-cell table without one.
+/// each type, from the per-cell `call` column of the score's table at `path`.
 fn cell_call_shares(path: &str, cells: &crate::manifest::rounds::Cells) -> Result<Option<Table>> {
     use legume_numeric::matrix::parquet::{peek_parquet_field_names, read_table_columns};
     if !peek_parquet_field_names(path)?
@@ -310,7 +309,7 @@ impl RoundView {
         let (share, score_calls) = match table(&a.cluster_celltype_q)? {
             Some(q) => (Some(q), false),
             None => {
-                let calls = match at(&a.annotation) {
+                let calls = match at(&a.marker_score) {
                     Some(p) => cell_call_shares(&p, &cells)?,
                     None => None,
                 };

@@ -316,6 +316,7 @@ fn record(
             a.markers = Some(crate::manifest::run::rel_to_manifest(dir, markers));
             a.argmax = rel(&out.argmax);
             a.annotation = rel(&out.annotation);
+            a.marker_score = rel(&out.marker_score);
             a.cluster_celltype_q = rel(&out.cluster_celltype_q);
             a.cluster_celltype_es = rel(&out.cluster_celltype_es);
             a.cluster_celltype_pip = rel(&out.cluster_celltype_pip);

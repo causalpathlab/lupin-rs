@@ -59,7 +59,8 @@ const OUTPUTS: [&str; 3] = [ARGMAX_TSV, ".membership.tsv", MARKER_SCORE_PARQUET]
 /// write the pass's files under `args.out`: the shared per-cell label
 /// contract (`argmax.tsv`, `membership.tsv`; the probability is NaN, as the
 /// score has none) and each cell's cluster, call and margin
-/// (`marker_score.parquet`). The round's cluster table is the caller's; the
+/// (`marker_score.parquet`, not a posterior: never `annotation`). The
+/// round's cluster table is the caller's; the
 /// round view tables each cluster's calls from the per-cell ones.
 pub fn run(
     args: &MarkerScoreArgs,
@@ -103,7 +104,7 @@ pub fn run(
 
     Ok(AnnotationOutputs {
         argmax: Some(format!("{out}{ARGMAX_TSV}")),
-        annotation: Some(table),
+        marker_score: Some(table),
         ..AnnotationOutputs::default()
     })
 }
