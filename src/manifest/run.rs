@@ -345,12 +345,25 @@ pub struct RunAnnotate {
 }
 
 impl RunAnnotate {
-    /// Drop the SuSiE stage's cluster × type tables: a round whose clusters
-    /// were regrouped (relabel, ask) would otherwise carry the old ones.
-    pub fn drop_susie_tables(&mut self) {
+    /// Drop the cluster × type tables a pass's call left over its clusters
+    /// and panel (SuSiE's, the score's share): a round whose clusters were
+    /// regrouped, or whose panel changed (relabel, ask), would otherwise
+    /// carry the old ones.
+    pub fn drop_call_tables(&mut self) {
         self.cluster_celltype_pip = None;
         self.cluster_celltype_effect = None;
         self.cluster_celltype_explained = None;
+        self.cluster_celltype_share = None;
+    }
+
+    /// How each cluster's evidence splits over the types, for any method:
+    /// the enrichment's Q, else the projection score's share of each
+    /// cluster's cells called each type.
+    #[must_use]
+    pub fn cluster_shares(&self) -> Option<&str> {
+        self.cluster_celltype_q
+            .as_deref()
+            .or(self.cluster_celltype_share.as_deref())
     }
 }
 

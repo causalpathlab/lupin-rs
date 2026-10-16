@@ -274,13 +274,9 @@ impl RoundView {
         let at = |rel: &Option<String>| rel.as_deref().map(|r| resolve(&loaded.dir, r));
 
         let table = |rel: &Option<String>| at(rel).map(|p| read_table(&p)).transpose();
-        // Q: how the cluster's evidence splits over the types; and the
-        // statistics it came from. A projection score round has no Q: the
-        // share of the cluster's cells called each type stands in.
-        let share = match table(&a.cluster_celltype_q)? {
-            Some(q) => Some(q),
-            None => table(&a.cluster_celltype_share)?,
-        };
+        // How the cluster's evidence splits over the types (the enrichment's
+        // Q, or the score's share), and the statistics it came from.
+        let share = table(&a.cluster_shares().map(str::to_string))?;
         // SuSiE's tables, when it made the call: its ranking replaces Q's.
         let susie = match (
             table(&a.cluster_celltype_pip)?,

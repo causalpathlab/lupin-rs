@@ -899,7 +899,10 @@ fn a_relabel_round_drops_the_susie_tables_of_the_clusters_it_regrouped() {
         a.cluster_celltype_pip
     );
     assert!(a.cluster_celltype_effect.is_none());
-    assert!(a.cluster_celltype_share.is_none(), "the score's shares are of the old clusters");
+    assert!(
+        a.cluster_celltype_share.is_none(),
+        "the score's shares are of the old clusters"
+    );
     assert!(a.cluster_celltype_explained.is_none());
 }
 
@@ -917,7 +920,10 @@ fn regrouping_drops_every_cluster_keyed_call_table() {
     assert!(a.cluster_celltype_pip.is_none());
     assert!(a.cluster_celltype_effect.is_none());
     assert!(a.cluster_celltype_explained.is_none());
-    assert!(a.cluster_celltype_share.is_none(), "the score's share table too");
+    assert!(
+        a.cluster_celltype_share.is_none(),
+        "the score's share table too"
+    );
     assert_eq!(a.argmax.as_deref(), Some("kept"));
 }
 

@@ -103,7 +103,7 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
         cell_batch: rel(&cache.cell_batch),
     });
     a.settings = Some(serde_json::json!({ "enrichment": eargs }));
-    a.drop_susie_tables();
+    a.drop_call_tables();
     for p in [
         &mut a.markers,
         &mut a.log,
