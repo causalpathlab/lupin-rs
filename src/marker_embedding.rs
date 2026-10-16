@@ -83,3 +83,7 @@ fn select_spliced_rows(feat: MatWithNames<Mat>, path: &str) -> Result<MatWithNam
         cols: feat.cols,
     })
 }
+
+#[cfg(test)]
+#[path = "marker_embedding_tests.rs"]
+mod tests;
