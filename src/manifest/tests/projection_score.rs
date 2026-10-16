@@ -53,3 +53,21 @@ fn the_score_pass_calls_each_cell_and_records_its_round() {
         "no ORA settings on a score round"
     );
 }
+
+#[test]
+fn a_score_round_clears_an_earlier_rounds_posterior() {
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, panel) = toy::write_run(dir.path());
+    let mut m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    m["annotate"] = serde_json::json!({"annotation": "run.L0.annotation.parquet"});
+    std::fs::write(&manifest, m.to_string()).unwrap();
+    let loaded = run::load(&manifest).unwrap();
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
+    let round = run::load(&annotated_path(&loaded.file, &out).to_string_lossy()).unwrap();
+    assert_eq!(
+        round.manifest.annotate.annotation, None,
+        "no earlier posterior beside the score's calls"
+    );
+}
