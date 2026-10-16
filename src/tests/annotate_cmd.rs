@@ -201,3 +201,18 @@ fn projection_from_embedding_files_runs_the_ora_unless_the_score_is_asked_for() 
     let fields = legume_numeric::matrix::parquet::peek_parquet_field_names(&table).unwrap();
     assert!(fields.iter().any(|f| f.as_ref() == "margin"), "{fields:?}");
 }
+
+#[test]
+fn the_score_refuses_settings_it_cannot_honour() {
+    let base = ["-f", "run.senna.json", "-m", "m.tsv", "-o", "out/x", "--projection", "score"];
+    let with = |more: &[&str]| {
+        let mut v = base.to_vec();
+        v.extend(more);
+        build_score_args(&parse(&v))
+    };
+    assert!(with(&[]).is_ok());
+    let err = with(&["--no-idf"]).err().expect("refused").to_string();
+    assert!(err.contains("IDF"), "{err}");
+    let err = with(&["--min-markers", "5"]).err().expect("refused").to_string();
+    assert!(err.contains("min-markers"), "{err}");
+}
