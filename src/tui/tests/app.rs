@@ -1456,3 +1456,21 @@ fn a_label_is_recorded_in_its_canonical_form() {
         app.edits
     );
 }
+
+#[test]
+fn the_cluster_list_shows_a_susie_calls_share_not_its_pip() {
+    use super::super::round::{Candidate, SusieEvidence};
+    use super::super::ui::{cluster_list_evidence, cluster_list_header};
+    // A PIP is a type's inclusion in the cluster's model, near 1 for every
+    // type a mixed cluster holds: next to the call it reads as certainty.
+    let cand = Candidate {
+        label: "CT1".into(),
+        share: 0.20,
+        susie: Some(SusieEvidence { pip: 1.0, fold: 12.0 }),
+        nes: None,
+        p: None,
+        q: None,
+    };
+    assert_eq!(cluster_list_evidence(true, Some(&cand)), ["0.20", "×12.0"]);
+    assert_eq!(cluster_list_header(true), ["", "cells", "label", "share", "fold", ""]);
+}
