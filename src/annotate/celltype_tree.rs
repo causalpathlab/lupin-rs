@@ -607,6 +607,17 @@ impl ClTerms {
         name_key(&self.rules, name)
     }
 
+    /// Every counted name (as names are compared) with the terms it names.
+    pub fn named_texts(&self) -> impl Iterator<Item = (&str, &BTreeSet<String>)> {
+        self.names.by_name.iter().map(|(name, ids)| (name.as_str(), ids))
+    }
+
+    /// A label as names are compared.
+    #[must_use]
+    pub fn normalise(&self, label: &str) -> String {
+        self.rules.normalise(label)
+    }
+
     /// Check `aliases` before any name when matching labels.
     #[must_use]
     pub fn with_aliases(mut self, aliases: Aliases) -> Self {
