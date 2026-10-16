@@ -51,6 +51,42 @@ pub fn load_marker_feature_embedding(
     }
 }
 
+/// The run's decoder gene table ρ (`outputs.feature_embedding`): the table
+/// the model multiplies a cell's embedding by, `log rate = ρ_g · z + a_g`,
+/// for the kinds that decode that way (bge, gem, simba,
+/// resolve-embedding-space). Never the co-embedding. A `gem` table keeps
+/// its spliced rows, re-keyed by gene. `prefix` only names the run in errors.
+pub fn load_feature_embedding(
+    manifest: &RunManifest,
+    dir: &Path,
+    prefix: &str,
+) -> Result<MatWithNames<Mat>> {
+    anyhow::ensure!(
+        manifest.kind.coembeds(),
+        "{prefix}: a {} run has no decoder gene table to score markers on (bge, gem, \
+         simba and resolve-embedding-space runs do); use `lupin annotate --method enrichment`",
+        manifest.kind
+    );
+    let rel = manifest
+        .outputs
+        .feature_embedding
+        .as_deref()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{prefix}: a {} run with no `outputs.feature_embedding` (an interrupted fit?)",
+                manifest.kind
+            )
+        })?;
+    let path = resolve(dir, rel);
+    let feat = Mat::from_parquet(&path)
+        .with_context(|| format!("reading gene embedding {path} (`outputs.feature_embedding`)"))?;
+    if manifest.kind == RunKind::Gem || feat.rows.iter().any(|r| split_count_row(r).is_some()) {
+        select_spliced_rows(feat, &path)
+    } else {
+        Ok(feat)
+    }
+}
+
 fn select_spliced_rows(feat: MatWithNames<Mat>, path: &str) -> Result<MatWithNames<Mat>> {
     let (keep, rows): (Vec<usize>, Vec<Box<str>>) = feat
         .rows
