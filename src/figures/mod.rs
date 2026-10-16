@@ -305,7 +305,7 @@ pub(crate) struct CellFigures {
     /// first pair it kept.
     pub(crate) dc_min_share: f32,
     /// Each scatter's type medians over all its cells, made on first use.
-    pub(crate) medians: Mutex<Vec<((Panel, LabelBy), Arc<Medians>)>>,
+    pub(crate) medians: Mutex<Vec<(MediansKey, Arc<Medians>)>>,
 }
 
 /// Each cell's colour (`None` for grey) and the legend of a categorical
@@ -313,6 +313,9 @@ pub(crate) struct CellFigures {
 type CellColours = (Vec<Option<Rgb>>, Vec<(String, Rgb)>);
 /// Each label's median position on a scatter.
 type Medians = BTreeMap<Box<str>, (f32, f32)>;
+
+/// The scatter and labelling a set of medians is of.
+type MediansKey = (Panel, LabelBy);
 
 /// What a scatter's labels name: the cells' types or their clusters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -811,7 +814,7 @@ impl CellFigures {
         cells: &[usize],
     ) -> Arc<Medians> {
         let key = (panel, by);
-        let kept = |m: &Vec<((Panel, LabelBy), Arc<Medians>)>| {
+        let kept = |m: &Vec<(MediansKey, Arc<Medians>)>| {
             m.iter().find(|(k, _)| *k == key).map(|(_, m)| m.clone())
         };
         if let Some(m) = kept(&self.medians.lock().expect("not poisoned")) {
