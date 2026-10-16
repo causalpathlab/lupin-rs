@@ -1,6 +1,8 @@
 //! Unified `lupin annotate` — enrichment, or projection from a run manifest or embedding files.
 
-use crate::annotate::args::{AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs};
+use crate::annotate::args::{
+    AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, ProjectionMethod,
+};
 use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::susie::SusieConfig;
 use crate::manifest::annotate::{
@@ -164,6 +166,14 @@ pub struct AnnotateCliArgs {
     pub mcmc_thin: usize,
 
     // ── projection / ORA ──
+    #[arg(
+        long,
+        value_enum,
+        default_value_t,
+        help = "Projection: score (the embedding marker score on the run's feature embedding, \
+                per cell with its margin) or ora (term over-representation on the co-embedding)"
+    )]
+    pub projection: ProjectionMethod,
     #[arg(long = "no-idf")]
     pub no_idf: bool,
     #[arg(long = "no-assign-qc")]
@@ -221,6 +231,11 @@ impl AnnotateCliArgs {
             AnnotateMethod::Projection => "projection",
         };
         val("method", method.into());
+        let projection = match self.projection {
+            ProjectionMethod::Score => "score",
+            ProjectionMethod::Ora => "ora",
+        };
+        val("projection", projection.into());
         val("markers", self.markers.to_string());
         val("out", self.out.to_string());
         val("resolution", self.resolution.to_string());
@@ -521,7 +536,9 @@ fn route<'a>(
     let projection = match args.method {
         AnnotateMethod::Enrichment => false,
         AnnotateMethod::Projection => true,
-        AnnotateMethod::Auto => loaded.is_some_and(|l| manifest_prefers_projection(&l.manifest)),
+        AnnotateMethod::Auto => {
+            loaded.is_some_and(|l| manifest_prefers_projection(&l.manifest, args.projection))
+        }
     };
     if projection {
         Route::Projection
@@ -530,13 +547,20 @@ fn route<'a>(
     }
 }
 
-/// A run with a co-embedded gene space annotates by projection. A kind that
-/// co-embeds needs that space itself: its raw gene embedding is not on the
-/// cell manifold, so a run written before the co-embedding existed falls back
-/// to enrichment.
-fn manifest_prefers_projection(manifest: &RunManifest) -> bool {
-    manifest.outputs.feature_coembedding.is_some()
-        || (!manifest.kind.coembeds() && manifest.outputs.feature_embedding.is_some())
+/// A run annotates by projection when it has the gene table the projection
+/// method reads. The score reads the decoder table ρ of a kind that decodes
+/// cells with it. The ORA reads the co-embedding; a kind that co-embeds needs
+/// that space itself, its ρ not being on the cell manifold, while another
+/// kind's ρ stands in.
+fn manifest_prefers_projection(manifest: &RunManifest, projection: ProjectionMethod) -> bool {
+    let o = &manifest.outputs;
+    match projection {
+        ProjectionMethod::Score => manifest.kind.coembeds() && o.feature_embedding.is_some(),
+        ProjectionMethod::Ora => {
+            o.feature_coembedding.is_some()
+                || (!manifest.kind.coembeds() && o.feature_embedding.is_some())
+        }
+    }
 }
 
 /// Explicit embedding pair: the same projection pass as the manifest route
@@ -636,6 +660,7 @@ fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieCo
 
 fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
     AnnotateProjectionArgs {
+        projection: args.projection,
         markers: args.markers.clone(),
         out: args.out.clone(),
         knn: args.knn.unwrap_or(PROJECTION_KNN),
@@ -662,12 +687,22 @@ mod route_tests {
     use crate::manifest::run::RunKind;
 
     #[test]
-    fn a_co_embedding_kind_without_its_co_embedding_falls_back_to_enrichment() {
+    fn a_run_annotates_by_projection_when_it_has_the_methods_gene_table() {
         let mut m = RunManifest::new(RunKind::Bge, "run");
         m.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
-        assert!(!manifest_prefers_projection(&m));
+        assert!(manifest_prefers_projection(&m, ProjectionMethod::Score));
+        assert!(
+            !manifest_prefers_projection(&m, ProjectionMethod::Ora),
+            "the ORA needs the co-embedding"
+        );
         m.outputs.feature_coembedding = Some("run.feature_coembedding.parquet".into());
-        assert!(manifest_prefers_projection(&m));
+        assert!(manifest_prefers_projection(&m, ProjectionMethod::Ora));
+        let mut svd = RunManifest::new(RunKind::Svd, "run");
+        svd.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
+        assert!(
+            !manifest_prefers_projection(&svd, ProjectionMethod::Score),
+            "an svd gene table decodes nothing"
+        );
     }
 }
 

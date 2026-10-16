@@ -125,8 +125,24 @@ pub struct AnnotateArgs {
 /// onto a co-embedded feature space (bge / fne / resolve-embedding-space).
 /// Embedding-grounded (no raw-count re-read), complementary to
 /// `annotate --method enrichment`. Drives the shared firm term-ORA core.
+/// How `--method projection` calls cell types.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectionMethod {
+    /// The embedding marker score on the run's feature embedding: each cell's
+    /// best type and its margin over the runner-up.
+    #[default]
+    Score,
+    /// Term over-representation on the co-embedding (kept one release, for
+    /// comparison).
+    Ora,
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct AnnotateProjectionArgs {
+    /// The embedding marker score, or the co-embedding ORA
+    pub projection: ProjectionMethod,
+
     /// Marker-gene TSV: `gene<TAB>celltype` per line (tab/comma/space delimited)
     pub markers: Box<str>,
 
