@@ -607,11 +607,11 @@ fn run_projection_from_files(
         // Without a run there are no clusters but `--clusters`: else the
         // score is centred at the mean cell, one group.
         ProjectionMethod::Score => {
-            let (groups, k) = match args.clusters.as_deref() {
-                Some(p) => crate::annotate::inputs::load_cluster_labels(p, &cell.rows)?,
-                None => (vec![0; cell.rows.len()], 1),
+            let groups = match args.clusters.as_deref() {
+                Some(p) => crate::annotate::inputs::load_cluster_labels(p, &cell.rows)?.0,
+                None => vec![0; cell.rows.len()],
             };
-            crate::annotate::marker_score::run(&build_score_args(args), &feat, &cell, &groups, k)?;
+            crate::annotate::marker_score::run(&build_score_args(args), &feat, &cell, &groups)?;
         }
         ProjectionMethod::Ora => {
             by_projection::run(

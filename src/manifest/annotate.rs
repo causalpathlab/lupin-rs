@@ -156,14 +156,14 @@ pub fn annotate_by_marker_score(args: &MarkerScoreArgs, loaded: &Loaded) -> Resu
     let cell_path = loaded.geometry_latent_path()?;
     let cells = Mat::from_parquet(&cell_path)
         .with_context(|| format!("reading cell embedding {cell_path}"))?;
-    let (groups, n_clusters) = resolve_clusters(
+    let (groups, _) = resolve_clusters(
         args.clusters.as_deref(),
         &args.leiden,
         &loaded.manifest,
         &loaded.dir,
         &cells.rows,
     )?;
-    let mut outputs = marker_score::run(args, &feat, &cells, &groups, n_clusters)?;
+    let mut outputs = marker_score::run(args, &feat, &cells, &groups)?;
     let clusters = format!("{}{}", args.out, rounds::CLUSTERS);
     rounds::write_clusters(&clusters, &cells.rows, &rounds::cluster_ids(&groups))?;
     outputs.clusters = Some(clusters);
@@ -317,7 +317,6 @@ fn record(
             a.argmax = rel(&out.argmax);
             a.annotation = rel(&out.annotation);
             a.cluster_celltype_q = rel(&out.cluster_celltype_q);
-            a.cluster_celltype_share = rel(&out.cluster_celltype_share);
             a.cluster_celltype_es = rel(&out.cluster_celltype_es);
             a.cluster_celltype_pip = rel(&out.cluster_celltype_pip);
             a.cluster_celltype_effect = rel(&out.cluster_celltype_effect);

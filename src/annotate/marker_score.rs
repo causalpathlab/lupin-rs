@@ -8,8 +8,7 @@
 
 use crate::annotate::args::MarkerScoreArgs;
 use crate::annotate::outputs::{
-    clean_outputs, write_cluster_tables, AnnotationOutputs, ANNOT_PARQUET, ARGMAX_TSV,
-    CLUSTER_CELLTYPE_SHARE,
+    clean_outputs, AnnotationOutputs, ARGMAX_TSV, MARKER_SCORE_PARQUET,
 };
 use anyhow::Result;
 use enrichment::UNASSIGNED_LABEL;
@@ -29,7 +28,7 @@ pub struct MarkerScore {
 
 /// Score `cells` (`[N × H]`) against the `markers` panel on the feature
 /// embedding `feat` (`[G × H]`, rows named by gene), centred at the
-/// balanced centre of `groups` (cell → cluster, [`UNASSIGNED`] left out).
+/// balanced centre of `groups` (cell → cluster, `usize::MAX` left out).
 pub fn score_cells(
     feat: &MatWithNames<Mat>,
     cells: &Mat,
@@ -53,53 +52,20 @@ pub fn score_cells(
     })
 }
 
-/// Per cluster `K0..K{n_clusters-1}`, the share of its cells called each of
-/// `n_types` types; an uncalled cell counts toward its cluster's size, and an
-/// empty cluster has no share.
-#[must_use]
-pub fn share_by_cluster(
-    calls: &[Option<usize>],
-    groups: &[usize],
-    n_clusters: usize,
-    n_types: usize,
-) -> Mat {
-    let mut share = Mat::zeros(n_clusters, n_types);
-    let mut size = vec![0_u32; n_clusters];
-    for (call, &k) in calls.iter().zip(groups) {
-        if k >= n_clusters {
-            continue;
-        }
-        size[k] += 1;
-        if let Some(t) = call {
-            share[(k, *t)] += 1.0;
-        }
-    }
-    for (k, &n) in size.iter().enumerate().filter(|(_, &n)| n > 0) {
-        share.row_mut(k).scale_mut(1.0 / n as f32);
-    }
-    share
-}
-
 /// The output files [`run`] writes, cleared first unless kept.
-const OUTPUTS: [&str; 4] = [
-    ARGMAX_TSV,
-    ".membership.tsv",
-    ANNOT_PARQUET,
-    CLUSTER_CELLTYPE_SHARE,
-];
+const OUTPUTS: [&str; 3] = [ARGMAX_TSV, ".membership.tsv", MARKER_SCORE_PARQUET];
 
-/// Score `cells` against `args.markers` on `feat`, centred on `groups`
-/// (`n_clusters` of them), and write the pass's files under `args.out`: the
-/// shared per-cell label contract (`argmax.tsv`, `membership.tsv`; the
-/// probability is NaN, as the score has none), each cell's cluster, call and
-/// margin (`annot.parquet`), and each cluster's share of each type. The
-/// round's cluster table is the caller's.
+/// Score `cells` against `args.markers` on `feat`, centred on `groups`, and
+/// write the pass's files under `args.out`: the shared per-cell label
+/// contract (`argmax.tsv`, `membership.tsv`; the probability is NaN, as the
+/// score has none) and each cell's cluster, call and margin
+/// (`marker_score.parquet`). The round's cluster table is the caller's; the
+/// round view tables each cluster's calls from the per-cell ones.
 pub fn run(
     args: &MarkerScoreArgs,
     feat: &MatWithNames<Mat>,
     cells: &MatWithNames<Mat>,
     groups: &[usize],
-    n_clusters: usize,
 ) -> Result<AnnotationOutputs> {
     let out = args.out.as_ref();
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
@@ -118,14 +84,14 @@ pub fn run(
     let probs = vec![f32::NAN; cells.rows.len()];
     graph_embedding_util::type_annotation::write_label_tsvs(out, &cells.rows, &call, &probs)?;
 
-    let annot = format!("{out}{ANNOT_PARQUET}");
+    let table = format!("{out}{MARKER_SCORE_PARQUET}");
     let cluster: Vec<i32> = groups
         .iter()
         .map(|&k| i32::try_from(k).unwrap_or(-1))
         .collect();
     let margin: Vec<f32> = score.margins.iter().map(|&m| m as f32).collect();
     write_named_table(
-        &annot,
+        &table,
         "cell",
         &cells.rows,
         &[
@@ -135,20 +101,9 @@ pub fn run(
         ],
     )?;
 
-    let share = share_by_cluster(&score.calls, groups, n_clusters, score.types.len());
-    let rows: Vec<Box<str>> = (0..n_clusters)
-        .map(|k| crate::annotate::rounds::cluster_row_name(k).into())
-        .collect();
-    let share_path = write_cluster_tables(
-        out,
-        &rows,
-        &score.types,
-        &[(&share, CLUSTER_CELLTYPE_SHARE)],
-    )?;
     Ok(AnnotationOutputs {
         argmax: Some(format!("{out}{ARGMAX_TSV}")),
-        annotation: Some(annot),
-        cluster_celltype_share: share_path.into_iter().next(),
+        annotation: Some(table),
         ..AnnotationOutputs::default()
     })
 }

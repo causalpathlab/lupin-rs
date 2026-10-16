@@ -2,7 +2,6 @@
 
 use super::toy;
 use super::*;
-use enrichment::consensus::UNASSIGNED;
 
 #[test]
 fn planted_cells_get_their_type_with_a_positive_margin() {
@@ -14,21 +13,6 @@ fn planted_cells_get_their_type_with_a_positive_margin() {
         assert_eq!(s.calls[i], Some(i / 10), "cell {i}");
         assert!(s.margins[i] > 0.0, "cell {i}: {}", s.margins[i]);
     }
-}
-
-#[test]
-fn a_clusters_share_counts_every_cell_it_holds_in_rows_k0_up() {
-    let calls = [Some(0), Some(0), Some(1), None, Some(1)];
-    let groups = [3, 3, 3, 3, UNASSIGNED];
-    let share = share_by_cluster(&calls, &groups, 4, 2);
-    assert_eq!(share.nrows(), 4, "K0..K3, as every cluster table");
-    assert_eq!(share[(3, 0)], 0.5);
-    assert_eq!(
-        share[(3, 1)],
-        0.25,
-        "an uncalled cell counts in its cluster"
-    );
-    assert_eq!(share[(0, 0)], 0.0, "an empty cluster has no share");
 }
 
 #[test]

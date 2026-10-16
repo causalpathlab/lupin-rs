@@ -169,6 +169,7 @@ fn projection_from_embedding_files_runs_the_ora_unless_the_score_is_asked_for() 
         .unwrap();
     let panel = crate::annotate::marker_score::toy::panel(dir.path());
     let out = at("files");
+    let (feat_path, cells_path) = (at("feat.parquet"), at("cells.parquet"));
     let argv = |more: &[&str]| {
         let mut v = vec![
             "-m",
@@ -178,9 +179,9 @@ fn projection_from_embedding_files_runs_the_ora_unless_the_score_is_asked_for() 
             "--method",
             "projection",
             "--feature-embedding",
-            &at("feat.parquet"),
+            &feat_path,
             "--cell-embedding",
-            &at("cells.parquet"),
+            &cells_path,
         ];
         v.extend(more);
         parse(&v)

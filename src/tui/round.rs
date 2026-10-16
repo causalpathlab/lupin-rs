@@ -27,7 +27,7 @@ pub struct Candidate {
     pub label: String,
     /// Its share of the cluster's evidence: in a SuSiE round, of the deviance
     /// the types explain; in a projection score round, of the cluster's cells
-    /// called the type; otherwise the enrichment's Q, a softmax of
+    /// the score called the type; otherwise the enrichment's Q, a softmax of
     /// z = Φ⁻¹(1 − p) over the types that pass FDR.
     pub share: f32,
     /// SuSiE's reading, when it made the round's call.
@@ -266,6 +266,34 @@ pub struct RoundView {
     pub rescorable: bool,
 }
 
+/// A score round's shares: each current cluster's share of its cells called
+/// each type, from the per-cell `call` column of the pass's table at `path`;
+/// `None` for a per-cell table without one.
+fn cell_call_shares(path: &str, cells: &crate::manifest::rounds::Cells) -> Result<Option<Table>> {
+    use legume_numeric::matrix::parquet::{peek_parquet_field_names, read_table_columns};
+    if !peek_parquet_field_names(path)?
+        .iter()
+        .any(|f| f.as_ref() == "call")
+    {
+        return Ok(None);
+    }
+    let (strings, _) = read_table_columns(path, &["cell", "call"], &[])?;
+    let call: std::collections::HashMap<&str, &str> = strings[0]
+        .iter()
+        .zip(&strings[1])
+        .map(|(c, l)| (c.as_ref(), l.as_ref()))
+        .collect();
+    let calls: Vec<Option<&str>> = cells
+        .names
+        .iter()
+        .map(|c| call.get(c.as_ref()).copied())
+        .collect();
+    Ok(Some(crate::annotate::rounds::call_shares(
+        &cells.clusters,
+        &calls,
+    )))
+}
+
 impl RoundView {
     pub fn load(manifest: &Path) -> Result<Self> {
         let loaded = run::load(&manifest.to_string_lossy())?;
@@ -274,9 +302,15 @@ impl RoundView {
         let at = |rel: &Option<String>| rel.as_deref().map(|r| resolve(&loaded.dir, r));
 
         let table = |rel: &Option<String>| at(rel).map(|p| read_table(&p)).transpose();
-        // How the cluster's evidence splits over the types (the enrichment's
-        // Q, or the score's share), and the statistics it came from.
-        let share = table(&a.cluster_shares().map(str::to_string))?;
+        // How the cluster's evidence splits over the types: the enrichment's
+        // Q, else (a score round) its cells' calls over the current clusters.
+        let share = match table(&a.cluster_celltype_q)? {
+            Some(q) => Some(q),
+            None => match at(&a.annotation) {
+                Some(p) => cell_call_shares(&p, &cells)?,
+                None => None,
+            },
+        };
         // SuSiE's tables, when it made the call: its ranking replaces Q's.
         let susie = match (
             table(&a.cluster_celltype_pip)?,
