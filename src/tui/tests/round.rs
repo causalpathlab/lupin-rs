@@ -351,3 +351,23 @@ fn a_susie_cluster_is_flagged_when_its_call_is_unsure_or_close() {
     };
     assert!(none.flagged(), "no call");
 }
+
+#[test]
+fn a_score_round_lists_each_clusters_types_by_share() {
+    use crate::annotate::marker_score::toy;
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, panel) = toy::write_run(dir.path());
+    let loaded = run::load(&manifest).unwrap();
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::annotate::annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
+    let view = RoundView::load(&crate::manifest::run::annotated_path(&loaded.file, &out)).unwrap();
+    for (c, want) in view.clusters.iter().zip(["A", "B"]) {
+        let top = c.candidates.first().expect("a candidate");
+        assert_eq!(
+            (top.label.as_str(), top.share),
+            (want, 1.0),
+            "cluster {}",
+            c.id
+        );
+    }
+}

@@ -9,7 +9,7 @@
 
 use crate::manifest::annotate::load_enrichment_inputs;
 use crate::manifest::recalibrate::write_cache;
-use crate::manifest::rounds::{write_argmax, write_clusters, write_summary, CLUSTERS};
+use crate::manifest::rounds::{self, write_argmax, write_clusters, write_summary, CLUSTERS};
 use crate::manifest::run::{self, annotated_path, rel_to_manifest, StatsCache};
 use anyhow::Result;
 use clap::Args;
@@ -68,11 +68,7 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
 
     // The round: clusters, no labels, the profile, and the cache.
     let clusters_path = format!("{out}{CLUSTERS}");
-    let ids: Vec<Option<u32>> = inputs
-        .cluster_labels
-        .iter()
-        .map(|&k| u32::try_from(k).ok())
-        .collect();
+    let ids = rounds::cluster_ids(&inputs.cluster_labels);
     write_clusters(&clusters_path, &inputs.cell_names, &ids)?;
     let argmax_path = format!("{out}.argmax.tsv");
     let n = inputs.cell_names.len();

@@ -55,6 +55,16 @@ pub type CellClusters = (Vec<Box<str>>, Vec<Option<ClusterId>>);
 
 /// Per-cell cluster ids from a cluster table: its `cluster` column (else the
 /// first), with NaN, negative ids, and rows whose `entropy` is not finite
+/// Cluster labels (cell → cluster, `usize::MAX` for none) as the ids
+/// [`write_clusters`] takes.
+#[must_use]
+pub fn cluster_ids(labels: &[usize]) -> Vec<Option<ClusterId>> {
+    labels
+        .iter()
+        .map(|&k| ClusterId::try_from(k).ok())
+        .collect()
+}
+
 /// read as unassigned.
 pub fn read_clusters(path: &str) -> Result<CellClusters> {
     let m = read_mat(path).with_context(|| format!("reading clusters {path}"))?;

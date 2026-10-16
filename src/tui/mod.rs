@@ -16,7 +16,7 @@ mod menu;
 mod ontology;
 mod order;
 mod picker;
-pub(crate) mod round;
+mod round;
 mod runner;
 mod ui;
 
@@ -116,7 +116,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     crate::annotate_cmd::apply_level(&mut args, &loaded.file)?;
     // As the command line would: projection where the run has its gene
     // table, enrichment otherwise.
-    args.method = crate::annotate_cmd::resolve_method(&args, &loaded.manifest);
+    args.method = crate::annotate_cmd::resolve_method(&args, Some(&loaded.manifest));
     args.from = Some(loaded.file.to_string_lossy().into());
     // The run's genes, read once for every marker panel browse.
     let mut genes: Option<Option<Arc<GeneRows>>> = None;

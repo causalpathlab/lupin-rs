@@ -1,12 +1,13 @@
 //! Unified `lupin annotate` — enrichment, or projection from a run manifest or embedding files.
 
 use crate::annotate::args::{
-    AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, ProjectionMethod,
+    AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, MarkerScoreArgs, ProjectionMethod,
 };
 use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::susie::SusieConfig;
 use crate::manifest::annotate::{
-    annotate_by_enrichment, annotate_by_projection, annotate_ontology,
+    annotate_by_enrichment, annotate_by_marker_score, annotate_by_projection, annotate_ontology,
+    LeidenArgs,
 };
 use crate::manifest::run::RunManifest;
 use anyhow::{Context, Result};
@@ -231,11 +232,7 @@ impl AnnotateCliArgs {
             AnnotateMethod::Projection => "projection",
         };
         val("method", method.into());
-        let projection = match self.projection {
-            ProjectionMethod::Score => "score",
-            ProjectionMethod::Ora => "ora",
-        };
-        val("projection", projection.into());
+        val("projection", self.projection.as_str().into());
         val("markers", self.markers.to_string());
         val("out", self.out.to_string());
         val("resolution", self.resolution.to_string());
@@ -415,7 +412,14 @@ fn run_pass(
                 "GO terms are scored by the enrichment pass; add --method enrichment"
             );
             let loaded = loaded.context("--from is required for projection annotation")?;
-            annotate_by_projection(&build_projection_args(args), loaded)?;
+            match args.projection {
+                ProjectionMethod::Score => {
+                    annotate_by_marker_score(&build_score_args(args), loaded)?
+                }
+                ProjectionMethod::Ora => {
+                    annotate_by_projection(&build_projection_args(args), loaded)?
+                }
+            }
         }
     }
     if let (Some(p), Some(l)) = (&prepared, loaded) {
@@ -533,25 +537,22 @@ fn route<'a>(
             return Route::EmbeddingFiles { feat, cell };
         }
     }
-    let method = match loaded {
-        Some(l) => resolve_method(args, &l.manifest),
-        None if args.method == AnnotateMethod::Projection => AnnotateMethod::Projection,
-        None => AnnotateMethod::Enrichment,
-    };
-    if method == AnnotateMethod::Projection {
+    if resolve_method(args, loaded.map(|l| &l.manifest)) == AnnotateMethod::Projection {
         Route::Projection
     } else {
         Route::Enrichment
     }
 }
 
-/// The method a pass on `manifest` runs: the one chosen, or for `auto`,
-/// projection when the run has the gene table its projection method reads
-/// and enrichment otherwise. The TUI resolves `auto` the same way.
+/// The method a pass runs: the one chosen, or for `auto`, projection when
+/// the run has the gene table its projection method reads and enrichment
+/// otherwise (or without a run). The TUI resolves `auto` the same way.
 #[must_use]
-pub fn resolve_method(args: &AnnotateCliArgs, manifest: &RunManifest) -> AnnotateMethod {
+pub fn resolve_method(args: &AnnotateCliArgs, manifest: Option<&RunManifest>) -> AnnotateMethod {
     match args.method {
-        AnnotateMethod::Auto if manifest_prefers_projection(manifest, args.projection) => {
+        AnnotateMethod::Auto
+            if manifest.is_some_and(|m| manifest_prefers_projection(m, args.projection)) =>
+        {
             AnnotateMethod::Projection
         }
         AnnotateMethod::Auto => AnnotateMethod::Enrichment,
@@ -559,20 +560,10 @@ pub fn resolve_method(args: &AnnotateCliArgs, manifest: &RunManifest) -> Annotat
     }
 }
 
-/// A run annotates by projection when it has the gene table the projection
-/// method reads. The score reads the decoder table ρ of a kind that decodes
-/// cells with it. The ORA reads the co-embedding; a kind that co-embeds needs
-/// that space itself, its ρ not being on the cell manifold, while another
-/// kind's ρ stands in.
+/// A run annotates by projection when it has the gene table its projection
+/// method reads ([`crate::marker_embedding::projection_gene_table`]).
 fn manifest_prefers_projection(manifest: &RunManifest, projection: ProjectionMethod) -> bool {
-    let o = &manifest.outputs;
-    match projection {
-        ProjectionMethod::Score => manifest.kind.coembeds() && o.feature_embedding.is_some(),
-        ProjectionMethod::Ora => {
-            o.feature_coembedding.is_some()
-                || (!manifest.kind.coembeds() && o.feature_embedding.is_some())
-        }
-    }
+    crate::marker_embedding::projection_gene_table(manifest, projection).is_ok()
 }
 
 /// Explicit embedding pair: the same projection pass as the manifest route
@@ -588,13 +579,26 @@ fn run_projection_from_files(
         .with_context(|| format!("reading feature embedding {feat_path}"))?;
     let cell = DMatrix::<f32>::from_parquet(cell_path)
         .with_context(|| format!("reading cell embedding {cell_path}"))?;
-    by_projection::run(
-        &build_projection_args(args),
-        &ProjectionInputs {
-            feature_embedding: &feat,
-            cell_embedding: &cell,
-        },
-    )?;
+    match args.projection {
+        // Without a run there are no clusters but `--clusters`: else the
+        // score is centred at the mean cell, one group.
+        ProjectionMethod::Score => {
+            let (groups, k) = match args.clusters.as_deref() {
+                Some(p) => crate::annotate::inputs::load_cluster_labels(p, &cell.rows)?,
+                None => (vec![0; cell.rows.len()], 1),
+            };
+            crate::annotate::marker_score::run(&build_score_args(args), &feat, &cell, &groups, k)?;
+        }
+        ProjectionMethod::Ora => {
+            by_projection::run(
+                &build_projection_args(args),
+                &ProjectionInputs {
+                    feature_embedding: &feat,
+                    cell_embedding: &cell,
+                },
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -670,17 +674,28 @@ fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieCo
     cfg
 }
 
-fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
-    AnnotateProjectionArgs {
-        projection: args.projection,
+fn build_score_args(args: &AnnotateCliArgs) -> MarkerScoreArgs {
+    MarkerScoreArgs {
         markers: args.markers.clone(),
         out: args.out.clone(),
         clusters: args.clusters.clone(),
+        leiden: LeidenArgs {
+            knn: args.knn.unwrap_or(PROJECTION_KNN),
+            resolution: args.resolution,
+            num_clusters: args.num_clusters,
+            min_cluster_size: args.min_cluster_size,
+            seed: args.cluster_seed,
+        },
+        no_clean: args.no_clean,
+    }
+}
+
+fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
+    AnnotateProjectionArgs {
+        markers: args.markers.clone(),
+        out: args.out.clone(),
         knn: args.knn.unwrap_or(PROJECTION_KNN),
         resolution: args.resolution,
-        num_clusters: args.num_clusters,
-        min_cluster_size: args.min_cluster_size,
-        cluster_seed: args.cluster_seed,
         num_perm: args.num_perm,
         seed: args.seed,
         min_markers: args.min_markers,
@@ -712,34 +727,37 @@ mod route_tests {
         let mut args = <Cli as clap::Parser>::parse_from(["lupin", "-o", "x"]).annotate;
         let mut bge = RunManifest::new(RunKind::Bge, "run");
         bge.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
-        assert_eq!(resolve_method(&args, &bge), AnnotateMethod::Projection);
         let mut svd = RunManifest::new(RunKind::Svd, "run");
         svd.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
-        assert_eq!(resolve_method(&args, &svd), AnnotateMethod::Enrichment);
-        args.method = AnnotateMethod::Enrichment;
         assert_eq!(
-            resolve_method(&args, &bge),
-            AnnotateMethod::Enrichment,
-            "a choice stands"
+            resolve_method(&args, Some(&bge)),
+            AnnotateMethod::Projection
         );
-    }
-
-    #[test]
-    fn a_run_annotates_by_projection_when_it_has_the_methods_gene_table() {
-        let mut m = RunManifest::new(RunKind::Bge, "run");
-        m.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
-        assert!(manifest_prefers_projection(&m, ProjectionMethod::Score));
-        assert!(
-            !manifest_prefers_projection(&m, ProjectionMethod::Ora),
+        assert_eq!(
+            resolve_method(&args, Some(&svd)),
+            AnnotateMethod::Enrichment
+        );
+        assert_eq!(
+            resolve_method(&args, None),
+            AnnotateMethod::Enrichment,
+            "no run"
+        );
+        args.projection = ProjectionMethod::Ora;
+        assert_eq!(
+            resolve_method(&args, Some(&bge)),
+            AnnotateMethod::Enrichment,
             "the ORA needs the co-embedding"
         );
-        m.outputs.feature_coembedding = Some("run.feature_coembedding.parquet".into());
-        assert!(manifest_prefers_projection(&m, ProjectionMethod::Ora));
-        let mut svd = RunManifest::new(RunKind::Svd, "run");
-        svd.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
-        assert!(
-            !manifest_prefers_projection(&svd, ProjectionMethod::Score),
-            "an svd gene table decodes nothing"
+        bge.outputs.feature_coembedding = Some("run.feature_coembedding.parquet".into());
+        assert_eq!(
+            resolve_method(&args, Some(&bge)),
+            AnnotateMethod::Projection
+        );
+        args.method = AnnotateMethod::Enrichment;
+        assert_eq!(
+            resolve_method(&args, Some(&bge)),
+            AnnotateMethod::Enrichment,
+            "a choice stands"
         );
     }
 }

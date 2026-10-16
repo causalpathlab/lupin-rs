@@ -308,6 +308,13 @@ fn de_ids<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ClusterId>, D::Error> {
         .collect()
 }
 
+/// Cluster `id`'s row name in every cluster × type table (`K{id}`); the
+/// inverse of [`parse_cluster_id`].
+#[must_use]
+pub fn cluster_row_name(id: usize) -> String {
+    format!("K{id}")
+}
+
 /// A cluster id from `12`, `K12` or `C12`.
 #[must_use]
 pub fn parse_cluster_id(s: &str) -> Option<ClusterId> {

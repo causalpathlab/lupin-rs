@@ -145,3 +145,45 @@ fn projection_scores_markers_by_default_and_the_ora_parses_back() {
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     assert_eq!(format!("{a:?}"), format!("{:?}", parse(&argv)));
 }
+
+#[test]
+fn projection_from_embedding_files_runs_the_score_by_default() {
+    use legume_numeric::matrix::traits::IoOps;
+    let dir = tempfile::tempdir().unwrap();
+    let (feat, cells, _) = crate::annotate::marker_score::toy::matrices();
+    let at = |n: &str| dir.path().join(n).to_string_lossy().into_owned();
+    feat.mat
+        .to_parquet_with_names(
+            &at("feat.parquet"),
+            (Some(&feat.rows[..]), Some("gene")),
+            None,
+        )
+        .unwrap();
+    cells
+        .mat
+        .to_parquet_with_names(
+            &at("cells.parquet"),
+            (Some(&cells.rows[..]), Some("cell")),
+            None,
+        )
+        .unwrap();
+    let panel = crate::annotate::marker_score::toy::panel(dir.path());
+    let out = at("files");
+    let a = parse(&[
+        "-m",
+        &panel,
+        "-o",
+        &out,
+        "--method",
+        "projection",
+        "--feature-embedding",
+        &at("feat.parquet"),
+        "--cell-embedding",
+        &at("cells.parquet"),
+    ]);
+    run_projection_from_files(&a, &at("feat.parquet"), &at("cells.parquet")).unwrap();
+    let fields =
+        legume_numeric::matrix::parquet::peek_parquet_field_names(&format!("{out}.annot.parquet"))
+            .unwrap();
+    assert!(fields.iter().any(|f| f.as_ref() == "margin"), "{fields:?}");
+}
