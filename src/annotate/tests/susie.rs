@@ -502,3 +502,100 @@ fn choice_means_over_many_draws_stay_normalised() {
     assert!((total - 1.0).abs() < 1e-6, "sum {total}");
     assert!((f64::from(bar[0][2]) - 0.7).abs() < 1e-6, "{:?}", bar[0]);
 }
+
+/// Six clusters of log-folds over three types (A, B sharing 12 of their 20
+/// markers, C apart): A in 0 and 3, B in 1 and 4, C in 2, none in 5. Every
+/// gene's misfit s² = 0.1, sampling variance 0.01.
+fn log_fold_clusters(seed: u64) -> (model::Panel, Vec<Vec<f32>>, Vec<Vec<f32>>) {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let sets: [std::ops::Range<usize>; 3] = [0..20, 8..28, 28..48];
+    let n_genes = 48;
+    let types_of: Vec<Vec<usize>> = (0..n_genes)
+        .map(|g| (0..3).filter(|&c| sets[c].contains(&g)).collect())
+        .collect();
+    let panel = model::Panel::new(types_of.clone(), 3, &vec![0.1; n_genes]);
+    let noise = rand_distr::StudentT::new(4.0f32).unwrap();
+    let up: [Option<usize>; 6] = [Some(0), Some(1), Some(2), Some(0), Some(1), None];
+    let x: Vec<Vec<f32>> = up
+        .iter()
+        .map(|t| {
+            (0..n_genes)
+                .map(|g| {
+                    let fold = if t.is_some_and(|c| types_of[g].contains(&c)) {
+                        1.5
+                    } else {
+                        0.0
+                    };
+                    fold + (0.11f32).sqrt() * noise.sample(&mut rng)
+                })
+                .collect()
+        })
+        .collect();
+    let delta = vec![vec![0.01f32; n_genes]; 6];
+    (panel, x, delta)
+}
+
+#[test]
+fn the_bayesian_sampler_with_fixed_scales_matches_the_plug_in_student_t() {
+    // Stage 0: the t is a Gaussian scale mixture, so with β = 0 and σ² fixed at
+    // the plug-in values (only λ sampled) both samplers target one posterior.
+    use model::{Cluster, ClusterLogFold, SusieModel};
+    let (panel, x, delta) = log_fold_clusters(31);
+    let cfg = SusieConfig {
+        samples: 2000,
+        warmup: 500,
+        ..Default::default()
+    };
+    let corr = marker_correlation(
+        &(0..48)
+            .map(|g| {
+                (0..3)
+                    .filter(|&c| [0..20, 8..28, 28..48][c].contains(&g))
+                    .collect()
+            })
+            .collect::<Vec<Vec<usize>>>(),
+        3,
+    );
+    let plug_in: Vec<ClusterFit> = x
+        .iter()
+        .zip(&delta)
+        .enumerate()
+        .map(|(k, (xk, dk))| {
+            let cluster = Cluster {
+                x: xk.clone(),
+                sampling: dk.clone(),
+            };
+            let lik = ClusterLogFold {
+                panel: &panel,
+                cluster: &cluster,
+            };
+            let model = SusieModel {
+                data: lik,
+                prior: cfg.prior,
+            };
+            let config = McmcConfig {
+                n_samples: cfg.samples,
+                warmup: cfg.warmup,
+                thin: 1,
+                seed: mix_seed(cfg.seed, k as u64),
+            };
+            summarize(&run_mcmc_parallel(&model, &config, cfg.chains), lik, &corr)
+        })
+        .collect();
+    let fixed = bayes::Fixed {
+        beta: Some(vec![0.0; 48]),
+        scale2: Some(vec![0.1; 48]),
+    };
+    let joint = bayes::fit_joint(&panel, &x, &delta, &fixed, &cfg, &corr);
+    for k in 0..6 {
+        for c in 0..3 {
+            let (p, q) = (plug_in[k].pip[c], joint.clusters[k].pip[c]);
+            assert!((p - q).abs() < 0.05, "cluster {k} type {c}: pip {p} vs {q}");
+            let (a, b) = (plug_in[k].theta[c], joint.clusters[k].theta[c]);
+            assert!(
+                (a - b).abs() < 0.1,
+                "cluster {k} type {c}: theta {a} vs {b}"
+            );
+        }
+    }
+}
