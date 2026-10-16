@@ -125,22 +125,13 @@ fn susie_settings_that_leave_no_posterior_fail_the_command() {
 }
 
 #[test]
-fn projection_scores_markers_by_default_and_the_ora_parses_back() {
-    let base = [
-        "-f",
-        "run.senna.json",
-        "-m",
-        "m.tsv",
-        "-o",
-        "out/x",
-        "--method",
-        "projection",
-    ];
-    assert_eq!(parse(&base).projection, ProjectionMethod::Score);
+fn projection_leaves_its_method_to_the_run_unless_given_and_the_choice_parses_back() {
+    let base = ["-f", "run.senna.json", "-m", "m.tsv", "-o", "out/x", "--method", "projection"];
+    assert_eq!(parse(&base).projection, None);
     let mut ora = base.to_vec();
     ora.extend(["--projection", "ora"]);
     let a = parse(&ora);
-    assert_eq!(a.projection, ProjectionMethod::Ora);
+    assert_eq!(a.projection, Some(ProjectionMethod::Ora));
     let argv = a.to_argv();
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     assert_eq!(format!("{a:?}"), format!("{:?}", parse(&argv)));

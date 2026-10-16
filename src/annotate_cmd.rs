@@ -717,50 +717,64 @@ mod route_tests {
     use super::*;
     use crate::manifest::run::RunKind;
 
-    #[test]
-    fn auto_resolves_to_the_method_the_runs_tables_allow() {
+    fn cli(more: &[&str]) -> AnnotateCliArgs {
         #[derive(clap::Parser)]
         struct Cli {
             #[command(flatten)]
             annotate: AnnotateCliArgs,
         }
-        let mut args = <Cli as clap::Parser>::parse_from(["lupin", "-o", "x"]).annotate;
-        let mut bge = RunManifest::new(RunKind::Bge, "run");
-        bge.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
-        let mut svd = RunManifest::new(RunKind::Svd, "run");
-        svd.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
+        let argv = ["lupin", "-o", "x", "-m", "m.tsv"].iter().chain(more);
+        <Cli as clap::Parser>::parse_from(argv).annotate
+    }
+
+    fn run_with(kind: RunKind, rho: bool, coembedding: bool) -> RunManifest {
+        let mut m = RunManifest::new(kind, "run");
+        m.outputs.feature_embedding = rho.then(|| "run.feature_embedding.parquet".into());
+        m.outputs.feature_coembedding =
+            coembedding.then(|| "run.feature_coembedding.parquet".into());
+        m
+    }
+
+    #[test]
+    fn auto_resolves_to_the_method_the_run_and_the_request_allow() {
+        let bge = run_with(RunKind::Bge, true, false);
+        let svd = run_with(RunKind::Svd, true, false);
+        assert_eq!(resolve_method(&cli(&[]), Some(&bge)), AnnotateMethod::Projection);
+        assert_eq!(resolve_method(&cli(&[]), Some(&svd)), AnnotateMethod::Enrichment);
+        assert_eq!(resolve_method(&cli(&[]), None), AnnotateMethod::Enrichment, "no run");
         assert_eq!(
-            resolve_method(&args, Some(&bge)),
-            AnnotateMethod::Projection
-        );
-        assert_eq!(
-            resolve_method(&args, Some(&svd)),
-            AnnotateMethod::Enrichment
-        );
-        assert_eq!(
-            resolve_method(&args, None),
+            resolve_method(&cli(&["--go"]), Some(&bge)),
             AnnotateMethod::Enrichment,
-            "no run"
+            "GO terms are the enrichment's"
         );
-        args.projection = ProjectionMethod::Ora;
+        let mut no_panel = cli(&[]);
+        no_panel.markers = "".into();
+        assert_eq!(resolve_method(&no_panel, Some(&bge)), AnnotateMethod::Enrichment);
         assert_eq!(
-            resolve_method(&args, Some(&bge)),
+            resolve_method(&cli(&["--projection", "ora"]), Some(&bge)),
             AnnotateMethod::Enrichment,
-            "the ORA needs the co-embedding"
+            "the ORA asked for needs the co-embedding"
         );
-        bge.outputs.feature_coembedding = Some("run.feature_coembedding.parquet".into());
         assert_eq!(
-            resolve_method(&args, Some(&bge)),
-            AnnotateMethod::Projection
-        );
-        args.method = AnnotateMethod::Enrichment;
-        assert_eq!(
-            resolve_method(&args, Some(&bge)),
+            resolve_method(&cli(&["--method", "enrichment"]), Some(&bge)),
             AnnotateMethod::Enrichment,
             "a choice stands"
         );
     }
-}
+
+    #[test]
+    fn projection_scores_where_the_run_decodes_and_falls_back_to_the_ora() {
+        let bge = run_with(RunKind::Bge, true, true);
+        let fne = run_with(RunKind::Fne, true, false);
+        let pinto = run_with(RunKind::Other("pinto-cage".into()), false, true);
+        let p = |more: &[&str], m: Option<&RunManifest>| resolve_projection(&cli(more), m);
+        assert_eq!(p(&[], Some(&bge)), ProjectionMethod::Score);
+        assert_eq!(p(&[], Some(&fne)), ProjectionMethod::Ora, "no decoder table");
+        assert_eq!(p(&[], Some(&pinto)), ProjectionMethod::Ora);
+        assert_eq!(p(&[], None), ProjectionMethod::Ora, "files: the table is unknown");
+        assert_eq!(p(&["--projection", "score"], None), ProjectionMethod::Score, "asked");
+        assert_eq!(resolve_method(&cli(&[]), Some(&pinto)), AnnotateMethod::Projection);
+    }}
 
 #[cfg(test)]
 #[path = "tests/annotate_cmd.rs"]
