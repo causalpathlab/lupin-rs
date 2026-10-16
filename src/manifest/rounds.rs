@@ -53,8 +53,6 @@ pub const MARKER_HISTORY: &str = ".marker_history.json";
 /// Cell names and, per cell, its cluster id (`None` when unassigned).
 pub type CellClusters = (Vec<Box<str>>, Vec<Option<ClusterId>>);
 
-/// Per-cell cluster ids from a cluster table: its `cluster` column (else the
-/// first), with NaN, negative ids, and rows whose `entropy` is not finite
 /// Cluster labels (cell → cluster, `usize::MAX` for none) as the ids
 /// [`write_clusters`] takes.
 #[must_use]
@@ -65,6 +63,8 @@ pub fn cluster_ids(labels: &[usize]) -> Vec<Option<ClusterId>> {
         .collect()
 }
 
+/// Per-cell cluster ids from a cluster table: its `cluster` column (else the
+/// first), with NaN, negative ids, and rows whose `entropy` is not finite
 /// read as unassigned.
 pub fn read_clusters(path: &str) -> Result<CellClusters> {
     let m = read_mat(path).with_context(|| format!("reading clusters {path}"))?;

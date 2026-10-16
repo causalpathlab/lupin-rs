@@ -220,11 +220,10 @@ fn the_score_refuses_settings_it_cannot_honour() {
         build_score_args(&parse(&v))
     };
     assert!(with(&[]).is_ok());
-    let err = with(&["--no-idf"]).err().expect("refused").to_string();
+    let err = with(&["--no-idf"]).expect_err("refused").to_string();
     assert!(err.contains("IDF"), "{err}");
     let err = with(&["--min-markers", "5"])
-        .err()
-        .expect("refused")
+        .expect_err("refused")
         .to_string();
     assert!(err.contains("min-markers"), "{err}");
 }

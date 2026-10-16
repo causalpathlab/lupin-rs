@@ -1,10 +1,11 @@
-//! A run's gene table for marker matching, located through its manifest.
-//!
-//! Markers must be matched against genes placed on the cell manifold:
-//! `outputs.feature_coembedding` for the embedding kinds, or ρ
-//! (`outputs.feature_embedding`) for kinds whose ρ already shares the cells'
-//! space. A `gem` table is keyed by feature row (spliced and unspliced per
-//! gene), so only its spliced rows are kept, re-keyed by gene.
+//! A run's gene table for projection, located through its manifest
+//! ([`projection_gene_table`]). The embedding marker score reads the decoder
+//! table ρ (`outputs.feature_embedding`) of a kind that decodes cells
+//! through it. The co-embedding ORA matches markers against genes placed on
+//! the cell manifold: `outputs.feature_coembedding` for the kinds that
+//! co-embed, or ρ for kinds whose ρ already shares the cells' space. A `gem`
+//! table is keyed by feature row (spliced and unspliced per gene), so only
+//! its spliced rows are kept, re-keyed by gene.
 
 use anyhow::{Context, Result};
 use data_beans::aux::feature_rows::split_count_row;

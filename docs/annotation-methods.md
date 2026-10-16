@@ -6,9 +6,11 @@ quoted here is the shipped default; results are stated qualitatively.
 Projection calls cell types on a run's embeddings rather than its raw counts, in one of two
 ways (`--projection`):
 
-- **`score`** (the default): the embedding marker score, §0.
-- **`ora`**: term over-representation on the co-embedding, §§1–9. It is kept for one release, for
-  comparison.
+- **`score`**: the embedding marker score, §0. The default for a run that decodes cells
+  through its gene table (bge, gem, simba, resolve-embedding-space).
+- **`ora`**: term over-representation on the co-embedding, §§1–9. The default for other runs
+  with a gene embedding, and for embedding files given directly (`--feature-embedding`), whose
+  table lupin cannot tell. It is kept for one release, for comparison.
 
 ---
 
@@ -44,11 +46,14 @@ walk were both tried, and neither raised the precision of what they kept.
 
 **Outputs:**
 - `argmax.tsv`: the call; the probability is NaN, since the score has none;
-- `annot.parquet`: each cell's cluster, call and margin;
-- `cluster_celltype_share.parquet`: each cluster's share of its cells called each type,
-  recorded as `annotate.cluster_celltype_share`. The TUI lists a cluster's candidates from it.
+- `marker_score.parquet`: each cell's cluster, call and margin, recorded as
+  `annotate.annotation`. The TUI tables a cluster's candidates from these calls over the
+  round's current clusters, so merges and splits keep their evidence. A marker edit needs a
+  new pass: the score caches no statistics to rescore with.
 
 **Guards:**
+- IDF weighting and the three-marker floor are part of the score: `--no-idf` and another
+  `--min-markers` are refused;
 - a type with fewer than three live markers is dropped;
 - fewer than two types left is an error naming the types lost;
 - a non-finite embedding is an error.
