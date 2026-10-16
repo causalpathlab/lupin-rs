@@ -586,7 +586,7 @@ fn the_bayesian_sampler_with_fixed_scales_matches_the_plug_in_student_t() {
         beta: Some(vec![0.0; 48]),
         scale2: Some(vec![0.1; 48]),
     };
-    let joint = bayes::fit_joint(&panel, &x, &delta, &fixed, &cfg, &corr);
+    let joint = bayes::fit_joint(&panel, &x, &delta, &fixed, None, &cfg, &corr);
     for (k, (pf, jf)) in plug_in.iter().zip(&joint.clusters).enumerate() {
         for c in 0..3 {
             let (p, q) = (pf.pip[c], jf.pip[c]);
@@ -632,7 +632,7 @@ fn the_fully_bayesian_sampler_recovers_planted_types_and_gene_baselines() {
         beta: None,
         scale2: None,
     };
-    let joint = bayes::fit_joint(&panel, &u, &delta, &free, &cfg, &corr);
+    let joint = bayes::fit_joint(&panel, &u, &delta, &free, None, &cfg, &corr);
     for (k, want) in [
         (0, Some(0)),
         (1, Some(1)),
@@ -704,6 +704,7 @@ fn diag_rhat_by_stage() {
                 beta: fb,
                 scale2: fs,
             },
+            None,
             &cfg,
             &corr,
         );
@@ -728,6 +729,56 @@ fn diag_rhat_by_stage() {
         eprintln!(
             "{name:11} R̂ {r:?}\n            θ {th:?}\n            s2 median {:.3}",
             median(&joint.scale2)
+        );
+    }
+}
+
+#[test]
+fn chains_started_from_plug_in_estimates_agree_with_the_baseline_free() {
+    // On the recovery data, the baselines free and the misfit held: started
+    // from a plug-in-like point (the baselines within a tenth of a log unit),
+    // the chains must agree and recover the calls.
+    let (panel, x, delta) = log_fold_clusters(41);
+    let mut rng = SmallRng::seed_from_u64(42);
+    let base = rand_distr::Normal::new(-8.0f32, 1.5).unwrap();
+    let beta: Vec<f32> = (0..48).map(|_| base.sample(&mut rng)).collect();
+    let u: Vec<Vec<f32>> = x
+        .iter()
+        .map(|xk| xk.iter().zip(&beta).map(|(a, b)| a + b).collect())
+        .collect();
+    let corr = marker_correlation(
+        &(0..48)
+            .map(|g| {
+                (0..3)
+                    .filter(|&c| [0..20, 8..28, 28..48][c].contains(&g))
+                    .collect()
+            })
+            .collect::<Vec<Vec<usize>>>(),
+        3,
+    );
+    let cfg = SusieConfig {
+        samples: 1000,
+        warmup: 500,
+        ..Default::default()
+    };
+    let noise = rand_distr::Normal::new(0.0f32, 0.1).unwrap();
+    let start = bayes::Start {
+        beta: beta.iter().map(|b| b + noise.sample(&mut rng)).collect(),
+        scale2: vec![0.11; 48],
+    };
+    let held = bayes::Fixed {
+        beta: None,
+        scale2: Some(vec![0.11; 48]),
+    };
+    let joint = bayes::fit_joint(&panel, &u, &delta, &held, Some(&start), &cfg, &corr);
+    for (k, want) in [(0, 0), (1, 1), (2, 2), (3, 0), (4, 1)] {
+        assert_eq!(joint.clusters[k].call(), Some(want), "cluster {k}");
+    }
+    for (k, f) in joint.clusters.iter().enumerate() {
+        assert!(
+            f.max_rhat < 1.1,
+            "cluster {k}: chains disagree, R̂ {}",
+            f.max_rhat
         );
     }
 }

@@ -48,6 +48,17 @@ pub(super) struct Fixed {
     pub(super) scale2: Option<Vec<f32>>,
 }
 
+/// Where the chains start: the plug-in's background (as a log baseline) and
+/// misfit scales. Each chain starts at them plus a small seeded jitter, so the
+/// chains still begin apart and R̂ can tell whether they converged.
+pub(super) struct Start {
+    pub(super) beta: Vec<f32>,
+    pub(super) scale2: Vec<f32>,
+}
+
+/// Jitter of a chain's starting baseline and log misfit variance.
+const START_JITTER: (f64, f64) = (0.1, 0.2);
+
 /// Every cluster's posterior plus the genes' posterior means.
 pub(super) struct JointFits {
     pub(super) clusters: Vec<ClusterFit>,
@@ -62,6 +73,7 @@ struct JointModel<'a> {
     u: &'a [Vec<f32>],
     delta: &'a [Vec<f32>],
     fixed: &'a Fixed,
+    start: Option<&'a Start>,
     prior: super::SusiePrior,
     beta_mean: f64,
 }
@@ -140,16 +152,43 @@ impl McmcModel for JointModel<'_> {
 
     fn init(&self, rng: &mut SmallRng) -> JointState {
         let m = self.n_genes();
-        let beta = match &self.fixed.beta {
-            Some(b) => b.clone(),
-            None => (0..m)
+        let beta = match (&self.fixed.beta, self.start) {
+            (Some(b), _) => b.clone(),
+            (None, Some(st)) => st
+                .beta
+                .iter()
+                .map(|&b| (f64::from(b) + START_JITTER.0 * normal(rng)) as f32)
+                .collect(),
+            (None, None) => (0..m)
                 .map(|g| median(&self.u.iter().map(|u| u[g]).collect::<Vec<f32>>()))
                 .collect(),
         };
-        let (s2, lambda) = (
-            vec![LOG_S2_MEAN.exp(); m],
-            vec![vec![1.0f32; m]; self.u.len()],
-        );
+        // log σ² = μ_s + ω·z: from the start's scales (jittered) when given.
+        let (mu_s, omega, z) = match self.start {
+            Some(st) if self.fixed.scale2.is_none() => {
+                let logs: Vec<f64> = st
+                    .scale2
+                    .iter()
+                    .map(|&v| f64::from(v).ln() + START_JITTER.1 * normal(rng))
+                    .collect();
+                let n = logs.len().max(1) as f64;
+                let mu = logs.iter().sum::<f64>() / n;
+                let sd = (logs.iter().map(|l| (l - mu).powi(2)).sum::<f64>() / n)
+                    .sqrt()
+                    .max(0.1);
+                let z = logs.iter().map(|l| ((l - mu) / sd) as f32).collect();
+                (mu, sd, z)
+            }
+            _ => (LOG_S2_MEAN, 1.0, vec![0.0; m]),
+        };
+        let lambda = vec![vec![1.0f32; m]; self.u.len()];
+        let s2: Vec<f64> = match &self.fixed.scale2 {
+            Some(v) => v.iter().map(|&a| f64::from(a)).collect(),
+            None => z
+                .iter()
+                .map(|&z: &f32| (mu_s + omega * f64::from(z)).exp())
+                .collect(),
+        };
         let clusters = (0..self.u.len())
             .map(|k| {
                 let (x, w) = self.gauss_inputs(k, &beta, &s2, &lambda[k]);
@@ -167,9 +206,9 @@ impl McmcModel for JointModel<'_> {
         JointState {
             clusters,
             beta,
-            z: vec![0.0; m],
-            mu_s: LOG_S2_MEAN,
-            omega: 1.0,
+            z,
+            mu_s,
+            omega,
             lambda,
         }
     }
@@ -295,6 +334,7 @@ pub(super) fn fit_joint(
     u: &[Vec<f32>],
     delta: &[Vec<f32>],
     fixed: &Fixed,
+    start: Option<&Start>,
     cfg: &SusieConfig,
     corr: &[Vec<f32>],
 ) -> JointFits {
@@ -304,6 +344,7 @@ pub(super) fn fit_joint(
         u,
         delta,
         fixed,
+        start,
         prior: cfg.prior,
         beta_mean: f64::from(median(&all)),
     };

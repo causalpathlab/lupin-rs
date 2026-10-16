@@ -88,6 +88,8 @@ pub enum Inference {
     Plugin,
     /// Bayesian, the background fixed at the plug-in's: σ² sampled.
     BayesScales,
+    /// Bayesian, the misfit fixed at the plug-in's: the background sampled.
+    BayesBaseline,
     /// Fully Bayesian, joint over clusters: β, σ² and λ sampled.
     Bayes,
 }
@@ -392,9 +394,14 @@ pub fn fit_all(
         let plug_beta: Vec<f32> = background.iter().map(|b| b.ln()).collect();
         let fixed = bayes::Fixed {
             beta: (cfg.inference == Inference::BayesScales).then(|| plug_beta.clone()),
-            scale2: None,
+            scale2: (cfg.inference == Inference::BayesBaseline).then(|| scale2.clone()),
         };
-        let joint = bayes::fit_joint(&panel, &u, &delta, &fixed, cfg, &corr);
+        // The chains start from the plug-in's estimates (jittered).
+        let start = bayes::Start {
+            beta: plug_beta.clone(),
+            scale2: scale2.clone(),
+        };
+        let joint = bayes::fit_joint(&panel, &u, &delta, &fixed, Some(&start), cfg, &corr);
         log::info!(
             "SuSiE ({:?}) vs the plug-in: β against the log background r = {:.3}, \
              σ² against the plug-in s² r = {:.3} (log scale), median σ²/s² {:.3}",
