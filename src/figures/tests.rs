@@ -484,3 +484,123 @@ fn a_table_that_repeats_a_name_gives_each_cell_its_own_row() {
         [1.0, 2.0, 9.0]
     );
 }
+
+/// A round on four cells in two clusters, labelled A and B, with a UMAP.
+fn round_with_layout(dir: &Path) -> crate::manifest::run::Loaded {
+    use legume_numeric::matrix::traits::IoOps as _;
+    let at = |n: &str| dir.join(n).to_string_lossy().into_owned();
+    let names: Vec<Box<str>> = ["c0", "c1", "c2", "c3"]
+        .iter()
+        .map(|s| Box::from(*s))
+        .collect();
+    crate::manifest::rounds::write_clusters(
+        &at("r.clusters.parquet"),
+        &names,
+        &[Some(0), Some(0), Some(1), Some(1)],
+    )
+    .unwrap();
+    std::fs::write(
+        at("r.argmax.tsv"),
+        "cell\tcell_type\tprobability\nc0\tA\t0.9\nc1\tA\t0.8\nc2\tB\t0.7\nc3\tunassigned\t0.1\n",
+    )
+    .unwrap();
+    let cols: Vec<Box<str>> = ["x", "y"].iter().map(|s| Box::from(*s)).collect();
+    Mat::from_row_slice(4, 2, &[0.0, 0.0, 1.0, 0.0, 5.0, 5.0, 6.0, 5.0])
+        .to_parquet_with_names(
+            &at("r.umap.parquet"),
+            (Some(&names), Some("cell")),
+            Some(&cols),
+        )
+        .unwrap();
+    std::fs::write(
+        at("r.senna.json"),
+        r#"{"version": 2, "kind": "bge", "prefix": "r",
+            "cluster": {"clusters": "r.clusters.parquet"},
+            "annotate": {"argmax": "r.argmax.tsv"},
+            "layout": {"cell_coords": "r.umap.parquet", "current": "umap"}}"#,
+    )
+    .unwrap();
+    crate::manifest::run::load(&at("r.senna.json")).unwrap()
+}
+
+#[test]
+fn a_rounds_cells_come_with_its_labels_clusters_and_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = CellFigures::of_round(&round_with_layout(dir.path()))
+        .unwrap()
+        .expect("a layout");
+    assert_eq!(
+        f.types.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+        ["A", "A", "B", UNASSIGNED_LABEL]
+    );
+    assert_eq!(f.cluster, vec![0, 0, 1, 1]);
+    assert_eq!((f.layouts.len(), f.layouts[0].x[2]), (1, 5.0));
+    assert_eq!(
+        f.colourings(),
+        vec![Colouring::Type, Colouring::Cluster],
+        "no pseudotime"
+    );
+    assert_eq!(
+        f.panels(),
+        vec![Panel::Layout { k: 0 }],
+        "no trajectory panels"
+    );
+    let fig = draw(&f, Panel::Layout { k: 0 }, &Style::opening(&f));
+    assert!(fig.svg.contains("<svg"));
+}
+
+#[test]
+fn a_round_without_a_layout_has_no_figures() {
+    let dir = tempfile::tempdir().unwrap();
+    let l = round_with_layout(dir.path());
+    let mut m = l.manifest.clone();
+    m.layout = Default::default();
+    m.save(&l.file).unwrap();
+    let l = crate::manifest::run::load(&l.file.to_string_lossy()).unwrap();
+    assert!(CellFigures::of_round(&l).unwrap().is_none());
+}
+
+#[test]
+fn a_focused_cluster_keeps_its_colours_and_draws_over_the_greyed_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = CellFigures::of_round(&round_with_layout(dir.path()))
+        .unwrap()
+        .unwrap();
+    let style = Style {
+        focus: Some(0),
+        ..Style::opening(&f)
+    };
+    let colours = f.shown_colours(&style);
+    assert!(
+        colours[0].is_some() && colours[1].is_some(),
+        "cluster 0 in colour"
+    );
+    assert!(
+        colours[2].is_none() && colours[3].is_none(),
+        "the rest grey"
+    );
+    let order = f.draw_order(&[0, 1, 2, 3], style.colouring, &colours);
+    assert_eq!(&order[..2], &[2, 3], "grey first, under the focus");
+    assert!(
+        f.title(Panel::Layout { k: 0 }, &style).contains("K0"),
+        "the title names the focus"
+    );
+}
+
+#[test]
+fn a_rounds_figures_export_as_cells_not_trajectory() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = CellFigures::of_round(&round_with_layout(dir.path()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(f.kind(), "cells");
+    assert_eq!(data().kind(), "trajectory");
+    let e = f
+        .export(Panel::Layout { k: 0 }, &Style::opening(&f), View::default())
+        .unwrap();
+    assert!(
+        e.base.to_string_lossy().contains("r.cells.layout_umap"),
+        "{}",
+        e.base.display()
+    );
+}
