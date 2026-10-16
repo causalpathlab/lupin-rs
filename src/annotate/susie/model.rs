@@ -91,6 +91,34 @@ impl Panel {
     pub(super) fn n_types(&self) -> usize {
         self.genes_of.len()
     }
+
+    /// Every marker gene's predicted log-fold at θ.
+    pub(super) fn etas(&self, theta: &[f32]) -> Vec<f32> {
+        self.types_of
+            .iter()
+            .map(|types| types.iter().map(|&c| theta[c]).sum::<f32>())
+            .collect()
+    }
+
+    /// 1/(ν·v_g) for `cluster`'s marker genes, v_g = s²_g + its sampling
+    /// variance: the one per-gene constant of [`ClusterLogFold`]'s terms,
+    /// computed once per cluster rather than on every call.
+    pub(super) fn inv_scale(&self, cluster: &Cluster) -> Vec<f64> {
+        self.scale2
+            .iter()
+            .zip(&cluster.sampling)
+            .map(|(&s2, &v)| 1.0 / (NU * (f64::from(s2) + f64::from(v))))
+            .collect()
+    }
+}
+
+/// A count `y` against its background expectation `mu0`: the log-fold
+/// ln((y + ½)/(μ⁰ + ½)) and the sampling variance of the log count, 1/(y + ½).
+pub(super) fn log_fold(y: f64, mu0: f64) -> (f32, f32) {
+    (
+        ((y + 0.5) / (mu0 + 0.5)).ln() as f32,
+        (1.0 / (y + 0.5)) as f32,
+    )
 }
 
 /// One cluster's marker genes against their background.
@@ -104,15 +132,7 @@ pub(super) struct Cluster {
 impl Cluster {
     /// From counts `y` and background expectations `mu0`.
     pub(super) fn new(y: impl Iterator<Item = f64>, mu0: impl Iterator<Item = f64>) -> Self {
-        let (x, sampling) = y
-            .zip(mu0)
-            .map(|(y, m)| {
-                (
-                    ((y + 0.5) / (m + 0.5)).ln() as f32,
-                    (1.0 / (y + 0.5)) as f32,
-                )
-            })
-            .unzip();
+        let (x, sampling) = y.zip(mu0).map(|(y, m)| log_fold(y, m)).unzip();
         Self { x, sampling }
     }
 }
@@ -122,49 +142,32 @@ impl Cluster {
 pub(super) struct ClusterLogFold<'a> {
     pub(super) panel: &'a Panel,
     pub(super) cluster: &'a Cluster,
+    /// [`Panel::inv_scale`] of this cluster.
+    pub(super) inv_scale: &'a [f64],
 }
 
 impl ClusterLogFold<'_> {
     /// Gene g's Student-t log-likelihood at predictor η, up to constants.
     fn term(&self, g: usize, eta: f32) -> f64 {
         let r = f64::from(self.cluster.x[g]) - f64::from(eta);
-        let v = f64::from(self.panel.scale2[g]) + f64::from(self.cluster.sampling[g]);
-        -0.5 * (NU + 1.0) * (r * r / (NU * v)).ln_1p()
-    }
-
-    /// Every marker gene's predicted log-fold at θ.
-    pub(super) fn etas(&self, theta: &[f32]) -> Vec<f32> {
-        self.panel
-            .types_of
-            .iter()
-            .map(|types| types.iter().map(|&c| theta[c]).sum::<f32>())
-            .collect()
-    }
-
-    /// Every marker gene's residual log-fold at θ.
-    pub(super) fn residuals(&self, theta: &[f32]) -> Vec<f32> {
-        self.cluster
-            .x
-            .iter()
-            .zip(self.etas(theta))
-            .map(|(&x, eta)| x - eta)
-            .collect()
+        -0.5 * (NU + 1.0) * (r * r * self.inv_scale[g]).ln_1p()
     }
 
     fn log_lik(&self, theta: &[f32]) -> f64 {
-        self.etas(theta)
+        self.panel
+            .etas(theta)
             .iter()
             .enumerate()
             .map(|(g, &eta)| self.term(g, eta))
             .sum()
     }
 
-    /// Each type's share of the deviance θ explains over the background:
+    /// Each type's share of the log-likelihood θ gains over the background:
     /// the log-likelihood lost when its effect alone is removed, over the
     /// log-likelihood θ gains on θ = 0 (0 for types without an effect).
     pub(super) fn explained(&self, theta: &[f32]) -> Vec<f32> {
         let total = self.log_lik(theta) - self.log_lik(&vec![0.0; theta.len()]);
-        let etas = self.etas(theta);
+        let etas = self.panel.etas(theta);
         (0..theta.len())
             .map(|c| {
                 if theta[c] <= 0.0 || total <= 0.0 {
@@ -257,7 +260,7 @@ impl McmcModel for SusieModel<'_> {
         let z_eff: Vec<f32> = (0..l).map(|_| std_normal(rng)).collect();
         let effect = z_eff.iter().map(|&z| self.effect(z)).collect();
         let theta = vec![0.0; c];
-        let etas = self.data.etas(&theta);
+        let etas = self.data.panel.etas(&theta);
         let base = etas
             .iter()
             .enumerate()
@@ -280,7 +283,7 @@ impl McmcModel for SusieModel<'_> {
         let (log_type, log_null) = self.log_prior();
         // η and the terms from θ afresh: the shifts below add and take away
         // effects in f32, and their rounding would otherwise accumulate.
-        s.etas = self.data.etas(&s.theta);
+        s.etas = self.data.panel.etas(&s.theta);
         s.base = s
             .etas
             .iter()

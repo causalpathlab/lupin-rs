@@ -1,15 +1,14 @@
-//! The enrichment pass's SuSiE stage: each cluster's pseudobulk counts
-//! regressed on the marker panel with positive single effects
-//! ([`super::susie`]), so the types compete for the markers they share.
+//! The enrichment pass's SuSiE stage: each cluster's marker genes, as
+//! log-folds against their background, regressed on the marker panel with
+//! positive single effects ([`super::susie`]), so the types compete for the
+//! markers they share.
 //!
 //! The enrichment's statistics (ES, NES, p, its softmax Q, q-values, the
 //! ontology walk) stay as it wrote them; SuSiE makes the call. It rewrites the
 //! per-cell labels and annotation (each cell its cluster's PIPs), and adds
 //! each type's posterior inclusion probability (PIP), its effect (the log fold
-//! of its markers), its share of the explained deviance, and the credible
-//! sets.
-//! PIPs near 1 are common on pseudobulk counts; the effect and the share
-//! rank the types that are in.
+//! of its markers), its share of the log-likelihood the effects gain, and the
+//! credible sets.
 
 use super::inputs::EnrichmentInputs;
 use super::outputs::{
@@ -45,11 +44,14 @@ pub fn run(
         n_types,
         cfg,
     )?;
-    let s = quantiles(&fits.scale, &[0.0, 0.5, 1.0]);
+    let s: Vec<f32> = quantiles(&fits.scale2, &[0.0, 0.5, 1.0])
+        .into_iter()
+        .map(f32::sqrt)
+        .collect();
     info!(
         "SuSiE: {n_clusters} clusters × {n_types} cell types over {} marker genes; \
          log-fold misfit scale median {:.3} (range {:.3}–{:.3})",
-        fits.scale.len(),
+        fits.scale2.len(),
         s[1],
         s[0],
         s[2]

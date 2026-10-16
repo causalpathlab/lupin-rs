@@ -14,6 +14,18 @@ struct Sim {
 }
 
 fn simulate(n_free: usize, sets: &[Vec<usize>], planted: &[Vec<(usize, f64)>], seed: u64) -> Sim {
+    simulate_with(n_free, sets, planted, seed, |_, _, _| 1.0)
+}
+
+/// [`simulate`], with each (cluster, gene) mean also scaled by `extra(k, g, rng)`
+/// (g counts from 0 over all genes, free ones first).
+fn simulate_with(
+    n_free: usize,
+    sets: &[Vec<usize>],
+    planted: &[Vec<(usize, f64)>],
+    seed: u64,
+    mut extra: impl FnMut(usize, usize, &mut SmallRng) -> f64,
+) -> Sim {
     let mut rng = SmallRng::seed_from_u64(seed);
     let n_marker = sets.iter().flatten().max().map_or(0, |m| m + 1);
     let n_genes = n_free + n_marker;
@@ -28,10 +40,10 @@ fn simulate(n_free: usize, sets: &[Vec<usize>], planted: &[Vec<(usize, f64)>], s
     let z: f64 = base.iter().sum();
     let phi = 0.05;
     let mut sums = Vec::with_capacity(n_genes * planted.len());
-    for fold_of in planted {
+    for (k, fold_of) in planted.iter().enumerate() {
         let lib = 2e5;
         for g in 0..n_genes {
-            let mut mu = lib * base[g] / z;
+            let mut mu = lib * base[g] / z * extra(k, g, &mut rng);
             for &(c, fold) in fold_of {
                 if markers[g].contains(&c) {
                     mu *= fold;
@@ -225,8 +237,7 @@ fn settings_that_leave_no_posterior_are_refused() {
 
 #[test]
 fn huge_pseudobulks_still_separate_types_that_share_markers() {
-    // As shared_markers_are_credited_…, at ~10⁶ counts per marker gene,
-    // where f32 terms lose about a nat each.
+    // As shared_markers_are_credited_…, at ~10⁶ counts per marker gene.
     let a: Vec<usize> = (0..50).collect();
     let b: Vec<usize> = (32..82).collect();
     let others: Vec<Vec<usize>> = (0..3)
@@ -243,15 +254,31 @@ fn huge_pseudobulks_still_separate_types_that_share_markers() {
     assert!(f.pip[1] < 0.2, "B: pip {:?}", f.pip);
 }
 
+/// Two one-gene types and a free gene, every count at its background.
+fn two_type_cluster() -> (model::Panel, model::Cluster) {
+    let panel = model::Panel::new(vec![vec![0], vec![1], vec![]], 2, &[0.1, 0.1, 0.1]);
+    let cluster = model::Cluster::new([10.0; 3].into_iter(), [10.0; 3].into_iter());
+    (panel, cluster)
+}
+
+fn two_type_lik<'a>(
+    panel: &'a model::Panel,
+    cluster: &'a model::Cluster,
+    inv_scale: &'a [f64],
+) -> model::ClusterLogFold<'a> {
+    model::ClusterLogFold {
+        panel,
+        cluster,
+        inv_scale,
+    }
+}
+
 #[test]
 fn chains_that_number_the_same_effects_differently_agree_on_the_credible_sets() {
-    use model::{Cluster, ClusterLogFold, Panel, SusieSample};
-    let panel = Panel::new(vec![vec![0], vec![1], vec![]], 2, &[0.1, 0.1, 0.1]);
-    let cluster = Cluster::new([10.0; 3].into_iter(), [10.0; 3].into_iter());
-    let counts = ClusterLogFold {
-        panel: &panel,
-        cluster: &cluster,
-    };
+    use model::SusieSample;
+    let (panel, cluster) = two_type_cluster();
+    let inv = panel.inv_scale(&cluster);
+    let counts = two_type_lik(&panel, &cluster, &inv);
     let draw = |first: usize| SusieSample {
         probs: vec![
             (0..3).map(|j| f32::from(u8::from(j == first))).collect(),
@@ -271,13 +298,10 @@ fn chains_that_number_the_same_effects_differently_agree_on_the_credible_sets() 
 
 #[test]
 fn a_type_that_moves_between_effects_within_a_chain_keeps_its_credible_set() {
-    use model::{Cluster, ClusterLogFold, Panel, SusieSample};
-    let panel = Panel::new(vec![vec![0], vec![1], vec![]], 2, &[0.1, 0.1, 0.1]);
-    let cluster = Cluster::new([10.0; 3].into_iter(), [10.0; 3].into_iter());
-    let counts = ClusterLogFold {
-        panel: &panel,
-        cluster: &cluster,
-    };
+    use model::SusieSample;
+    let (panel, cluster) = two_type_cluster();
+    let inv = panel.inv_scale(&cluster);
+    let counts = two_type_lik(&panel, &cluster, &inv);
     let null = vec![0.0, 0.0, 1.0];
     let type0 = vec![1.0, 0.0, 0.0];
     let draw = |probs: Vec<Vec<f32>>| SusieSample {
@@ -344,62 +368,38 @@ fn a_type_in_most_clusters_is_still_called() {
 /// Real marrow: a few genes a decoy type lists (HLA class II, say) are on in a
 /// minority of clusters, the target's among them, and near silent elsewhere,
 /// while every gene varies between clusters for reasons no type explains. The
-/// decoy's own 54 specific markers never rise.
-fn decoy_sim(seed: u64) -> (Vec<f64>, Vec<Vec<usize>>, usize, usize) {
-    let mut rng = SmallRng::seed_from_u64(seed);
-    let (n_free, n_clusters) = (600usize, 9usize);
-    // Types: 0 target (40 markers), 1 decoy (6 shared + 54 own), 2..=4 others (40 each).
+/// decoy's own 54 specific markers never rise. Types: 0 the target (40
+/// markers), 1 the decoy (6 shared + 54 own), 2..=4 others (40 each); the
+/// target is in cluster 0, the others in 5..=8, clusters 1..=3 are its
+/// neighbours.
+fn decoy_sim(seed: u64) -> Sim {
+    let n_free = 600;
     let mut sets: Vec<Vec<usize>> = vec![(0..40).collect(), (40..100).collect()];
     sets.extend((0..3).map(|c| (100 + c * 40..140 + c * 40).collect()));
-    let shared: Vec<usize> = (40..46).collect();
-    let n_marker = 220;
-    let n_genes = n_free + n_marker;
-    let mut markers = vec![Vec::new(); n_genes];
-    for (c, set) in sets.iter().enumerate() {
-        for &g in set {
-            markers[n_free + g].push(c);
-        }
-    }
-    let base_rate = LogNormal::new(0.0, 1.0).unwrap();
-    let biology = LogNormal::new(0.0, 0.8).unwrap();
-    let base: Vec<f64> = (0..n_genes).map(|_| base_rate.sample(&mut rng)).collect();
-    let z: f64 = base.iter().sum();
-    let phi = 0.05;
-    let mut sums = Vec::with_capacity(n_genes * n_clusters);
-    for k in 0..n_clusters {
-        // Target in cluster 0; the others in 5..; clusters 1..=3 are target-like neighbours.
-        let planted: Vec<usize> = match k {
-            0 => vec![0],
-            5..=8 => vec![2 + k % 3],
+    let planted: Vec<Vec<(usize, f64)>> = (0..9)
+        .map(|k| match k {
+            0 => vec![(0, 4.0)],
+            5..=8 => vec![(2 + k % 3, 4.0)],
             _ => vec![],
+        })
+        .collect();
+    let biology = LogNormal::new(0.0, 0.8).unwrap();
+    let shared = n_free + 40..n_free + 46;
+    simulate_with(n_free, &sets, &planted, seed, |k, g, rng| {
+        let on = if !shared.contains(&g) {
+            1.0
+        } else if k <= 3 {
+            50.0
+        } else {
+            0.01
         };
-        for g in 0..n_genes {
-            let mut mu = 2e5 * base[g] / z * biology.sample(&mut rng);
-            for &c in &planted {
-                if markers[g].contains(&c) {
-                    mu *= 4.0;
-                }
-            }
-            if g >= n_free && shared.contains(&(g - n_free)) {
-                mu *= if k <= 3 { 50.0 } else { 0.01 };
-            }
-            let lam = Gamma::new(1.0 / phi, mu * phi).unwrap().sample(&mut rng);
-            sums.push(Poisson::new(lam.max(1e-9)).unwrap().sample(&mut rng));
-        }
-    }
-    (sums, markers, n_genes, n_clusters)
+        biology.sample(rng) * on
+    })
 }
 
 #[test]
 fn a_few_shared_genes_on_in_a_minority_of_clusters_do_not_call_the_decoy() {
-    let (sums, markers, n_genes, n_clusters) = decoy_sim(11);
-    let cfg = SusieConfig {
-        samples: 400,
-        warmup: 300,
-        ..Default::default()
-    };
-    let fits = fit_all(&sums, n_genes, n_clusters, &markers, 5, &cfg).unwrap();
-    let f = &fits.clusters[0];
+    let f = &fit(&decoy_sim(11), 5).clusters[0];
     assert_eq!(f.call(), Some(0), "pip {:?} theta {:?}", f.pip, f.theta);
     assert!(
         f.credible_sets.iter().all(|s| !s.contains(&1)),
@@ -412,14 +412,7 @@ fn a_few_shared_genes_on_in_a_minority_of_clusters_do_not_call_the_decoy() {
 
 #[test]
 fn pips_are_probabilities() {
-    let (sums, markers, n_genes, n_clusters) = decoy_sim(11);
-    let cfg = SusieConfig {
-        samples: 200,
-        warmup: 100,
-        ..Default::default()
-    };
-    let fits = fit_all(&sums, n_genes, n_clusters, &markers, 5, &cfg).unwrap();
-    for (k, f) in fits.clusters.iter().enumerate() {
+    for (k, f) in fit(&decoy_sim(11), 5).clusters.iter().enumerate() {
         assert!(
             f.pip.iter().all(|&p| (0.0..=1.0).contains(&p)),
             "cluster {k}: pip {:?}",
