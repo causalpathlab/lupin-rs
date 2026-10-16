@@ -788,3 +788,7 @@ fn build_batch_labels(labels: Vec<Box<str>>, n_cells: usize) -> Result<(Vec<usiz
     let names: Vec<&str> = labels.iter().map(AsRef::as_ref).collect();
     Ok(data_beans::alg::dc_poisson::compact_labels(&names))
 }
+
+#[cfg(test)]
+#[path = "tests/projection_score.rs"]
+mod projection_score_tests;
