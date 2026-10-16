@@ -160,6 +160,15 @@ pub struct AnnotateCliArgs {
     pub mcmc_warmup: usize,
     #[arg(long = "mcmc-thin", default_value_t = SusieConfig::default().thin)]
     pub mcmc_thin: usize,
+    /// SuSiE inference of background and misfit (plugin, bayes-scales,
+    /// bayes); hidden while the Bayesian stage is compared with the plug-in.
+    #[arg(
+        long = "susie-inference",
+        hide = true,
+        value_enum,
+        default_value = "plugin"
+    )]
+    pub susie_inference: crate::annotate::susie::Inference,
 
     // ── projection / ORA ──
     #[arg(long = "no-idf")]
@@ -235,6 +244,11 @@ impl AnnotateCliArgs {
         val("mcmc-samples", self.mcmc_samples.to_string());
         val("mcmc-warmup", self.mcmc_warmup.to_string());
         val("mcmc-thin", self.mcmc_thin.to_string());
+        if self.susie_inference != crate::annotate::susie::Inference::Plugin {
+            let v =
+                clap::ValueEnum::to_possible_value(&self.susie_inference).expect("a named variant");
+            val("susie-inference", v.get_name().to_string());
+        }
         let opts: [(&str, Option<String>); 15] = [
             ("from", self.from.as_deref().map(String::from)),
             (
@@ -626,6 +640,7 @@ fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieCo
         samples: args.mcmc_samples,
         warmup: args.mcmc_warmup,
         thin: args.mcmc_thin,
+        inference: args.susie_inference,
         seed: args.seed,
         ..Default::default()
     };

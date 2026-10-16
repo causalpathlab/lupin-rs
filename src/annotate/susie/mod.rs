@@ -23,12 +23,15 @@
 //! the typical fold of its markers; each type's effect and its share of the
 //! explained log-likelihood rank the types that enter.
 
+mod bayes;
 pub mod model;
 
 use legume_numeric::matrix::rand_util::mix_seed;
 use legume_numeric::matrix::utils::{median, quantiles};
 use legume_numeric::mcmc::engine::{run_mcmc_parallel, split_rhat_chains, McmcConfig};
-use model::{log_fold, Cluster, ClusterLogFold, Panel, SusieModel, SusiePrior, SusieSample};
+use model::{
+    log_fold, Cluster, ClusterLogFold, GeneTerms, Panel, SusieModel, SusiePrior, SusieSample,
+};
 use rayon::prelude::*;
 
 /// Coverage of a credible set.
@@ -60,6 +63,33 @@ pub struct SusieConfig {
     /// enter, as the enrichment's `--min-markers`.
     #[serde(default = "default_min_markers")]
     pub min_markers: usize,
+    /// How the background and the genes' misfit are inferred.
+    #[serde(default)]
+    pub inference: Inference,
+}
+
+/// The SuSiE stage's inference of the background and misfit scales.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    clap::ValueEnum,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Inference {
+    /// Plug-in: two-pass background, MAD misfit shrunk to the median, a
+    /// Student-t per cluster.
+    #[default]
+    Plugin,
+    /// Bayesian, the background fixed at the plug-in's: σ² sampled.
+    BayesScales,
+    /// Fully Bayesian, joint over clusters: β, σ² and λ sampled.
+    Bayes,
 }
 
 impl Default for SusieConfig {
@@ -72,6 +102,7 @@ impl Default for SusieConfig {
             thin: 1,
             seed: 42,
             min_markers: default_min_markers(),
+            inference: Inference::default(),
         }
     }
 }
@@ -343,6 +374,60 @@ pub fn fit_all(
         .collect();
     let scale2 = shrunk_scale2(&raw, present.len());
     panel.set_scale2(&scale2);
+    if cfg.inference != Inference::Plugin {
+        // Each marker's log count over the library, and its sampling variance.
+        let (u, delta): (Vec<Vec<f32>>, Vec<Vec<f32>>) = present
+            .iter()
+            .zip(&lib)
+            .map(|(&k, &n)| {
+                marker_genes
+                    .iter()
+                    .map(|&g| {
+                        let y = at(g, k);
+                        (((y + 0.5) / n).ln() as f32, (1.0 / (y + 0.5)) as f32)
+                    })
+                    .unzip()
+            })
+            .unzip();
+        let plug_beta: Vec<f32> = background.iter().map(|b| b.ln()).collect();
+        let fixed = bayes::Fixed {
+            beta: (cfg.inference == Inference::BayesScales).then(|| plug_beta.clone()),
+            scale2: None,
+        };
+        let joint = bayes::fit_joint(&panel, &u, &delta, &fixed, cfg, &corr);
+        log::info!(
+            "SuSiE ({:?}) vs the plug-in: β against the log background r = {:.3}, \
+             σ² against the plug-in s² r = {:.3} (log scale), median σ²/s² {:.3}",
+            cfg.inference,
+            pearson(&joint.beta, &plug_beta),
+            pearson(
+                &joint.scale2.iter().map(|v| v.ln()).collect::<Vec<_>>(),
+                &scale2.iter().map(|v| v.ln()).collect::<Vec<_>>()
+            ),
+            median(
+                &joint
+                    .scale2
+                    .iter()
+                    .zip(&scale2)
+                    .map(|(a, b)| a / b)
+                    .collect::<Vec<_>>()
+            )
+        );
+        let mut fitted = joint.clusters.into_iter();
+        let clusters = (0..n_clusters)
+            .map(|k| {
+                if present.binary_search(&k).is_ok() {
+                    fitted.next().expect("one fit per present cluster")
+                } else {
+                    ClusterFit::empty(n_types)
+                }
+            })
+            .collect();
+        return Ok(SusieFits {
+            clusters,
+            scale2: joint.scale2,
+        });
+    }
     let fitted = fit_pass(&panel, &on(&background), cfg);
     // Back to every id; one without counts gets no call.
     let mut fitted = fitted.into_iter();
@@ -392,6 +477,28 @@ fn shrunk_scale2(raw: &[f64], n_clusters: usize) -> Vec<f32> {
             ((k * d.ln() + w * center) / (k + w)).exp() as f32
         })
         .collect()
+}
+
+/// Pearson correlation of two equal-length series (0 when either is flat).
+fn pearson(a: &[f32], b: &[f32]) -> f64 {
+    let n = a.len().min(b.len()) as f64;
+    if n < 2.0 {
+        return 0.0;
+    }
+    let ma = a.iter().map(|&v| f64::from(v)).sum::<f64>() / n;
+    let mb = b.iter().map(|&v| f64::from(v)).sum::<f64>() / n;
+    let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
+    for (&x, &y) in a.iter().zip(b) {
+        let (dx, dy) = (f64::from(x) - ma, f64::from(y) - mb);
+        sab += dx * dy;
+        saa += dx * dx;
+        sbb += dy * dy;
+    }
+    if saa > 0.0 && sbb > 0.0 {
+        sab / (saa * sbb).sqrt()
+    } else {
+        0.0
+    }
 }
 
 /// |Pearson correlation| between the types' marker indicators over the
@@ -481,11 +588,7 @@ fn match_effects(reference: &[Vec<f32>], draw: &[Vec<f32>]) -> Vec<(usize, usize
 
 /// PIP, mean θ, the share each type explains, credible sets and R̂ from one
 /// cluster's chains, pooled.
-fn summarize(
-    chains: &[Vec<SusieSample>],
-    data: ClusterLogFold<'_>,
-    corr: &[Vec<f32>],
-) -> ClusterFit {
+fn summarize(chains: &[Vec<SusieSample>], data: impl GeneTerms, corr: &[Vec<f32>]) -> ClusterFit {
     let samples: Vec<&SusieSample> = chains.iter().flatten().collect();
     let n_types = corr.len();
     // Averaged in f64: thousands of f32 terms of 1/t drift past 1.

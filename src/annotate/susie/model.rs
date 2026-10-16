@@ -138,16 +138,18 @@ pub(super) struct ClusterLogFold<'a> {
     pub(super) cluster: &'a Cluster,
 }
 
-impl ClusterLogFold<'_> {
-    /// Gene g's Student-t log-likelihood at predictor η, up to constants.
-    fn term(&self, g: usize, eta: f32) -> f64 {
-        let v = f64::from(self.panel.scale2[g]) + f64::from(self.cluster.sampling[g]);
-        let r = f64::from(self.cluster.x[g]) - f64::from(eta);
-        -0.5 * (NU + 1.0) * (r * r / (NU * v)).ln_1p()
-    }
+/// One cluster's per-gene log-likelihood over the panel: what the SuSiE step
+/// needs from a likelihood. [`ClusterLogFold`] is the Student-t on log-folds;
+/// the Bayesian stage's per-cluster step uses a Gaussian with the variances
+/// of its current draw ([`ClusterGauss`]).
+pub(super) trait GeneTerms {
+    fn panel(&self) -> &Panel;
+
+    /// Gene g's log-likelihood at predictor η, up to constants.
+    fn term(&self, g: usize, eta: f32) -> f64;
 
     fn log_lik(&self, theta: &[f32]) -> f64 {
-        self.panel
+        self.panel()
             .etas(theta)
             .iter()
             .enumerate()
@@ -158,15 +160,15 @@ impl ClusterLogFold<'_> {
     /// Each type's share of the log-likelihood θ gains over the background:
     /// the log-likelihood lost when its effect alone is removed, over the
     /// log-likelihood θ gains on θ = 0 (0 for types without an effect).
-    pub(super) fn explained(&self, theta: &[f32]) -> Vec<f32> {
+    fn explained(&self, theta: &[f32]) -> Vec<f32> {
         let total = self.log_lik(theta) - self.log_lik(&vec![0.0; theta.len()]);
-        let etas = self.panel.etas(theta);
+        let etas = self.panel().etas(theta);
         (0..theta.len())
             .map(|c| {
                 if theta[c] <= 0.0 || total <= 0.0 {
                     return 0.0;
                 }
-                let lost: f64 = self.panel.genes_of[c]
+                let lost: f64 = self.panel().genes_of[c]
                     .iter()
                     .map(|&g| self.term(g, etas[g]) - self.term(g, etas[g] - theta[c]))
                     .sum();
@@ -178,10 +180,43 @@ impl ClusterLogFold<'_> {
     /// The change in log-likelihood from adding `effect` to type c's markers,
     /// at the predictors `etas` whose terms are `base`.
     fn gain(&self, etas: &[f32], base: &[f64], c: usize, effect: f32) -> f64 {
-        self.panel.genes_of[c]
+        self.panel().genes_of[c]
             .iter()
             .map(|&g| self.term(g, etas[g] + effect) - base[g])
             .sum()
+    }
+}
+
+impl GeneTerms for ClusterLogFold<'_> {
+    fn panel(&self) -> &Panel {
+        self.panel
+    }
+
+    /// Gene g's Student-t log-likelihood at predictor η, up to constants.
+    fn term(&self, g: usize, eta: f32) -> f64 {
+        let v = f64::from(self.panel.scale2[g]) + f64::from(self.cluster.sampling[g]);
+        let r = f64::from(self.cluster.x[g]) - f64::from(eta);
+        -0.5 * (NU + 1.0) * (r * r / (NU * v)).ln_1p()
+    }
+}
+
+/// One cluster under a Gaussian with given per-gene variances: `x_g ~ N(η_g,
+/// w_g)`.
+#[derive(Clone, Copy)]
+pub(super) struct ClusterGauss<'a> {
+    pub(super) panel: &'a Panel,
+    pub(super) x: &'a [f32],
+    pub(super) w: &'a [f64],
+}
+
+impl GeneTerms for ClusterGauss<'_> {
+    fn panel(&self) -> &Panel {
+        self.panel
+    }
+
+    fn term(&self, g: usize, eta: f32) -> f64 {
+        let r = f64::from(self.x[g]) - f64::from(eta);
+        -0.5 * r * r / self.w[g]
     }
 }
 
@@ -191,8 +226,8 @@ fn std_normal(rng: &mut impl Rng) -> f32 {
 }
 
 /// The sampler over one cluster.
-pub(super) struct SusieModel<'a> {
-    pub(super) data: ClusterLogFold<'a>,
+pub(super) struct SusieModel<D> {
+    pub(super) data: D,
     pub(super) prior: SusiePrior,
 }
 
@@ -209,6 +244,21 @@ pub(super) struct SusieState {
     base: Vec<f64>,
 }
 
+impl SusieState {
+    /// θ over the types at this state.
+    pub(super) fn theta(&self) -> &[f32] {
+        &self.theta
+    }
+
+    /// This state as a posterior draw.
+    pub(super) fn sample(&self) -> SusieSample {
+        SusieSample {
+            probs: self.probs.clone(),
+            theta: self.theta.clone(),
+        }
+    }
+}
+
 /// One posterior draw.
 #[derive(Clone)]
 pub(super) struct SusieSample {
@@ -219,7 +269,7 @@ pub(super) struct SusieSample {
     pub(super) theta: Vec<f32>,
 }
 
-impl SusieModel<'_> {
+impl<D: GeneTerms> SusieModel<D> {
     fn effect(&self, z: f32) -> f32 {
         (self.prior.effect_mean + self.prior.effect_sd * z)
             .min(5.0)
@@ -229,31 +279,31 @@ impl SusieModel<'_> {
     /// Log prior of each choice: the null weight, the rest shared evenly.
     fn log_prior(&self) -> (f64, f64) {
         let w = f64::from(self.prior.null_weight).clamp(1e-6, 1.0 - 1e-6);
-        let c = self.data.panel.n_types() as f64;
+        let c = self.data.panel().n_types() as f64;
         (((1.0 - w) / c).ln(), w.ln())
     }
 
     /// Add `delta` to type c's effect, keeping η and the terms in step.
     fn shift(&self, s: &mut SusieState, c: usize, delta: f32) {
         s.theta[c] += delta;
-        for &g in &self.data.panel.genes_of[c] {
+        for &g in &self.data.panel().genes_of[c] {
             s.etas[g] += delta;
             s.base[g] = self.data.term(g, s.etas[g]);
         }
     }
 }
 
-impl McmcModel for SusieModel<'_> {
+impl<D: GeneTerms> McmcModel for SusieModel<D> {
     type State = SusieState;
     type Sample = SusieSample;
     type Result = Vec<SusieSample>;
 
     fn init(&self, rng: &mut SmallRng) -> SusieState {
-        let (c, l) = (self.data.panel.n_types(), self.prior.num_effects);
+        let (c, l) = (self.data.panel().n_types(), self.prior.num_effects);
         let z_eff: Vec<f32> = (0..l).map(|_| std_normal(rng)).collect();
         let effect = z_eff.iter().map(|&z| self.effect(z)).collect();
         let theta = vec![0.0; c];
-        let etas = self.data.panel.etas(&theta);
+        let etas = self.data.panel().etas(&theta);
         let base = etas
             .iter()
             .enumerate()
@@ -272,11 +322,11 @@ impl McmcModel for SusieModel<'_> {
     }
 
     fn sweep(&self, s: &mut SusieState, rng: &mut SmallRng) {
-        let c = self.data.panel.n_types();
+        let c = self.data.panel().n_types();
         let (log_type, log_null) = self.log_prior();
         // η and the terms from θ afresh: the shifts below add and take away
         // effects in f32, and their rounding would otherwise accumulate.
-        s.etas = self.data.panel.etas(&s.theta);
+        s.etas = self.data.panel().etas(&s.theta);
         s.base = s
             .etas
             .iter()
@@ -296,7 +346,7 @@ impl McmcModel for SusieModel<'_> {
             // A type with no marker genes is no choice.
             let mut logp: Vec<f64> = (0..c)
                 .map(|j| {
-                    if self.data.panel.genes_of[j].is_empty() {
+                    if self.data.panel().genes_of[j].is_empty() {
                         f64::NEG_INFINITY
                     } else {
                         log_type + gains[j]
