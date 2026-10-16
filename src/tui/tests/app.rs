@@ -1469,8 +1469,10 @@ fn the_form_lists_the_rows_of_its_method() {
     let rows = settings(&a);
     assert!(rows.contains(&Setting::Projection));
     for s in [Setting::Susie, Setting::Go, Setting::NumPerm] {
-        assert!(!rows.contains(&s), "{s:?} is the enrichment's");
+        assert!(!rows.contains(&s), "{s:?} is not the score's");
     }
+    a.projection = crate::annotate::args::ProjectionMethod::Ora;
+    assert!(settings(&a).contains(&Setting::NumPerm), "the ORA's null permutes");
     assert_eq!(
         rows.iter().position(|&s| s == Setting::Method),
         settings(&cli(&[]))
