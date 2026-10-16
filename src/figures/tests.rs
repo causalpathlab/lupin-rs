@@ -613,3 +613,46 @@ fn a_rounds_figures_export_as_cells_not_trajectory() {
         e.base.display()
     );
 }
+
+#[test]
+fn coloured_by_cluster_the_labels_name_the_clusters() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = CellFigures::of_round(&round_with_layout(dir.path()))
+        .unwrap()
+        .unwrap();
+    let by = |colouring| {
+        let style = Style {
+            colouring,
+            ..Style::opening(&f)
+        };
+        draw(&f, Panel::Layout { k: 0 }, &style).svg
+    };
+    let types = by(Colouring::Type);
+    assert!(types.contains(">A</text>") && !types.contains(">K0</text>"));
+    let clusters = by(Colouring::Cluster);
+    assert!(
+        !clusters.contains(">A</text>"),
+        "no type names over the clusters"
+    );
+    assert_eq!(
+        clusters.matches(">K0</text>").count(),
+        2,
+        "legend and label"
+    );
+}
+
+#[test]
+fn with_a_cluster_in_focus_the_legend_lists_only_its_colours() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = CellFigures::of_round(&round_with_layout(dir.path()))
+        .unwrap()
+        .unwrap();
+    let style = Style {
+        labels: None,
+        focus: Some(1),
+        ..Style::opening(&f)
+    };
+    let svg = draw(&f, Panel::Layout { k: 0 }, &style).svg;
+    assert!(svg.contains(">B</text>"), "cluster 1's label");
+    assert!(!svg.contains(">A</text>"), "not cluster 0's");
+}
