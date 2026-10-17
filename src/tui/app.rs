@@ -1505,9 +1505,10 @@ impl App {
 
     /// Whether the pass settings differ from those the round on screen was
     /// made with (as they stood when it was shown): not while a pass runs
-    /// with them, nor once they are set back.
+    /// with them, nor once they are set back, nor with no round on screen.
     pub fn stale(&self) -> bool {
         !self.pass_running()
+            && self.round.is_some()
             && self
                 .settings_base
                 .as_ref()
@@ -3138,11 +3139,15 @@ impl App {
                 "kept the run on screen (s saves the edits)",
             ));
         }
+        // The round shown was made with the settings as they stood before
+        // any change: a change made since still waits for a pass.
+        let base = self.settings_base.take();
         if pick.labelled {
             self.open(path);
         } else {
             self.set_round(None);
         }
+        self.settings_base = base;
         if !crate::manifest::run::same_file(path, &self.source) {
             let (source, out) = pass_origin(path);
             self.source = source;
@@ -3914,13 +3919,14 @@ impl Drop for App {
     }
 }
 
-/// A pass's arguments but its output, which is where it writes and not how.
+/// A pass's arguments but its run and output, which are what it reads and
+/// where it writes, not how.
 fn pass_settings(args: &AnnotateCliArgs) -> Vec<String> {
     let argv = args.to_argv();
     let mut kept = Vec::with_capacity(argv.len());
     let mut it = argv.into_iter();
     while let Some(a) = it.next() {
-        if a == "--out" {
+        if a == "--out" || a == "--from" {
             it.next();
         } else {
             kept.push(a);

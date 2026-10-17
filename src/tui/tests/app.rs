@@ -2841,6 +2841,33 @@ fn the_settings_note_goes_once_a_pass_runs_with_them_or_they_are_set_back() {
 }
 
 #[test]
+fn the_settings_note_stays_when_g_shows_another_round() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    app.form = Some(Form::default());
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
+    press(&mut app, KeyCode::Right);
+    app.form = None;
+    assert!(app.stale());
+    // The round g shows was made with the settings as they stood before.
+    app.open_run(pick(tmp.path(), "X.L0.L1"), false);
+    assert!(app.shown_manifest().ends_with("X.L0.L1.senna.json"));
+    assert!(app.stale(), "the edited settings are not the round's");
+    assert!(drawn(&app).contains("settings changed"));
+    // The run itself has no round to differ from; its rounds still do.
+    app.open_run(pick(tmp.path(), "X"), false);
+    assert!(!app.stale());
+    app.open_run(pick(tmp.path(), "X.L0.L1"), false);
+    assert!(app.stale());
+    // Set back, they are the round's again, whichever run passes start from.
+    app.form = Some(Form::default());
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
+    press(&mut app, KeyCode::Left);
+    assert!(!app.stale(), "{:?}", app.args.from);
+}
+
+#[test]
 fn annotate_opened_on_a_round_shows_that_round() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = family_app(tmp.path());
