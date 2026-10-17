@@ -937,7 +937,7 @@ fn the_susie_setting_toggles_the_stage() {
 }
 
 #[test]
-fn a_susie_rounds_cluster_list_shows_the_calls_pip_and_fold() {
+fn a_susie_rounds_cluster_list_shows_the_calls_share_and_fold() {
     use super::super::round::{Candidate, SusieEvidence};
     let mut app = app_with_terms(false);
     if let Some(r) = app.round.as_mut() {
@@ -967,11 +967,14 @@ fn a_susie_rounds_cluster_list_shows_the_calls_pip_and_fold() {
         .expect("the cluster list's header");
     // The list pane: from its left border to its right one.
     let list: String = header.chars().skip(1).take_while(|&c| c != '│').collect();
-    assert!(list.contains("PIP") && list.contains("fold"), "{list}");
-    assert!(!list.contains("share"), "{list}");
+    assert!(list.contains("explains") && list.contains("fold"), "{list}");
+    assert!(
+        !list.contains("PIP"),
+        "a PIP beside the call reads as certainty: {list}"
+    );
     let k0 = rows.iter().find(|r| r.contains("K0")).unwrap();
     let k0: String = k0.chars().skip(1).take_while(|&c| c != '│').collect();
-    assert!(k0.contains("×7.0"), "{k0}");
+    assert!(k0.contains("0.85") && k0.contains("×7.0"), "{k0}");
 }
 
 #[test]
@@ -1454,5 +1457,39 @@ fn a_label_is_recorded_in_its_canonical_form() {
         matches!(&app.edits[..], [Edit::Label { label, .. }] if label == "CT_2"),
         "{:?}",
         app.edits
+    );
+}
+
+#[test]
+fn the_cluster_list_shows_a_susie_calls_share_not_its_pip() {
+    use super::super::round::{Candidate, SusieEvidence};
+    use super::super::ui::{cluster_list_evidence, cluster_list_header};
+    // A PIP is a type's inclusion in the cluster's model, near 1 for every
+    // type a mixed cluster holds: next to the call it reads as certainty.
+    let cand = Candidate {
+        label: "CT1".into(),
+        share: 0.20,
+        susie: Some(SusieEvidence {
+            pip: 1.0,
+            fold: 12.0,
+        }),
+        nes: None,
+        p: None,
+        q: None,
+    };
+    assert_eq!(cluster_list_evidence(true, Some(&cand)), ["0.20", "×12.0"]);
+    assert_eq!(
+        cluster_list_header(true),
+        ["", "cells", "label", "explains", "fold", ""],
+        "named apart from the enrichment's share, which a rescore puts in its place"
+    );
+    let no_susie = Candidate {
+        susie: None,
+        ..cand
+    };
+    assert_eq!(
+        cluster_list_evidence(true, Some(&no_susie)),
+        ["0.20", "—"],
+        "a known share is shown; only the fold is missing"
     );
 }
