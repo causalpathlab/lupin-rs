@@ -3,14 +3,9 @@
 use super::*;
 
 fn candidate(label: &str, share: f32) -> Candidate {
-    Candidate {
-        label: label.into(),
-        share,
-        susie: None,
-        nes: Some(1.0),
-        p: Some(0.01),
-        q: Some(0.05),
-    }
+    let mut c = Candidate::new(label, share);
+    (c.evidence.nes, c.evidence.p, c.evidence.q) = (Some(1.0), Some(0.01), Some(0.05));
+    c
 }
 
 fn cluster(id: ClusterId, cells: usize, label: Option<&str>) -> ClusterView {
@@ -44,7 +39,7 @@ fn round() -> RoundView {
         loose_cells: 1,
         decided: BTreeSet::new(),
         rescorable: false,
-        score_calls: false,
+        by: Default::default(),
         figures: Default::default(),
     }
 }
@@ -236,8 +231,10 @@ fn rescored_scores_replace_a_clusters_and_swap_back() {
     let preview = serde_json::json!({"scores": {"0": [
         {"label": "CT4", "share": 0.8, "nes": 2.1, "p": 1e-4, "q": 1e-3},
         {"label": "CT1", "share": 0.2, "nes": 1.2, "p": 0.01, "q": 0.04},
-        {"label": "CT2", "share": 0.0, "nes": null, "p": 0.9, "q": 1.0}
+        {"label": "CT2", "share": 0.0, "nes": null, "p": 0.9, "q": 1.0},
+        {"label": "unassigned", "share": 0.5, "nes": null, "p": null, "q": null}
     ]}});
+    let mut r = round();
     let scores = parse_scores(&preview).unwrap();
     let (candidates, shares) = &scores[&0];
     assert_eq!(
@@ -246,12 +243,16 @@ fn rescored_scores_replace_a_clusters_and_swap_back() {
             .map(|c| c.label.as_str())
             .collect::<Vec<_>>(),
         ["CT4", "CT1"],
-        "a type with no share is no candidate"
+        "a type with no share is no candidate, nor unassigned"
     );
     assert_eq!(candidates[0].nes, Some(2.1));
     assert_eq!(shares.len(), 3, "every type keeps its share");
+    assert_eq!(
+        candidates[0].ranks,
+        [Some(0), None, None],
+        "ranked by the rescored enrichment alone"
+    );
 
-    let mut r = round();
     let old = r.swap_scores(scores);
     assert_eq!(r.clusters[0].candidates[0].label, "CT4");
     assert_eq!(r.clusters[1].candidates[0].label, "CT1", "K1 not rescored");
@@ -294,18 +295,21 @@ fn a_decisions_evidence_is_the_rounds_own_when_rescored_scores_are_shown() {
 
 #[test]
 fn a_susie_rounds_candidates_follow_its_call() {
-    let row = |v: [f32; 3]| -> Vec<(String, f32)> {
-        ["A", "B", "C"]
-            .iter()
-            .map(|t| t.to_string())
-            .zip(v)
-            .collect()
+    use crate::annotate::rounds::{Method, TypeEvidence};
+    let e = |label: &str, pip: f32, effect: f32, explained: f32| TypeEvidence {
+        label: label.into(),
+        pip: Some(pip),
+        fold: Some(effect.exp()),
+        explained: Some(explained),
+        ..TypeEvidence::default()
     };
     // A and B both certain; B explains more. C barely enters.
-    let pip = row([1.0, 1.0, 0.01]);
-    let effect = row([0.95, 2.6, 0.1]);
-    let explained = row([0.2, 0.5, 0.0]);
-    let c = susie_candidates(&pip, &effect, &explained);
+    let rows = [
+        e("A", 1.0, 0.95, 0.2),
+        e("B", 1.0, 2.6, 0.5),
+        e("C", 0.01, 0.1, 0.0),
+    ];
+    let (c, _) = ranked_view(&rows, Method::Susie);
     let labels: Vec<&str> = c.iter().map(|c| c.label.as_str()).collect();
     assert_eq!(
         labels,
@@ -313,17 +317,16 @@ fn a_susie_rounds_candidates_follow_its_call() {
         "PIPs tie: the larger share leads; C is out"
     );
     assert_eq!(c[0].share, 0.5, "the share is the log-likelihood explained");
-    let s = c[0].susie.as_ref().unwrap();
+    let s = c[0].susie().unwrap();
     assert_eq!(s.pip, 1.0);
     assert!((s.fold - 2.6f32.exp()).abs() < 1e-4);
 }
 
 /// A SuSiE candidate with a PIP and an explained share.
 fn susie_candidate(label: &str, pip: f32, share: f32) -> Candidate {
-    Candidate {
-        susie: Some(SusieEvidence { pip, fold: 4.0 }),
-        ..candidate(label, share)
-    }
+    let mut c = candidate(label, share);
+    (c.evidence.pip, c.evidence.fold) = (Some(pip), Some(4.0));
+    c
 }
 
 #[test]
@@ -446,4 +449,83 @@ fn call_shares_table_each_clusters_calls_with_uncalled_cells_in_its_size() {
     assert_eq!(t.cols, ["A", "B"], "unassigned is not a call");
     assert_eq!(t.row(3).unwrap(), [0.5, 0.0]);
     assert_eq!(t.row(5).unwrap(), [0.0, 1.0]);
+}
+
+#[test]
+fn a_rounds_candidates_carry_the_scores_share_beside_the_enrichments() {
+    use crate::annotate::marker_score::toy;
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, panel) = toy::write_run(dir.path());
+    let loaded = run::load(&manifest).unwrap();
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::annotate::annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
+    let view = RoundView::load(&crate::manifest::run::annotated_path(&loaded.file, &out)).unwrap();
+    let top = &view.clusters[0].candidates[0];
+    assert_eq!((top.label.as_str(), top.score), ("A", Some(1.0)));
+}
+
+fn ranked(label: &str, share: f32, ranks: [Option<usize>; 3]) -> Candidate {
+    Candidate {
+        ranks,
+        ..candidate(label, share)
+    }
+}
+
+#[test]
+fn the_list_shows_ten_then_any_methods_top_below_them_and_all_on_asking() {
+    use crate::annotate::rounds::Method;
+    let mut cands: Vec<Candidate> = (0..12)
+        .map(|i| {
+            ranked(
+                &format!("T{i:02}"),
+                0.5 - 0.01 * i as f32,
+                [Some(i), None, None],
+            )
+        })
+        .collect();
+    cands[11].ranks[2] = Some(0);
+    let names = |by: Method, all: bool| -> Vec<String> {
+        listed(&cands, by, all)
+            .iter()
+            .map(|c| c.label.clone())
+            .collect()
+    };
+    let short = names(Method::Enrichment, false);
+    let first_ten: Vec<String> = (0..10).map(|i| format!("T{i:02}")).collect();
+    assert_eq!(short[..10], first_ten[..]);
+    assert_eq!(
+        short[10..],
+        ["T11".to_string()],
+        "the score's top is always listed"
+    );
+    assert_eq!(names(Method::Enrichment, true).len(), 12);
+    assert_eq!(
+        names(Method::Score, false)[0],
+        "T11",
+        "by the score, its top first"
+    );
+}
+
+#[test]
+fn a_rounds_candidates_know_where_each_method_ranks_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let round = crate::manifest::annotate::projection_score_tests::round_with_both(dir.path());
+    let view = RoundView::load(&round.file).unwrap();
+    let k0 = &view.clusters[0].candidates;
+    let ranks = |l: &str| k0.iter().find(|c| c.label == l).unwrap().ranks;
+    assert_eq!(ranks("A"), [Some(0), None, Some(0)]);
+    assert_eq!(ranks("B"), [Some(1), None, None]);
+}
+
+#[test]
+fn the_choices_are_every_methods_top_three_firsts_first() {
+    let cands = vec![
+        ranked("A", 0.5, [Some(0), None, Some(1)]),
+        ranked("C", 0.2, [Some(2), None, None]),
+        ranked("B", 0.3, [Some(1), None, Some(0)]),
+        ranked("D", 0.1, [Some(3), None, Some(2)]),
+        ranked("E", 0.0, [Some(4), None, Some(3)]),
+    ];
+    let labels: Vec<&str> = choices(&cands).iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["A", "B", "C", "D"]);
 }

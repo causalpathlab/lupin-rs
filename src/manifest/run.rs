@@ -286,6 +286,13 @@ pub struct RunAnnotate {
     /// Per-cluster digest for review, keyed by cluster id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_summary: Option<String>,
+    /// Long table: every cluster's types with every method's statistic
+    /// (share, nes, p, q, pip, fold, explained, score; NaN where none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_evidence: Option<String>,
+    /// The method whose reading made the round's call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub called_by: Option<crate::annotate::rounds::Method>,
     /// Every round's decisions per cluster id, newest first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<String>,
@@ -348,9 +355,24 @@ impl RunAnnotate {
     /// Drop the SuSiE stage's cluster × type tables: a round whose clusters
     /// were regrouped (relabel, ask) would otherwise carry the old ones.
     pub fn drop_susie_tables(&mut self) {
+        use crate::annotate::rounds::Method;
         self.cluster_celltype_pip = None;
         self.cluster_celltype_effect = None;
         self.cluster_celltype_explained = None;
+        if self.called_by == Some(Method::Susie) {
+            self.called_by = self
+                .cluster_celltype_q
+                .is_some()
+                .then_some(Method::Enrichment);
+        }
+    }
+
+    /// Drop the projection score's per-cell table, and its call with it.
+    pub fn drop_marker_score(&mut self) {
+        self.marker_score = None;
+        if self.called_by == Some(crate::annotate::rounds::Method::Score) {
+            self.called_by = None;
+        }
     }
 }
 

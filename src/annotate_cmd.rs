@@ -29,7 +29,7 @@ pub struct AnnotateCliArgs {
         long,
         value_enum,
         default_value_t = AnnotateMethod::Auto,
-        help = "Annotation backend: enrichment (raw counts), projection (the run's embeddings; see --projection), or auto"
+        help = "Annotation backend: enrichment (raw counts), projection (the run's embeddings; see --projection), or auto (enrichment, with the projection score beside it where the run decodes cells)"
     )]
     pub method: AnnotateMethod,
 
@@ -547,18 +547,20 @@ fn route<'a>(
 }
 
 /// The method a pass runs: the one chosen; for `auto`, enrichment when GO
-/// terms are asked for or no panel is given (both the enrichment's), else
-/// projection when the run has the gene table its projection method reads,
-/// else enrichment (and without a run).
+/// terms are asked for or no panel is given (both the enrichment's), and on
+/// a run that decodes cells, where the projection score rides beside the
+/// enrichment's call unless `--projection score` asks for the score's own;
+/// else projection when the run has the gene table its projection method
+/// reads, else enrichment (and without a run).
 #[must_use]
 pub fn resolve_method(args: &AnnotateCliArgs, manifest: Option<&RunManifest>) -> AnnotateMethod {
+    let projects = |m: &RunManifest| {
+        let projection = resolve_projection(args, Some(m));
+        let beside = projection == ProjectionMethod::Score && args.projection.is_none();
+        !beside && manifest_prefers_projection(m, projection)
+    };
     match args.method {
-        AnnotateMethod::Auto
-            if !enrichment_only(args)
-                && manifest.is_some_and(|m| {
-                    manifest_prefers_projection(m, resolve_projection(args, Some(m)))
-                }) =>
-        {
+        AnnotateMethod::Auto if !enrichment_only(args) && manifest.is_some_and(projects) => {
             AnnotateMethod::Projection
         }
         AnnotateMethod::Auto => AnnotateMethod::Enrichment,
@@ -688,6 +690,7 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
         ontology_fdr_q: args.ontology_fdr_q,
         ontology_by: args.ontology_by,
         susie: (!args.no_susie).then(|| build_susie_config(args)),
+        score_beside: args.method == AnnotateMethod::Auto,
     }
 }
 
@@ -790,7 +793,13 @@ mod route_tests {
         let svd = run_with(RunKind::Svd, false, false);
         assert_eq!(
             resolve_method(&cli(&[]), Some(&bge)),
-            AnnotateMethod::Projection
+            AnnotateMethod::Enrichment,
+            "a decoder run's call is the enrichment's, the score beside it"
+        );
+        assert_eq!(
+            resolve_method(&cli(&["--projection", "score"]), Some(&bge)),
+            AnnotateMethod::Projection,
+            "the score's call, asked for"
         );
         assert_eq!(
             resolve_method(&cli(&[]), Some(&svd)),

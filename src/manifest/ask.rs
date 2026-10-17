@@ -118,6 +118,7 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
     ] {
         *p = None;
     }
+    a.called_by = None;
     a.stats = None;
     write_summary(&mut next, &out)?;
     next.manifest.save(&next.file)?;

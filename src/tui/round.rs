@@ -6,9 +6,10 @@
 use crate::annotate::markers::label_key;
 use crate::annotate::markers::read_marker_pairs;
 use crate::annotate::rounds::{
-    digest, parse_cluster_id, Action, ClusterId, DecidedBy, Decision, Evidence, Table, Term,
+    digest, parse_cluster_id, Action, ClusterId, DecidedBy, Decision, Evidence, Term,
 };
-use crate::manifest::rounds::{read_cells, read_table};
+use crate::annotate::rounds::{Method, TypeEvidence};
+use crate::manifest::rounds::{called_by, read_cells, read_score_cells, read_type_tables};
 use crate::manifest::run::{self, resolve};
 use anyhow::Result;
 use enrichment::UNASSIGNED_LABEL;
@@ -18,25 +19,117 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-/// Candidates listed per cluster.
-const CANDIDATES: usize = 6;
+/// Candidates listed per cluster before each method's top is added.
+pub const LISTED: usize = 10;
 
-/// A cell type competing for a cluster, with its enrichment statistics.
-#[derive(Clone, Debug, PartialEq)]
+/// A cell type competing for a cluster: its evidence from every method
+/// (read through it, as `cand.nes`), its share of the cluster's evidence by
+/// the method listing it, and where each method ranks it.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Candidate {
-    pub label: String,
-    /// Its share of the cluster's evidence: in a SuSiE round, of the log-likelihood
-    /// the types explain; in a projection score round, of the cluster's cells
-    /// the score called the type; otherwise the enrichment's Q, a softmax of
+    pub evidence: TypeEvidence,
+    /// Its share of the cluster's evidence, as [`Method::reading`] gives it
+    /// for the round's method: in a SuSiE round, of the log-likelihood the
+    /// types explain; in a projection score round, of the cluster's cells the
+    /// score called the type; otherwise the enrichment's Q, a softmax of
     /// z = Φ⁻¹(1 − p) over the types that pass FDR.
     pub share: f32,
-    /// SuSiE's reading, when it made the round's call.
-    pub susie: Option<SusieEvidence>,
-    /// fgsea's normalized enrichment score, the effect size.
-    pub nes: Option<f32>,
-    pub p: Option<f32>,
-    /// BH q-value within the cluster.
-    pub q: Option<f32>,
+    /// Where each method ([`Method::ALL`], in order) ranks the type among
+    /// those it puts forward; 0 is its top.
+    pub ranks: [Option<usize>; 3],
+}
+
+impl std::ops::Deref for Candidate {
+    type Target = TypeEvidence;
+    fn deref(&self) -> &TypeEvidence {
+        &self.evidence
+    }
+}
+
+impl Candidate {
+    /// A candidate `label` of `share` and no other evidence.
+    #[cfg(test)]
+    pub fn new(label: &str, share: f32) -> Self {
+        Self {
+            evidence: TypeEvidence {
+                label: label.into(),
+                ..TypeEvidence::default()
+            },
+            share,
+            ranks: [None; 3],
+        }
+    }
+
+    /// SuSiE's reading, when SuSiE scored the type.
+    #[must_use]
+    pub fn susie(&self) -> Option<SusieEvidence> {
+        Some(SusieEvidence {
+            pip: self.pip?,
+            fold: self.fold.unwrap_or(f32::NAN),
+        })
+    }
+}
+
+/// A cluster's candidates and every type's share from its `evidence`, by
+/// method `by`: `by`'s ranking first, then each other method's types it
+/// lacks, each knowing where every method ranks it.
+#[must_use]
+pub fn ranked_view(evidence: &[TypeEvidence], by: Method) -> (Vec<Candidate>, Vec<(String, f32)>) {
+    let ranked = Method::ALL.map(|m| m.ranked(evidence));
+    let place: [HashMap<&str, usize>; 3] = ranked.each_ref().map(|r| {
+        r.iter()
+            .enumerate()
+            .map(|(k, e)| (e.label.as_str(), k))
+            .collect()
+    });
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let candidates = std::iter::once(by)
+        .chain(Method::ALL)
+        .flat_map(|m| &ranked[m.index()])
+        .filter(|e| seen.insert(e.label.as_str()))
+        .map(|e| Candidate {
+            evidence: (*e).clone(),
+            share: by.reading(e).unwrap_or(0.0),
+            ranks: place.each_ref().map(|p| p.get(e.label.as_str()).copied()),
+        })
+        .collect();
+    let shares = evidence
+        .iter()
+        .filter_map(|e| Some((e.label.clone(), by.reading(e)?)))
+        .collect();
+    (candidates, shares)
+}
+
+/// How deep in each method's ranking a type is offered as a label choice.
+const CHOICE_DEPTH: usize = 3;
+
+/// The label choices for a cluster: every type in some method's top
+/// [`CHOICE_DEPTH`], the ones more methods put first ahead, then by their
+/// best place in any ranking, then in the candidates' order.
+#[must_use]
+pub fn choices(candidates: &[Candidate]) -> Vec<&Candidate> {
+    let best = |c: &Candidate| c.ranks.iter().flatten().min().copied();
+    let firsts = |c: &Candidate| c.ranks.iter().filter(|r| **r == Some(0)).count();
+    let mut offered: Vec<&Candidate> = candidates
+        .iter()
+        .filter(|c| best(c).is_some_and(|b| b < CHOICE_DEPTH))
+        .collect();
+    offered.sort_by_key(|c| (std::cmp::Reverse(firsts(c)), best(c)));
+    offered
+}
+
+/// The candidates as listed by method `by`: the ones it ranks, best first,
+/// then the rest in their order; the first [`LISTED`] and every other
+/// method's top below them, or all.
+#[must_use]
+pub fn listed(candidates: &[Candidate], by: Method, all: bool) -> Vec<&Candidate> {
+    let mut order: Vec<&Candidate> = candidates.iter().collect();
+    order.sort_by_key(|c| c.ranks[by.index()].unwrap_or(usize::MAX));
+    if !all && order.len() > LISTED {
+        let tops = order.split_off(LISTED);
+        order.extend(tops.into_iter().filter(|c| c.ranks.contains(&Some(0))));
+    }
+    order
 }
 
 /// A type's SuSiE posterior in one cluster.
@@ -46,47 +139,6 @@ pub struct SusieEvidence {
     pub pip: f32,
     /// The fold its markers rise by, e^θ.
     pub fold: f32,
-}
-
-/// Below this PIP a type is not a SuSiE round's candidate.
-const MIN_CANDIDATE_PIP: f32 = 0.05;
-
-/// A SuSiE round's candidates for one cluster from its rows of PIP, effect θ
-/// and explained share (type, value), ranked as SuSiE calls: by PIP, ties
-/// (within 0.01) by the share explained; the share is the explained one.
-#[must_use]
-pub fn susie_candidates(
-    pip: &[(String, f32)],
-    effect: &[(String, f32)],
-    explained: &[(String, f32)],
-) -> Vec<Candidate> {
-    let of = |rows: &[(String, f32)], t: &str| {
-        rows.iter().find(|(l, _)| l == t).map_or(0.0, |(_, v)| *v)
-    };
-    let mut c: Vec<Candidate> = pip
-        .iter()
-        .filter(|(l, p)| *p >= MIN_CANDIDATE_PIP && l != UNASSIGNED_LABEL)
-        .map(|(l, p)| Candidate {
-            label: l.clone(),
-            share: of(explained, l),
-            susie: Some(SusieEvidence {
-                pip: *p,
-                fold: of(effect, l).exp(),
-            }),
-            nes: None,
-            p: None,
-            q: None,
-        })
-        .collect();
-    let pip_of = |c: &Candidate| c.susie.map_or(0.0, |s| s.pip);
-    c.sort_by(|a, b| {
-        if (pip_of(a) - pip_of(b)).abs() < 0.01 {
-            b.share.total_cmp(&a.share)
-        } else {
-            pip_of(b).total_cmp(&pip_of(a))
-        }
-    });
-    c
 }
 
 /// A genes × clusters expression table with what fold changes over it need,
@@ -195,7 +247,7 @@ impl ClusterView {
     /// SuSiE's reading of the call (the top candidate), in a SuSiE round.
     #[must_use]
     pub fn call_evidence(&self) -> Option<SusieEvidence> {
-        self.candidates.first().and_then(|c| c.susie)
+        self.candidates.first().and_then(Candidate::susie)
     }
 
     /// Needs a look: unassigned; or, in a SuSiE round, its call is unsure
@@ -264,37 +316,13 @@ pub struct RoundView {
     pub decided: BTreeSet<ClusterId>,
     /// The pass cached its statistics, so marker edits can be rescored.
     pub rescorable: bool,
-    /// The candidates are the projection score's per-cell calls: a marker
-    /// edit needs a new pass to be scored.
-    pub score_calls: bool,
+    /// The method whose reading made the round's call: its shares are the
+    /// candidates' and its ranking their first order; `None` for a round
+    /// that records none (the enrichment's order then).
+    pub by: Option<Method>,
     /// The round's cells on its run's layouts, for the cell map; taken by
     /// the app when it shows the round.
     pub figures: crate::figures::CellFigures,
-}
-
-/// A score round's shares: each current cluster's share of its cells called
-/// each type, from the per-cell `call` column of the score's table at
-/// `path`; none when the table is gone.
-fn cell_call_shares(path: &str, cells: &crate::manifest::rounds::Cells) -> Result<Option<Table>> {
-    use legume_numeric::matrix::parquet::read_table_columns;
-    if !Path::new(path).is_file() {
-        return Ok(None);
-    }
-    let (strings, _) = read_table_columns(path, &["cell", "call"], &[])?;
-    let call: std::collections::HashMap<&str, &str> = strings[0]
-        .iter()
-        .zip(&strings[1])
-        .map(|(c, l)| (c.as_ref(), l.as_ref()))
-        .collect();
-    let calls: Vec<Option<&str>> = cells
-        .names
-        .iter()
-        .map(|c| call.get(c.as_ref()).copied())
-        .collect();
-    Ok(Some(crate::annotate::rounds::call_shares(
-        &cells.clusters,
-        &calls,
-    )))
 }
 
 impl RoundView {
@@ -304,34 +332,9 @@ impl RoundView {
         let a = &loaded.manifest.annotate;
         let at = |rel: &Option<String>| rel.as_deref().map(|r| resolve(&loaded.dir, r));
 
-        let table = |rel: &Option<String>| at(rel).map(|p| read_table(&p)).transpose();
-        // How the cluster's evidence splits over the types: the enrichment's
-        // Q, else (a score round) its cells' calls over the current clusters.
-        let (share, score_calls) = match table(&a.cluster_celltype_q)? {
-            Some(q) => (Some(q), false),
-            None => {
-                let calls = match at(&a.marker_score) {
-                    Some(p) => cell_call_shares(&p, &cells)?,
-                    None => None,
-                };
-                let found = calls.is_some();
-                (calls, found)
-            }
-        };
-        // SuSiE's tables, when it made the call: its ranking replaces Q's.
-        let susie = match (
-            table(&a.cluster_celltype_pip)?,
-            table(&a.cluster_celltype_effect)?,
-            table(&a.cluster_celltype_explained)?,
-        ) {
-            (Some(p), Some(e), Some(x)) => Some((p, e, x)),
-            _ => None,
-        };
-        let (nes_table, p_table, q_table) = (
-            table(&a.cluster_celltype_nes)?,
-            table(&a.cluster_celltype_p)?,
-            table(&a.cluster_celltype_q_values)?,
-        );
+        let score = read_score_cells(&loaded, &cells)?;
+        let tables = read_type_tables(&loaded, score.as_ref().map(|s| s.shares(&cells)))?;
+        let by = called_by(a);
         let expression = at(&a.cluster_expression)
             .map(|p| Mat::from_parquet_with_row_names(&p, Some(0)))
             .transpose()?
@@ -353,47 +356,8 @@ impl RoundView {
         let clusters = digests
             .into_iter()
             .map(|(id, d)| {
-                let row = |t: &Table| -> Vec<(String, f32)> {
-                    t.row(id)
-                        .map(|r| t.cols.iter().cloned().zip(r.iter().copied()).collect())
-                        .unwrap_or_default()
-                };
-                let shares: Vec<(String, f32)> = match &susie {
-                    Some((_, _, x)) => row(x),
-                    None => share.as_ref().map(row).unwrap_or_default(),
-                };
-                let stat = |t: &Option<Table>, label: &str| {
-                    let t = t.as_ref()?;
-                    let j = t.cols.iter().position(|c| c == label)?;
-                    t.row(id).map(|r| r[j]).filter(|v| v.is_finite())
-                };
-                let mut candidates: Vec<Candidate> = match &susie {
-                    Some((p, e, x)) => {
-                        let mut c = susie_candidates(&row(p), &row(e), &row(x));
-                        c.truncate(CANDIDATES);
-                        c
-                    }
-                    None => top_by(shares.iter().cloned(), CANDIDATES)
-                        .into_iter()
-                        .filter(|(l, s)| *s > 0.0 && l != UNASSIGNED_LABEL)
-                        .map(|(label, share)| Candidate {
-                            label,
-                            share,
-                            susie: None,
-                            nes: None,
-                            p: None,
-                            q: None,
-                        })
-                        .collect(),
-                };
-                // The enrichment's statistics either way.
-                for c in &mut candidates {
-                    (c.nes, c.p, c.q) = (
-                        stat(&nes_table, &c.label),
-                        stat(&p_table, &c.label),
-                        stat(&q_table, &c.label),
-                    );
-                }
+                let (candidates, shares) =
+                    ranked_view(&tables.evidence(id), by.unwrap_or_default());
                 ClusterView {
                     id,
                     cells: d.size,
@@ -405,7 +369,7 @@ impl RoundView {
                 }
             })
             .collect();
-        let figures = crate::figures::CellFigures::of_round(&loaded, &cells);
+        let figures = crate::figures::CellFigures::of_round(&loaded, &cells, score);
         Ok(Self {
             manifest: manifest.to_path_buf(),
             figures,
@@ -417,7 +381,7 @@ impl RoundView {
             loose_cells,
             decided,
             rescorable: a.stats_cache.is_some() && a.expression_clusters.is_some(),
-            score_calls,
+            by,
         })
     }
 
@@ -514,7 +478,10 @@ impl RoundView {
 pub type Scores = BTreeMap<ClusterId, (Vec<Candidate>, Vec<(String, f32)>)>;
 
 /// A `lupin relabel --preview`'s `scores` (per cluster id, each type's
-/// share, NES, p and q) as candidates and shares; `None` when it has none.
+/// share, NES, p and q) as candidates and shares, ranked by the
+/// enrichment: the rescoring is of the edited panel, which the round's other
+/// readings (SuSiE's, the score's) were not made on. `None` when the preview
+/// has no scores.
 #[must_use]
 pub fn parse_scores(preview: &serde_json::Value) -> Option<Scores> {
     let num = |v: &serde_json::Value| v.as_f64().map(|x| x as f32);
@@ -523,27 +490,23 @@ pub fn parse_scores(preview: &serde_json::Value) -> Option<Scores> {
         .iter()
         .map(|(id, calls)| {
             let id: ClusterId = id.parse().ok()?;
-            let all: Vec<Candidate> = calls
+            let evidence: Vec<TypeEvidence> = calls
                 .as_array()?
                 .iter()
                 .map(|c| {
-                    Some(Candidate {
+                    Some(TypeEvidence {
+                        cluster: id,
                         label: c["label"].as_str()?.to_string(),
-                        share: num(&c["share"]).unwrap_or(0.0),
-                        susie: None,
+                        enrichment: num(&c["share"]),
                         nes: num(&c["nes"]),
                         p: num(&c["p"]),
                         q: num(&c["q"]),
+                        ..TypeEvidence::default()
                     })
                 })
+                .filter(|e| e.as_ref().is_none_or(|e| e.label != UNASSIGNED_LABEL))
                 .collect::<Option<_>>()?;
-            let shares = all.iter().map(|c| (c.label.clone(), c.share)).collect();
-            let candidates = all
-                .into_iter()
-                .filter(|c| c.share > 0.0 && c.label != UNASSIGNED_LABEL)
-                .take(CANDIDATES)
-                .collect();
-            Some((id, (candidates, shares)))
+            Some((id, ranked_view(&evidence, Method::Enrichment)))
         })
         .collect()
 }
@@ -685,10 +648,13 @@ pub fn decisions(edits: &[Edit], round: &RoundView, recorded: Option<&Scores>) -
                     .find(|c| c.id == id)
                     .map(|c| &c.candidates[..])
             })
-            .unwrap_or_default()
-            .iter()
+            .unwrap_or_default();
+        // As listed by the round's method: the first ten and each method's top.
+        let evidence = listed(evidence, round.by.unwrap_or_default(), false)
+            .into_iter()
             .map(|c| {
-                json!({"kind": "marker", "term": c.label, "share": c.share, "nes": c.nes, "p": c.p, "q": c.q})
+                json!({"kind": "marker", "term": c.label, "share": c.share, "nes": c.nes,
+                       "p": c.p, "q": c.q, "pip": c.pip, "fold": c.fold, "score": c.score})
             })
             .collect();
         let (action, label, reason) = match e {
@@ -720,10 +686,10 @@ fn decided_in(path: &str) -> Result<BTreeSet<ClusterId>> {
         .collect())
 }
 
-fn top_by(items: impl Iterator<Item = (String, f32)>, k: usize) -> Vec<(String, f32)> {
+/// `items` with a finite value, largest first, ties by name.
+fn top_by(items: impl Iterator<Item = (String, f32)>) -> Vec<(String, f32)> {
     let mut v: Vec<(String, f32)> = items.filter(|(_, s)| s.is_finite()).collect();
     v.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    v.truncate(k);
     v
 }
 
@@ -742,7 +708,7 @@ pub fn specific_genes(expr: &Expression) -> BTreeMap<ClusterId, Vec<(String, f32
                     expr.log2fc(g, &[k])
                         .map(|fc| (expr.table.rows[g].to_string(), fc))
                 });
-            (id, top_by(scored, usize::MAX))
+            (id, top_by(scored))
         })
         .collect()
 }

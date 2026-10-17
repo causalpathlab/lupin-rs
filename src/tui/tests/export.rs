@@ -28,14 +28,7 @@ fn cluster(id: ClusterId, label: &str, shares: &[(&str, f32)]) -> ClusterView {
         label: Some(label.into()),
         candidates: shares
             .iter()
-            .map(|(label, share)| Candidate {
-                label: label.clone(),
-                share: *share,
-                susie: None,
-                nes: None,
-                p: None,
-                q: None,
-            })
+            .map(|(label, share)| Candidate::new(label, *share))
             .collect(),
         shares,
         genes: Vec::new(),
@@ -66,7 +59,7 @@ fn round() -> RoundView {
         loose_cells: 0,
         decided: BTreeSet::new(),
         rescorable: false,
-        score_calls: false,
+        by: Default::default(),
         figures: Default::default(),
     }
 }

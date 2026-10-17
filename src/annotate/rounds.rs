@@ -96,6 +96,213 @@ impl Table {
     }
 }
 
+/// A statistic a method gives each type in each cluster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stat {
+    /// The enrichment's share: its softmax Q over the types passing FDR.
+    Share,
+    Nes,
+    P,
+    /// BH q-value within the cluster.
+    Q,
+    /// SuSiE's posterior inclusion probability.
+    Pip,
+    /// The fold SuSiE's effect raises the markers by, e^θ (its table holds θ).
+    Fold,
+    /// SuSiE's share of the cluster's explained deviance.
+    Explained,
+    /// The projection score's share of the cluster's cells called the type.
+    Score,
+}
+
+impl Stat {
+    pub const ALL: [Stat; 8] = [
+        Stat::Share,
+        Stat::Nes,
+        Stat::P,
+        Stat::Q,
+        Stat::Pip,
+        Stat::Fold,
+        Stat::Explained,
+        Stat::Score,
+    ];
+
+    /// Its column in `cluster_evidence.parquet` and its key in `review --json`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Stat::Share => "share",
+            Stat::Nes => "nes",
+            Stat::P => "p",
+            Stat::Q => "q",
+            Stat::Pip => "pip",
+            Stat::Fold => "fold",
+            Stat::Explained => "explained",
+            Stat::Score => "score",
+        }
+    }
+}
+
+/// One type's evidence in one cluster from every method the round ran;
+/// `None` where a method did not run or did not score the type.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct TypeEvidence {
+    #[serde(skip)]
+    pub cluster: ClusterId,
+    #[serde(rename = "celltype")]
+    pub label: String,
+    /// The enrichment's share (`share` in the tables).
+    #[serde(rename = "share", skip_serializing_if = "Option::is_none")]
+    pub enrichment: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nes: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pip: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fold: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explained: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f32>,
+}
+
+impl TypeEvidence {
+    /// Its value of `stat`, as in [`Stat`].
+    #[must_use]
+    pub fn get(&self, stat: Stat) -> Option<f32> {
+        *self.slot_ref(stat)
+    }
+
+    fn slot_ref(&self, stat: Stat) -> &Option<f32> {
+        match stat {
+            Stat::Share => &self.enrichment,
+            Stat::Nes => &self.nes,
+            Stat::P => &self.p,
+            Stat::Q => &self.q,
+            Stat::Pip => &self.pip,
+            Stat::Fold => &self.fold,
+            Stat::Explained => &self.explained,
+            Stat::Score => &self.score,
+        }
+    }
+
+    fn slot(&mut self, stat: Stat) -> &mut Option<f32> {
+        match stat {
+            Stat::Share => &mut self.enrichment,
+            Stat::Nes => &mut self.nes,
+            Stat::P => &mut self.p,
+            Stat::Q => &mut self.q,
+            Stat::Pip => &mut self.pip,
+            Stat::Fold => &mut self.fold,
+            Stat::Explained => &mut self.explained,
+            Stat::Score => &mut self.score,
+        }
+    }
+}
+
+/// The cluster × type tables a round records, one per [`Stat`] it has.
+#[derive(Default)]
+pub struct TypeTables {
+    pub tables: Vec<(Stat, Table)>,
+}
+
+impl TypeTables {
+    /// Every type any table scores in cluster `id`, with its evidence, in
+    /// label order.
+    #[must_use]
+    pub fn evidence(&self, id: ClusterId) -> Vec<TypeEvidence> {
+        let mut by: BTreeMap<&str, TypeEvidence> = BTreeMap::new();
+        for (stat, t) in &self.tables {
+            let Some(row) = t.row(id) else { continue };
+            for (label, &v) in t.cols.iter().zip(row) {
+                if NOT_A_CALL.contains(&label.as_str()) || !v.is_finite() {
+                    continue;
+                }
+                let e = by.entry(label).or_insert_with(|| TypeEvidence {
+                    cluster: id,
+                    label: label.clone(),
+                    ..TypeEvidence::default()
+                });
+                *e.slot(*stat) = Some(if *stat == Stat::Fold { v.exp() } else { v });
+            }
+        }
+        by.into_values().collect()
+    }
+}
+
+/// Below this PIP SuSiE does not put a type forward.
+pub const MIN_CANDIDATE_PIP: f32 = 0.05;
+
+/// A method whose reading a round may carry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Method {
+    /// The enrichment's softmax share.
+    #[default]
+    Enrichment,
+    /// SuSiE's posterior: PIP, then the share explained.
+    Susie,
+    /// The projection score's share of the cluster's cells.
+    Score,
+}
+
+impl Method {
+    pub const ALL: [Method; 3] = [Method::Enrichment, Method::Susie, Method::Score];
+
+    /// Its place in [`Method::ALL`].
+    #[must_use]
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Method::Enrichment => "enrichment",
+            Method::Susie => "susie",
+            Method::Score => "score",
+        }
+    }
+
+    /// The share of a cluster's evidence this method gives `e`: the
+    /// enrichment's Q, SuSiE's explained share, the score's share of cells.
+    #[must_use]
+    pub fn reading(self, e: &TypeEvidence) -> Option<f32> {
+        match self {
+            Method::Enrichment => e.enrichment,
+            Method::Susie => e.explained,
+            Method::Score => e.score,
+        }
+    }
+
+    /// The types this method puts forward in one cluster's `evidence`, best
+    /// first: a share above zero, or for SuSiE a PIP of at least
+    /// [`MIN_CANDIDATE_PIP`], ranked as SuSiE calls
+    /// ([`crate::annotate::susie::call_order`]).
+    #[must_use]
+    pub fn ranked(self, evidence: &[TypeEvidence]) -> Vec<&TypeEvidence> {
+        let of = |v: Option<f32>| v.unwrap_or(0.0);
+        let mut put: Vec<&TypeEvidence> = evidence
+            .iter()
+            .filter(|e| match self {
+                Method::Susie => e.pip >= Some(MIN_CANDIDATE_PIP),
+                _ => self.reading(e) > Some(0.0),
+            })
+            .collect();
+        match self {
+            Method::Susie => {
+                crate::annotate::susie::call_order(&mut put, |e| (of(e.pip), of(e.explained)));
+            }
+            _ => put.sort_by(|a, b| of(self.reading(b)).total_cmp(&of(self.reading(a)))),
+        }
+        put
+    }
+}
+
 /// Each cluster's share of its cells called each label (`calls` per cell,
 /// aligned to `clusters`): rows the clusters in order, columns the labels
 /// called in order, `unassigned` left out; an uncalled cell counts toward

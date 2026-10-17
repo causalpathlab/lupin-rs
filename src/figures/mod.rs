@@ -6,7 +6,7 @@
 //! writes as a figure file; the TUI's figure pane is where they are shown and
 //! exported.
 
-use crate::manifest::rounds::Cells;
+use crate::manifest::rounds::{Cells, ScoreCells};
 use crate::manifest::run::{derive_out_prefix, resolve, Loaded, RunManifest};
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
 use anyhow::{Context, Result};
@@ -62,6 +62,10 @@ pub(crate) enum Colouring {
     Component,
     /// A round's clusters.
     Cluster,
+    /// The projection score's per-cell call.
+    Call,
+    /// The projection score's margin: how far its call leads the runner-up.
+    Margin,
 }
 
 impl Colouring {
@@ -72,6 +76,8 @@ impl Colouring {
             Self::Lineage => "lineage",
             Self::Component => "component",
             Self::Cluster => "cluster",
+            Self::Call => "score call",
+            Self::Margin => "score margin",
         }
     }
 
@@ -295,11 +301,14 @@ pub(crate) struct CellFigures {
     pub(crate) layouts: Vec<Layout>,
     /// Per cell: a round's cluster, -1 for none.
     pub(crate) cluster: Vec<i32>,
+    /// A round's projection score per cell (its call and margin), when the
+    /// round carries one.
+    pub(crate) score: Option<ScoreCells>,
     /// What to run for the layouts of [`WANTED_LAYOUTS`] it lacks, if any.
     pub(crate) layout_hint: Option<String>,
     pub(crate) edges: Vec<EdgeRow>,
     /// Each colouring's cell colours and legend, made on first use.
-    pub(crate) colours: [OnceLock<CellColours>; 5],
+    pub(crate) colours: [OnceLock<CellColours>; 7],
     /// Every cell, grey first, then by pseudotime: the draw order, made on
     /// first use.
     pub(crate) by_pseudotime: OnceLock<Vec<usize>>,
@@ -341,6 +350,7 @@ type MediansKey = (Panel, LabelBy);
 pub(crate) enum LabelBy {
     Type,
     Cluster,
+    Call,
 }
 
 /// A 2D layout of the run's cells, NaN where a cell has none.
@@ -401,7 +411,7 @@ impl CellFigures {
     /// A round's labels and clusters (`cells`, read from `loaded`) on its
     /// run's layouts; none when the run has no layout, with what to run for
     /// one in `layout_hint`.
-    pub(crate) fn of_round(loaded: &Loaded, cells: &Cells) -> Self {
+    pub(crate) fn of_round(loaded: &Loaded, cells: &Cells, score: Option<ScoreCells>) -> Self {
         let index = cell_index(&cells.names);
         let (layouts, layout_hint) = read_layouts(
             &loaded.manifest,
@@ -425,6 +435,7 @@ impl CellFigures {
                 .collect(),
             layouts,
             layout_hint,
+            score,
             ..Self::default()
         }
     }
@@ -516,6 +527,9 @@ impl CellFigures {
         out.push(Colouring::Type);
         if several(&self.cluster) {
             out.push(Colouring::Cluster);
+        }
+        if self.score.is_some() {
+            out.extend([Colouring::Call, Colouring::Margin]);
         }
         if several(&self.lineage) {
             out.push(Colouring::Lineage);
@@ -711,10 +725,10 @@ impl CellFigures {
             // Coloured by cluster, the labels name the clusters; else the
             // types. The whole scatter's are kept; a zoomed one's are of the
             // cells on screen.
-            let by = if style.colouring == Colouring::Cluster {
-                LabelBy::Cluster
-            } else {
-                LabelBy::Type
+            let by = match style.colouring {
+                Colouring::Cluster => LabelBy::Cluster,
+                Colouring::Call => LabelBy::Call,
+                _ => LabelBy::Type,
             };
             let medians = if view.is_whole() {
                 self.medians(panel, by, x, y, &finite)
@@ -819,6 +833,31 @@ impl CellFigures {
                 categorical(&codes(&self.component), |c| format!("component {c}"))
             }
             Colouring::Cluster => categorical(&codes(&self.cluster), cluster_name),
+            Colouring::Call | Colouring::Margin if self.score.is_none() => {
+                (vec![None; self.types.len()], Vec::new())
+            }
+            Colouring::Call => categorical(
+                &self
+                    .score
+                    .iter()
+                    .flat_map(ScoreCells::calls)
+                    .collect::<Vec<_>>(),
+                str::to_string,
+            ),
+            // Blue for a call that barely leads, red for the widest margin.
+            Colouring::Margin => {
+                let margin = self.score.as_ref().map_or(&[][..], |s| &s.margin[..]);
+                let widest = margin
+                    .iter()
+                    .copied()
+                    .filter(|m| m.is_finite())
+                    .fold(f32::MIN_POSITIVE, f32::max);
+                let colours = margin
+                    .iter()
+                    .map(|&m| m.is_finite().then(|| sample_blue_red(m / widest)))
+                    .collect();
+                (colours, Vec::new())
+            }
         })
     }
 
@@ -914,10 +953,17 @@ impl CellFigures {
                 .collect()
         }
         match by {
-            LabelBy::Type => medians_by(cells, |i| Some(self.types[i].as_ref()), x, y)
-                .into_iter()
-                .map(|(t, at)| (t.into(), at))
-                .collect(),
+            LabelBy::Type | LabelBy::Call => {
+                let calls = match (by, &self.score) {
+                    (LabelBy::Call, Some(s)) => s.calls(),
+                    (LabelBy::Call, None) => Vec::new(),
+                    _ => self.types.iter().map(|t| Some(t.as_ref())).collect(),
+                };
+                medians_by(cells, |i| calls.get(i).copied().flatten(), x, y)
+                    .into_iter()
+                    .map(|(t, at)| (t.into(), at))
+                    .collect()
+            }
             LabelBy::Cluster => {
                 let codes = codes(&self.cluster);
                 medians_by(cells, |i| codes[i], x, y)

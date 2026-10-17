@@ -267,10 +267,10 @@ pub(super) fn help(app: &App) -> String {
 fn pane_keys(app: &App) -> &'static str {
     match app.focus {
         Focus::Clusters if app.in_order() => {
-            " ? keys · ↑↓ cluster · 1-9 take · k keep · ] next flagged · A annotate · g runs · r run · tab pane · q quit"
+            " ? keys · ↑↓ cluster · 1-9 take · ⏎ choices · S sort · a all · k keep · ] next flagged · A annotate · g runs · r run · tab pane · q quit"
         }
         Focus::Clusters => {
-            " ? keys · ↑↓ cluster · 1-9 take · k keep · ] next flagged · A annotate · g runs · tab pane · s save · q quit"
+            " ? keys · ↑↓ cluster · 1-9 take · ⏎ choices · S sort · a all · k keep · ] next flagged · A annotate · g runs · tab pane · s save · q quit"
         }
         Focus::Genes => {
             " ? keys · ↑↓ gene · a add · A add to a type · d drop · h hide · H hidden · m view · tab pane"
@@ -332,9 +332,11 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         &[
             ("↑↓", "select a cluster"),
             ("1-9", "label it with that candidate"),
+            ("enter", "the label choices: each method's top types, the tree, or a name"),
+            ("S", "list the candidates by the next method: enrichment, SuSiE, score"),
+            ("a", "list every candidate, not only the first ten and each method's top"),
             ("k", "keep its label (✓ = decided)"),
             ("u", "unassign it"),
-            ("enter", "find its label in the tree"),
             ("A", "annotate again: the annotation form"),
             ("⌫", "undo its edit"),
             ("]", "next flagged (?) cluster not yet decided"),
@@ -597,8 +599,7 @@ pub(super) fn cluster_list_evidence(
     match (susie, candidate) {
         (true, Some(t)) => vec![
             format!("{:.2}", t.share),
-            t.susie
-                .map_or_else(|| "—".into(), |e| format!("×{:.1}", e.fold)),
+            t.fold.map_or_else(|| "—".into(), |f| format!("×{f:.1}")),
         ],
         (true, None) => vec!["—".into(), "—".into()],
         (false, Some(t)) => vec![format!("{:.2}", t.share)],
@@ -786,8 +787,8 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let now = app.current_label();
-    let mut rows: Vec<Row> = c
-        .candidates
+    let listed = app.listed_candidates();
+    let mut rows: Vec<Row> = listed
         .iter()
         .enumerate()
         .map(|(k, cand)| {
@@ -800,14 +801,12 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
                 } else {
                     Color::Yellow
                 }),
-                Cell::from(num(cand.susie.map(|s| s.pip), 2)),
-                Cell::from(
-                    cand.susie
-                        .map_or_else(|| "—".into(), |s| format!("×{:.1}", s.fold)),
-                ),
+                Cell::from(num(cand.pip, 2)),
+                Cell::from(cand.fold.map_or_else(|| "—".into(), |f| format!("×{f:.1}"))),
                 Cell::from(num(cand.nes, 2)),
                 Cell::from(pval(cand.p)),
                 Cell::from(pval(cand.q)),
+                Cell::from(num(cand.score, 2)),
             ]);
             if now.as_deref() == Some(cand.label.as_str()) {
                 row.bold()
@@ -819,7 +818,7 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     // A label picked off the candidates (a new type, or one that did not
     // pass FDR) is shown too: it is scored once the edits are saved.
     if let Some(l) = now.as_deref().filter(|l| {
-        !c.candidates
+        !listed
             .iter()
             .any(|cand| label_key(&cand.label) == label_key(l))
     }) {
@@ -860,10 +859,12 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         ""
     };
     let title = format!(
-        " K{} · {} cells · {}{scored} ",
+        " K{} · {} cells · {}{scored} · by {}{} ",
         c.id,
         c.cells,
-        now.as_deref().unwrap_or(UNASSIGNED_LABEL)
+        now.as_deref().unwrap_or(UNASSIGNED_LABEL),
+        app.cand_method().name(),
+        if app.cand_all { " · all" } else { "" },
     );
     let t = Table::new(
         rows,
@@ -877,9 +878,15 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(6),
             Constraint::Length(6),
             Constraint::Length(6),
+            Constraint::Length(5),
         ],
     )
-    .header(Row::new(["", "type", "share", "", "PIP", "fold", "NES", "p", "q"]).bold())
+    .header(
+        Row::new([
+            "", "type", "share", "", "PIP", "fold", "NES", "p", "q", "score",
+        ])
+        .bold(),
+    )
     .block(
         Block::default()
             .borders(Borders::ALL)
@@ -1468,8 +1475,18 @@ fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
         .map(|l| Line::from(l).bold())
         .collect();
     lines.push(Line::default());
+    // A detail's lines are its paragraphs; the options get the room the
+    // question, the detail and the frame leave.
+    let detail: Vec<String> = m.choices.get(m.sel).map_or_else(Vec::new, |o| {
+        o.detail
+            .lines()
+            .flat_map(|p| wrap(p, inner, 4))
+            .take(12)
+            .collect()
+    });
+    let fixed = lines.len() + detail.len() + 4;
+    let room = (over.height as usize).saturating_sub(fixed).max(3);
     // The options, scrolled to keep the selected one in sight.
-    let room = over.height.saturating_sub(12).max(3) as usize;
     let first = m.sel.saturating_sub(room.saturating_sub(1));
     for (i, o) in m.choices.iter().enumerate().skip(first).take(room) {
         let line = Line::from(format!(" {}  {}", o.key, o.label));
@@ -1479,13 +1496,7 @@ fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
         lines.push(Line::from(format!("    … {} more", m.choices.len() - first - room)).dim());
     }
     lines.push(Line::default());
-    if let Some(o) = m.choices.get(m.sel) {
-        lines.extend(
-            wrap(&o.detail, inner, 4)
-                .into_iter()
-                .map(|l| Line::from(l).dim()),
-        );
-    }
+    lines.extend(detail.into_iter().map(|l| Line::from(l).dim()));
     let height = (lines.len() as u16 + 2).min(over.height);
     let area = centered(over, width, height);
     f.render_widget(Clear, area);

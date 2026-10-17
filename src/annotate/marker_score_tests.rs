@@ -27,3 +27,20 @@ fn a_one_type_panel_is_refused() {
         .to_string();
     assert!(err.contains('A'), "{err}");
 }
+
+#[test]
+fn the_score_beside_another_pass_writes_its_table_and_leaves_the_call_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (feat, cells, groups) = toy::matrices();
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    std::fs::write(format!("{out}.argmax.tsv"), "the other pass's call").unwrap();
+    let table = alongside(&toy::panel(dir.path()), &out, &feat, &cells, &groups).unwrap();
+    assert!(table.ends_with(crate::annotate::outputs::MARKER_SCORE_PARQUET));
+    let (strings, _) =
+        legume_numeric::matrix::parquet::read_table_columns(&table, &["call"], &[]).unwrap();
+    assert_eq!(strings[0][0].as_ref(), "A");
+    assert_eq!(
+        std::fs::read_to_string(format!("{out}.argmax.tsv")).unwrap(),
+        "the other pass's call"
+    );
+}

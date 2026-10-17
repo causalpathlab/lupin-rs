@@ -502,3 +502,21 @@ fn choice_means_over_many_draws_stay_normalised() {
     assert!((total - 1.0).abs() < 1e-6, "sum {total}");
     assert!((f64::from(bar[0][2]) - 0.7).abs() < 1e-6, "{:?}", bar[0]);
 }
+
+#[test]
+fn the_call_order_is_total_where_the_pip_tie_alone_is_not() {
+    // Pairwise, A ties B and B ties C, but C leads A by PIP: a cycle the
+    // order must break the same way every time.
+    let mut v = vec![("A", 0.900, 0.5), ("B", 0.906, 0.3), ("C", 0.911, 0.1)];
+    call_order(&mut v, |t| (t.1, t.2));
+    let names: Vec<&str> = v.iter().map(|t| t.0).collect();
+    assert_eq!(names, ["B", "C", "A"], "C's run takes B; A starts its own");
+    let mut w = vec![
+        ("nan", f32::NAN, 1.0),
+        ("low", 0.1, 0.0),
+        ("tie", 0.105, 0.2),
+    ];
+    call_order(&mut w, |t| (t.1, t.2));
+    let names: Vec<&str> = w.iter().map(|t| t.0).collect();
+    assert_eq!(names, ["tie", "low", "nan"], "a NaN PIP comes last");
+}

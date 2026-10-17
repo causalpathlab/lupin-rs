@@ -277,6 +277,8 @@ pub enum GeneView {
 
 /// What an open prompt will do with its reason.
 pub enum Pending {
+    /// The label (the text) to give cluster `cluster`, typed by hand.
+    LabelName { cluster: ClusterId },
     Label {
         cluster: ClusterId,
         label: String,
@@ -533,6 +535,11 @@ pub struct App {
     map_hint: Option<String>,
     /// The user put the tree in the cell map's place (`V`).
     map_off: bool,
+    /// The method the candidates are listed by (`S`); the round's own when
+    /// none was chosen.
+    cand_by: Option<crate::annotate::rounds::Method>,
+    /// Every candidate listed, not only the first ten and each method's top (`a`).
+    pub cand_all: bool,
     /// The output prefix was given or confirmed; until then the first pass
     /// asks for it.
     pub out_chosen: bool,
@@ -600,6 +607,8 @@ impl App {
             cell_map: None,
             map_hint: None,
             map_off: false,
+            cand_by: None,
+            cand_all: false,
             out_chosen: true,
             trajectory: super::order::TrajectoryRun::default(),
             trajectory_tui: false,
@@ -852,7 +861,7 @@ impl App {
         }
         if !round.rescorable {
             self.scored_for = want;
-            self.status = if round.score_calls {
+            self.status = if round.by == Some(crate::annotate::rounds::Method::Score) {
                 "a projection score round has no statistics to rescore: a new pass scores the edited panel"
             } else {
                 "this round cached no statistics: marker edits are scored on save"
@@ -893,10 +902,11 @@ impl App {
 
     /// Show a preview's rescored candidates, keeping the round's own.
     fn show_scores(&mut self, json: &str) {
-        let scores = match serde_json::from_str::<serde_json::Value>(json) {
-            Ok(v) => super::round::parse_scores(&v),
+        let preview = match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(v) => v,
             Err(_) => return self.rescore_failed("rescoring gave no readable result; see the log"),
         };
+        let scores = super::round::parse_scores(&preview);
         let Some(scores) = scores else {
             return self
                 .rescore_failed("this round cannot be rescored: marker edits are scored on save");
@@ -954,6 +964,73 @@ impl App {
 
     pub fn selected(&self) -> Option<&super::round::ClusterView> {
         self.round.as_ref()?.clusters.get(self.cluster_sel)
+    }
+
+    /// Select cluster `id` again, as a choice made for it may outlast the
+    /// selection (a pass reloads the round); `false`, saying so, when the
+    /// round no longer has it.
+    fn reselect(&mut self, id: ClusterId) -> bool {
+        let at = self
+            .round
+            .as_ref()
+            .and_then(|r| r.clusters.iter().position(|c| c.id == id));
+        match at {
+            Some(i) => {
+                if i != self.cluster_sel {
+                    self.select_cluster(i);
+                }
+                true
+            }
+            None => {
+                self.status = format!("K{id} is no longer in the round");
+                false
+            }
+        }
+    }
+
+    /// The method the candidates are listed by: the one chosen (`S`), else
+    /// the round's, while it ranks the selected cluster's candidates (a
+    /// rescoring ranks by the enrichment alone); else the first that does.
+    pub fn cand_method(&self) -> crate::annotate::rounds::Method {
+        use crate::annotate::rounds::Method;
+        let ranks = |m: &Method| {
+            self.selected()
+                .is_some_and(|c| c.candidates.iter().any(|t| t.ranks[m.index()].is_some()))
+        };
+        let wanted = self.cand_by.or_else(|| self.round.as_ref()?.by);
+        wanted
+            .filter(ranks)
+            .or_else(|| Method::ALL.into_iter().find(ranks))
+            .unwrap_or_default()
+    }
+
+    /// The selected cluster's candidates as listed: by [`App::cand_method`],
+    /// the first ten and each method's top, or all (`a`).
+    pub fn listed_candidates(&self) -> Vec<&super::round::Candidate> {
+        self.selected().map_or_else(Vec::new, |c| {
+            super::round::listed(&c.candidates, self.cand_method(), self.cand_all)
+        })
+    }
+
+    /// List the candidates by the next method that ranks any of them.
+    fn next_cand_method(&mut self) {
+        use crate::annotate::rounds::Method;
+        let ranking: Vec<Method> = Method::ALL
+            .into_iter()
+            .filter(|m| {
+                self.selected()
+                    .is_some_and(|c| c.candidates.iter().any(|t| t.ranks[m.index()].is_some()))
+            })
+            .collect();
+        let next =
+            (!ranking.is_empty()).then(|| crate::figures::next_in(&ranking, self.cand_method()));
+        self.status = match next {
+            Some(m) => {
+                self.cand_by = Some(m);
+                format!("candidates by {}", m.name())
+            }
+            None => "no method ranks this cluster's candidates".into(),
+        };
     }
 
     /// The selected cluster's label with the edits applied.
@@ -1390,14 +1467,109 @@ impl App {
         });
     }
 
-    /// Label the selected cluster by its `k`-th candidate.
+    /// Label the selected cluster by its `k`-th listed candidate.
     fn pick_candidate(&mut self, k: usize) {
+        if let Some(pick) = self.listed_candidates().get(k).copied().cloned() {
+            self.pick(pick);
+        }
+    }
+
+    /// Open the label choices for the selected cluster: each method's top
+    /// types ([`super::round::choices`]), then the tree and a typed name.
+    fn open_choice(&mut self) {
+        use super::menu::{numbered, Choice, Menu};
         let Some(c) = self.selected() else { return };
-        let Some(pick) = c.candidates.get(k).cloned() else {
-            return;
+        let options = super::round::choices(&c.candidates)
+            .into_iter()
+            .map(|t| {
+                let detail = self.choice_detail(c, t);
+                let label = t.label.clone();
+                let action = Action::Label {
+                    cluster: c.id,
+                    label: label.clone(),
+                };
+                (label, detail, action)
+            })
+            .collect();
+        let mut choices = numbered(options);
+        choices.extend([
+            Choice {
+                key: 't',
+                label: "on the tree…".into(),
+                detail: "Pick the type, or a coarser node, on the panel tree.".into(),
+                action: Action::LabelOnTree,
+            },
+            Choice {
+                key: 'n',
+                label: "a name…".into(),
+                detail: "Type any name; it is scored once the edits are saved.".into(),
+                action: Action::LabelByName { cluster: c.id },
+            },
+        ]);
+        self.menu = Some(Menu::new(
+            format!("Label K{}: each method's top types first", c.id),
+            choices,
+            "",
+        ));
+    }
+
+    /// A label choice's evidence, one paragraph a line: each method's
+    /// reading and its place in that method's ranking, the type's markers,
+    /// and the cluster's gene-set terms.
+    fn choice_detail(&self, c: &super::round::ClusterView, t: &super::round::Candidate) -> String {
+        use crate::annotate::rounds::Method;
+        let num = |v: Option<f32>| v.map_or_else(|| "—".into(), |v| format!("{v:.2}"));
+        let place = |m: Method| match t.ranks[m.index()] {
+            Some(0) => " · its top".to_string(),
+            Some(r) => format!(" · its #{}", r + 1),
+            None => String::new(),
         };
+        let mut lines = Vec::new();
+        if t.enrichment.is_some() || t.nes.is_some() {
+            lines.push(format!(
+                "enrichment: share {} · NES {} · q {}{}",
+                num(t.enrichment),
+                num(t.nes),
+                num(t.q),
+                place(Method::Enrichment)
+            ));
+        }
+        if let Some(s) = t.susie() {
+            lines.push(format!(
+                "SuSiE: PIP {:.2} · ×{:.1} · explained {}{}",
+                s.pip,
+                s.fold,
+                num(t.explained),
+                place(Method::Susie)
+            ));
+        }
+        if let Some(s) = t.score {
+            lines.push(format!(
+                "score: {s:.2} of the cluster's cells{}",
+                place(Method::Score)
+            ));
+        }
+        if let Some(r) = &self.round {
+            let markers: Vec<String> = (r.markers_of(&t.label, &self.edits).into_iter())
+                .map(|(g, _)| g)
+                .take(12)
+                .collect();
+            if !markers.is_empty() {
+                lines.push(format!("markers: {}", markers.join(" ")));
+            }
+        }
+        if !c.terms.is_empty() {
+            let terms: Vec<&str> = c.terms.iter().take(5).map(|t| t.term.as_str()).collect();
+            lines.push(format!("the cluster's gene sets: {}", terms.join("; ")));
+        }
+        lines.join("\n")
+    }
+
+    /// Label the selected cluster by candidate `pick`.
+    fn pick(&mut self, pick: super::round::Candidate) {
+        let Some(c) = self.selected() else { return };
         let reason = match c.candidates.first() {
-            Some(top) if k > 0 => format!(
+            Some(top) if top.label != pick.label => format!(
                 "{} ({}) over the top candidate {} ({})",
                 pick.label,
                 evidence(&pick),
@@ -1407,7 +1579,7 @@ impl App {
             _ => format!("top candidate {} ({})", pick.label, evidence(&pick)),
         };
         let reason = self.rescored_note(reason);
-        self.ask_label(pick.label, reason, None);
+        self.ask_label(pick.evidence.label, reason, None);
     }
 
     /// `reason`, noting when the numbers it quotes are a rescoring's.
@@ -1703,6 +1875,11 @@ impl App {
                         self.edits.push(Edit::Keep { cluster, reason });
                     }
                     Pending::Hide => self.hide(&reason),
+                    Pending::LabelName { cluster } => {
+                        if self.reselect(cluster) {
+                            self.ask_label(reason, "named by hand".into(), None);
+                        }
+                    }
                     Pending::MixName { parts } => self.ask_mixed(reason, parts),
                     Pending::MarkerType { genes, add } => {
                         self.marked = genes;
@@ -2035,18 +2212,30 @@ impl App {
                 match code {
                     KeyCode::Char(c @ '1'..='9') => {
                         let k = c as usize - '1' as usize;
-                        let n = self.selected().map_or(0, |c| c.candidates.len());
+                        let n = self.listed_candidates().len();
                         if k < n {
                             self.pick_candidate(k);
                         } else {
                             self.status = format!("this cluster has {n} candidate(s)");
                         }
                     }
+                    KeyCode::Char('S') => self.next_cand_method(),
+                    KeyCode::Char('a') => {
+                        self.cand_all = !self.cand_all;
+                        self.status = if self.cand_all {
+                            "all candidates listed".into()
+                        } else {
+                            format!(
+                                "the first {} candidates and each method's top",
+                                super::round::LISTED
+                            )
+                        };
+                    }
                     KeyCode::Char('u') => self.unassign(),
                     KeyCode::Char('k') => self.keep(),
                     KeyCode::Backspace | KeyCode::Delete => self.undo(),
                     KeyCode::Char(']') => self.next_flagged(),
-                    KeyCode::Enter => self.jump_to_tree(),
+                    KeyCode::Enter => self.open_choice(),
                     // Annotate again: the form, and from the order view a
                     // choice to run the trajectory after.
                     KeyCode::Char('A') => {
@@ -2549,6 +2738,29 @@ impl App {
             }
             Action::ListRuns => self.list_runs(),
             Action::OpenRun { pick, drop_edits } => self.open_run(pick, drop_edits),
+            Action::Label { cluster, label } => {
+                if !self.reselect(cluster) {
+                    return;
+                }
+                let pick = self
+                    .selected()
+                    .and_then(|c| c.candidates.iter().find(|t| t.label == label))
+                    .cloned();
+                match pick {
+                    Some(pick) => self.pick(pick),
+                    None => {
+                        self.status = format!("{label} is no longer a candidate of K{cluster}");
+                    }
+                }
+            }
+            Action::LabelOnTree => self.jump_to_tree(),
+            Action::LabelByName { cluster } => {
+                self.prompt = Some(Prompt {
+                    title: format!(" label K{cluster} as (any name): "),
+                    text: String::new(),
+                    pending: Pending::LabelName { cluster },
+                });
+            }
         }
     }
 
@@ -3387,7 +3599,7 @@ fn remember_alias(file: &Path, label: &str, id: &str, note: &str) -> anyhow::Res
 /// made the call, and NES and q when known.
 fn evidence(c: &super::round::Candidate) -> String {
     let mut s = format!("share {:.2}", c.share);
-    if let Some(e) = c.susie {
+    if let Some(e) = c.susie() {
         s += &format!(", PIP {:.2}, ×{:.1}", e.pip, e.fold);
     }
     if let Some(nes) = c.nes {
@@ -3395,6 +3607,9 @@ fn evidence(c: &super::round::Candidate) -> String {
     }
     if let Some(q) = c.q {
         s += &format!(", q {q:.3}");
+    }
+    if let Some(score) = c.score {
+        s += &format!(", score {score:.2} of the cells");
     }
     s
 }

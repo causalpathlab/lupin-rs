@@ -1,6 +1,7 @@
 //! A choice popup: a question, numbered options with a line explaining the
 //! selected one, chosen with the arrows and Enter or the option's key.
 
+use crate::annotate::rounds::ClusterId;
 use ratatui::crossterm::event::KeyCode;
 
 /// What an option does once chosen.
@@ -32,6 +33,12 @@ pub enum Action {
         pick: crate::manifest::family::Pick,
         drop_edits: bool,
     },
+    /// Label cluster `cluster` with this candidate.
+    Label { cluster: ClusterId, label: String },
+    /// Label the selected cluster on the panel tree.
+    LabelOnTree,
+    /// Label cluster `cluster` with a name typed by hand.
+    LabelByName { cluster: ClusterId },
 }
 
 pub struct Choice {

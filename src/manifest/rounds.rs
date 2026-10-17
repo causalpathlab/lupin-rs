@@ -6,6 +6,8 @@
 //! - `{out}.clusters.parquet`: per-cell cluster id (`cluster.clusters`)
 //! - `{out}.argmax.tsv`: per-cell label (`annotate.argmax`)
 //! - `{out}.cluster_summary.json`: the digest (`annotate.cluster_summary`)
+//! - `{out}.cluster_evidence.parquet`: every cluster's types with every
+//!   method's statistic, one row each (`annotate.cluster_evidence`)
 //! - `{out}.annotation_log.jsonl`: this round's decisions (`annotate.log`)
 //! - `{out}.annotation_history.json`: every round's decisions per cluster,
 //!   newest first (`annotate.history`)
@@ -19,7 +21,8 @@ use crate::annotate::outputs::{
 };
 use crate::annotate::rounds::{
     self, apply, apply_markers, digest, next_cluster_id, parse_cluster_id, prepend_history,
-    ClPlacement, ClusterId, Decision, Digest, Evidence, History, MarkerHistory, Table, Term,
+    ClPlacement, ClusterId, Decision, Digest, Evidence, History, MarkerHistory, Method, Stat,
+    Table, Term, TypeEvidence, TypeTables,
 };
 use crate::manifest::run::{
     self, annotated_path, parent_dir, rel_to_manifest, resolve, same_file, Loaded,
@@ -41,6 +44,7 @@ use std::time::Duration;
 
 pub const CLUSTERS: &str = ".clusters.parquet";
 pub const SUMMARY: &str = ".cluster_summary.json";
+pub const EVIDENCE: &str = ".cluster_evidence.parquet";
 pub const LOG: &str = ".annotation_log.jsonl";
 pub const HISTORY: &str = ".annotation_history.json";
 pub const MARKERS: &str = ".markers.tsv";
@@ -282,6 +286,155 @@ fn read_evidence(loaded: &Loaded) -> Result<Evidence> {
     Ok(ev)
 }
 
+/// The projection score's per-cell reading, aligned to a round's cells.
+#[derive(Default)]
+pub(crate) struct ScoreCells {
+    /// The types it called, in order of first call.
+    pub(crate) types: Vec<Box<str>>,
+    /// Per cell: its call, an index into `types`; `None` for no row or no call.
+    pub(crate) call: Vec<Option<usize>>,
+    /// Per cell: how far its call leads the runner-up; NaN for no row.
+    pub(crate) margin: Vec<f32>,
+}
+
+impl ScoreCells {
+    /// Per cell, the type called.
+    pub(crate) fn calls(&self) -> Vec<Option<&str>> {
+        self.call
+            .iter()
+            .map(|c| c.map(|k| self.types[k].as_ref()))
+            .collect()
+    }
+
+    /// Each of `cells`' current clusters' share of its cells called each type.
+    pub(crate) fn shares(&self, cells: &Cells) -> Table {
+        rounds::call_shares(&cells.clusters, &self.calls())
+    }
+}
+
+/// The score's per-cell table the round records, aligned to `cells`; `None`
+/// when it records none or the file is gone.
+pub(crate) fn read_score_cells(loaded: &Loaded, cells: &Cells) -> Result<Option<ScoreCells>> {
+    use legume_numeric::matrix::parquet::read_table_columns;
+    let Some(path) =
+        (loaded.manifest.annotate.marker_score.as_deref()).and_then(|rel| loaded.recorded(rel))
+    else {
+        return Ok(None);
+    };
+    let (strings, nums) = read_table_columns(&path, &["cell", "call"], &["margin"])
+        .with_context(|| format!("reading {path}"))?;
+    let row: HashMap<&str, usize> = strings[0]
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.as_ref(), i))
+        .collect();
+    let mut out = ScoreCells::default();
+    let mut code: HashMap<&str, usize> = HashMap::new();
+    for c in &cells.names {
+        let Some(&i) = row.get(c.as_ref()) else {
+            out.call.push(None);
+            out.margin.push(f32::NAN);
+            continue;
+        };
+        // In the panel's own spelling, as the other methods' tables are.
+        let call = strings[1][i].as_ref();
+        out.call.push((call != UNASSIGNED_LABEL).then(|| {
+            *code.entry(call).or_insert_with(|| {
+                out.types
+                    .push(crate::annotate::markers::label_key(call).into());
+                out.types.len() - 1
+            })
+        }));
+        out.margin.push(nums[0][i] as f32);
+    }
+    Ok(Some(out))
+}
+
+/// Every cluster × type table the round records, read once: the
+/// enrichment's and SuSiE's, with `score`'s shares ([`ScoreCells::shares`])
+/// beside them. A table recorded but gone from disk is skipped.
+pub(crate) fn read_type_tables(loaded: &Loaded, mut score: Option<Table>) -> Result<TypeTables> {
+    let a = &loaded.manifest.annotate;
+    let mut tables = Vec::new();
+    for stat in Stat::ALL {
+        let rel = match stat {
+            Stat::Share => &a.cluster_celltype_q,
+            Stat::Nes => &a.cluster_celltype_nes,
+            Stat::P => &a.cluster_celltype_p,
+            Stat::Q => &a.cluster_celltype_q_values,
+            Stat::Pip => &a.cluster_celltype_pip,
+            Stat::Fold => &a.cluster_celltype_effect,
+            Stat::Explained => &a.cluster_celltype_explained,
+            Stat::Score => {
+                tables.extend(score.take().map(|t| (stat, t)));
+                continue;
+            }
+        };
+        match rel.as_deref().map(|r| (r, loaded.recorded(r))) {
+            Some((_, Some(path))) => tables.push((stat, read_table(&path)?)),
+            Some((r, None)) => log::warn!("{r} is recorded but gone: no {} evidence", stat.name()),
+            None => {}
+        }
+    }
+    Ok(TypeTables { tables })
+}
+
+/// The method whose reading made the round's call, as the round records it
+/// (`annotate.called_by`); for a round from before that, by the tables it
+/// records: SuSiE's, else the enrichment's share, else the score's per-cell
+/// table. `None` for a round with none of them.
+pub(crate) fn called_by(a: &super::run::RunAnnotate) -> Option<Method> {
+    if a.called_by.is_some() {
+        return a.called_by;
+    }
+    let susie = a.cluster_celltype_pip.is_some()
+        && a.cluster_celltype_effect.is_some()
+        && a.cluster_celltype_explained.is_some();
+    if susie {
+        Some(Method::Susie)
+    } else if a.cluster_celltype_q.is_some() {
+        Some(Method::Enrichment)
+    } else {
+        a.marker_score.is_some().then_some(Method::Score)
+    }
+}
+
+/// Every cluster's types with every method's evidence, cluster by cluster.
+pub(crate) fn type_evidence(loaded: &Loaded, cells: &Cells) -> Result<Vec<TypeEvidence>> {
+    let score = read_score_cells(loaded, cells)?.map(|s| s.shares(cells));
+    let tables = read_type_tables(loaded, score)?;
+    let ids: BTreeSet<ClusterId> = cells.clusters.iter().flatten().copied().collect();
+    Ok(ids.into_iter().flat_map(|id| tables.evidence(id)).collect())
+}
+
+/// Write `rows` as the long table `{out}.cluster_evidence.parquet`: cluster
+/// (`K{id}`), celltype, then each [`Stat`], NaN where it has none.
+fn write_type_evidence(path: &str, rows: &[TypeEvidence]) -> Result<()> {
+    use legume_numeric::matrix::parquet::{write_table, Column};
+    let cluster: Vec<Box<str>> = rows
+        .iter()
+        .map(|r| crate::figures::cluster_name(r.cluster).into())
+        .collect();
+    let celltype: Vec<Box<str>> = rows.iter().map(|r| r.label.as_str().into()).collect();
+    let stats: Vec<Vec<f32>> = Stat::ALL
+        .iter()
+        .map(|&s| rows.iter().map(|r| r.get(s).unwrap_or(f32::NAN)).collect())
+        .collect();
+    let mut columns: Vec<(Box<str>, Column)> = vec![
+        ("cluster".into(), Column::Str(&cluster)),
+        ("celltype".into(), Column::Str(&celltype)),
+    ];
+    columns.extend(
+        Stat::ALL
+            .iter()
+            .zip(&stats)
+            .map(|(s, v)| (s.name().into(), Column::F32(v))),
+    );
+    write_table(path, &columns)?;
+    info!("wrote {path}");
+    Ok(())
+}
+
 /// Build this round's digest, write `{out}.cluster_summary.json` and record
 /// it in the manifest (which the caller saves).
 pub fn write_summary(loaded: &mut Loaded, out_prefix: &str) -> Result<BTreeMap<ClusterId, Digest>> {
@@ -307,6 +460,17 @@ pub fn write_summary(loaded: &mut Loaded, out_prefix: &str) -> Result<BTreeMap<C
     fs::write(&path, serde_json::to_string_pretty(&d)?)?;
     info!("wrote {path}");
     loaded.manifest.annotate.cluster_summary = Some(rel_to_manifest(&loaded.dir, &path));
+    let evidence = format!("{out_prefix}{EVIDENCE}");
+    // A view of the tables just recorded: one that cannot be read costs the
+    // evidence table, never the round; the parent's is never kept.
+    loaded.manifest.annotate.cluster_evidence = None;
+    match type_evidence(loaded, &cells).and_then(|rows| write_type_evidence(&evidence, &rows)) {
+        Ok(()) => {
+            loaded.manifest.annotate.cluster_evidence =
+                Some(rel_to_manifest(&loaded.dir, &evidence));
+        }
+        Err(e) => log::warn!("no evidence table for this round: {e:#}"),
+    }
     Ok(d)
 }
 
@@ -773,7 +937,7 @@ fn relabel(
     // The score's per-cell calls hold over new clusters, but not over a new
     // panel: they were made on the old one.
     if p.marker_history.is_some() {
-        next.manifest.annotate.marker_score = None;
+        next.manifest.annotate.drop_marker_score();
     }
     let rel = |p: &str| Some(rel_to_manifest(&next.dir, p));
     if let Some(t) = &tables {
@@ -1483,32 +1647,79 @@ With several writers (a viewer and an agent), append each decision as one
 write of one newline-terminated line under 4 KB, so lines never interleave.";
 
 /// Print a round's digest and history, for a person or an agent deciding.
-pub fn run_review(args: &ReviewArgs) -> Result<()> {
-    let loaded = run::load(&args.from)?;
-    let digests: BTreeMap<ClusterId, Digest> = match &loaded.manifest.annotate.cluster_summary {
-        Some(rel) if Path::new(&resolve(&loaded.dir, rel)).is_file() => {
-            serde_json::from_str(&fs::read_to_string(resolve(&loaded.dir, rel))?)?
-        }
-        _ => {
-            let cells = read_cells(&loaded)?;
-            digest(&cells.clusters, &cells.labels, &read_evidence(&loaded)?)
+/// The round's digests: its summary when written, else built afresh.
+/// The round's digests: its summary when written, else built from `cells`
+/// (read when needed and not given).
+fn read_digests(loaded: &Loaded, cells: Option<&Cells>) -> Result<BTreeMap<ClusterId, Digest>> {
+    if let Some(path) =
+        (loaded.manifest.annotate.cluster_summary.as_deref()).and_then(|rel| loaded.recorded(rel))
+    {
+        return Ok(serde_json::from_str(&fs::read_to_string(path)?)?);
+    }
+    let read;
+    let cells = match cells {
+        Some(c) => c,
+        None => {
+            read = read_cells(loaded)?;
+            &read
         }
     };
-    let history = read_history(&loaded)?;
+    Ok(digest(
+        &cells.clusters,
+        &cells.labels,
+        &read_evidence(loaded)?,
+    ))
+}
+
+/// `review --json`: per cluster (all, or those in `clusters`), its digest,
+/// its history, each method's top type (`tops`, for the methods that put
+/// one forward) and every type's evidence (`types`).
+pub(crate) fn review_json(
+    loaded: &Loaded,
+    clusters: &[ClusterId],
+) -> Result<BTreeMap<ClusterId, Value>> {
+    // The cells give the score's shares over the current clusters; a round
+    // whose cells cannot be read is still reviewed from its summary.
+    let cells = read_cells(loaded)
+        .inspect_err(|e| log::warn!("review without the cells: {e:#}"))
+        .ok();
+    let digests = read_digests(loaded, cells.as_ref())?;
+    let history = read_history(loaded)?;
+    let score = match &cells {
+        Some(c) => read_score_cells(loaded, c)?.map(|s| s.shares(c)),
+        None => None,
+    };
+    let tables = read_type_tables(loaded, score)?;
+    Ok(digests
+        .iter()
+        .filter(|(id, _)| clusters.is_empty() || clusters.contains(id))
+        .map(|(id, d)| {
+            let types = tables.evidence(*id);
+            let tops: serde_json::Map<String, Value> = Method::ALL
+                .into_iter()
+                .filter_map(|m| {
+                    let top = m.ranked(&types).first()?.label.clone();
+                    Some((m.name().to_string(), top.into()))
+                })
+                .collect();
+            let h = history.get(id).cloned().unwrap_or_default();
+            let v = json!({ "digest": d, "history": h, "tops": tops, "types": types });
+            (*id, v)
+        })
+        .collect())
+}
+
+pub fn run_review(args: &ReviewArgs) -> Result<()> {
+    let loaded = run::load(&args.from)?;
     let wanted = |id: &ClusterId| args.cluster.is_empty() || args.cluster.contains(id);
 
     if args.json {
-        let out: BTreeMap<ClusterId, serde_json::Value> = digests
-            .iter()
-            .filter(|(id, _)| wanted(id))
-            .map(|(id, d)| {
-                let h = history.get(id).cloned().unwrap_or_default();
-                (*id, serde_json::json!({ "digest": d, "history": h }))
-            })
-            .collect();
+        let out = review_json(&loaded, &args.cluster)?;
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
+    let digests = read_digests(&loaded, None)?;
+    let history = read_history(&loaded)?;
     for (id, d) in digests.iter().filter(|(id, _)| wanted(id)) {
         print!(
             "{}",
