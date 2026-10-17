@@ -993,6 +993,17 @@ fn switching_runs_gives_the_order_view_the_edges_of_what_is_shown() {
     );
 }
 
+#[test]
+fn opening_a_run_with_no_trajectory_drops_the_earlier_ones_figures() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = figures_app(tmp.path());
+    app.trajectory_tui = true;
+    let fam = family_app(tmp.path());
+    app.source = fam.source.clone();
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    assert!(app.figures.is_none(), "X.L0 has no trajectory");
+}
+
 /// The form's marker panel, picked in the browser popup over it.
 fn browsing_for_markers(dir: &Path) -> App {
     let mut app = app_with_terms(false);

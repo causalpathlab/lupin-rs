@@ -2924,12 +2924,14 @@ impl App {
             self.target = annotated_path(&self.source, &self.args.out);
         }
         // Only `lupin trajectory`'s TUI shows a trajectory's figures.
+        // Another run's figures (and the edges read from them) never stay.
         let trajectory = pick.kind == Kind::Trajectory && self.trajectory_tui;
+        let shown = self.figures.take().is_none_or(|f| f.shown);
         if trajectory {
             let picker = self.picker().clone();
             match super::figure_pane::FigurePane::load(&[path], &picker) {
                 Ok(Some(mut v)) => {
-                    v.shown = self.figures.as_ref().is_none_or(|f| f.shown);
+                    v.shown = shown;
                     self.figures = Some(v);
                 }
                 Ok(None) => {}
