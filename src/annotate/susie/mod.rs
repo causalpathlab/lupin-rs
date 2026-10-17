@@ -97,7 +97,8 @@ pub struct ClusterFit {
     pub pip: Vec<f32>,
     /// Posterior mean effect θ per cell type (log fold of its markers).
     pub theta: Vec<f32>,
-    /// Each type's share of the log-likelihood θ gains.
+    /// Each type's share of the log-likelihood θ gains; the shares sum to at
+    /// most 1.
     pub explained: Vec<f32>,
     /// Credible sets: cell-type indices, most probable first.
     pub credible_sets: Vec<Vec<usize>>,
