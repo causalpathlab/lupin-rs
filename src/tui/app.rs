@@ -530,6 +530,10 @@ pub struct App {
     pub form: Option<Form>,
     /// The key guide is open.
     pub help_open: bool,
+    /// The guide's first line on screen, and how far it scrolls as last
+    /// drawn (0 when it fits).
+    pub help_scroll: usize,
+    pub help_scrolls: std::cell::Cell<usize>,
     pub prompt: Option<Prompt>,
     /// A choice among options (see [`super::menu`]), which takes keys.
     pub menu: Option<super::menu::Menu>,
@@ -621,6 +625,8 @@ impl App {
             tree_sel: 0,
             form: None,
             help_open: false,
+            help_scroll: 0,
+            help_scrolls: Default::default(),
             prompt: None,
             menu: None,
             log: Vec::new(),
@@ -2214,8 +2220,11 @@ impl App {
             }
         }
         if self.help_open {
-            // Any key closes the guide.
-            self.help_open = false;
+            // The arrows, pages and ends scroll the guide; any other key
+            // closes it.
+            if !step(&mut self.help_scroll, self.help_scrolls.get() + 1, k.code) {
+                self.help_open = false;
+            }
             return;
         }
         // `b` hides the running job's popup, or brings it back.
@@ -2225,6 +2234,7 @@ impl App {
         }
         if k.code == KeyCode::Char('?') {
             self.help_open = true;
+            self.help_scroll = 0;
             return;
         }
         if self.form.is_some() {

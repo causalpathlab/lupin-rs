@@ -1541,6 +1541,42 @@ fn question_mark_opens_the_guide_and_any_key_closes_it() {
 }
 
 #[test]
+fn a_guide_taller_than_the_screen_scrolls_and_says_there_is_more() {
+    for (trajectory, width, height) in [(true, 140, 45), (true, 200, 55), (false, 100, 30)] {
+        let mut app = app_with_terms(false);
+        app.trajectory_tui = trajectory;
+        press(&mut app, KeyCode::Char('?'));
+        let screen = drawn_in(&app, width, height).concat();
+        assert!(
+            screen.contains("↓ more"),
+            "{width}x{height}: cut, and says so"
+        );
+        assert!(
+            !screen.contains("a marker not enriched"),
+            "the marks are below"
+        );
+        for key in [KeyCode::Down, KeyCode::PageDown, KeyCode::Up, KeyCode::End] {
+            press(&mut app, key);
+            assert!(app.help_open, "{key:?} scrolls, it does not close");
+        }
+        let screen = drawn_in(&app, width, height).concat();
+        assert!(
+            screen.contains("a marker not enriched"),
+            "End shows the last"
+        );
+        assert!(!screen.contains("↓ more"), "nothing more below");
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.help_scroll, 0);
+        press(&mut app, KeyCode::PageDown);
+        assert!(app.help_scroll > 1, "a page");
+        press(&mut app, KeyCode::Char('x'));
+        assert!(!app.help_open, "any other key closes it");
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.help_scroll, 0, "it opens at the top");
+    }
+}
+
+#[test]
 fn gene_keys_add_and_drop_markers_and_backspace_undoes_the_last() {
     use super::super::round::Edit;
     let mut app = app_with_terms(false);

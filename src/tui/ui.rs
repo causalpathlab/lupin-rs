@@ -79,7 +79,7 @@ fn draw_overlays(f: &mut Frame, app: &App, menu_area: Rect) {
         draw_settings(f, app, form);
     }
     if app.help_open {
-        draw_guide(f, app.trajectory_tui);
+        draw_guide(f, app);
     }
     draw_progress(f, app);
     if app.prompt.is_some() {
@@ -503,7 +503,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
     (
         "anywhere",
         &[
-            ("?", "this guide (any key closes it)"),
+            ("?", "this guide (↑↓, pgup/dn and home/end scroll it, any other key closes it)"),
             (
                 "tab / shift-tab",
                 "next / previous pane: clusters → genes → tree → candidates → GO terms (when scored)",
@@ -677,7 +677,9 @@ fn guide_section(section: &str, keys: &[(&str, &str)], width: usize) -> Vec<Line
     lines
 }
 
-fn draw_guide(f: &mut Frame, trajectory: bool) {
+/// The guide, scrolled to `app.help_scroll` when taller than the screen.
+fn draw_guide(f: &mut Frame, app: &App) {
+    let trajectory = app.trajectory_tui;
     let screen = f.area();
     // Two columns side by side when the terminal is wide enough.
     let columns: u16 = if screen.width >= 150 { 2 } else { 1 };
@@ -706,9 +708,19 @@ fn draw_guide(f: &mut Frame, trajectory: bool) {
     }
     let tallest = cols.iter().map(Vec::len).max().unwrap_or(0);
     let height = (tallest as u16 + 2).min(screen.height);
+    // The columns scroll together; the key that reaches past the end is
+    // held at it.
+    let scrolls = tallest.saturating_sub(usize::from(height.saturating_sub(2)));
+    app.help_scrolls.set(scrolls);
+    let at = app.help_scroll.min(scrolls);
+    let hint = match (scrolls, at < scrolls) {
+        (0, _) => " any key closes ",
+        (_, true) => " ↓ more · ↑↓ pgup/dn home/end scroll · any other key closes ",
+        (_, false) => " ↑↓ pgup/dn home/end scroll · any other key closes ",
+    };
     let area = centered(screen, width, height);
     f.render_widget(Clear, area);
-    let block = popup(" keys ".into(), " any key closes ");
+    let block = popup(" keys ".into(), hint);
     let inner = block.inner(area);
     f.render_widget(block.style(POPUP), area);
     let parts = Layout::horizontal(vec![
@@ -717,7 +729,8 @@ fn draw_guide(f: &mut Frame, trajectory: bool) {
     ])
     .split(inner);
     for (lines, part) in cols.into_iter().zip(parts.iter()) {
-        f.render_widget(Paragraph::new(lines).style(POPUP), *part);
+        let shown: Vec<Line> = lines.into_iter().skip(at).collect();
+        f.render_widget(Paragraph::new(shown).style(POPUP), *part);
     }
 }
 
