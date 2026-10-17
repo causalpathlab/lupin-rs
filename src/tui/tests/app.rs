@@ -2039,7 +2039,7 @@ fn the_cluster_list_shows_a_susie_calls_share_not_its_pip() {
     assert_eq!(
         cluster_list_header(true),
         ["", "cells", "label", "explains", "fold", ""],
-        "named apart from the enrichment's share, which a rescore puts in its place"
+        "named apart from the enrichment's share"
     );
     let mut no_susie = cand.clone();
     (no_susie.evidence.pip, no_susie.evidence.fold) = (None, None);
@@ -2762,5 +2762,65 @@ fn the_candidates_value_column_follows_the_method_they_are_sorted_by() {
     assert!(
         screen.contains("susie") && screen.contains("0.33"),
         "{screen}"
+    );
+}
+
+#[test]
+fn a_rescored_susie_round_keeps_its_call_and_says_what_is_from_before_the_edit() {
+    use crate::annotate::rounds::{Method, TypeEvidence};
+    let mut app = app_with_terms(false);
+    let r = app.round.as_mut().unwrap();
+    r.by = Some(Method::Susie);
+    let e = TypeEvidence {
+        label: "CT1".into(),
+        enrichment: Some(0.7),
+        pip: Some(1.0),
+        fold: Some(6.0),
+        explained: Some(0.6),
+        ..TypeEvidence::default()
+    };
+    (r.clusters[0].candidates, r.clusters[0].shares) =
+        super::super::round::ranked_view(&[e], Method::Susie);
+    let flagged = r.clusters[0].flagged();
+    app.show_scores(
+        r#"{"scores": {"0": [{"label": "CT1", "share": 0.2, "nes": 1.0, "p": 0.01, "q": 0.05}]}}"#,
+    );
+    let c = &app.round.as_ref().unwrap().clusters[0];
+    assert_eq!(
+        (c.candidates[0].pip, c.candidates[0].enrichment),
+        (Some(1.0), Some(0.2))
+    );
+    assert_eq!(
+        c.flagged(),
+        flagged,
+        "no flag for what the rescore did not redo"
+    );
+    assert!(drawn(&app).contains("before the edit"), "{}", drawn(&app));
+    // A label's reason says which of its numbers are from before the edit.
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('1'));
+    let why = &app.prompt.as_ref().expect("asks why").text;
+    assert!(why.contains("SuSiE's from before"), "{why}");
+}
+
+#[test]
+fn a_saved_round_called_by_another_method_says_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.source = tmp.path().join("X.L0.senna.json");
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    // A SuSiE round whose save, with a marker edit, has no SuSiE call.
+    app.round.as_mut().unwrap().by = Some(crate::annotate::rounds::Method::Susie);
+    let text = std::fs::read_to_string(tmp.path().join("X.L0.senna.json")).unwrap();
+    std::fs::write(tmp.path().join("X.L0.r1.senna.json"), text).unwrap();
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    child.wait().unwrap();
+    app.child = Some(Running::new(child, Job::Save(0)));
+    app.tick();
+    assert!(app.shown_manifest().ends_with("X.L0.r1.senna.json"));
+    assert!(
+        app.status.contains("a save does not redo susie"),
+        "{}",
+        app.status
     );
 }

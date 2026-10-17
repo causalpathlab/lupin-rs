@@ -638,8 +638,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 /// The cluster list's header: a SuSiE round's calls show the share of the
 /// deviance they explain and their fold, not their PIP (a type's inclusion
 /// in the cluster's model, near 1 for every type a mixed cluster holds,
-/// which beside the call reads as certainty); otherwise the enrichment's
-/// share, named apart so a rescore's switch shows.
+/// which beside the call reads as certainty; a rescoring keeps them, from
+/// before the edit); otherwise the enrichment's share.
 pub(super) fn cluster_list_header(susie: bool) -> Vec<&'static str> {
     if susie {
         vec!["", "cells", "label", "explains", "fold", ""]
@@ -674,6 +674,8 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let susie = r.clusters.iter().any(|c| c.call_evidence().is_some());
+    // SuSiE's readings stay from before the edit while a rescoring is shown.
+    let stale = susie && app.recorded.is_some();
     let rows: Vec<Row> = r
         .clusters
         .iter()
@@ -694,13 +696,23 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
                 .iter()
                 .find(|t| key.as_deref() == Some(label_key(&t.label).as_str()));
             let evidence = cluster_list_evidence(susie, of_label);
-            let mut cells = vec![
+            let mut cells: Vec<Cell> = [
                 crate::figures::cluster_name(c.id),
                 c.cells.to_string(),
                 shown,
-            ];
-            cells.extend(evidence);
-            cells.push(flag.to_string());
+            ]
+            .into_iter()
+            .map(Cell::from)
+            .collect();
+            cells.extend(evidence.into_iter().map(|e| {
+                let cell = Cell::from(e);
+                if stale {
+                    cell.dim()
+                } else {
+                    cell
+                }
+            }));
+            cells.push(Cell::from(flag));
             let row = Row::new(cells);
             if app.edited(c.id) {
                 row.yellow()
@@ -872,6 +884,11 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     let pinned = pinned_label(app);
     // The value column is the reading of the method the list is sorted by.
     let by = app.cand_method();
+    // While a rescoring is shown, only the enrichment's readings are of the
+    // edited panel: SuSiE's and the score's are dimmed, from before the edit.
+    let stale = app.recorded.is_some();
+    let dim_if = |cell: Cell<'static>, old: bool| if stale && old { cell.dim() } else { cell };
+    let value_old = by != crate::annotate::rounds::Method::Enrichment;
     // Only the rows that fit are built, from the one that keeps the
     // selection in sight; the pinned label stays on top.
     let height = usize::from(area.height.saturating_sub(3))
@@ -894,20 +911,26 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             let row = Row::new(vec![
                 Cell::from(key).cyan(),
                 Cell::from(cand.label.clone()),
-                Cell::from(num(value, 2)),
-                Cell::from(value.map(bar).unwrap_or_default()).fg(
-                    if value.is_some_and(|v| v >= CONTESTED) {
-                        Color::Green
-                    } else {
-                        Color::Yellow
-                    },
+                dim_if(Cell::from(num(value, 2)), value_old),
+                dim_if(
+                    Cell::from(value.map(bar).unwrap_or_default()).fg(
+                        if value.is_some_and(|v| v >= CONTESTED) {
+                            Color::Green
+                        } else {
+                            Color::Yellow
+                        },
+                    ),
+                    value_old,
                 ),
-                Cell::from(num(cand.pip, 2)),
-                Cell::from(cand.fold.map_or_else(|| "—".into(), |f| format!("×{f:.1}"))),
+                dim_if(Cell::from(num(cand.pip, 2)), true),
+                dim_if(
+                    Cell::from(cand.fold.map_or_else(|| "—".into(), |f| format!("×{f:.1}"))),
+                    true,
+                ),
                 Cell::from(num(cand.nes, 2)),
                 Cell::from(pval(cand.p)),
                 Cell::from(pval(cand.q)),
-                Cell::from(num(cand.score, 2)),
+                dim_if(Cell::from(num(cand.score, 2)), true),
             ]);
             if now.as_deref() == Some(cand.label.as_str()) {
                 row.bold()
@@ -1011,8 +1034,18 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         .bold(),
     )
     .block(
-        pane(title, focused)
-            .title_bottom(Line::from(format!(" {} ", path.unwrap_or_default())).cyan()),
+        pane(title, focused).title_bottom(
+            Line::from(format!(
+                " {}{} ",
+                if stale {
+                    "dim: before the edit · "
+                } else {
+                    ""
+                },
+                path.unwrap_or_default()
+            ))
+            .cyan(),
+        ),
     )
     .row_highlight_style(highlight(focused));
     let at = app.cand_sel.saturating_sub(start) + usize::from(pinned.is_some());

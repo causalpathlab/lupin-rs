@@ -477,13 +477,15 @@ impl RoundView {
 /// or a rescoring gave them.
 pub type Scores = BTreeMap<ClusterId, (Vec<Candidate>, Vec<(String, f32)>)>;
 
+/// Per cluster, the enrichment's readings of every type, as a rescoring of
+/// the edited panel gives them.
+pub type Rescored = BTreeMap<ClusterId, Vec<TypeEvidence>>;
+
 /// A `lupin relabel --preview`'s `scores` (per cluster id, each type's
-/// share, NES, p and q) as candidates and shares, ranked by the
-/// enrichment: the rescoring is of the edited panel, which the round's other
-/// readings (SuSiE's, the score's) were not made on. `None` when the preview
-/// has no scores.
+/// share, NES, p and q): the enrichment of the edited panel, the only
+/// reading a preview redoes. `None` when the preview has no scores.
 #[must_use]
-pub fn parse_scores(preview: &serde_json::Value) -> Option<Scores> {
+pub fn parse_scores(preview: &serde_json::Value) -> Option<Rescored> {
     let num = |v: &serde_json::Value| v.as_f64().map(|x| x as f32);
     preview["scores"]
         .as_object()?
@@ -506,12 +508,59 @@ pub fn parse_scores(preview: &serde_json::Value) -> Option<Scores> {
                 })
                 .filter(|e| e.as_ref().is_none_or(|e| e.label != UNASSIGNED_LABEL))
                 .collect::<Option<_>>()?;
-            Some((id, ranked_view(&evidence, Method::Enrichment)))
+            Some((id, evidence))
         })
         .collect()
 }
 
 impl RoundView {
+    /// The clusters' candidates and shares with `rescored`'s enrichment in
+    /// place of theirs, listed by the round's method as the round lists
+    /// them. SuSiE's and the score's readings, which were made on the panel
+    /// before the edits and a rescoring does not redo, stay as the round's
+    /// own candidates (`recorded`'s, while a rescoring is shown) have them:
+    /// out of date, but no call is dropped or flagged for want of them.
+    #[must_use]
+    pub fn rescored(&self, recorded: Option<&Scores>, rescored: &Rescored) -> Scores {
+        let by = self.by.unwrap_or_default();
+        self.clusters
+            .iter()
+            .filter_map(|c| {
+                let new = rescored.get(&c.id)?;
+                let (own, shares) = recorded
+                    .and_then(|r| r.get(&c.id))
+                    .map_or((&c.candidates, &c.shares), |(o, s)| (o, s));
+                let mut evidence: Vec<TypeEvidence> = own
+                    .iter()
+                    .map(|t| TypeEvidence {
+                        enrichment: None,
+                        nes: None,
+                        p: None,
+                        q: None,
+                        ..t.evidence.clone()
+                    })
+                    .collect();
+                for e in new {
+                    let key = label_key(&e.label);
+                    match evidence.iter_mut().find(|t| label_key(&t.label) == key) {
+                        Some(t) => {
+                            (t.enrichment, t.nes, t.p, t.q) = (e.enrichment, e.nes, e.p, e.q)
+                        }
+                        None => evidence.push(e.clone()),
+                    }
+                }
+                let (candidates, new_shares) = ranked_view(&evidence, by);
+                // Only the enrichment's shares were redone.
+                let shares = if by == Method::Enrichment {
+                    new_shares
+                } else {
+                    shares.clone()
+                };
+                Some((c.id, (candidates, shares)))
+            })
+            .collect()
+    }
+
     /// Show `scores` in place of the clusters' own; the ones replaced, to
     /// put back.
     pub fn swap_scores(&mut self, mut scores: Scores) -> Scores {

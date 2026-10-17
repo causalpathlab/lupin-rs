@@ -235,7 +235,7 @@ fn rescored_scores_replace_a_clusters_and_swap_back() {
         {"label": "unassigned", "share": 0.5, "nes": null, "p": null, "q": null}
     ]}});
     let mut r = round();
-    let scores = parse_scores(&preview).unwrap();
+    let scores = r.rescored(None, &parse_scores(&preview).unwrap());
     let (candidates, shares) = &scores[&0];
     assert_eq!(
         candidates
@@ -246,11 +246,11 @@ fn rescored_scores_replace_a_clusters_and_swap_back() {
         "a type with no share is no candidate, nor unassigned"
     );
     assert_eq!(candidates[0].nes, Some(2.1));
-    assert_eq!(shares.len(), 3, "every type keeps its share");
+    assert_eq!(shares.len(), 3, "every rescored type has its share");
     assert_eq!(
         candidates[0].ranks,
         [Some(0), None, None],
-        "ranked by the rescored enrichment alone"
+        "an enrichment round is ranked by the rescored enrichment"
     );
 
     let old = r.swap_scores(scores);
@@ -528,4 +528,49 @@ fn the_choices_are_every_methods_top_three_firsts_first() {
     ];
     let labels: Vec<&str> = choices(&cands).iter().map(|c| c.label.as_str()).collect();
     assert_eq!(labels, ["A", "B", "C", "D"]);
+}
+
+#[test]
+fn a_rescore_keeps_the_rounds_method_and_the_readings_it_did_not_redo() {
+    use crate::annotate::rounds::Method;
+    let mut r = round();
+    r.by = Some(Method::Susie);
+    // SuSiE calls CT1, sure and well ahead; the score agrees.
+    let mut ct1 = susie_candidate("CT1", 1.0, 0.6);
+    (ct1.evidence.explained, ct1.evidence.score) = (Some(0.6), Some(0.7));
+    let mut ct2 = susie_candidate("CT2", 0.99, 0.1);
+    ct2.evidence.explained = Some(0.1);
+    let (candidates, shares) = ranked_view(&[ct1.evidence, ct2.evidence], Method::Susie);
+    (r.clusters[0].candidates, r.clusters[0].shares) = (candidates, shares.clone());
+    let flagged = r.clusters[0].flagged();
+
+    // The edit moves the enrichment to CT2.
+    let preview = serde_json::json!({"scores": {"0": [
+        {"label": "CT2", "share": 0.9, "nes": 2.0, "p": 1e-4, "q": 1e-3},
+        {"label": "CT1", "share": 0.1, "nes": 0.5, "p": 0.2, "q": 0.4}
+    ]}});
+    let scores = r.rescored(None, &parse_scores(&preview).unwrap());
+    let (c, rescored_shares) = &scores[&0];
+    let labels: Vec<&str> = c.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["CT1", "CT2"], "still in SuSiE's order");
+    assert_eq!((c[0].pip, c[0].score), (Some(1.0), Some(0.7)), "kept");
+    assert_eq!(
+        (c[0].enrichment, c[0].nes),
+        (Some(0.1), Some(0.5)),
+        "rescored"
+    );
+    assert_eq!(c[0].share, 0.6, "the share is still SuSiE's");
+    assert_eq!(c[1].ranks[Method::Enrichment.index()], Some(0));
+    assert_eq!(rescored_shares, &shares, "SuSiE's shares stand");
+    assert!(!scores.contains_key(&1), "K1 was not rescored");
+
+    // Rescored again, the kept readings are still the round's own.
+    let recorded = r.swap_scores(scores);
+    let again = r.rescored(Some(&recorded), &parse_scores(&preview).unwrap());
+    assert_eq!(again[&0].0[0].pip, Some(1.0));
+    assert_eq!(
+        r.clusters[0].flagged(),
+        flagged,
+        "no flag for what was not redone"
+    );
 }

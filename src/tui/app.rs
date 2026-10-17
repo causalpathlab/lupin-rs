@@ -742,6 +742,7 @@ impl App {
                     Job::Save(n) => self.edits.split_off(n.min(self.edits.len())),
                     _ => Vec::new(),
                 };
+                let by_before = self.round.as_ref().and_then(|r| r.by);
                 self.open(&latest);
                 self.settings_base = if job == Job::Pass { None } else { base };
                 if self.in_order() {
@@ -749,12 +750,31 @@ impl App {
                 }
                 let kept = later.len();
                 self.edits = later;
+                // A marker edit's save drops SuSiE's and the score's
+                // readings, made on the old panel: the new round's call is
+                // another method's, which may flag other clusters.
+                let by_after = self.round.as_ref().and_then(|r| r.by);
+                let saved_other = |b: &crate::annotate::rounds::Method| {
+                    matches!(job, Job::Save(_)) && by_after != Some(*b)
+                };
+                let called = match by_before.filter(saved_other) {
+                    Some(before) => {
+                        let note = format!(
+                            ", called by {}: a save does not redo {}'s call (r re-runs the pass)",
+                            by_after.unwrap_or_default().name(),
+                            before.name()
+                        );
+                        self.push_log(format!("the new round is{note}"));
+                        note
+                    }
+                    None => String::new(),
+                };
                 let done = match job {
                     Job::Save(n) if kept > 0 => format!(
-                        "saved {n} edit(s), {kept} made since still unsaved; {}",
+                        "saved {n} edit(s){called}, {kept} made since still unsaved; {}",
                         self.export()
                     ),
-                    Job::Save(n) => format!("saved {n} edit(s); {}", self.export()),
+                    Job::Save(n) => format!("saved {n} edit(s){called}; {}", self.export()),
                     _ => format!("pass done in {secs}s"),
                 };
                 self.status = format!("{done}. {}", self.status);
@@ -978,12 +998,13 @@ impl App {
             Ok(v) => v,
             Err(_) => return self.rescore_failed("rescoring gave no readable result; see the log"),
         };
-        let scores = super::round::parse_scores(&preview);
-        let Some(scores) = scores else {
+        let rescored = super::round::parse_scores(&preview);
+        let Some(rescored) = rescored else {
             return self
                 .rescore_failed("this round cannot be rescored: marker edits are scored on save");
         };
         let Some(round) = &mut self.round else { return };
+        let scores = round.rescored(self.recorded.as_ref(), &rescored);
         let old = round.swap_scores(scores);
         // The round's own are what is kept, across several rescorings.
         if self.recorded.is_none() {
@@ -1061,8 +1082,8 @@ impl App {
     }
 
     /// The method the candidates are listed by: the one chosen (`S`), else
-    /// the round's, while it ranks the selected cluster's candidates (a
-    /// rescoring ranks by the enrichment alone); else the first that does.
+    /// the round's, while it ranks the selected cluster's candidates; else
+    /// the first that does.
     pub fn cand_method(&self) -> crate::annotate::rounds::Method {
         use crate::annotate::rounds::Method;
         let ranks = |m: &Method| {
@@ -1252,12 +1273,13 @@ impl App {
         let label = self
             .current_label()
             .unwrap_or_else(|| UNASSIGNED_LABEL.into());
-        let reason = match c.candidates.iter().find(|t| t.label == label) {
+        let own = c.candidates.iter().find(|t| t.label == label);
+        let reason = match own {
             Some(t) => format!("keep {label} ({})", evidence(t)),
             None => format!("keep {label}"),
         };
         let id = c.id;
-        let reason = self.rescored_note(reason);
+        let reason = self.rescored_note(reason, own);
         self.prompt = Some(Prompt {
             title: format!(" K{id} keeps {label}: why? "),
             text: reason,
@@ -1663,16 +1685,33 @@ impl App {
             ),
             _ => format!("top candidate {} ({})", pick.label, evidence(&pick)),
         };
-        let reason = self.rescored_note(reason);
+        let reason = self.rescored_note(reason, Some(&pick));
         self.ask_label(pick.evidence.label, reason, None);
     }
 
-    /// `reason`, noting when the numbers it quotes are a rescoring's.
-    fn rescored_note(&self, reason: String) -> String {
-        if self.recorded.is_some() {
+    /// `reason`, noting when the numbers it quotes of candidate `t` are a
+    /// rescoring's, and which a rescoring did not redo.
+    fn rescored_note(&self, reason: String, t: Option<&super::round::Candidate>) -> String {
+        if self.recorded.is_none() {
+            return reason;
+        }
+        let old: Vec<&str> = t
+            .into_iter()
+            .flat_map(|t| {
+                [
+                    (t.pip.is_some(), "SuSiE's"),
+                    (t.score.is_some(), "the score's"),
+                ]
+            })
+            .filter_map(|(has, name)| has.then_some(name))
+            .collect();
+        if old.is_empty() {
             format!("{reason}; rescored with the marker edits")
         } else {
-            reason
+            format!(
+                "{reason}; the enrichment's rescored with the marker edits, {} from before them",
+                old.join(" and ")
+            )
         }
     }
 
