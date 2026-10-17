@@ -1658,6 +1658,28 @@ fn the_projection_row_cycles_the_runs_choice_the_score_and_the_ora() {
 }
 
 #[test]
+fn the_counts_note_is_checked_again_each_time_the_form_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    app.source = dir.path().join("run.senna.json");
+    std::fs::write(
+        &app.source,
+        r#"{"version": 2, "kind": "svd", "prefix": "run",
+            "data": {"input": ["a.zarr.zip"]}}"#,
+    )
+    .unwrap();
+    let note = |app: &App| app.form.as_ref().unwrap().expression.clone();
+    press(&mut app, KeyCode::Char('r'));
+    assert!(note(&app).is_some_and(|n| n.contains("will fail")));
+    press(&mut app, KeyCode::Esc);
+    // The counts are reachable now: the form, opened again, says nothing.
+    std::fs::write(dir.path().join("a.zarr.zip"), "").unwrap();
+    press(&mut app, KeyCode::Char('r'));
+    assert_eq!(note(&app), None);
+}
+
+#[test]
 fn the_counts_note_is_the_enrichments_and_not_shown_for_projection() {
     use crate::annotate_cmd::AnnotateMethod;
     let mut app = app_with_terms(false);
