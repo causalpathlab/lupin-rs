@@ -3089,7 +3089,14 @@ impl App {
     /// annotation form, which stays open to run).
     pub fn set_markers(&mut self, path: Option<&Path>) {
         let Some(path) = path else {
-            self.status = "no marker panel picked".into();
+            self.status = if self.args.markers.is_empty() {
+                "no marker panel picked".into()
+            } else {
+                format!(
+                    "kept the marker panel {}",
+                    file_name(Path::new(self.args.markers.as_ref()))
+                )
+            };
             return;
         };
         let p = path.to_string_lossy();

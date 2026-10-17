@@ -1011,6 +1011,37 @@ fn the_browser_popup_picks_the_forms_marker_panel_and_draws_over_it() {
 }
 
 #[test]
+fn the_browser_shows_the_end_of_a_long_folder_and_esc_keeps_the_panel() {
+    let root = tempfile::tempdir().unwrap();
+    let deep = root
+        .path()
+        .join("a".repeat(60))
+        .join("b".repeat(60))
+        .join("annotate_here");
+    std::fs::create_dir_all(&deep).unwrap();
+    let mut app = browsing_for_markers(&deep);
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut term = ratatui::Terminal::new(backend).unwrap();
+    term.draw(|f| super::super::ui::draw(f, &app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        screen.contains("annotate_here"),
+        "the folder's own name: {screen}"
+    );
+    // Cancelled, an earlier panel stays and the status says so.
+    app.args.markers = "earlier.tsv".into();
+    press(&mut app, KeyCode::Esc);
+    assert!(app.status.contains("earlier.tsv"), "{}", app.status);
+    assert!(!app.status.contains("no marker panel"), "{}", app.status);
+}
+
+#[test]
 fn esc_closes_the_browser_popup_and_leaves_the_form() {
     let root = tempfile::tempdir().unwrap();
     let mut app = browsing_for_markers(root.path());

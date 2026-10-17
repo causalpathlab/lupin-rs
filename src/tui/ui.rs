@@ -115,11 +115,24 @@ fn draw_browser(f: &mut Frame, b: &super::picker::Picker) {
         Constraint::Min(1),
     ])
     .areas(inner);
+    // A long folder keeps its end, where its own name is.
+    let path = b.dir().display().to_string();
     f.render_widget(
-        Paragraph::new(b.dir().display().to_string()).style(POPUP.fg(Color::Indexed(245))),
+        Paragraph::new(tail(&path, dir.width as usize)).style(POPUP.fg(Color::Indexed(245))),
         dir,
     );
     b.draw_list(f, list);
+}
+
+/// `text` in `width` columns: its end, after `…`, when it is longer.
+fn tail(text: &str, width: usize) -> String {
+    let n = text.chars().count();
+    if n <= width {
+        return text.to_string();
+    }
+    let keep = width.saturating_sub(1);
+    let rest: String = text.chars().skip(n - keep).collect();
+    format!("…{rest}")
 }
 
 /// The trajectory's order view: the clusters on the left, the ordering (or
