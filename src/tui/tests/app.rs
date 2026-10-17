@@ -1313,11 +1313,11 @@ fn arrows_on_a_form_row_that_changes_nothing_leave_the_round_current() {
         app.form.as_mut().unwrap().row = setting_row(&app.args, s);
         press(&mut app, KeyCode::Left);
         press(&mut app, KeyCode::Right);
-        assert!(!app.stale, "{s:?} changed nothing");
+        assert!(!app.stale(), "{s:?} changed nothing");
     }
     app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
     press(&mut app, KeyCode::Right);
-    assert!(app.stale, "knn changed");
+    assert!(app.stale(), "knn changed");
 }
 
 #[test]
@@ -2491,4 +2491,44 @@ fn q_closes_a_menu_as_esc_does_and_the_hints_say_so() {
         .map(|(_, what)| what)
         .unwrap();
     assert!(q.contains("closes a menu"), "{q}");
+}
+
+#[test]
+fn the_settings_note_goes_once_a_pass_runs_with_them_or_they_are_set_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    let knn = |app: &mut App, right: bool| {
+        app.form = Some(Form::default());
+        app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
+        press(app, if right { KeyCode::Right } else { KeyCode::Left });
+        app.form = None;
+    };
+    knn(&mut app, true);
+    assert!(app.stale());
+    knn(&mut app, false);
+    assert!(!app.stale(), "set back: the round is current again");
+
+    knn(&mut app, true);
+    running(&mut app);
+    assert!(!app.stale(), "the pass running has them");
+    assert!(!drawn(&app).contains("settings changed"));
+    app.stop();
+    assert!(app.stale(), "stopped, it never reached the round");
+
+    // A save's round was made with the settings of the round before it.
+    let text = std::fs::read_to_string(tmp.path().join("X.L0.senna.json")).unwrap();
+    std::fs::write(tmp.path().join("X.L0.r1.senna.json"), text).unwrap();
+    let done = |app: &mut App, job: Job| {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        child.wait().unwrap();
+        app.child = Some(Running::new(child, job));
+        app.tick();
+    };
+    done(&mut app, Job::Save(0));
+    assert!(app.shown_manifest().ends_with("X.L0.r1.senna.json"));
+    assert!(app.stale(), "a save keeps the note");
+    app.target = tmp.path().join("X.L9.senna.json");
+    done(&mut app, Job::Pass);
+    assert!(!app.stale(), "a pass done ran with them");
 }

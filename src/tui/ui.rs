@@ -604,7 +604,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if !app.edits.is_empty() {
         spans.push(Span::from(format!("· {} unsaved ", app.edits.len())).yellow());
     }
-    if app.stale {
+    if app.stale() {
         spans.push(
             // Neither key runs while a job does.
             Span::from(if app.child.is_some() {

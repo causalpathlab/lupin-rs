@@ -536,8 +536,9 @@ pub struct App {
     /// When a key last left a reply in the status: while it is recent the
     /// running job's progress does not replace it.
     replied: Option<Instant>,
-    /// Settings changed since the round on screen was made.
-    pub stale: bool,
+    /// The pass settings before the first change made since the round on
+    /// screen (see [`App::stale`]); none while unchanged.
+    settings_base: Option<Vec<String>>,
     /// A key that asked to be pressed again, and when: the question lapses
     /// after [`KEY_REPLY_HOLD`].
     armed: Option<(Armed, Instant)>,
@@ -616,7 +617,7 @@ impl App {
             recorded: None,
             status: "r: run a pass".into(),
             replied: None,
-            stale: false,
+            settings_base: None,
             armed: None,
             quit: false,
             shift_enter: false,
@@ -720,6 +721,9 @@ impl App {
                     _ => self.target.clone(),
                 };
                 let (latest, _) = chain_rounds(&saved);
+                // A save's round was made with the settings of the one before
+                // it, so a change to them still waits; a pass ran with them.
+                let base = self.settings_base.take();
                 // Edits made while a save ran were not in it: carry them into
                 // the new round (a save keeps the clusters' ids).
                 let later = match job {
@@ -727,6 +731,7 @@ impl App {
                     _ => Vec::new(),
                 };
                 self.open(&latest);
+                self.settings_base = if job == Job::Pass { None } else { base };
                 if self.in_order() {
                     self.reload_order();
                 }
@@ -813,7 +818,7 @@ impl App {
         self.marked.clear();
         self.tree_marked.clear();
         self.gene_sel = 0;
-        self.stale = false;
+        self.settings_base = None;
         self.cluster_sel = self.cluster_sel.min(self.n_clusters().saturating_sub(1));
         self.sync_map_focus();
     }
@@ -1414,6 +1419,17 @@ impl App {
             k <= saving || e.cluster() != id
         });
         self.edits.push(edit);
+    }
+
+    /// Whether the pass settings differ from those the round on screen was
+    /// made with (as they stood when it was shown): not while a pass runs
+    /// with them, nor once they are set back.
+    pub fn stale(&self) -> bool {
+        !self.pass_running()
+            && self
+                .settings_base
+                .as_ref()
+                .is_some_and(|b| *b != pass_settings(&self.args))
     }
 
     /// Whether a pass is running, which is about to replace the clusters.
@@ -2242,11 +2258,10 @@ impl App {
                 step(&mut form.row, rows.len(), code);
             }
             KeyCode::Left | KeyCode::Right => {
-                // Stale only when the pass's arguments really changed.
-                let before = self.args.to_argv();
+                let before = pass_settings(&self.args);
                 at.adjust(&mut self.args, code == KeyCode::Right);
-                if self.args.to_argv() != before {
-                    self.stale = self.round.is_some();
+                if self.round.is_some() {
+                    self.settings_base.get_or_insert(before);
                 }
             }
             KeyCode::Enter if self.shift_enter && k.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -3712,6 +3727,21 @@ impl Drop for App {
         }
         self.stop_rescoring();
     }
+}
+
+/// A pass's arguments but its output, which is where it writes and not how.
+fn pass_settings(args: &AnnotateCliArgs) -> Vec<String> {
+    let argv = args.to_argv();
+    let mut kept = Vec::with_capacity(argv.len());
+    let mut it = argv.into_iter();
+    while let Some(a) = it.next() {
+        if a == "--out" {
+            it.next();
+        } else {
+            kept.push(a);
+        }
+    }
+    kept
 }
 
 /// The status line when a trajectory menu is closed without a choice.
