@@ -2981,6 +2981,23 @@ fn after_a_trajectory_run_g_marks_the_new_trajectory() {
 }
 
 #[test]
+fn a_trajectory_done_names_its_manifest_once_in_the_header() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.trajectory_tui = true;
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    let made = tmp.path().join("X.T1.senna.json");
+    app.trajectory_done(&made, 211);
+    assert!(
+        app.status.starts_with("trajectory done in 211s"),
+        "{}",
+        app.status
+    );
+    let header = &drawn_in(&app, 200, 40)[0];
+    assert_eq!(header.matches("X.T1.senna.json").count(), 1, "{header}");
+}
+
+#[test]
 fn clusters_from_the_manifest_leave_the_leiden_rows_fixed_and_passed_over() {
     use super::super::app::{setting_row, Setting};
     let mut app = app_with_terms(false);
@@ -3203,10 +3220,17 @@ fn a_saved_round_called_by_another_method_says_so() {
     finished(&mut app, Job::Save(0));
     assert!(app.shown_manifest().ends_with("X.L0.r1.senna.json"));
     assert!(
-        app.status.contains("a save does not redo susie"),
+        app.status.starts_with(
+            "saved 0 edit(s), called by enrichment: susie's call needs a new pass (r)"
+        ),
         "{}",
         app.status
     );
+    // The files go to the log; the status keeps to what to do next.
+    assert!(!app.status.contains(".senna.json"), "{}", app.status);
+    assert!(!app.status.contains(".parquet"), "{}", app.status);
+    assert!(app.status.contains("to look at"), "{}", app.status);
+    assert!(app.log.iter().any(|l| l.contains("does not redo susie")));
 }
 
 #[test]

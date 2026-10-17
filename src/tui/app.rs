@@ -785,25 +785,39 @@ impl App {
                 };
                 let called = match by_before.filter(saved_other) {
                     Some(before) => {
-                        let note = format!(
-                            "called by {}: a save does not redo {}'s call (r re-runs the pass)",
-                            by_after.unwrap_or_default().name(),
+                        let after = by_after.unwrap_or_default().name();
+                        self.push_log(format!(
+                            "the new round is called by {after}: a save does not redo {}'s call (r re-runs the pass)",
                             before.name()
-                        );
-                        self.push_log(format!("the new round is {note}"));
-                        format!(", {note}")
+                        ));
+                        format!(
+                            ", called by {after}: {}'s call needs a new pass (r)",
+                            before.name()
+                        )
                     }
                     None => String::new(),
+                };
+                // The status keeps to what to do next: the files exported
+                // are named in the log.
+                let exported = |app: &mut Self| match app.export() {
+                    Ok(_) => "labels and markers exported".to_string(),
+                    Err(e) => e,
                 };
                 let done = match job {
                     Job::Save(n) if kept > 0 => format!(
                         "saved {n} edit(s){called}, {kept} made since still unsaved; {}",
-                        self.export()
+                        exported(self)
                     ),
-                    Job::Save(n) => format!("saved {n} edit(s){called}; {}", self.export()),
+                    Job::Save(n) => format!("saved {n} edit(s){called}; {}", exported(self)),
                     _ => format!("pass done in {secs}s"),
                 };
-                self.status = format!("{done}. {}", self.status);
+                // The round's counts, as opening it says them; the header
+                // names it.
+                let counts = self.round.as_ref().map(round_counts);
+                self.status = match (&job, counts) {
+                    (Job::Save(_), Some(c)) => format!("{done}; {c}"),
+                    _ => format!("{done}. {}", self.status),
+                };
                 match after {
                     AfterPass::Run if !self.asking() => self.ask_trajectory_out(),
                     AfterPass::Run => self.status += " r in the order view runs the trajectory.",
@@ -855,12 +869,7 @@ impl App {
     pub fn open(&mut self, manifest: &Path) {
         match RoundView::load(manifest) {
             Ok(r) => {
-                let flagged = r.clusters.iter().filter(|c| c.flagged()).count();
-                self.status = format!(
-                    "{}: {} clusters, {flagged} to look at (]: next)",
-                    file_name(manifest),
-                    r.clusters.len()
-                );
+                self.status = format!("{}: {}", file_name(manifest), round_counts(&r));
                 self.set_round(Some(r));
             }
             Err(e) => {
@@ -1557,10 +1566,11 @@ impl App {
         }
     }
 
-    /// Write the open round's cell annotation and marker table; says where.
-    fn export(&mut self) -> String {
+    /// Write the open round's cell annotation and marker table, logging
+    /// where; says where, or why not.
+    fn export(&mut self) -> Result<String, String> {
         let Some(r) = &self.round else {
-            return "nothing to export".into();
+            return Err("nothing to export".into());
         };
         match super::export::write(r, &self.tree, self.cl.as_ref(), &self.mixed, &self.original) {
             Ok((cells, markers)) => {
@@ -1569,9 +1579,13 @@ impl App {
                     cells.display(),
                     markers.display()
                 ));
-                format!("exported {}, {}", file_name(&cells), file_name(&markers))
+                Ok(format!(
+                    "exported {}, {}",
+                    file_name(&cells),
+                    file_name(&markers)
+                ))
             }
-            Err(e) => format!("export failed: {e:#}"),
+            Err(e) => Err(format!("export failed: {e:#}")),
         }
     }
 
@@ -2298,7 +2312,7 @@ impl App {
             KeyCode::Char('s') => self.save(),
             KeyCode::Char('e') => {
                 self.status = if self.edits.is_empty() {
-                    self.export()
+                    self.export().unwrap_or_else(|e| e)
                 } else {
                     "save the edits first (s): the export is of a saved round".into()
                 };
@@ -3424,7 +3438,12 @@ impl App {
         if self.in_order() {
             self.reload_order();
         }
-        self.status = format!("trajectory done in {secs}s: {}", manifest.display());
+        // The header names the manifest whose figures are up.
+        self.status = if self.figures.is_some() && self.trajectory_tui {
+            format!("trajectory done in {secs}s: its figures (g lists the runs)")
+        } else {
+            format!("trajectory done in {secs}s: {}", file_name(manifest))
+        };
     }
 
     /// The labels on screen with their cell counts: the round's labels, else
@@ -3917,6 +3936,15 @@ impl Drop for App {
         }
         self.stop_rescoring();
     }
+}
+
+/// A round's clusters and how many need a look, as the status says them.
+fn round_counts(r: &RoundView) -> String {
+    let flagged = r.clusters.iter().filter(|c| c.flagged()).count();
+    format!(
+        "{} clusters, {flagged} to look at (]: next)",
+        r.clusters.len()
+    )
 }
 
 /// A pass's arguments but its run and output, which are what it reads and
