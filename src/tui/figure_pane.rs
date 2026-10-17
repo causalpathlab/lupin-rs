@@ -384,6 +384,10 @@ impl FigurePane {
             KeyCode::Char('[') if shown => Say(self.step_pair(false, true)),
             KeyCode::Char(']') if shown => Say(self.step_pair(true, true)),
             // senna view's keys: labels, colouring, layout.
+            // Labels and colours are the scatter's.
+            KeyCode::Char('t' | 'c') if shown && !self.current().is_scatter() => {
+                Say("t and c restyle the scatter (v reaches it)".into())
+            }
             KeyCode::Char('t') if shown => Say(self.style.cycle_labels()),
             KeyCode::Char('c') if shown => Say(self.style.cycle_colouring(&self.data.colourings())),
             KeyCode::Char('m') if shown => Say(self.next_layout()),

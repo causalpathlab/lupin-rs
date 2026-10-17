@@ -843,6 +843,31 @@ fn a_grid_tile_opens_with_its_number_or_space() {
 }
 
 #[test]
+fn the_status_follows_the_figures_and_t_c_say_only_the_scatter_takes_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    press(&mut app, KeyCode::Char('w'));
+    assert!(app.status.contains("arrows choose"), "{}", app.status);
+    press(&mut app, KeyCode::Char('V'));
+    assert!(!app.status.contains("arrows choose"), "{}", app.status);
+    press(&mut app, KeyCode::Char('v'));
+    let p = app.figures.as_mut().unwrap();
+    p.open_grid();
+    p.grid.as_mut().unwrap().sel = 3;
+    p.open_tile();
+    assert!(!p.current().is_scatter());
+    let style = p.style;
+    for key in ['t', 'c'] {
+        press(&mut app, KeyCode::Char(key));
+        assert!(app.status.contains("scatter"), "{key}: {}", app.status);
+    }
+    assert!(
+        app.figures.as_ref().unwrap().style == style,
+        "nothing changed"
+    );
+}
+
+#[test]
 fn f_waits_for_the_figures() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = figures_app(dir.path());
