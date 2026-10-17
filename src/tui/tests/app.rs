@@ -529,6 +529,28 @@ is_a: CL:100
 ";
 
 #[test]
+fn the_ontology_opens_on_a_term_the_datas_tree_does_not_list() {
+    let cl = crate::annotate::celltype_tree::ClTerms::parse(
+        TYPES_OBO,
+        &crate::annotate::cl_rules::shipped(),
+    );
+    let mut app = app_with_terms(false);
+    let panel = [
+        ("GENE1".to_string(), "CT1".to_string()),
+        ("GENE2".to_string(), "CT2".to_string()),
+    ];
+    app.tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &panel);
+    app.cl = Some(cl);
+    // `elsewhere` is in no type's lineage: the whole ontology, on it.
+    let v = app.ontology_on(Some("CL:106".into())).unwrap();
+    assert_eq!(v.selected().unwrap().id, "CL:106");
+    // A term the data's tree lists keeps that tree.
+    let v = app.ontology_on(Some("CL:104".into())).unwrap();
+    assert_eq!(v.scope, super::super::ontology::Scope::Data);
+    assert_eq!(v.selected().unwrap().id, "CL:104");
+}
+
+#[test]
 fn annotates_ontology_view_opens_on_the_rounds_labels_and_toggles_with_d() {
     use super::super::ontology::Scope;
     let cl = crate::annotate::celltype_tree::ClTerms::parse(

@@ -3341,7 +3341,7 @@ impl App {
             }
             (KeyCode::Char('o'), at) => {
                 let term = at.and_then(|i| v.tree.nodes[i].cl_id.clone());
-                let view = self.ontology_at(term);
+                let view = self.ontology_on(term);
                 if let TreeMode::Order(v) = &mut self.tree_mode {
                     v.ontology = view;
                 }
@@ -3517,7 +3517,7 @@ impl App {
             .cl
             .as_ref()
             .and_then(|cl| super::ontology::term_of(cl, &self.tree, &self.label_or_top()?));
-        if let Some(v) = self.ontology_at(from_node.or(from_cluster)) {
+        if let Some(v) = self.ontology_on(from_node.or(from_cluster)) {
             self.tree_mode = TreeMode::Ontology(Box::new(v));
         }
     }
@@ -3535,6 +3535,16 @@ impl App {
         let data = self.ontology_data();
         let cl = self.cl.as_ref()?;
         Some(super::ontology::OntologyView::in_data(cl, data, &focus))
+    }
+
+    /// [`Self::ontology_at`] with the cursor on `term` (`o`): a term the
+    /// data's tree does not list opens the whole ontology around it.
+    fn ontology_on(&mut self, term: Option<String>) -> Option<super::ontology::OntologyView> {
+        let mut v = self.ontology_at(term.clone())?;
+        if let (Some(id), Some(cl)) = (term.filter(|id| v.focus == *id), &self.cl) {
+            v.select(cl, &id);
+        }
+        Some(v)
     }
 
     /// The types in the data by the Cell Ontology term each sits on, with
