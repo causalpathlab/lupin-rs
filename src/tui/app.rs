@@ -29,6 +29,9 @@ use std::time::{Duration, Instant};
 const LOG_KEEP: usize = 1000;
 /// A cluster whose top candidate has less of its evidence than this is flagged.
 pub const CONTESTED: f32 = 0.5;
+/// How long a key's reply holds the status line while a job runs, before
+/// the job's progress takes it back.
+pub const KEY_REPLY_HOLD: Duration = Duration::from_secs(4);
 
 /// The annotation form's state: the selected row, and why it did not run
 /// or what running it again will do (`confirm`: the user has been told the
@@ -529,6 +532,9 @@ pub struct App {
     /// The round's own scores while rescored ones are shown.
     pub recorded: Option<super::round::Scores>,
     pub status: String,
+    /// When a key last left a reply in the status: while it is recent the
+    /// running job's progress does not replace it.
+    replied: Option<Instant>,
     /// Settings changed since the round on screen was made.
     pub stale: bool,
     armed: Option<Armed>,
@@ -606,6 +612,7 @@ impl App {
             scored_for: Vec::new(),
             recorded: None,
             status: "r: run a pass".into(),
+            replied: None,
             stale: false,
             armed: None,
             quit: false,
@@ -658,8 +665,11 @@ impl App {
         };
         let (secs, job) = (r.started.elapsed().as_secs(), r.job.clone());
         match r.child.try_wait() {
-            // The progress, unless a key waits to be pressed again.
-            Ok(None) if self.armed.is_some() => {}
+            // The progress, unless a key waits to be pressed again or a
+            // key's reply is still fresh.
+            Ok(None)
+                if self.armed.is_some()
+                    || self.replied.is_some_and(|t| t.elapsed() < KEY_REPLY_HOLD) => {}
             Ok(None) => {
                 let elapsed = r.started.elapsed();
                 let stop = if job.stoppable() { "  (x: stop)" } else { "" };
@@ -2045,6 +2055,7 @@ impl App {
         // question the key has dropped (`x again`, `q again`), goes.
         self.status.clear();
         self.key_unsynced(k);
+        self.replied = (!self.status.is_empty()).then(Instant::now);
         self.sync_map_focus();
     }
 

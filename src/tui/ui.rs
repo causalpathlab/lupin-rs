@@ -606,7 +606,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     }
     if app.stale {
         spans.push(
-            Span::from(if app.in_order() {
+            // Neither key runs while a job does.
+            Span::from(if app.child.is_some() {
+                "· settings changed, not yet run "
+            } else if app.in_order() {
                 "· settings changed, A in the clusters re-annotates "
             } else {
                 "· settings changed, r to re-run "

@@ -2359,3 +2359,61 @@ fn the_log_pane_leaves_out_the_svg_fonts_fallback_notes() {
     let verbose = crate::tui::PaneLogger(LevelFilter::Debug);
     assert!(verbose.enabled(&at("usvg::text", Level::Warn)));
 }
+
+/// A stand-in for a running `job`.
+fn running_job(app: &mut App, job: Job) {
+    let child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    app.child = Some(Running::new(child, job));
+}
+
+#[test]
+fn a_keys_reply_holds_the_status_against_the_progress_for_a_while() {
+    let mut app = app_with_terms(false);
+    running_job(&mut app, Job::Save(1));
+    press(&mut app, KeyCode::Char('x'));
+    app.tick();
+    assert!(app.status.contains("finishes on its own"), "{}", app.status);
+    // Once the reply has been up its while, the progress takes over again.
+    app.replied = app.replied.map(|t| t - KEY_REPLY_HOLD);
+    app.tick();
+    assert!(app.status.starts_with("save…"), "{}", app.status);
+    // A key that says nothing leaves the progress at once.
+    press(&mut app, KeyCode::Down);
+    app.tick();
+    assert!(app.status.starts_with("save…"), "{}", app.status);
+    app.stop();
+    if let Some(mut r) = app.child.take() {
+        let _ = r.child.kill();
+        let _ = r.child.wait();
+    }
+
+    running(&mut app);
+    for code in [KeyCode::Char('r'), KeyCode::Char('A')] {
+        app.focus = Focus::Clusters;
+        press(&mut app, code);
+        app.tick();
+        assert!(app.status.contains("wait for"), "{code:?}: {}", app.status);
+    }
+    app.stop();
+}
+
+#[test]
+fn the_settings_note_does_not_offer_r_while_a_job_refuses_it() {
+    let mut app = app_with_terms(false);
+    app.form = Some(Form::default());
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Esc);
+    assert!(drawn(&app).contains("r to re-run"));
+    running_job(&mut app, Job::Save(0));
+    let screen = drawn(&app);
+    assert!(screen.contains("settings changed"), "{screen}");
+    assert!(!screen.contains("r to re-run"), "{screen}");
+    if let Some(mut r) = app.child.take() {
+        let _ = r.child.kill();
+        let _ = r.child.wait();
+    }
+}
