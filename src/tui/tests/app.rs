@@ -1797,3 +1797,13 @@ fn the_order_views_cluster_keys_name_s_save() {
     let bar = super::super::ui::help(&app);
     assert!(bar.contains("s save"), "{bar}");
 }
+
+#[test]
+fn with_the_guide_open_b_closes_it_and_leaves_the_jobs_popup() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    app.help_open = true;
+    press(&mut app, KeyCode::Char('b'));
+    assert!(!app.help_open, "any key closes the guide");
+    assert!(!app.progress_hidden, "and does nothing else");
+}

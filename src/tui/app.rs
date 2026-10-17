@@ -2046,14 +2046,14 @@ impl App {
                 return;
             }
         }
-        // `b` hides the running job's popup, or brings it back.
-        if k.code == KeyCode::Char('b') && self.child.is_some() {
-            self.progress_hidden = !self.progress_hidden;
-            return;
-        }
         if self.help_open {
             // Any key closes the guide.
             self.help_open = false;
+            return;
+        }
+        // `b` hides the running job's popup, or brings it back.
+        if k.code == KeyCode::Char('b') && self.child.is_some() {
+            self.progress_hidden = !self.progress_hidden;
             return;
         }
         if k.code == KeyCode::Char('?') {
