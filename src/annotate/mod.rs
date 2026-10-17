@@ -14,6 +14,7 @@ pub mod cl_rules;
 pub mod gene_rows;
 pub mod go_signature;
 pub mod inputs;
+pub mod marker_score;
 pub mod markers;
 pub mod ontology;
 pub mod outputs;

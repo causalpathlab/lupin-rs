@@ -950,3 +950,47 @@ fn a_relabel_round_keeps_the_susie_tables_when_clusters_and_markers_stay() {
     assert!(pip.ends_with("run.cluster_celltype_pip.parquet"), "{pip}");
     assert!(a.cluster_celltype_effect.is_some() && a.cluster_celltype_explained.is_some());
 }
+
+#[test]
+fn a_marker_edit_drops_the_scores_old_calls_but_a_regroup_keeps_them() {
+    let root = tempfile::tempdir().unwrap();
+    let src = first_round(root.path());
+    fs::write(
+        root.path().join("r0/markers.tsv"),
+        "gene\tcelltype\nGENE1\tCT1\nGENE2\tCT1\nGENE3\tCT2\n",
+    )
+    .unwrap();
+    let mut m = RunManifest::load(&src).unwrap().0;
+    m.annotate.markers = Some("markers.tsv".into());
+    m.annotate.marker_score = Some("run.marker_score.parquet".into());
+    m.save(&src).unwrap();
+    let relabel_with = |text: &str, out: &str| -> RunManifest {
+        let d = root.path().join(format!("{}.jsonl", out.replace('/', "_")));
+        fs::write(&d, text).unwrap();
+        let out = root.path().join(out);
+        run_relabel(&args(&src, &d, Some(&out))).unwrap();
+        RunManifest::load(Path::new(&format!("{}.senna.json", out.display())))
+            .unwrap()
+            .0
+    };
+    let edited = relabel_with(
+        &line(
+            json!({"action": "markers_drop", "label": "CT1", "features": ["GENE2"], "rationale": "weak", "decided_by": "user"}),
+        ),
+        "r1/run",
+    );
+    assert_eq!(
+        edited.annotate.marker_score, None,
+        "calls on the old panel are not this round's"
+    );
+    let merged = relabel_with(
+        &line(
+            json!({"clusters": [1, 2], "action": "merge", "label": "CT2", "rationale": "same", "decided_by": "user"}),
+        ),
+        "r2/run",
+    );
+    assert!(
+        merged.annotate.marker_score.is_some(),
+        "the cells' calls hold over new clusters"
+    );
+}

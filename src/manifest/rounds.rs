@@ -53,6 +53,16 @@ pub const MARKER_HISTORY: &str = ".marker_history.json";
 /// Cell names and, per cell, its cluster id (`None` when unassigned).
 pub type CellClusters = (Vec<Box<str>>, Vec<Option<ClusterId>>);
 
+/// Cluster labels (cell → cluster, `usize::MAX` for none) as the ids
+/// [`write_clusters`] takes.
+#[must_use]
+pub fn cluster_ids(labels: &[usize]) -> Vec<Option<ClusterId>> {
+    labels
+        .iter()
+        .map(|&k| ClusterId::try_from(k).ok())
+        .collect()
+}
+
 /// Per-cell cluster ids from a cluster table: its `cluster` column (else the
 /// first), with NaN, negative ids, and rows whose `entropy` is not finite
 /// read as unassigned.
@@ -759,6 +769,11 @@ fn relabel(
     let regrouped = p.decisions.iter().any(|d| d.action.regroups());
     if regrouped || p.marker_history.is_some() {
         next.manifest.annotate.drop_susie_tables();
+    }
+    // The score's per-cell calls hold over new clusters, but not over a new
+    // panel: they were made on the old one.
+    if p.marker_history.is_some() {
+        next.manifest.annotate.marker_score = None;
     }
     let rel = |p: &str| Some(rel_to_manifest(&next.dir, p));
     if let Some(t) = &tables {

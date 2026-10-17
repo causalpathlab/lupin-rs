@@ -122,6 +122,110 @@ fn susie_settings_that_leave_no_posterior_fail_the_command() {
 }
 
 #[test]
+fn projection_leaves_its_method_to_the_run_unless_given_and_the_choice_parses_back() {
+    let base = [
+        "-f",
+        "run.senna.json",
+        "-m",
+        "m.tsv",
+        "-o",
+        "out/x",
+        "--method",
+        "projection",
+    ];
+    assert_eq!(parse(&base).projection, None);
+    let mut ora = base.to_vec();
+    ora.extend(["--projection", "ora"]);
+    let a = parse(&ora);
+    assert_eq!(a.projection, Some(ProjectionMethod::Ora));
+    let argv = a.to_argv();
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    assert_eq!(format!("{a:?}"), format!("{:?}", parse(&argv)));
+}
+
+#[test]
+fn projection_from_embedding_files_runs_the_ora_unless_the_score_is_asked_for() {
+    use legume_numeric::matrix::traits::IoOps;
+    let dir = tempfile::tempdir().unwrap();
+    let (feat, cells, _) = crate::annotate::marker_score::toy::matrices();
+    let at = |n: &str| dir.path().join(n).to_string_lossy().into_owned();
+    feat.mat
+        .to_parquet_with_names(
+            &at("feat.parquet"),
+            (Some(&feat.rows[..]), Some("gene")),
+            None,
+        )
+        .unwrap();
+    cells
+        .mat
+        .to_parquet_with_names(
+            &at("cells.parquet"),
+            (Some(&cells.rows[..]), Some("cell")),
+            None,
+        )
+        .unwrap();
+    let panel = crate::annotate::marker_score::toy::panel(dir.path());
+    let out = at("files");
+    let (feat_path, cells_path) = (at("feat.parquet"), at("cells.parquet"));
+    let argv = |more: &[&str]| {
+        let mut v = vec![
+            "-m",
+            &panel,
+            "-o",
+            &out,
+            "--method",
+            "projection",
+            "--feature-embedding",
+            &feat_path,
+            "--cell-embedding",
+            &cells_path,
+        ];
+        v.extend(more);
+        parse(&v)
+    };
+    assert_eq!(
+        resolve_projection(&argv(&[]), None),
+        ProjectionMethod::Ora,
+        "files say no table"
+    );
+    run_projection_from_files(
+        &argv(&["--projection", "score"]),
+        &at("feat.parquet"),
+        &at("cells.parquet"),
+    )
+    .unwrap();
+    let table = format!("{out}{}", crate::annotate::outputs::MARKER_SCORE_PARQUET);
+    let fields = legume_numeric::matrix::parquet::peek_parquet_field_names(&table).unwrap();
+    assert!(fields.iter().any(|f| f.as_ref() == "margin"), "{fields:?}");
+}
+
+#[test]
+fn the_score_refuses_settings_it_cannot_honour() {
+    let base = [
+        "-f",
+        "run.senna.json",
+        "-m",
+        "m.tsv",
+        "-o",
+        "out/x",
+        "--projection",
+        "score",
+    ];
+    let with = |more: &[&str]| {
+        let mut v = base.to_vec();
+        v.extend(more);
+        build_score_args(&parse(&v))
+    };
+    assert!(with(&[]).is_ok());
+    let err = with(&["--no-idf"]).expect_err("refused").to_string();
+    assert!(err.contains("IDF"), "{err}");
+    let err = with(&["--min-markers", "5"])
+        .expect_err("refused")
+        .to_string();
+    assert!(err.contains("min-markers"), "{err}");
+}
+
+#[test]
 fn the_retired_susie_dispersion_flag_is_still_accepted() {
     // 0.5.0 shipped it; saved commands that pass it must keep working.
     let a = parse(&["-o", "x", "-m", "m.tsv", "--susie-dispersion", "0"]);

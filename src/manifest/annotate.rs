@@ -8,11 +8,13 @@
 //! cluster × gene expression.
 
 use crate::annotate::args::{
-    fixed_settings, AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, BLOCK_SIZE,
+    fixed_settings, AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, MarkerScoreArgs,
+    ProjectionMethod, BLOCK_SIZE,
 };
 use crate::annotate::by_enrichment;
 use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
+use crate::annotate::marker_score;
 use crate::annotate::ontology;
 use crate::annotate::outputs::{AnnotationOutputs, ANNOT_PARQUET};
 use crate::manifest::rounds;
@@ -22,7 +24,7 @@ use legume_numeric::matrix::parquet::read_table_columns;
 use crate::annotate::aggregate::{accumulate_gene_sum_pair, weighted_mean_profile};
 use crate::annotate::markers::build_annotation_matrix;
 use crate::manifest::run::{CellSpace, RunManifest};
-use crate::marker_embedding::load_marker_feature_embedding;
+use crate::marker_embedding::{load_feature_embedding, load_marker_feature_embedding};
 use data_beans::aux::data_loading::{
     read_data_on_shared_rows, ReadSharedRowsArgs, SparseDataWithBatch,
 };
@@ -38,6 +40,7 @@ use std::path::Path;
 
 /// CLI passthrough for the internal Leiden fallback (used only when neither
 /// `--clusters` nor `manifest.cluster.clusters` is provided).
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct LeidenArgs {
     pub knn: usize,
     pub resolution: f64,
@@ -96,11 +99,7 @@ pub fn annotate_by_enrichment(
     // The ids the cluster tables' `K{id}` rows refer to, so later rounds and
     // viewers key on the same clusters.
     let clusters_path = format!("{}{}", args.out, rounds::CLUSTERS);
-    let ids: Vec<Option<u32>> = inputs
-        .cluster_labels
-        .iter()
-        .map(|&k| u32::try_from(k).ok())
-        .collect();
+    let ids = rounds::cluster_ids(&inputs.cluster_labels);
     rounds::write_clusters(&clusters_path, &inputs.cell_names, &ids)?;
     outputs.clusters = Some(clusters_path);
     // The decoder's expected expression is no count sum: a later pass or
@@ -147,8 +146,52 @@ pub fn annotate_by_enrichment(
     Ok(())
 }
 
-/// `lupin annotate --method projection`: score the run's co-embedded gene
-/// space and cell embedding against the marker panel, and record what it wrote.
+/// `lupin annotate --method projection --projection score`: the embedding
+/// marker score ([`marker_score`]) on the run's decoder gene table and cell
+/// embedding, centred on its clusters (`--clusters`, else the run's, else
+/// internal Leiden), which also become the round's cluster table.
+pub fn annotate_by_marker_score(args: &MarkerScoreArgs, loaded: &Loaded) -> Result<()> {
+    let run = loaded.file.display().to_string();
+    let feat = load_feature_embedding(&loaded.manifest, &loaded.dir, &run)?;
+    let cell_path = loaded.geometry_latent_path()?;
+    let cells = Mat::from_parquet(&cell_path)
+        .with_context(|| format!("reading cell embedding {cell_path}"))?;
+    let (groups, _) = resolve_clusters(
+        args.clusters.as_deref(),
+        &args.leiden,
+        &loaded.manifest,
+        &loaded.dir,
+        &cells.rows,
+    )?;
+    let mut outputs = marker_score::run(args, &feat, &cells, &groups)?;
+    let clusters = format!("{}{}", args.out, rounds::CLUSTERS);
+    rounds::write_clusters(&clusters, &cells.rows, &rounds::cluster_ids(&groups))?;
+    outputs.clusters = Some(clusters);
+    record(
+        loaded,
+        &args.out,
+        Pass::Markers(&args.markers),
+        &outputs,
+        "projection",
+        projection_settings(args, ProjectionMethod::Score)?,
+    )
+}
+
+/// A projection pass's settings, naming the way it called.
+fn projection_settings(
+    args: &impl serde::Serialize,
+    projection: ProjectionMethod,
+) -> Result<serde_json::Value> {
+    let mut v = settings(args)?;
+    if let serde_json::Value::Object(m) = &mut v {
+        m.insert("projection".into(), projection.as_str().into());
+    }
+    Ok(v)
+}
+
+/// `lupin annotate --method projection --projection ora`: score the run's
+/// co-embedded gene space and cell embedding against the marker panel, and
+/// record what it wrote (kept one release, for comparison).
 pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &Loaded) -> Result<()> {
     let run = loaded.file.display().to_string();
     // Genes on the cell manifold; for a `gem` run only the spliced rows,
@@ -177,7 +220,7 @@ pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &Loaded) ->
         Pass::Markers(&args.markers),
         &outputs,
         "projection",
-        settings(args)?,
+        projection_settings(args, ProjectionMethod::Ora)?,
     )
 }
 
@@ -273,6 +316,7 @@ fn record(
             a.markers = Some(crate::manifest::run::rel_to_manifest(dir, markers));
             a.argmax = rel(&out.argmax);
             a.annotation = rel(&out.annotation);
+            a.marker_score = rel(&out.marker_score);
             a.cluster_celltype_q = rel(&out.cluster_celltype_q);
             a.cluster_celltype_es = rel(&out.cluster_celltype_es);
             a.cluster_celltype_pip = rel(&out.cluster_celltype_pip);
@@ -441,7 +485,13 @@ pub(super) fn load_enrichment_inputs(
     let gene_names = data_vec.row_names()?;
     info!("Raw counts: {n_genes} genes × {n_cells} cells");
 
-    let (cluster_labels, n_clusters) = resolve_clusters(args, manifest, manifest_dir, &cell_names)?;
+    let (cluster_labels, n_clusters) = resolve_clusters(
+        args.clusters.as_deref(),
+        &args.leiden(),
+        manifest,
+        manifest_dir,
+        &cell_names,
+    )?;
     anyhow::ensure!(
         n_clusters >= 2,
         "annotate needs ≥ 2 clusters, found {n_clusters}"
@@ -562,7 +612,8 @@ pub(super) fn panel_inputs(
 ///      we can re-cluster from the same latent the manifest points at.
 ///   3. Internal Leiden on `manifest.outputs.latent`.
 pub(super) fn resolve_clusters(
-    args: &AnnotateArgs,
+    clusters: Option<&str>,
+    leiden: &LeidenArgs,
     manifest: &RunManifest,
     manifest_dir: &Path,
     cell_names: &[Box<str>],
@@ -572,7 +623,7 @@ pub(super) fn resolve_clusters(
         .clusters
         .as_deref()
         .map(|rel| resolve(manifest_dir, rel));
-    let resolved_path = args.clusters.as_deref().map(String::from).or_else(|| {
+    let resolved_path = clusters.map(String::from).or_else(|| {
         manifest_cluster_path.filter(|p| {
             let exists = Path::new(p).is_file();
             if !exists {
@@ -593,14 +644,7 @@ pub(super) fn resolve_clusters(
         "Resolving cluster source: internal Leiden on manifest's cell embedding ({:?})",
         manifest.outputs.geometry_latent()
     );
-    let leiden_args = LeidenArgs {
-        knn: args.knn,
-        resolution: args.resolution,
-        num_clusters: args.num_clusters,
-        min_cluster_size: args.min_cluster_size,
-        seed: args.cluster_seed,
-    };
-    compute_clusters_from_latent(manifest, manifest_dir, cell_names, &leiden_args)
+    compute_clusters_from_latent(manifest, manifest_dir, cell_names, leiden)
 }
 
 /// Per-gene NB-Fisher weights: the cached parquet from training first, falling
@@ -788,3 +832,7 @@ fn build_batch_labels(labels: Vec<Box<str>>, n_cells: usize) -> Result<(Vec<usiz
     let names: Vec<&str> = labels.iter().map(AsRef::as_ref).collect();
     Ok(data_beans::alg::dc_poisson::compact_labels(&names))
 }
+
+#[cfg(test)]
+#[path = "tests/projection_score.rs"]
+mod projection_score_tests;

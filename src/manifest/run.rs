@@ -259,6 +259,10 @@ pub struct RunAnnotate {
     /// nClusters × C FDR-sparse softmax Q (probabilities, not q-values).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_celltype_q: Option<String>,
+    /// The projection score's per-cell table: each cell's cluster, call and
+    /// margin. Not a posterior, so not `annotation`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_score: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_celltype_es: Option<String>,
     /// nClusters × C SuSiE posterior inclusion probability; set when SuSiE
