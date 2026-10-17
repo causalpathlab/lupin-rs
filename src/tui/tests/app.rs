@@ -89,9 +89,17 @@ fn tab_reaches_the_go_pane_only_when_the_round_scored_terms() {
             .collect()
     };
     let mut with = app_with_terms(true);
-    assert!(tabs(&mut with) == [Focus::Genes, Focus::Tree, Focus::Go, Focus::Clusters]);
+    assert!(tabs(&mut with) == [Focus::Genes, Focus::Tree, Focus::Candidates, Focus::Go]);
     let mut without = app_with_terms(false);
-    assert!(tabs(&mut without) == [Focus::Genes, Focus::Tree, Focus::Clusters, Focus::Genes]);
+    assert!(
+        tabs(&mut without)
+            == [
+                Focus::Genes,
+                Focus::Tree,
+                Focus::Candidates,
+                Focus::Clusters
+            ]
+    );
 }
 
 #[test]
@@ -476,17 +484,25 @@ fn state_the_order_myself_closes_the_menu_on_the_table_and_esc_cancels() {
 }
 
 #[test]
-fn in_the_order_view_tab_follows_the_columns_clusters_ordering_ontology() {
+fn in_the_order_view_tab_follows_the_columns_clusters_candidates_ordering_ontology() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = order_app(dir.path(), &["CT1", "CT2"]);
     app.focus = Focus::Clusters;
-    let seen: Vec<Focus> = (0..4)
+    let seen: Vec<Focus> = (0..5)
         .map(|_| {
             press(&mut app, KeyCode::Tab);
             app.focus
         })
         .collect();
-    assert!(seen == [Focus::Genes, Focus::Order, Focus::Tree, Focus::Clusters]);
+    assert!(
+        seen == [
+            Focus::Genes,
+            Focus::Candidates,
+            Focus::Order,
+            Focus::Tree,
+            Focus::Clusters
+        ]
+    );
 }
 
 #[test]
@@ -2640,4 +2656,65 @@ fn another_runs_trajectory_is_named_over_its_figures_and_in_g() {
         screen.contains("figures from X.T1's trajectory"),
         "{screen}"
     );
+}
+
+/// The app with cluster 0's candidates `CT1` … `CT{n}`, the enrichment
+/// ranking them in that order.
+fn app_with_candidates(n: usize) -> App {
+    use super::super::round::Candidate;
+    let mut app = app_with_terms(false);
+    let c = &mut app.round.as_mut().unwrap().clusters[0];
+    c.candidates = (0..n)
+        .map(|k| Candidate {
+            ranks: [Some(k), None, None],
+            ..Candidate::new(&format!("CT{}", k + 1), 0.5 / (k + 1) as f32)
+        })
+        .collect();
+    app.focus = Focus::Clusters;
+    app
+}
+
+#[test]
+fn the_candidates_show_their_first_ten_where_the_screen_allows_and_say_how_many_more() {
+    let app = app_with_candidates(14);
+    let screen = drawn(&app);
+    assert!(screen.contains("CT10"), "the tenth fits: {screen}");
+    assert!(!screen.contains("CT11"), "{screen}");
+    assert!(screen.contains("4 more"), "{screen}");
+}
+
+#[test]
+fn tab_reaches_the_candidates_which_scroll_with_their_selection_and_enter_takes_one() {
+    let mut app = app_with_candidates(30);
+    press(&mut app, KeyCode::Char('a'));
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Tab);
+    assert!(app.focus == Focus::Candidates);
+    press(&mut app, KeyCode::End);
+    let screen = drawn(&app);
+    assert!(screen.contains("CT30"), "scrolled to the last: {screen}");
+    assert!(
+        !screen.contains("CT2 "),
+        "the first rows scrolled off: {screen}"
+    );
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Label { label, .. }) if label == "CT29"
+    ));
+    app.prompt = None;
+    // A number takes that row here too; esc goes back to the clusters.
+    press(&mut app, KeyCode::Char('2'));
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Label { label, .. }) if label == "CT2"
+    ));
+    app.prompt = None;
+    press(&mut app, KeyCode::Esc);
+    assert!(app.focus == Focus::Clusters);
+    // Another cluster's list starts at its top.
+    app.cand_sel = 5;
+    app.select_cluster(0);
+    assert_eq!(app.cand_sel, 0);
 }

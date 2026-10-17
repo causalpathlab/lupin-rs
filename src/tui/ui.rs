@@ -47,8 +47,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     };
     let [clusters, genes] =
         Layout::vertical([Constraint::Min(8), Constraint::Length(16)]).areas(left);
-    let [tree, candidates] =
-        Layout::vertical([Constraint::Min(8), Constraint::Length(12)]).areas(right);
+    let [tree, candidates] = Layout::vertical([
+        Constraint::Min(8),
+        Constraint::Length(candidates_height(app, right.height.saturating_sub(8))),
+    ])
+    .areas(right);
 
     draw_header(f, header, app);
     draw_clusters(f, clusters, app);
@@ -160,7 +163,7 @@ fn draw_order_screen(f: &mut Frame, app: &App, [header, body, summary, log, keys
     let [clusters, genes, candidates] = Layout::vertical([
         Constraint::Min(8),
         Constraint::Length(12),
-        Constraint::Length(10),
+        Constraint::Length(candidates_height(app, left.height.saturating_sub(20))),
     ])
     .areas(left);
     draw_header(f, header, app);
@@ -323,6 +326,9 @@ fn pane_keys(app: &App) -> &'static str {
             " ? keys · ↑↓ node · enter label · space mark · + mixed label · → into the ontology · o ontology · / search · v cells"
         }
         Focus::Go => " ? keys · ↑↓ term · ← → read a long name · tab pane · esc clusters",
+        Focus::Candidates => {
+            " ? keys · ↑↓ candidate · ⏎ or 1-9 take · S sort · a all · tab pane · esc clusters"
+        }
     }
 }
 
@@ -339,7 +345,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("?", "this guide (any key closes it)"),
             (
                 "tab / shift-tab",
-                "next / previous pane: clusters → genes → tree → GO terms (when scored)",
+                "next / previous pane: clusters → genes → tree → candidates → GO terms (when scored)",
             ),
             ("pgup/dn home/end", "a page / to either end of the pane's list"),
             ("r", "the annotation form (marker panel, output, settings; ▶ run or shift+enter runs the pass)"),
@@ -365,6 +371,14 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("A", "annotate again: the annotation form"),
             ("⌫", "undo its edit"),
             ("]", "next flagged (?) cluster not yet decided"),
+        ],
+    ),
+    (
+        "candidates",
+        &[
+            ("↑↓", "select a candidate; the list scrolls with it"),
+            ("enter / 1-9", "label the cluster with the selected / that candidate"),
+            ("S / a", "as in the clusters: the next method's order / every candidate"),
         ],
     ),
     (
@@ -420,7 +434,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("-", "the two marked types are unrelated (asks why)"),
             ("r", "from any pane: run lupin trajectory on the labels on screen (asks for the output prefix; when nothing orders the types, asks how)"),
             ("A", "in the clusters: the annotation form, then a choice to run the trajectory"),
-            ("tab", "panes: clusters → genes → ordering → ontology; the Cell Ontology beside the table: ↑↓ selects a type in both, space marks it, o the full ontology, there d in the data ↔ all"),
+            ("tab", "panes: clusters → genes → candidates → ordering → ontology; the Cell Ontology beside the table: ↑↓ selects a type in both, space marks it, o the full ontology, there d in the data ↔ all"),
             ("T / esc", "back to the tree / to the clusters (t restyles the figures' labels)"),
             ("", "statements go to the project's precedence.tsv; edges show source and, after a trajectory run, verdict"),
         ],
@@ -828,20 +842,45 @@ fn pval(v: Option<f32>) -> String {
 /// The GO column's effect, p and q widths, before the term name.
 const GO_STAT_WIDTHS: [u16; 3] = [6, 6, 6];
 
+/// The selected cluster's label when the candidates as listed do not hold
+/// it: a new type, or one that did not pass FDR, pinned above them.
+fn pinned_label(app: &App) -> Option<String> {
+    let now = app.current_label()?;
+    let listed = app.listed_candidates();
+    (!listed
+        .iter()
+        .any(|cand| label_key(&cand.label) == label_key(&now)))
+    .then_some(now)
+}
+
+/// The candidates pane's height: its rows (at least the first
+/// [`super::round::LISTED`]) with their header and borders, within `room`.
+fn candidates_height(app: &App, room: u16) -> u16 {
+    let pinned = if pinned_label(app).is_some() { 2 } else { 0 };
+    let rows = app.listed_candidates().len().max(super::round::LISTED) + pinned;
+    u16::try_from(rows + 3).unwrap_or(u16::MAX).min(room).max(4)
+}
+
 fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
+    let focused = app.focus == Focus::Candidates;
     let Some(c) = app.selected() else {
-        f.render_widget(
-            Block::default().borders(Borders::ALL).title(" cluster "),
-            area,
-        );
+        f.render_widget(pane(" cluster ".into(), focused), area);
         return;
     };
     let now = app.current_label();
     let listed = app.listed_candidates();
-    let mut rows: Vec<Row> = listed
+    let pinned = pinned_label(app);
+    // Only the rows that fit are built, from the one that keeps the
+    // selection in sight; the pinned label stays on top.
+    let height = usize::from(area.height.saturating_sub(3))
+        .saturating_sub(if pinned.is_some() { 2 } else { 0 })
+        .max(1);
+    let start = app.cand_sel.saturating_sub(height - 1);
+    let window = start.min(listed.len())..(start + height).min(listed.len());
+    let mut rows: Vec<Row> = listed[window.clone()]
         .iter()
-        .enumerate()
-        .map(|(k, cand)| {
+        .zip(window.clone())
+        .map(|(cand, k)| {
             let row = Row::new(vec![
                 Cell::from(format!("{}", k + 1)).dim(),
                 Cell::from(cand.label.clone()),
@@ -867,11 +906,7 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         .collect();
     // A label picked off the candidates (a new type, or one that did not
     // pass FDR) is shown too: it is scored once the edits are saved.
-    if let Some(l) = now.as_deref().filter(|l| {
-        !listed
-            .iter()
-            .any(|cand| label_key(&cand.label) == label_key(l))
-    }) {
+    if let Some(l) = pinned.as_deref() {
         let share = c
             .shares
             .iter()
@@ -910,8 +945,13 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     } else {
         ""
     };
+    // The candidates out of sight: scrolled past, or past the first ten.
+    let more = match c.candidates.len() - window.len() {
+        0 => String::new(),
+        n => format!(" · {n} more"),
+    };
     let title = format!(
-        " K{} · {} cells · {}{scored} · by {}{} ",
+        " K{} · {} cells · {}{scored} · by {}{}{more} ",
         c.id,
         c.cells,
         now.as_deref().unwrap_or(UNASSIGNED_LABEL),
@@ -940,12 +980,13 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         .bold(),
     )
     .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(title)
+        pane(title, focused)
             .title_bottom(Line::from(format!(" {} ", path.unwrap_or_default())).cyan()),
-    );
-    f.render_widget(t, area);
+    )
+    .row_highlight_style(highlight(focused));
+    let at = app.cand_sel.saturating_sub(start) + usize::from(pinned.is_some());
+    let mut state = TableState::default().with_selected(focused.then_some(at));
+    f.render_stateful_widget(t, area, &mut state);
 }
 
 /// Why a cluster's label is not among its candidates.

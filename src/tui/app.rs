@@ -76,6 +76,8 @@ pub enum Focus {
     Order,
     /// The selected cluster's GO terms, when the round scored them.
     Go,
+    /// The selected cluster's candidates, which scroll with their selection.
+    Candidates,
 }
 
 /// The rows of the annotation form, in the order it lists them.
@@ -504,6 +506,8 @@ pub struct App {
     pub focus: Focus,
     pub cluster_sel: usize,
     pub gene_sel: usize,
+    /// The selected row of the candidates as listed.
+    pub cand_sel: usize,
     /// The selected row of the GO pane.
     pub go_sel: usize,
     /// Words of the selected GO term's name slid out of view (← →).
@@ -602,6 +606,7 @@ impl App {
             focus: Focus::Clusters,
             cluster_sel: 0,
             gene_sel: 0,
+            cand_sel: 0,
             go_sel: 0,
             go_shift: 0,
             gene_view: GeneView::Specific,
@@ -1116,6 +1121,7 @@ impl App {
     fn select_cluster(&mut self, i: usize) {
         self.cluster_sel = i;
         self.gene_sel = 0;
+        self.cand_sel = 0;
         self.go_sel = 0;
         self.go_shift = 0;
         self.marked.clear();
@@ -2310,13 +2316,14 @@ impl App {
     }
 
     fn cycle(&self, forward: bool) -> Focus {
-        use Focus::{Clusters, Genes, Go, Order, Tree};
-        // The order view's columns, left to right: clusters (genes below
-        // them), ordering, ontology.
+        use Focus::{Candidates, Clusters, Genes, Go, Order, Tree};
+        // The order view's columns, left to right: clusters (genes and
+        // candidates below them), ordering, ontology; annotate's: clusters
+        // and genes, then the tree and the candidates below it.
         let mut order = if self.in_order() {
-            vec![Clusters, Genes, Order, Tree]
+            vec![Clusters, Genes, Candidates, Order, Tree]
         } else {
-            vec![Clusters, Genes, Tree]
+            vec![Clusters, Genes, Tree, Candidates]
         };
         if self.has_go() && !self.in_order() {
             order.push(Go);
@@ -2328,6 +2335,47 @@ impl App {
         } else {
             (i + n - 1) % n
         }]
+    }
+
+    /// The keys on the selected cluster's candidates, from the clusters or
+    /// the candidates pane: a number takes that row, `S` lists them by the
+    /// next method and `a` lists all; `false` for any other key.
+    fn candidate_key(&mut self, code: KeyCode) -> bool {
+        if !matches!(code, KeyCode::Char('1'..='9' | 'S' | 'a')) {
+            return false;
+        }
+        if self.selected().is_none() {
+            self.status = "no clusters yet".into();
+            return true;
+        }
+        match code {
+            KeyCode::Char(c @ '1'..='9') => {
+                let k = c as usize - '1' as usize;
+                let n = self.listed_candidates().len();
+                if k < n {
+                    self.pick_candidate(k);
+                } else {
+                    self.status = format!("this cluster has {n} candidate(s)");
+                }
+            }
+            KeyCode::Char('S') => {
+                self.next_cand_method();
+                self.cand_sel = 0;
+            }
+            _ => {
+                self.cand_all = !self.cand_all;
+                self.cand_sel = 0;
+                self.status = if self.cand_all {
+                    "all candidates listed".into()
+                } else {
+                    format!(
+                        "the first {} candidates and each method's top",
+                        super::round::LISTED
+                    )
+                };
+            }
+        }
+        true
     }
 
     /// The focused pane's binding for `code`, if it has one: `false` leaves
@@ -2349,7 +2397,7 @@ impl App {
                 // The keys that act on a cluster wait for a round.
                 let on_cluster = matches!(
                     code,
-                    KeyCode::Char('1'..='9' | 'S' | 'a' | 'u' | 'k' | ']')
+                    KeyCode::Char('u' | 'k' | ']')
                         | KeyCode::Backspace
                         | KeyCode::Delete
                         | KeyCode::Enter
@@ -2358,28 +2406,10 @@ impl App {
                     self.status = "no clusters yet".into();
                     return true;
                 }
+                if self.candidate_key(code) {
+                    return true;
+                }
                 match code {
-                    KeyCode::Char(c @ '1'..='9') => {
-                        let k = c as usize - '1' as usize;
-                        let n = self.listed_candidates().len();
-                        if k < n {
-                            self.pick_candidate(k);
-                        } else {
-                            self.status = format!("this cluster has {n} candidate(s)");
-                        }
-                    }
-                    KeyCode::Char('S') => self.next_cand_method(),
-                    KeyCode::Char('a') => {
-                        self.cand_all = !self.cand_all;
-                        self.status = if self.cand_all {
-                            "all candidates listed".into()
-                        } else {
-                            format!(
-                                "the first {} candidates and each method's top",
-                                super::round::LISTED
-                            )
-                        };
-                    }
                     KeyCode::Char('u') => self.unassign(),
                     KeyCode::Char('k') => self.keep(),
                     KeyCode::Backspace | KeyCode::Delete => self.undo(),
@@ -2446,6 +2476,17 @@ impl App {
                     }
                     KeyCode::Esc => self.focus = Focus::Clusters,
                     _ => return false,
+                }
+            }
+            Focus::Candidates => {
+                let n = self.listed_candidates().len();
+                move_in(&mut self.cand_sel, n);
+                match code {
+                    KeyCode::Enter if self.selected().is_some() => {
+                        self.pick_candidate(self.cand_sel);
+                    }
+                    KeyCode::Esc => self.focus = Focus::Clusters,
+                    _ => return self.candidate_key(code),
                 }
             }
             Focus::Go => {
