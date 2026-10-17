@@ -3321,7 +3321,7 @@ fn candidates_pane(app: &App, width: u16, height: u16) -> Vec<String> {
     let left = screen[top][..at].chars().count();
     screen[top..]
         .iter()
-        .take_while(|r| !r.chars().nth(left).is_some_and(|c| c == '└'))
+        .take_while(|r| r.chars().nth(left).is_none_or(|c| c != '└'))
         .map(|r| {
             r.chars()
                 .skip(left + 1)
