@@ -881,8 +881,15 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .zip(window.clone())
         .map(|(cand, k)| {
+            // The key that takes the row, 1-9 (as the label choices show
+            // theirs); none past the ninth.
+            let key = if k < 9 {
+                (k + 1).to_string()
+            } else {
+                String::new()
+            };
             let row = Row::new(vec![
-                Cell::from(format!("{}", k + 1)).dim(),
+                Cell::from(key).cyan(),
                 Cell::from(cand.label.clone()),
                 Cell::from(format!("{:.2}", cand.share)),
                 Cell::from(bar(cand.share)).fg(if cand.share >= CONTESTED {

@@ -2718,3 +2718,19 @@ fn tab_reaches_the_candidates_which_scroll_with_their_selection_and_enter_takes_
     app.select_cluster(0);
     assert_eq!(app.cand_sel, 0);
 }
+
+#[test]
+fn each_candidate_a_number_takes_shows_it_and_the_rest_show_none() {
+    let mut app = app_with_candidates(12);
+    press(&mut app, KeyCode::Char('a'));
+    let screen = drawn(&app);
+    assert!(screen.contains("9 CT9 "), "{screen}");
+    // No key takes the tenth: it shows no digit, not a cut-off `1`.
+    assert!(
+        screen.contains("  CT10 ") && !screen.contains("1 CT10"),
+        "{screen}"
+    );
+    // The label choices show their own numbers.
+    press(&mut app, KeyCode::Enter);
+    assert!(drawn(&app).contains(" 1  CT1 "), "{}", drawn(&app));
+}
