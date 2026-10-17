@@ -430,12 +430,12 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         &[
             ("v / V", "next figure: scatter, order, connectivity / back to the table"),
             ("t", "type labels on the scatter: small, medium, large, largest, off"),
-            ("c", "colour the cells by pseudotime, cell type, lineage or component"),
+            ("c", "colour the cells by what the run has: pseudotime, cell type, cluster, score call, score margin, lineage or component"),
             ("m", "the scatter's layout: each layout the run has (PHATE first), then the diffusion map"),
             (", .", "the diffusion map's y axis: the previous or next component"),
             ("[ ]", "the diffusion map's x axis: the previous or next component"),
             ("w", "all figures as thumbnails: arrows choose, enter, space or 1-9 opens, p exports the tile, f exports, V the table, esc or w closes"),
-            ("+ - 0", "zoom the scatter in / out / show it whole (m and , . also show it whole)"),
+            ("+ - 0", "zoom the scatter in / out / show it whole (m, , . and [ ] also show it whole)"),
             ("arrows", "pan a zoomed scatter (with the exports strip open, ↑↓ move in the strip)"),
             ("p", "export the figure as on screen (zoomed too) as {run}.trajectory.{figure}.svg + .pdf and log it"),
             ("f", "the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, esc closes"),
@@ -457,14 +457,29 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// `r` anywhere in `lupin trajectory`'s TUI, where the order view takes it.
+const R_IN_TRAJECTORY: &str = "the annotation form (marker panel, output, settings; ▶ run or shift+enter runs the pass); in the order view r runs the trajectory instead";
+
 /// The key guide; without `trajectory`, the annotate TUI's: no order view
 /// and no figures.
 pub(super) fn guide(
     trajectory: bool,
-) -> impl Iterator<Item = (&'static str, &'static [(&'static str, &'static str)])> {
-    GUIDE.iter().copied().filter(move |(section, _)| {
-        trajectory || !(section.starts_with("order view") || section.starts_with("figures"))
-    })
+) -> impl Iterator<Item = (&'static str, Vec<(&'static str, &'static str)>)> {
+    GUIDE
+        .iter()
+        .filter(move |(section, _)| {
+            trajectory || !(section.starts_with("order view") || section.starts_with("figures"))
+        })
+        .map(move |&(section, keys)| {
+            let keys = keys
+                .iter()
+                .map(|&(key, what)| match (section, key) {
+                    ("anywhere", "r") if trajectory => (key, R_IN_TRAJECTORY),
+                    _ => (key, what),
+                })
+                .collect();
+            (section, keys)
+        })
 }
 
 /// The width of the guide's key column.
@@ -494,7 +509,7 @@ fn draw_guide(f: &mut Frame, trajectory: bool) {
     let width = screen.width.saturating_sub(4).min(110 * columns);
     let col = usize::from((width.saturating_sub(2)) / columns);
     let sections: Vec<Vec<Line>> = guide(trajectory)
-        .map(|(section, keys)| guide_section(section, keys, col))
+        .map(|(section, keys)| guide_section(section, &keys, col))
         .collect();
     // The first `split` sections go left, the rest right: the split whose
     // taller column is shortest.

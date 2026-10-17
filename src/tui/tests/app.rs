@@ -2150,7 +2150,7 @@ fn on_the_map_the_trajectory_tuis_bar_names_capital_t_for_the_order() {
 fn the_annotate_guide_names_the_maps_grid_and_exports_strip() {
     let text: String = super::super::ui::guide(false)
         .filter(|(section, _)| *section == "tree")
-        .flat_map(|(_, keys)| keys.iter())
+        .flat_map(|(_, keys)| keys.into_iter())
         .map(|(key, what)| format!("{key} {what}\n"))
         .collect();
     for want in [
@@ -2193,4 +2193,22 @@ fn with_the_guide_open_b_closes_it_and_leaves_the_jobs_popup() {
     press(&mut app, KeyCode::Char('b'));
     assert!(!app.help_open, "any key closes the guide");
     assert!(!app.progress_hidden, "and does nothing else");
+}
+
+#[test]
+fn the_trajectory_guide_agrees_with_itself_and_the_keys() {
+    let entry = |section: &str, key: &str| {
+        super::super::ui::guide(true)
+            .find(|(s, _)| s.starts_with(section))
+            .and_then(|(_, keys)| keys.into_iter().find(|(k, _)| *k == key))
+            .map(|(_, what)| what)
+            .unwrap()
+    };
+    let r = entry("anywhere", "r");
+    assert!(r.contains("runs the trajectory"), "{r}");
+    let c = entry("figures", "c");
+    for colouring in ["cluster", "score call", "margin"] {
+        assert!(c.contains(colouring), "{colouring}: {c}");
+    }
+    assert!(entry("figures", "+ - 0").contains("[ ]"));
 }
