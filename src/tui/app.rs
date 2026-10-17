@@ -692,7 +692,13 @@ impl App {
                         self.push_log(format!("could not set the old rounds aside: {e:#}"));
                     }
                 }
-                let (latest, _) = chain_rounds(&self.target);
+                // A save writes the round after the one on screen; a pass,
+                // its output's.
+                let saved = match (&job, &self.round) {
+                    (Job::Save(_), Some(r)) => r.manifest.clone(),
+                    _ => self.target.clone(),
+                };
+                let (latest, _) = chain_rounds(&saved);
                 // Edits made while a save ran were not in it: carry them into
                 // the new round (a save keeps the clusters' ids).
                 let later = match job {

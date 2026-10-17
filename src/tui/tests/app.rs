@@ -1050,6 +1050,29 @@ fn a_round_from_the_list_gives_the_order_view_its_labels() {
 }
 
 #[test]
+fn a_save_opens_the_round_after_the_one_saved_whatever_the_pass_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    // The run opened is the round itself: its passes would go to X.L0.L2.
+    app.source = tmp.path().join("X.L0.senna.json");
+    app.target = tmp.path().join("X.L0.L2.senna.json");
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    // As `lupin relabel --next` leaves it: the next round beside it.
+    let text = std::fs::read_to_string(tmp.path().join("X.L0.senna.json")).unwrap();
+    std::fs::write(tmp.path().join("X.L0.r1.senna.json"), text).unwrap();
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    child.wait().unwrap();
+    app.child = Some(Running::new(child, Job::Save(0)));
+    app.tick();
+    assert!(
+        app.shown_manifest().ends_with("X.L0.r1.senna.json"),
+        "{}: {}",
+        app.shown_manifest().display(),
+        app.status
+    );
+}
+
+#[test]
 fn unsaved_edits_are_asked_about_and_a_running_job_refuses() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = family_app(tmp.path());
