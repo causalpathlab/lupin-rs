@@ -1659,7 +1659,7 @@ pub struct ReviewArgs {
 
     #[arg(
         long,
-        help = "Print JSON (digest and history per cluster) instead of text"
+        help = "Print JSON (per cluster: digest, history, each method's top type, every type's evidence) instead of text"
     )]
     pub json: bool,
 }
@@ -1768,8 +1768,9 @@ impl Reviewed {
 }
 
 /// `review --json`: per cluster (all, or those in `clusters`), its digest,
-/// its history, each method's top type (`tops`, for the methods that put
-/// one forward), every type's evidence (`types`) and, when the round has a
+/// its history, each method's top type (`tops`, the first of
+/// [`Method::ranked`], for the methods that put one forward), every type's
+/// evidence (`types`) and, when the round has a
 /// type tree, the Cell Ontology term it puts the label on (`cl`).
 pub(crate) fn review_json(
     loaded: &Loaded,

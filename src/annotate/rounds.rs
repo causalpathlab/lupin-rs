@@ -321,12 +321,13 @@ impl Method {
     }
 
     /// The types this method puts forward in one cluster's `evidence`, best
-    /// first: a share above zero, or for SuSiE a PIP of at least
-    /// [`MIN_CANDIDATE_PIP`], ranked as SuSiE calls
-    /// ([`crate::annotate::susie::call_order`]).
+    /// first. SuSiE puts forward a PIP of at least [`MIN_CANDIDATE_PIP`],
+    /// ranked as SuSiE calls ([`crate::annotate::susie::call_order`]). The
+    /// others put forward a share above zero, largest first; types of one
+    /// share go by their q, smallest first, then their NES, largest first,
+    /// unknowns last; types tied on all three stay in `evidence`'s order.
     #[must_use]
     pub fn ranked(self, evidence: &[TypeEvidence]) -> Vec<&TypeEvidence> {
-        let of = |v: Option<f32>| v.unwrap_or(0.0);
         let mut put: Vec<&TypeEvidence> = evidence
             .iter()
             .filter(|e| match self {
@@ -336,9 +337,19 @@ impl Method {
             .collect();
         match self {
             Method::Susie => {
+                let of = |v: Option<f32>| v.unwrap_or(0.0);
                 crate::annotate::susie::call_order(&mut put, |e| (of(e.pip), of(e.explained)));
             }
-            _ => put.sort_by(|a, b| of(self.reading(b)).total_cmp(&of(self.reading(a)))),
+            _ => {
+                let low = |v: Option<f32>| v.unwrap_or(f32::INFINITY);
+                let high = |v: Option<f32>| v.unwrap_or(f32::NEG_INFINITY);
+                put.sort_by(|a, b| {
+                    high(self.reading(b))
+                        .total_cmp(&high(self.reading(a)))
+                        .then(low(a.q).total_cmp(&low(b.q)))
+                        .then(high(b.nes).total_cmp(&high(a.nes)))
+                });
+            }
         }
         put
     }

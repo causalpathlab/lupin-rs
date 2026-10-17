@@ -72,23 +72,33 @@ fn a_score_round_clears_an_earlier_rounds_posterior() {
     );
 }
 
+/// Write `dir/name`, a cluster × type table: rows K0 and K1, columns A and
+/// B, `values` row by row.
+fn cluster_type_table(dir: &std::path::Path, name: &str, values: [f32; 4]) {
+    use legume_numeric::matrix::dense_mat_io::Mat;
+    use legume_numeric::matrix::traits::IoOps;
+    Mat::from_row_slice(2, 2, &values)
+        .to_parquet_with_names(
+            &dir.join(name).to_string_lossy(),
+            (Some(&["K0".into(), "K1".into()][..]), Some("cluster")),
+            Some(&["A".into(), "B".into()]),
+        )
+        .unwrap();
+}
+
 /// A score round on the toy run, with an enrichment Q table added beside it
 /// (cluster 0: A 0.7, B 0.3; cluster 1: B 1.0): two methods' readings.
 pub(crate) fn round_with_both(dir: &std::path::Path) -> run::Loaded {
-    use legume_numeric::matrix::dense_mat_io::Mat;
-    use legume_numeric::matrix::traits::IoOps;
     let (manifest, panel) = toy::write_run(dir);
     let loaded = run::load(&manifest).unwrap();
     let out = dir.join("run.L1").to_string_lossy().into_owned();
     annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
     let round_path = annotated_path(&loaded.file, &out);
-    let q = Mat::from_row_slice(2, 2, &[0.7, 0.3, 0.0, 1.0]);
-    q.to_parquet_with_names(
-        &format!("{out}.cluster_celltype_q.parquet"),
-        (Some(&["K0".into(), "K1".into()][..]), Some("cluster")),
-        Some(&["A".into(), "B".into()]),
-    )
-    .unwrap();
+    cluster_type_table(
+        dir,
+        "run.L1.cluster_celltype_q.parquet",
+        [0.7, 0.3, 0.0, 1.0],
+    );
     let mut round = run::load(&round_path.to_string_lossy()).unwrap();
     round.manifest.annotate.cluster_celltype_q = Some("run.L1.cluster_celltype_q.parquet".into());
     round.manifest.save(&round.file).unwrap();
@@ -234,6 +244,30 @@ fn review_json_gives_each_methods_top_and_every_types_evidence() {
 }
 
 #[test]
+fn review_json_tops_tied_on_the_share_go_by_q_then_nes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut round = round_with_both(dir.path());
+    let table = |name: &str, values| cluster_type_table(dir.path(), name, values);
+    // Cluster 0's share is split evenly; B's q is the smaller. Cluster 1's
+    // share is split too, both at one q: B's NES is the larger.
+    table("run.L1.cluster_celltype_q.parquet", [0.5, 0.5, 0.5, 0.5]);
+    table(
+        "run.L1.cluster_celltype_q_values.parquet",
+        [0.05, 0.01, 0.01, 0.01],
+    );
+    table("run.L1.cluster_celltype_nes.parquet", [3.0, 1.0, 1.0, 2.0]);
+    let a = &mut round.manifest.annotate;
+    a.cluster_celltype_q_values = Some("run.L1.cluster_celltype_q_values.parquet".into());
+    a.cluster_celltype_nes = Some("run.L1.cluster_celltype_nes.parquet".into());
+    round.manifest.save(&round.file).unwrap();
+    let round = run::load(&round.file.to_string_lossy()).unwrap();
+
+    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    assert_eq!(v[&0]["tops"]["enrichment"], "B", "{}", v[&0]["tops"]);
+    assert_eq!(v[&1]["tops"]["enrichment"], "B", "{}", v[&1]["tops"]);
+}
+
+#[test]
 fn the_scores_calls_take_the_panels_spelling() {
     use legume_numeric::matrix::parquet::{write_named_table, Column};
     let dir = tempfile::tempdir().unwrap();
@@ -343,20 +377,14 @@ fn the_score_pass_writes_its_labels_as_parquet_too() {
 
 #[test]
 fn review_settles_tied_calls_names_clusters_k_and_places_them_on_the_tree() {
-    use legume_numeric::matrix::dense_mat_io::Mat;
-    use legume_numeric::matrix::traits::IoOps;
     let dir = tempfile::tempdir().unwrap();
     let mut round = round_with_both(dir.path());
     // Both types tied on q in cluster 1, whose share is all B's.
-    let q = Mat::from_row_slice(2, 2, &[0.01, 0.5, 0.01, 0.01]);
-    q.to_parquet_with_names(
-        &dir.path()
-            .join("run.L1.cluster_celltype_q_values.parquet")
-            .to_string_lossy(),
-        (Some(&["K0".into(), "K1".into()][..]), Some("cluster")),
-        Some(&["A".into(), "B".into()]),
-    )
-    .unwrap();
+    cluster_type_table(
+        dir.path(),
+        "run.L1.cluster_celltype_q_values.parquet",
+        [0.01, 0.5, 0.01, 0.01],
+    );
     std::fs::write(
         dir.path().join("run.L1.celltype_tree.json"),
         r#"{"source":"cell_ontology","label_cl":{"A":"CL:9000001"},

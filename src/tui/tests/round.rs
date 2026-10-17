@@ -518,11 +518,12 @@ fn a_rounds_candidates_know_where_each_method_ranks_them() {
 }
 
 #[test]
-fn types_tied_on_the_share_follow_q_then_nes_as_review_orders_calls() {
+fn types_tied_on_the_share_follow_q_then_nes_as_review_json_tops_do() {
     use crate::annotate::rounds::{Method, TypeEvidence};
     let e = |label: &str, share: f32, q: f32, nes: f32| TypeEvidence {
         label: label.into(),
         enrichment: Some(share),
+        score: Some(share),
         q: Some(q),
         nes: Some(nes),
         ..TypeEvidence::default()
@@ -534,10 +535,14 @@ fn types_tied_on_the_share_follow_q_then_nes_as_review_orders_calls() {
         e("CT0", 0.25, 0.05, 3.0),
         e("CT4", 0.5, 0.2, 1.0),
     ];
-    let (c, _) = ranked_view(&rows, Method::Enrichment);
-    let labels: Vec<&str> = c.iter().map(|t| t.label.as_str()).collect();
-    assert_eq!(labels, ["CT4", "CT1", "CT3", "CT2", "CT0"]);
-    assert_eq!(c[2].ranks[Method::Enrichment.index()], Some(2));
+    for m in [Method::Enrichment, Method::Score] {
+        let (c, _) = ranked_view(&rows, m);
+        let labels: Vec<&str> = c.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(labels, ["CT4", "CT1", "CT3", "CT2", "CT0"], "{m:?}");
+        assert_eq!(c[2].ranks[m.index()], Some(2), "{m:?}");
+        let tops: Vec<&str> = m.ranked(&rows).iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(labels, tops, "the TUI's ranking is the one tops take");
+    }
 }
 
 #[test]
