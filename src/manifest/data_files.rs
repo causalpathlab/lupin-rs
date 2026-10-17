@@ -585,10 +585,45 @@ pub enum DataCmd {
         #[arg(long)]
         force: bool,
     },
+    /// Suggest Cell Ontology terms for labels by text embedding, as JSON:
+    /// each label's nearest terms with their scores, none taken (the
+    /// annotate TUI's `c` offers them to confirm). The first run fetches the
+    /// text model and caches the ontology's index
+    SuggestCl {
+        /// A run manifest, for the ontology its project finds
+        #[arg(long, short = 'f')]
+        from: Option<Box<str>>,
+        /// The Cell Ontology OBO file, as annotate's --obo
+        #[arg(long)]
+        obo: Option<Box<str>>,
+        /// Write the JSON here instead of stdout
+        #[arg(long, short = 'o')]
+        out: Option<Box<str>>,
+        /// The labels to suggest terms for
+        #[arg(required = true)]
+        labels: Vec<String>,
+    },
 }
 
 pub fn run_data(args: &DataArgs) -> Result<()> {
     match &args.cmd {
+        DataCmd::SuggestCl {
+            from,
+            obo,
+            out,
+            labels,
+        } => {
+            let run_dir = from
+                .as_deref()
+                .map(|f| super::run::load(f).map(|l| l.dir))
+                .transpose()?;
+            crate::annotate::term_match::run(
+                run_dir.as_deref(),
+                obo.as_deref(),
+                out.as_deref(),
+                labels,
+            )
+        }
         DataCmd::Where { from } => {
             let run_dir = from
                 .as_deref()

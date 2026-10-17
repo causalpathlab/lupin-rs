@@ -609,7 +609,10 @@ impl ClTerms {
 
     /// Every counted name (as names are compared) with the terms it names.
     pub fn named_texts(&self) -> impl Iterator<Item = (&str, &BTreeSet<String>)> {
-        self.names.by_name.iter().map(|(name, ids)| (name.as_str(), ids))
+        self.names
+            .by_name
+            .iter()
+            .map(|(name, ids)| (name.as_str(), ids))
     }
 
     /// A label as names are compared.
