@@ -86,12 +86,7 @@ pub fn run_trajectory(t: &crate::trajectory::run::TrajectoryArgs) -> Result<()> 
     a.obo.clone_from(&t.obo);
     a.label_cl.clone_from(&t.label_cl);
     a.graphics = t.graphics;
-    let run_with = order::TrajectoryRun {
-        argv: t.child_argv(),
-        out: t.out.as_deref().map(str::to_string),
-        labels: None,
-    };
-    run(&a, Some(run_with))
+    run(&a, Some(order::TrajectoryRun::of(t)))
 }
 
 /// Run the TUI on `args`; with `trajectory`, it opens on the order view and

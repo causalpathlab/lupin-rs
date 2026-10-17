@@ -3156,6 +3156,9 @@ impl App {
         match path {
             Some(p) => {
                 self.trajectory.labels = Some(p.to_string_lossy().into_owned());
+                if self.in_order() {
+                    self.reload_order();
+                }
                 self.ask_trajectory_out();
             }
             None => self.status = "no labels file picked".into(),
@@ -3198,7 +3201,8 @@ impl App {
                 .filter(|(l, _)| l != UNASSIGNED_LABEL)
                 .collect(),
             // No round yet (`lupin trajectory`): the trajectory run's
-            // types with their cells, else the panel's types.
+            // types with their cells, else the labels file's, else the
+            // panel's types.
             None => match &self.figures {
                 Some(f) => {
                     let mut n: std::collections::BTreeMap<String, usize> = Default::default();
@@ -3209,9 +3213,33 @@ impl App {
                         .filter(|(l, _)| l != UNASSIGNED_LABEL)
                         .collect()
                 }
-                None => self.original.keys().map(|k| (k.clone(), 0)).collect(),
+                None => match self.labels_file_types() {
+                    Some(types) => types,
+                    None => self.original.keys().map(|k| (k.clone(), 0)).collect(),
+                },
             },
         }
+    }
+
+    /// The trajectory's labels file's types with their cells.
+    fn labels_file_types(&self) -> Option<Vec<(String, usize)>> {
+        let path = self.trajectory.labels.as_deref()?;
+        let labels = match crate::cell_labels::read_cell_labels(path) {
+            Ok(l) => l,
+            Err(e) => {
+                log::warn!("the labels file: {e:#}");
+                return None;
+            }
+        };
+        let mut n: std::collections::BTreeMap<String, usize> = Default::default();
+        for (_, t) in labels.iter() {
+            *n.entry(t.to_string()).or_default() += 1;
+        }
+        Some(
+            n.into_iter()
+                .filter(|(l, _)| l != UNASSIGNED_LABEL)
+                .collect(),
+        )
     }
 
     /// (Re)build the order view from the labels on screen and the data files.

@@ -370,6 +370,40 @@ fn with_nothing_to_order_r_asks_how_and_a_root_goes_on_to_the_run() {
 }
 
 #[test]
+fn a_labels_file_gives_the_order_table_its_types_and_r_asks_how_to_order_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &[]);
+    let labels = dir.path().join("labels.tsv");
+    std::fs::write(&labels, "c1\tCT1\nc2\tCT1\nc3\tCT2\n").unwrap();
+    app.trajectory.labels = Some(labels.to_string_lossy().into());
+    app.reload_order();
+    let TreeMode::Order(v) = &app.tree_mode else {
+        panic!("the order view")
+    };
+    assert_eq!(v.types, [("CT1".to_string(), 2), ("CT2".to_string(), 1)]);
+    press(&mut app, KeyCode::Char('r'));
+    assert!(
+        menu(&app).is_some(),
+        "nothing orders them: the menu asks how"
+    );
+    assert!(app.prompt.is_none());
+}
+
+#[test]
+fn lupin_trajectorys_labels_reach_the_tui_once() {
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        t: crate::trajectory::run::TrajectoryArgs,
+    }
+    let argv = ["lupin", "-f", "run.senna.json", "--labels", "l.tsv"];
+    let t = <Cli as clap::Parser>::parse_from(argv).t;
+    let run = super::super::order::TrajectoryRun::of(&t);
+    assert_eq!(run.labels.as_deref(), Some("l.tsv"));
+    assert!(!run.argv.iter().any(|a| a == "--labels"), "{:?}", run.argv);
+}
+
+#[test]
 fn the_order_menu_stays_away_when_something_orders_the_types() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = order_app(dir.path(), &["CT1", "CT2"]);

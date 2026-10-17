@@ -17,8 +17,27 @@ use std::path::{Path, PathBuf};
 pub struct TrajectoryRun {
     pub argv: Vec<String>,
     pub out: Option<String>,
-    /// A labels file typed in the TUI for a run with no annotation.
+    /// A labels file, given as `--labels` or picked in the TUI, for a run
+    /// with no annotation.
     pub labels: Option<String>,
+}
+
+impl TrajectoryRun {
+    /// How the TUI runs `lupin trajectory` with `t`'s options: `--labels`
+    /// is kept apart, so the order view lists its types and a round on
+    /// screen stands in for it.
+    #[must_use]
+    pub fn of(t: &crate::trajectory::run::TrajectoryArgs) -> Self {
+        let mut argv = t.child_argv();
+        if let Some(i) = argv.iter().position(|a| a == "--labels") {
+            argv.drain(i..(i + 2).min(argv.len()));
+        }
+        Self {
+            argv,
+            out: t.out.as_deref().map(str::to_string),
+            labels: t.labels.as_deref().map(str::to_string),
+        }
+    }
 }
 
 /// The first `{stem}.T{k}` (k = 1, 2, …) beside `source` with no manifest yet.
