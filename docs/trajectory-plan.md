@@ -79,7 +79,7 @@ instead of starting a run that can only fail: start from one type
 runs), state the order in the table, a precedence file (`--prior`), or a
 `label<TAB>CL:id` file (`--label-cl`) so the ontology's develops-from links
 order the types (asked again if they still do not). In every menu ↑↓
-choose, Enter or the option's key takes it, and esc cancels.
+choose, Enter or the option's key takes it, and esc or q cancels.
 
 `g`, from any pane, lists the run's family: the run, the annotation rounds
 made from it (`X.L0`, `X.L0.L1`, `X.r2`, …) and the trajectories made from

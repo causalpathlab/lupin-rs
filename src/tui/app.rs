@@ -1519,7 +1519,7 @@ impl App {
     /// Open the label choices for the selected cluster: each method's top
     /// types ([`super::round::choices`]), then the tree and a typed name.
     fn open_choice(&mut self) {
-        use super::menu::{numbered, Choice, Menu};
+        use super::menu::{numbered_but, Choice, Menu};
         let Some(c) = self.selected() else { return };
         let options = super::round::choices(&c.candidates)
             .into_iter()
@@ -1533,16 +1533,16 @@ impl App {
                 (label, detail, action)
             })
             .collect();
-        let mut choices = numbered(options);
+        let mut choices = numbered_but(options, "tn");
         choices.extend([
             Choice {
-                key: 't',
+                key: Some('t'),
                 label: "on the tree…".into(),
                 detail: "Pick the type, or a coarser node, on the panel tree.".into(),
                 action: Action::LabelOnTree,
             },
             Choice {
-                key: 'n',
+                key: Some('n'),
                 label: "a name…".into(),
                 detail: "Type any name; it is scored once the edits are saved.".into(),
                 action: Action::LabelByName { cluster: c.id },

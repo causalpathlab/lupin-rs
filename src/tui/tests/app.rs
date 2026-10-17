@@ -2286,7 +2286,7 @@ fn the_forms_keys_fit_its_popup_with_or_without_shift_enter() {
         press(&mut app, KeyCode::Char('r'));
         assert!(app.form.is_some());
         let screen = drawn(&app);
-        assert!(screen.contains("esc close"), "shift+enter {shift_enter}");
+        assert!(screen.contains("esc/q close"), "shift+enter {shift_enter}");
     }
 }
 
@@ -2464,4 +2464,31 @@ fn a_question_asked_again_lapses_and_any_other_key_drops_it() {
     age(&mut app);
     app.tick();
     assert!(!app.status.contains("q again"), "{}", app.status);
+}
+
+#[test]
+fn q_closes_a_menu_as_esc_does_and_the_hints_say_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    press(&mut app, KeyCode::Char('g'));
+    assert!(app.menu.is_some());
+    assert!(drawn(&app).contains("esc or q cancels"));
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.menu.is_none(), "q closes the runs list");
+    assert!(!app.quit, "and does not quit");
+
+    let mut app = app_with_two_readings();
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.menu.is_none(), "q closes the label choices");
+    assert!(app.prompt.is_none() && !app.quit);
+
+    press(&mut app, KeyCode::Char('r'));
+    assert!(drawn(&app).contains("esc/q close"), "the form's hint");
+    let q = super::super::ui::guide(false)
+        .find(|(s, _)| s.starts_with("anywhere"))
+        .and_then(|(_, keys)| keys.into_iter().find(|(k, _)| k.starts_with('q')))
+        .map(|(_, what)| what)
+        .unwrap();
+    assert!(q.contains("closes a menu"), "{q}");
 }

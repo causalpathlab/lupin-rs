@@ -98,7 +98,7 @@ fn draw_browser(f: &mut Frame, b: &super::picker::Picker) {
         over.width.saturating_sub(4).min(100),
         over.height.saturating_sub(4).min(30),
     );
-    let (hint, note) = b.hint("esc cancel");
+    let (hint, note) = b.hint("esc/q cancel");
     let hint = Line::from(hint);
     let hint = if note {
         hint.fg(Color::LightYellow)
@@ -349,7 +349,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("esc", "back to the clusters from any other pane; closes a prompt, menu, form, the grid or the exports strip first"),
             ("s", "save the edits as the next round, and export"),
             ("e", "export the open round"),
-            ("q / ctrl-c", "quit (asks again with unsaved edits)"),
+            ("q / ctrl-c", "quit (asks again with unsaved edits or a running job); q first closes a menu, the form or the file browser, as esc does"),
         ],
     ),
     (
@@ -761,7 +761,7 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
     } else {
         "enter on ▶ run"
     };
-    let keys = format!(" ↑↓ row · ←→ change · enter picks or edits · {runs} runs · esc close ");
+    let keys = format!(" ↑↓ row · ←→ change · enter picks or edits · {runs} runs · esc/q close ");
     let block = popup(format!(" annotate · {source} "), keys);
     let inner = block.inner(area);
     f.render_widget(Clear, area);
@@ -1528,7 +1528,8 @@ fn draw_prompt(f: &mut Frame, app: &App) {
 /// A choice popup within `over`: the question, the numbered options with
 /// the selected one highlighted, and what choosing it does.
 fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
-    let option = |o: &super::menu::Choice| format!(" {}  {}", o.key, o.label).chars().count();
+    let key = |o: &super::menu::Choice| o.key.unwrap_or(' ');
+    let option = |o: &super::menu::Choice| format!(" {}  {}", key(o), o.label).chars().count();
     // Wide enough for its longest option: past `over`, or past the usual
     // 100 columns of a wide menu, as far as the screen goes.
     let longest = m.choices.iter().map(option).max().unwrap_or(0);
@@ -1565,7 +1566,7 @@ fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
     // The options, scrolled to keep the selected one in sight.
     let first = m.sel.saturating_sub(room.saturating_sub(1));
     for (i, o) in m.choices.iter().enumerate().skip(first).take(room) {
-        let line = Line::from(format!(" {}  {}", o.key, o.label));
+        let line = Line::from(format!(" {}  {}", key(o), o.label));
         lines.push(if i == m.sel { line.reversed() } else { line });
     }
     if m.choices.len() > first + room {
@@ -1579,7 +1580,7 @@ fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
     f.render_widget(
         Paragraph::new(lines).style(POPUP).block(popup(
             String::new(),
-            " ↑↓ choose · enter or its key takes it · esc cancels ",
+            " ↑↓ choose · enter or its key takes it · esc or q cancels ",
         )),
         area,
     );
