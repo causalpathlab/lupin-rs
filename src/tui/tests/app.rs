@@ -1814,6 +1814,32 @@ fn a_panel_leaf_picked_on_the_tree_gives_its_own_evidence_as_the_reason() {
 }
 
 #[test]
+fn a_marker_edits_reason_says_specific_only_as_the_fold_change_does() {
+    use legume_numeric::matrix::dense_mat_io::Mat;
+    use legume_numeric::matrix::traits::MatWithNames;
+    let mut app = app_with_terms(false);
+    if let Some(r) = app.round.as_mut() {
+        r.expression = Some(super::super::round::Expression::new(MatWithNames {
+            rows: vec!["UP".into(), "DOWN".into()],
+            cols: vec!["K0".into(), "K1".into()],
+            mat: Mat::from_row_slice(2, 2, &[20.0, 1.0, 1.0, 20.0]),
+        }));
+        r.markers
+            .insert("CT1".into(), ["UP".into(), "DOWN".into()].into());
+    }
+    let why = |app: &mut App, gene: &str, add: bool| {
+        app.marked = vec![gene.into()];
+        app.ask_markers_of("CT1".into(), add);
+        app.prompt.take().map(|p| p.text).unwrap_or_default()
+    };
+    let up = why(&mut app, "UP", false);
+    assert!(!up.contains("not specific"), "UP is up in K0: {up}");
+    assert!(up.contains("UP +"), "{up}");
+    let down = why(&mut app, "DOWN", false);
+    assert!(down.contains("not specific"), "{down}");
+}
+
+#[test]
 fn a_relabelled_cluster_shows_the_evidence_of_its_new_label() {
     use super::super::round::{Candidate, Edit};
     let cand = |label: &str, fold| {

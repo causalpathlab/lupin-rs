@@ -1819,20 +1819,21 @@ impl App {
             };
             return;
         }
+        let folds: Vec<Option<f32>> = genes.iter().map(|g| r.fold_change(c.id, g)).collect();
         let fc: Vec<String> = genes
             .iter()
-            .map(|g| {
-                r.fold_change(c.id, g)
-                    .map_or_else(|| format!("{g} not measured"), |f| format!("{g} {f:+.1}"))
-            })
+            .zip(&folds)
+            .map(|(g, f)| f.map_or_else(|| format!("{g} not measured"), |f| format!("{g} {f:+.1}")))
             .collect();
-        let (verb, reason) = if add {
-            ("add", format!("specific to K{} ({})", c.id, fc.join(", ")))
-        } else {
-            (
-                "drop",
-                format!("not specific to K{} ({})", c.id, fc.join(", ")),
-            )
+        // Specific (or not) only as every gene's fold change says.
+        let up = |f: &Option<f32>| f.is_some_and(|f| f > 0.0);
+        let down = |f: &Option<f32>| f.is_some_and(|f| f <= 0.0);
+        let (id, fc) = (c.id, fc.join(", "));
+        let (verb, reason) = match add {
+            true if folds.iter().all(up) => ("add", format!("specific to K{id} ({fc})")),
+            true => ("add", format!("markers of {label} (in K{id}: {fc})")),
+            false if folds.iter().all(down) => ("drop", format!("not specific to K{id} ({fc})")),
+            false => ("drop", format!("not markers of {label} (in K{id}: {fc})")),
         };
         self.prompt = Some(Prompt {
             title: format!(" {verb} {} as markers of {label}: why? ", genes.join(", ")),
