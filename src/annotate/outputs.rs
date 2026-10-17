@@ -7,7 +7,8 @@
 
 use std::path::Path;
 
-/// `{out}.argmax.tsv`: per-cell `cell⇥cell_type⇥probability`, written by every pass.
+/// `{out}.argmax.tsv`: per-cell `cell⇥cell_type⇥probability`, written by every
+/// pass beside the parquet, and what older rounds record as `annotate.argmax`.
 pub const ARGMAX_TSV: &str = ".argmax.tsv";
 
 /// `name` and, when it is a round's labels file (`{out}.argmax.tsv` or
@@ -35,11 +36,12 @@ pub fn labels_prefix(path: &str) -> Option<&str> {
 }
 
 /// The per-cell labels file a pass or round under `out` records as
-/// `annotate.argmax`: the TSV, which the viewers read, until they read the
-/// parquet written beside it.
+/// `annotate.argmax`: the parquet, with the TSVs still written beside it.
+/// Every reader takes either, so an older round's recorded TSV still reads.
 #[must_use]
 pub fn labels_path(out: &str) -> String {
-    format!("{out}{ARGMAX_TSV}")
+    use graph_embedding_util::type_annotation::CELL_LABELS_SUFFIX;
+    format!("{out}{CELL_LABELS_SUFFIX}")
 }
 /// `{out}.annot.parquet`: projection's per-cell table (`community`, `coarse_label`, …).
 pub const ANNOT_PARQUET: &str = ".annot.parquet";
@@ -184,4 +186,39 @@ pub fn write_cluster_tables(
             Ok(path)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_round_records_its_labels_as_the_parquet() {
+        assert_eq!(labels_path("dir/run.L1"), "dir/run.L1.argmax.parquet");
+    }
+
+    #[test]
+    fn a_labels_prefix_is_read_from_either_recorded_form() {
+        for name in ["dir/run.L1.argmax.parquet", "dir/run.L1.argmax.tsv"] {
+            assert_eq!(labels_prefix(name), Some("dir/run.L1"), "{name}");
+            let mut siblings = with_label_siblings(name);
+            siblings.sort();
+            assert_eq!(
+                siblings,
+                [
+                    "dir/run.L1.argmax.parquet",
+                    "dir/run.L1.argmax.tsv",
+                    "dir/run.L1.membership.tsv"
+                ],
+                "{name}"
+            );
+        }
+        assert_eq!(labels_prefix("dir/run.L1.membership.tsv"), None);
+        for other in [
+            "dir/run.L1.fine_argmax.tsv",
+            "dir/run.L1.fine_argmax.parquet",
+        ] {
+            assert_eq!(labels_prefix(other), None, "{other}");
+        }
+    }
 }

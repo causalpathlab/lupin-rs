@@ -53,7 +53,8 @@ separates confident cells from doubtful ones. A per-cell gene-set null and a hie
 walk were both tried, and neither raised the precision of what they kept.
 
 **Outputs:**
-- `argmax.tsv`: the call; the probability is NaN, since the score has none;
+- `argmax.parquet` (recorded as `annotate.argmax`, `argmax.tsv` beside it): the call; the
+  probability is NaN, since the score has none;
 - `marker_score.parquet`: each cell's cluster, call and margin, recorded as
   `annotate.marker_score` (not `annotate.annotation`, which holds a cell × type posterior). The TUI tables a cluster's candidates from these calls over the
   round's current clusters, so merges and splits keep their evidence. A marker edit needs a

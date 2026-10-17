@@ -199,3 +199,30 @@ fn a_manifest_points_describe_at_the_latest_pass_not_stale_files() {
         .is_some_and(|p| p.ends_with("run.cluster_celltype_q_values.parquet")));
     assert!(files.term_q.is_none());
 }
+
+#[test]
+fn an_output_prefix_finds_its_labels_as_parquet_or_as_an_older_tsv() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("run").to_string_lossy().into_owned();
+    let tsv = format!("{prefix}.argmax.tsv");
+    std::fs::write(&tsv, "cell\tcell_type\nc0\tCT_A\n").unwrap();
+    assert_eq!(
+        EvidenceFiles::locate(&prefix).argmax.as_deref(),
+        Some(tsv.as_str())
+    );
+    let ev = load_evidence(&EvidenceFiles::locate(&prefix), 0.1).unwrap();
+    assert_eq!(ev[0].coarse_label, "CT_A");
+
+    let cells: Vec<Box<str>> = vec!["c0".into()];
+    graph_embedding_util::type_annotation::write_cell_labels(
+        &prefix,
+        &cells,
+        &["CT_B".into()],
+        &[0.9],
+    )
+    .unwrap();
+    let parquet = format!("{prefix}.argmax.parquet");
+    let files = EvidenceFiles::locate(&prefix);
+    assert_eq!(files.argmax.as_deref(), Some(parquet.as_str()));
+    assert_eq!(load_evidence(&files, 0.1).unwrap()[0].coarse_label, "CT_B");
+}

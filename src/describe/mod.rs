@@ -16,6 +16,7 @@ use crate::annotate::outputs::{
 use crate::gene_text::vocab::Vocabulary;
 use anyhow::{bail, Context, Result};
 use clap::Args;
+use graph_embedding_util::type_annotation::CELL_LABELS_SUFFIX;
 use legume_numeric::matrix::common_io::open_buf_reader;
 use legume_numeric::matrix::parquet::peek_parquet_field_names;
 use log::info;
@@ -210,7 +211,8 @@ impl EvidenceFiles {
                     annot: found(ANNOT_PARQUET),
                     enrichment_q: found(CLUSTER_CELLTYPE_Q_VALUES),
                     term_q: found(CLUSTER_TERM_Q),
-                    argmax: found(ARGMAX_TSV),
+                    // The parquet, else the TSV of an older pass.
+                    argmax: found(CELL_LABELS_SUFFIX).or_else(|| found(ARGMAX_TSV)),
                     marker_embedding: found(".marker_embedding.parquet"),
                     markers_tsv: None,
                 }
@@ -227,11 +229,11 @@ fn load_evidence(files: &EvidenceFiles, fdr_alpha: f32) -> Result<Vec<ClusterEvi
         return load_from_enrichment_q(p, fdr_alpha);
     }
     if let Some(p) = &files.argmax {
-        return load_from_argmax_tsv(p);
+        return load_from_argmax(p);
     }
     bail!(
         "no annotate evidence found: need a projection annot table, an enrichment \
-         q-value table, or an argmax TSV (run `lupin annotate` first)"
+         q-value table, or per-cell labels (run `lupin annotate` first)"
     );
 }
 
@@ -349,7 +351,7 @@ fn load_from_annot_parquet(path: &str) -> Result<Vec<ClusterEvidence>> {
     Ok(by_comm.into_values().collect())
 }
 
-fn load_from_argmax_tsv(path: &str) -> Result<Vec<ClusterEvidence>> {
+fn load_from_argmax(path: &str) -> Result<Vec<ClusterEvidence>> {
     let labels = crate::cell_labels::read_cell_labels(path)?.unique_groups();
     Ok(labels
         .into_iter()
