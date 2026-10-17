@@ -1244,6 +1244,26 @@ fn a_clusters_new_label_replaces_its_earlier_one() {
 }
 
 #[test]
+fn keeping_a_relabelled_cluster_keeps_its_new_label() {
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    app.ask_label("CT2".into(), "why".into(), None);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('k'));
+    assert!(app.prompt.as_ref().unwrap().title.contains("keeps CT2"));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.current_label().as_deref(), Some("CT2"));
+    let r = app.round.as_ref().unwrap();
+    let saved = super::super::round::decisions(&app.edits, r, None);
+    assert_eq!(saved.len(), 1);
+    assert_eq!(
+        saved[0].label.as_deref(),
+        Some("CT2"),
+        "the save records it"
+    );
+}
+
+#[test]
 fn close_bracket_visits_the_flagged_clusters_left_to_decide() {
     use super::super::round::{Candidate, ClusterView};
     let mut app = app_with_terms(false);

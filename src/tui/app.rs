@@ -1898,7 +1898,21 @@ impl App {
                         }
                     }
                     Pending::Keep { cluster } => {
-                        self.decide(Edit::Keep { cluster, reason });
+                        // Keeping a label picked here keeps that label, not
+                        // the round's.
+                        let now = self.round.as_ref().and_then(|r| {
+                            let own = &r.clusters.iter().find(|c| c.id == cluster)?.label;
+                            let now = r.label_of(cluster, &self.edits);
+                            (now != *own).then(|| now.unwrap_or_else(|| UNASSIGNED_LABEL.into()))
+                        });
+                        self.decide(match now {
+                            Some(label) => Edit::Label {
+                                cluster,
+                                label,
+                                reason,
+                            },
+                            None => Edit::Keep { cluster, reason },
+                        });
                     }
                     Pending::Hide => self.hide(&reason),
                     Pending::LabelName { cluster } => {
