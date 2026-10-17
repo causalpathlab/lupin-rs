@@ -63,7 +63,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     draw_summary(f, summary, app);
     draw_log(f, log, app);
-    f.render_widget(Paragraph::new(help(app)).dim(), keys);
+    f.render_widget(
+        Paragraph::new(help_in(app, usize::from(keys.width))).dim(),
+        keys,
+    );
     draw_overlays(f, app, f.area());
 }
 
@@ -180,7 +183,10 @@ fn draw_order_screen(f: &mut Frame, app: &App, [header, body, summary, log, keys
     draw_candidates(f, candidates, app);
     draw_summary(f, summary, app);
     draw_log(f, log, app);
-    f.render_widget(Paragraph::new(help(app)).dim(), keys);
+    f.render_widget(
+        Paragraph::new(help_in(app, usize::from(keys.width))).dim(),
+        keys,
+    );
     // A choice leaves the ordering and the ontology in sight: it opens over
     // the clusters.
     draw_overlays(f, app, left);
@@ -274,64 +280,216 @@ fn draw_progress(f: &mut Frame, app: &App) {
     );
 }
 
-/// The bottom line: where the key guide is, and the pane's main keys.
+/// The bottom line: where the key guide is, and the pane's keys, whole.
 pub(super) fn help(app: &App) -> String {
-    let keys = pane_keys(app);
-    // Only `lupin trajectory`'s TUI has the order view; on the cell map `t`
-    // restyles the labels and `T` leaves for the order.
-    if app.trajectory_tui && app.focus == Focus::Tree && !app.in_order() {
-        let t = if matches!(app.tree_mode, TreeMode::Cells) {
-            'T'
-        } else {
-            't'
-        };
-        format!("{keys} · {t} order")
-    } else {
-        keys.to_string()
-    }
+    help_in(app, usize::MAX)
 }
 
-/// The focused pane's main keys.
-fn pane_keys(app: &App) -> &'static str {
+/// The bottom line in `width` columns: the pane's keys, most used first,
+/// as many as fit whole; `? more` ends it when some are left out (the
+/// guide has them all).
+pub(super) fn help_in(app: &App, width: usize) -> String {
+    let keys = key_line(app);
+    let all = format!(" ? keys · {}", keys.join(" · "));
+    if Line::from(all.as_str()).width() <= width {
+        return all;
+    }
+    // Each key with its separator, and `? more` after the last that fits.
+    let mut line = String::new();
+    for k in keys {
+        let next = format!("{line} {k} ·");
+        if Line::from(format!("{next} ? more")).width() > width {
+            break;
+        }
+        line = next;
+    }
+    format!("{line} ? more")
+}
+
+/// The focused pane's keys, most used first: on the trajectory's tree pane
+/// the way to the order view among the first (on the cell map `t` restyles
+/// the labels and `T` leaves for the order).
+fn key_line(app: &App) -> Vec<&'static str> {
+    let mut keys = pane_keys(app).to_vec();
+    if app.trajectory_tui && app.focus == Focus::Tree && !app.in_order() {
+        let order = if matches!(app.tree_mode, TreeMode::Cells) {
+            "T order"
+        } else {
+            "t order"
+        };
+        keys.insert(keys.len().min(2), order);
+    }
+    keys
+}
+
+/// The focused pane's keys, most used first.
+fn pane_keys(app: &App) -> &'static [&'static str] {
     match app.focus {
-        Focus::Clusters if app.in_order() => {
-            " ? keys · ↑↓ cluster · 1-9 take · ⏎ choices · S sort · a all · k keep · ] next flagged · A annotate · g runs · r run · tab pane · s save · q quit"
-        }
-        Focus::Clusters => {
-            " ? keys · ↑↓ cluster · 1-9 take · ⏎ choices · S sort · a all · k keep · ] next flagged · A annotate · g runs · tab pane · s save · q quit"
-        }
-        Focus::Genes => {
-            " ? keys · ↑↓ gene · a add · A add to a type · d drop · h hide · H hidden · m view · tab pane"
-        }
+        Focus::Clusters if app.in_order() => &[
+            "↑↓ cluster",
+            "1-9 take",
+            "⏎ choices",
+            "k keep",
+            "u unassign",
+            "⌫ undo",
+            "] next flagged",
+            "S sort",
+            "a all",
+            "r run",
+            "A annotate",
+            "g runs",
+            "tab pane",
+            "s save",
+            "q quit",
+        ],
+        Focus::Clusters => &[
+            "↑↓ cluster",
+            "1-9 take",
+            "⏎ choices",
+            "k keep",
+            "u unassign",
+            "⌫ undo",
+            "] next flagged",
+            "S sort",
+            "a all",
+            "r form",
+            "g runs",
+            "tab pane",
+            "s save",
+            "q quit",
+        ],
+        Focus::Genes => &[
+            "↑↓ gene",
+            "space mark",
+            "a add",
+            "A add to a type",
+            "d drop",
+            "⌫ undo marker",
+            "h hide",
+            "X hide by pattern",
+            "H hidden",
+            "m view",
+            "tab pane",
+            "esc clusters",
+        ],
         Focus::Tree if app.in_order() => {
             if matches!(&app.tree_mode, TreeMode::Order(v) if v.ontology.is_some()) {
-                " ? keys · ↑↓ term · → children · ← parents · h hide / show unmatched below · d in the data / all · / search · o the run's types · T tree · tab clusters"
+                &[
+                    "↑↓ term",
+                    "→ children",
+                    "← parents",
+                    "h hide / show unmatched below",
+                    "d in the data / all",
+                    "/ search",
+                    "o the run's types",
+                    "T tree",
+                    "tab clusters",
+                    "esc clusters",
+                ]
             } else {
-                " ? keys · ↑↓ type on the ontology · ← → fold · space mark · o full ontology · T tree · tab clusters"
+                &[
+                    "↑↓ type on the ontology",
+                    "← → fold",
+                    "space mark",
+                    "o full ontology",
+                    "T tree",
+                    "tab clusters",
+                    "esc clusters",
+                ]
             }
         }
-        Focus::Order if app.figures_shown() => {
-            " ? keys · v next · w all · V table · t c m labels colour layout · , . [ ] axes · +-0 zoom · ←↑→↓ pan · p export · f exports · r run · esc clusters"
-        }
-        Focus::Order => {
-            " ? keys · ↑↓ type · space mark · > precedes · u unrelated · r run · v figures · tab ontology · T tree"
-        }
-        Focus::Tree if matches!(app.tree_mode, TreeMode::Cells) => {
-            " ? keys · the selected cluster lit · c colour · t labels · m layout · +-0 zoom · ←↑→↓ pan · w all · p export · f exports · V tree"
-        }
+        Focus::Order if app.figures_shown() => &[
+            "v next",
+            "w all",
+            "V table",
+            "t c m labels colour layout",
+            ", . [ ] axes",
+            "+-0 zoom",
+            "←↑→↓ pan",
+            "p export",
+            "f exports",
+            "r run",
+            "esc clusters",
+        ],
+        Focus::Order => &[
+            "↑↓ type",
+            "space mark",
+            "> precedes",
+            "u unrelated",
+            "r run",
+            "v figures",
+            "tab ontology",
+            "T tree",
+            "esc clusters",
+        ],
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Cells) => &[
+            "c colour",
+            "t labels",
+            "m layout",
+            "+-0 zoom",
+            "←↑→↓ pan",
+            "o ontology",
+            "w all",
+            "p export",
+            "f exports",
+            "V tree",
+            "esc clusters",
+            "the selected cluster lit",
+        ],
+        // `o` goes back to where the ontology was opened from.
         Focus::Tree if matches!(app.tree_mode, TreeMode::Ontology(_)) && app.ontology_from_map => {
-            " ? keys · ↑↓ term · enter label · space mark · + mixed label · → children · ← parents · h hide / show unmatched below · d in the data / all · / search · o back to the cells"
+            &[
+                "↑↓ term",
+                "enter label",
+                "space mark",
+                "+ mixed label",
+                "→ children",
+                "← parents",
+                "h hide / show unmatched below",
+                "d in the data / all",
+                "/ search",
+                "o back to the cells",
+                "esc clusters",
+            ]
         }
-        Focus::Tree if matches!(app.tree_mode, TreeMode::Ontology(_)) => {
-            " ? keys · ↑↓ term · enter label · space mark · + mixed label · → children · ← parents · h hide / show unmatched below · d in the data / all · / search · o panel"
-        }
-        Focus::Tree => {
-            " ? keys · ↑↓ node · enter label · space mark · + mixed label · → into the ontology · o ontology · / search · v cells"
-        }
-        Focus::Go => " ? keys · ↑↓ term · ← → read a long name · tab pane · esc clusters",
-        Focus::Candidates => {
-            " ? keys · ↑↓ candidate · ⏎ or 1-9 take · S sort · a all · tab pane · esc clusters"
-        }
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Ontology(_)) => &[
+            "↑↓ term",
+            "enter label",
+            "space mark",
+            "+ mixed label",
+            "→ children",
+            "← parents",
+            "h hide / show unmatched below",
+            "d in the data / all",
+            "/ search",
+            "o panel",
+            "esc clusters",
+        ],
+        Focus::Tree => &[
+            "↑↓ node",
+            "enter label",
+            "space mark",
+            "+ mixed label",
+            "→ into the ontology",
+            "o ontology",
+            "/ search",
+            "v cells",
+            "esc clusters",
+        ],
+        Focus::Go => &[
+            "↑↓ term",
+            "← → read a long name",
+            "tab pane",
+            "esc clusters",
+        ],
+        Focus::Candidates => &[
+            "↑↓ candidate",
+            "⏎ or 1-9 take",
+            "S sort",
+            "a all",
+            "tab pane",
+            "esc clusters",
+        ],
     }
 }
 

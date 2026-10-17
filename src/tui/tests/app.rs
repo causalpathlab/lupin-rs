@@ -2161,6 +2161,50 @@ fn o_from_the_maps_ontology_goes_back_to_the_map() {
 }
 
 #[test]
+fn each_panes_key_line_names_its_keys_and_a_narrow_one_ends_with_more() {
+    use super::super::ui::{help, help_in};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    let wants = [
+        (Focus::Clusters, &["u unassign", "⌫ undo", "r form"][..]),
+        (
+            Focus::Genes,
+            &[
+                "space mark",
+                "X hide by pattern",
+                "⌫ undo marker",
+                "esc clusters",
+            ][..],
+        ),
+        (Focus::Tree, &["o ontology"][..]),
+    ];
+    for (focus, want) in wants {
+        app.focus = focus;
+        let bar = help(&app);
+        for w in want {
+            assert!(bar.contains(w), "{focus:?} {w}: {bar}");
+        }
+        assert!(bar.starts_with(" ? keys · "), "{bar}");
+        let narrow = help_in(&app, 80);
+        assert!(
+            ratatui::text::Line::from(narrow.as_str()).width() <= 80,
+            "{narrow}"
+        );
+        assert!(narrow.ends_with(" · ? more"), "{focus:?}: {narrow}");
+        let shown: Vec<&str> = narrow.trim().split(" · ").collect();
+        let all: Vec<&str> = bar.trim().split(" · ").skip(1).collect();
+        assert_eq!(
+            shown[..shown.len() - 1],
+            all[..shown.len() - 1],
+            "the first keys, whole"
+        );
+    }
+    app.focus = Focus::Clusters;
+    let wide = help(&app);
+    assert_eq!(help_in(&app, 400), wide, "all fit: no more to say");
+}
+
+#[test]
 fn a_round_without_a_layout_keeps_the_tree_and_v_names_the_senna_command() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = map_app(dir.path(), false);
