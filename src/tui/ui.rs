@@ -8,7 +8,7 @@ use crate::annotate::markers::label_key;
 use enrichment::UNASSIGNED_LABEL;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, BorderType, Borders, Cell, Clear, LineGauge, Paragraph, Row, Table, TableState, Wrap,
 };
@@ -836,17 +836,19 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             .iter()
             .find(|(t, _)| label_key(t) == label_key(l))
             .map(|(_, s)| *s);
+        // The note on a line of its own: a long ontology name would cut it.
         rows.insert(
             0,
             Row::new(vec![
                 Cell::from("→"),
-                Cell::from(Line::from(vec![
-                    Span::from(l.to_string()).bold(),
-                    Span::from(pinned_note(app, l, share)).dim(),
+                Cell::from(Text::from(vec![
+                    Line::from(l.to_string()).bold(),
+                    Line::from(pinned_note(app, l, share)).dim(),
                 ])),
                 Cell::from(share.map_or_else(|| "—".into(), |s| format!("{s:.2}"))),
                 Cell::from(share.map(bar).unwrap_or_default()),
-            ]),
+            ])
+            .height(2),
         );
     }
     if rows.is_empty() {
@@ -911,10 +913,10 @@ fn pinned_note(app: &App, label: &str, share: Option<f32>) -> &'static str {
         matches!(e, super::round::Edit::Markers { label: l, .. } if label_key(l) == label_key(label))
     });
     match share {
-        Some(s) if s > 0.0 => " · below the top candidates",
-        _ if app.rescoring.is_some() => " · rescoring…",
-        _ if edited && app.recorded.is_none() => " · scored on save",
-        _ => " · not called (did not pass FDR)",
+        Some(s) if s > 0.0 => "below the top candidates",
+        _ if app.rescoring.is_some() => "rescoring…",
+        _ if edited && app.recorded.is_none() => "scored on save",
+        _ => "not called (did not pass FDR)",
     }
 }
 

@@ -1388,6 +1388,22 @@ fn a_running_jobs_progress_leaves_an_armed_question_on_screen() {
 }
 
 #[test]
+fn a_long_pinned_label_keeps_its_note_whole() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    let long = "hematopoietic_oligopotent_progenitor_cell";
+    let panel = [("GENE1".to_string(), long.to_string())];
+    app.tree = crate::manifest::ontology::panel_tree_on(None, &panel);
+    app.edits = vec![Edit::Label {
+        cluster: 0,
+        label: long.into(),
+        reason: "why".into(),
+    }];
+    let screen = drawn(&app);
+    assert!(screen.contains("not called (did not pass FDR)"), "{screen}");
+}
+
+#[test]
 fn a_relabelled_cluster_shows_the_evidence_of_its_new_label() {
     use super::super::round::{Candidate, Edit};
     let cand = |label: &str, fold| {
