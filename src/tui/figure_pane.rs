@@ -65,7 +65,8 @@ impl Exports {
     /// Re-read the gallery and check every entry against its files.
     pub fn refresh(&mut self) {
         let set_aside = self.gallery.set_aside.take();
-        self.gallery = Gallery::here();
+        let dir = self.gallery.dir().to_path_buf();
+        self.gallery = Gallery::open(&dir);
         self.gallery.set_aside = self.gallery.set_aside.take().or(set_aside);
         self.statuses = self.gallery.check();
         self.not_listed = self.gallery.not_listed(&self.prefix);
@@ -106,6 +107,11 @@ impl Exports {
         let panel = name.strip_prefix(&stem).unwrap_or(&name);
         self.gallery.add(&files, &name, panel, manifest)?;
         self.refresh();
+        // The list is newest first: the selection follows the file.
+        let listed = crate::manifest::data_files::absolute(&pdf);
+        if let Some(i) = self.gallery.entries.iter().position(|e| e.path == listed) {
+            self.sel = i;
+        }
         Ok(format!("listed {}", pdf.display()))
     }
 

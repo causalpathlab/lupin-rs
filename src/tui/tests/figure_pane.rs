@@ -254,3 +254,35 @@ fn the_axis_keys_say_where_they_work_and_what_they_chose() {
     let said = p.step_pair(true, false);
     assert_eq!(said, p.title(p.current()), "the new pair, as titled");
 }
+
+#[test]
+fn a_file_just_listed_stays_selected_when_the_strip_resorts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    let write = |base: &str| {
+        let pdf = dir.join(format!("{base}.pdf"));
+        std::fs::write(&pdf, "%PDF-1.4 fake").unwrap();
+        pdf
+    };
+    let listed = write("run.trajectory.a");
+    write("run.trajectory.b");
+    let mut x = Exports {
+        prefix: dir.join("run.trajectory").to_string_lossy().into_owned(),
+        gallery: Gallery::open(&dir.join(super::super::gallery::DIR)),
+        open: true,
+        sel: 0,
+        statuses: Vec::new(),
+        not_listed: Vec::new(),
+        delete_armed: None,
+    };
+    x.gallery
+        .add(&[listed], "a", "a", &dir.join("run.senna.json"))
+        .unwrap();
+    x.refresh();
+    assert_eq!((x.gallery.entries.len(), x.not_listed.len()), (1, 1));
+    // The not-listed row is the second; listing it puts it first.
+    x.sel = 1;
+    x.adopt(&dir.join("run.senna.json")).unwrap();
+    let on = &x.gallery.entries[x.sel].path;
+    assert!(on.ends_with("run.trajectory.b.pdf"), "{}", on.display());
+}
