@@ -1722,13 +1722,23 @@ struct Reviewed {
 }
 
 impl Reviewed {
-    fn read(loaded: &Loaded) -> Result<Self> {
-        // The cells give the score's shares over the current clusters; a
-        // round whose cells cannot be read is still reviewed from its
-        // summary.
-        let cells = read_cells(loaded)
-            .inspect_err(|e| log::warn!("review without the cells: {e:#}"))
-            .ok();
+    /// The round as review shows it; `every_type` when the types' evidence
+    /// is wanted too (`--json`).
+    fn read(loaded: &Loaded, every_type: bool) -> Result<Self> {
+        // The cells give the score's shares over the current clusters: for
+        // the types' evidence, the digests when no summary was written, and
+        // the order of tied calls when the score made the call. A round
+        // whose cells cannot be read is still reviewed from its summary.
+        let a = &loaded.manifest.annotate;
+        let summary = (a.cluster_summary.as_deref()).and_then(|rel| loaded.recorded(rel));
+        let wants_cells = every_type || summary.is_none() || called_by(a) == Some(Method::Score);
+        let cells = wants_cells
+            .then(|| {
+                read_cells(loaded)
+                    .inspect_err(|e| log::warn!("review without the cells: {e:#}"))
+                    .ok()
+            })
+            .flatten();
         // A table or tree that cannot be read costs what it adds (the order
         // of tied calls, the types' evidence, the tree's placement), never
         // the review.
@@ -1765,7 +1775,7 @@ pub(crate) fn review_json(
     loaded: &Loaded,
     clusters: &[ClusterId],
 ) -> Result<BTreeMap<ClusterId, Value>> {
-    let r = Reviewed::read(loaded)?;
+    let r = Reviewed::read(loaded, true)?;
     let (digests, history, tables) = (&r.digests, &r.history, &r.tables);
     Ok(digests
         .iter()
@@ -1791,7 +1801,7 @@ pub(crate) fn review_json(
 
 /// `review`'s text: each cluster (all, or those in `clusters`) in turn.
 pub(crate) fn review_text(loaded: &Loaded, clusters: &[ClusterId]) -> Result<String> {
-    let r = Reviewed::read(loaded)?;
+    let r = Reviewed::read(loaded, false)?;
     Ok(r.digests
         .iter()
         .filter(|(id, _)| clusters.is_empty() || clusters.contains(id))

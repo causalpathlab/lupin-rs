@@ -59,8 +59,7 @@ impl Digest {
     /// reads the same as one written after.
     pub fn settle(&mut self, id: ClusterId, ties: &TieBreak) {
         let types = ties.tables.evidence(id);
-        self.calls
-            .sort_by(|a, b| call_order(a, b, &types, ties.method));
+        sort_calls(&mut self.calls, &types, ties.method);
         let agrees = self.evidence.as_ref().is_some_and(|e| e.agrees);
         self.check_evidence();
         if let Some(e) = &mut self.evidence {
@@ -405,22 +404,28 @@ pub struct TieBreak {
 /// Smallest q first (unknowns last), then the method's reading and the NES
 /// of each call's type in `types`, largest first; the sort is stable, so
 /// calls tied on all of them stay by name.
-fn call_order(a: &Call, b: &Call, types: &[TypeEvidence], method: Method) -> std::cmp::Ordering {
-    let q = |c: &Call| c.q.unwrap_or(f32::INFINITY);
-    let of = |c: &Call| {
-        let e = types
-            .iter()
-            .find(|e| label_key(&e.label) == label_key(&c.label));
-        let v = |x: Option<f32>| x.unwrap_or(f32::NEG_INFINITY);
-        (
-            v(e.and_then(|e| method.reading(e))),
-            v(e.and_then(|e| e.nes)),
-        )
-    };
-    let ((ra, na), (rb, nb)) = (of(a), of(b));
-    q(a).total_cmp(&q(b))
-        .then(rb.total_cmp(&ra))
-        .then(nb.total_cmp(&na))
+fn sort_calls(calls: &mut Vec<Call>, types: &[TypeEvidence], method: Method) {
+    let v = |x: Option<f32>| x.unwrap_or(f32::NEG_INFINITY);
+    let of: BTreeMap<String, (f32, f32)> = types
+        .iter()
+        .map(|e| (label_key(&e.label), (v(method.reading(e)), v(e.nes))))
+        .collect();
+    let mut keyed: Vec<(f32, f32, f32, Call)> = calls
+        .drain(..)
+        .map(|c| {
+            let (r, n) = of
+                .get(&label_key(&c.label))
+                .copied()
+                .unwrap_or((f32::NEG_INFINITY, f32::NEG_INFINITY));
+            (c.q.unwrap_or(f32::INFINITY), r, n, c)
+        })
+        .collect();
+    keyed.sort_by(|(qa, ra, na, _), (qb, rb, nb, _)| {
+        qa.total_cmp(qb)
+            .then(rb.total_cmp(ra))
+            .then(nb.total_cmp(na))
+    });
+    calls.extend(keyed.into_iter().map(|(.., c)| c));
 }
 
 /// Labels a table may carry that are not a call.
@@ -483,7 +488,7 @@ fn calls_for(id: ClusterId, ev: &Evidence) -> Vec<Call> {
         Some(t) => (t.tables.evidence(id), t.method),
         None => (Vec::new(), Method::default()),
     };
-    calls.sort_by(|a, b| call_order(a, b, &types, method));
+    sort_calls(&mut calls, &types, method);
     calls.truncate(TOP);
     calls
 }
