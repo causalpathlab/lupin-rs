@@ -206,7 +206,13 @@ fn draw_progress(f: &mut Frame, app: &App) {
     let Some(p) = app.child.as_ref().map(|r| &r.progress) else {
         return;
     };
-    let block = popup(format!(" {what} "), " x stop · b hide ");
+    let stoppable = app.child.as_ref().is_some_and(|r| r.job.stoppable());
+    let hint = if stoppable {
+        " x stop · b hide "
+    } else {
+        " b hide "
+    };
+    let block = popup(format!(" {what} "), hint);
     let inner = block.inner(area);
     f.render_widget(Clear, area);
     f.render_widget(block, area);

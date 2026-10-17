@@ -412,6 +412,12 @@ impl Job {
             Self::Trajectory(_) => "trajectory",
         }
     }
+
+    /// Whether `x` stops it: a save is not stopped midway.
+    #[must_use]
+    pub fn stoppable(&self) -> bool {
+        !matches!(self, Self::Save(_))
+    }
 }
 
 /// A `lupin relabel --preview` rescoring the round against `edits`.
@@ -655,14 +661,15 @@ impl App {
             Ok(None) if self.armed.is_some() => {}
             Ok(None) => {
                 let elapsed = r.started.elapsed();
+                let stop = if job.stoppable() { "  (x: stop)" } else { "" };
                 self.status = match r.progress.estimate(elapsed) {
                     Some(e) if self.progress_hidden => format!(
-                        "{} {:.0}% · {} · b shows  (x: stop)",
+                        "{} {:.0}% · {} · b shows{stop}",
                         job.name(),
                         100.0 * e.fraction,
                         crate::progress::eta_text(&e)
                     ),
-                    _ => format!("{}… {secs}s  (x: stop)", job.name()),
+                    _ => format!("{}… {secs}s{stop}", job.name()),
                 };
             }
             Ok(Some(st)) if st.success() => {
@@ -2068,15 +2075,17 @@ impl App {
         if k.code == KeyCode::Char('g') {
             return self.list_runs();
         }
-        // `x` stops a running job from any pane, asked twice.
+        // `x` stops a running job from any pane, asked twice; a save, which
+        // is not stopped, says so at once.
         if k.code == KeyCode::Char('x') {
-            if self.child.is_some() {
-                if armed == Some(Armed::Stop) {
-                    self.stop();
-                } else {
+            match self.child.as_ref().map(|r| r.job.stoppable()) {
+                Some(false) => self.stop(),
+                Some(true) if armed == Some(Armed::Stop) => self.stop(),
+                Some(true) => {
                     self.armed = Some(Armed::Stop);
                     self.status = "x again stops it".into();
                 }
+                None => {}
             }
             return;
         }

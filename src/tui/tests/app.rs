@@ -212,6 +212,26 @@ fn x_stops_a_pass_only_when_asked_twice_from_any_pane() {
 }
 
 #[test]
+fn a_running_save_offers_no_stop_and_x_says_so_at_once() {
+    let mut app = app_with_terms(false);
+    let child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    app.child = Some(Running::new(child, Job::Save(1)));
+    app.tick();
+    assert!(!app.status.contains("x: stop"), "{}", app.status);
+    assert!(!drawn(&app).contains("x stop"), "the popup offers no stop");
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.status.contains("finishes on its own"), "{}", app.status);
+    assert!(app.child.is_some());
+    if let Some(mut r) = app.child.take() {
+        let _ = r.child.kill();
+        let _ = r.child.wait();
+    }
+}
+
+#[test]
 fn h_hides_a_gene_and_x_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with_terms(false);
