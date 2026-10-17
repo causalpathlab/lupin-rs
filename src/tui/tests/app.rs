@@ -3015,7 +3015,7 @@ fn after_a_trajectory_run_g_marks_the_new_trajectory() {
     app.open_run(pick(tmp.path(), "X.L0"), false);
     // As a trajectory run leaves its figures, read from X.T1.
     let mut pane = super::super::figure_pane::tests::pane();
-    pane.data.manifest = tmp.path().join("X.T1.senna.json");
+    std::sync::Arc::get_mut(&mut pane.data).unwrap().manifest = tmp.path().join("X.T1.senna.json");
     app.figures = Some(pane);
     press(&mut app, KeyCode::Char('g'));
     let m = menu(&app).expect("the runs");
@@ -3103,7 +3103,9 @@ fn another_runs_trajectory_is_named_over_its_figures_and_in_g() {
 
     let tmp = tempfile::tempdir().unwrap();
     let mut app = figures_app(tmp.path());
-    app.figures.as_mut().unwrap().data.trajectory_of = Some("X.T1".into());
+    std::sync::Arc::get_mut(&mut app.figures.as_mut().unwrap().data)
+        .unwrap()
+        .trajectory_of = Some("X.T1".into());
     let screen = drawn(&app);
     assert!(
         screen.contains("figures from X.T1's trajectory"),

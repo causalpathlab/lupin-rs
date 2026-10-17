@@ -597,9 +597,10 @@ pub struct App {
     /// The terminal's picture protocol, asked for once.
     picker: Option<ratatui_image::picker::Picker>,
     /// The frame being drawn goes out at once: the figures show as last
-    /// drawn, so a key's reply is not held up by drawing one anew.
+    /// drawn while a new one is rasterised, so a key's reply is not held
+    /// up by drawing one anew. Off, a frame waits for its figures.
     pub quick_frame: std::cell::Cell<bool>,
-    /// A quick frame left a figure to draw in the next.
+    /// A quick frame showed a figure not yet drawn anew.
     pub frame_behind: std::cell::Cell<bool>,
 }
 

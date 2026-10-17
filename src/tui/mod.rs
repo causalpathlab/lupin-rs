@@ -222,8 +222,9 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     let result = (|| -> Result<()> {
         // Drawn when something changed: a key, a resize, the log, the status
         // or a rescoring starting or ending; and each second a job runs.
-        // A change goes out at once with the figures as last drawn, and a
-        // figure left to draw follows once no key waits (`behind`).
+        // Every frame goes out at once, the figures as last drawn while a
+        // new one is rasterised off this thread; the screen is drawn again
+        // shortly until it is in (`behind`).
         let mut dirty = true;
         let mut behind = false;
         let mut drawn = std::time::Instant::now();
@@ -239,7 +240,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                 || app.child.as_ref().map(|r| r.progress.reported_at) != progress
                 || app.redraw_due(drawn.elapsed());
             if dirty || behind {
-                app.quick_frame.set(dirty);
+                app.quick_frame.set(true);
                 app.frame_behind.set(false);
                 terminal.draw(|f| ui::draw(f, &app))?;
                 behind = app.frame_behind.get();
@@ -277,11 +278,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
             if app.job_ended() {
                 continue;
             }
-            let mut wait = if behind {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(150)
-            };
+            let mut wait = Duration::from_millis(if behind { 30 } else { 150 });
             while !app.quit && app.want_file.is_none() && event::poll(wait)? {
                 wait = Duration::ZERO;
                 match event::read()? {

@@ -291,7 +291,7 @@ fn a_file_just_listed_stays_selected_when_the_strip_resorts() {
 #[test]
 fn the_axes_keys_say_when_there_is_no_diffusion_map_to_step() {
     let mut p = pane();
-    p.data.diffusion = None;
+    Arc::get_mut(&mut p.data).unwrap().diffusion = None;
     let said = p.step_pair(true, false);
     assert!(!said.contains("m reaches it"), "{said}");
     assert!(said.contains("no diffusion map"), "{said}");
@@ -319,18 +319,23 @@ fn the_strips_keys_say_why_when_it_has_no_room() {
 }
 
 #[test]
-fn a_quick_frame_shows_the_figure_last_drawn_and_says_one_is_due() {
+fn a_quick_frame_shows_the_figure_last_drawn_while_the_new_one_is_drawn_apart() {
     let mut p = pane();
     let area = Rect::new(0, 0, 30, 10);
     assert!(
         matches!(p.drawn_so_far(area), (None, true)),
         "nothing drawn yet"
     );
+    // A full frame waits for it.
     assert!(p.protocol(area).is_ok());
     assert!(matches!(p.drawn_so_far(area), (Some(_), false)));
-    // A new look: the old drawing stands in until the next frame.
+    // A new look: the old drawing stands in until the new one is in.
     p.style.cycle_labels();
     assert!(matches!(p.drawn_so_far(area), (Some(_), true)));
-    assert!(p.protocol(area).is_ok());
-    assert!(matches!(p.drawn_so_far(area), (Some(_), false)));
+    let start = std::time::Instant::now();
+    while p.drawn_so_far(area).1 {
+        assert!(start.elapsed().as_secs() < 30, "never drawn");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(p.drawn_so_far(area).0.is_some_and(|d| d.is_ok()));
 }
