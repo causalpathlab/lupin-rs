@@ -311,3 +311,14 @@ fn an_unreadable_table_costs_the_evidence_not_the_summary() {
         "no evidence, and none of another round's"
     );
 }
+
+#[test]
+fn the_score_pass_writes_its_labels_as_parquet_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, panel) = toy::write_run(dir.path());
+    let loaded = run::load(&manifest).unwrap();
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
+    let labels = read_argmax(&format!("{out}.argmax.parquet")).unwrap();
+    assert_eq!(labels["c00"].0, "A");
+}

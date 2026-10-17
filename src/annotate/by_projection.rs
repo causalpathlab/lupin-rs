@@ -106,7 +106,7 @@ pub fn run(
 
     info!("annotate --method projection complete → {out}.*");
     Ok(AnnotationOutputs {
-        argmax: Some(format!("{out}.argmax.tsv")),
+        argmax: Some(super::outputs::labels_path(&out)),
         annotation: Some(format!("{out}.annot.parquet")),
         // Projection emits cluster × term (not cluster × celltype enrichment);
         // those manifest fields stay None for this pass.

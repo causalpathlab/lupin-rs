@@ -70,14 +70,8 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
     let clusters_path = format!("{out}{CLUSTERS}");
     let ids = rounds::cluster_ids(&inputs.cluster_labels);
     write_clusters(&clusters_path, &inputs.cell_names, &ids)?;
-    let argmax_path = format!("{out}.argmax.tsv");
     let n = inputs.cell_names.len();
-    write_argmax(
-        &argmax_path,
-        &inputs.cell_names,
-        &vec![None; n],
-        &vec![f32::NAN; n],
-    )?;
+    let argmax_path = write_argmax(&out, &inputs.cell_names, &vec![None; n], &vec![f32::NAN; n])?;
     let names: Vec<Box<str>> = (0..inputs.n_clusters)
         .map(|k| format!("K{k}").into())
         .collect();

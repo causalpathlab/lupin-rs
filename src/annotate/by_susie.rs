@@ -12,8 +12,8 @@
 
 use super::inputs::EnrichmentInputs;
 use super::outputs::{
-    write_cluster_tables, AnnotationOutputs, ARGMAX_TSV, CLUSTER_CELLTYPE_EFFECT,
-    CLUSTER_CELLTYPE_EXPLAINED, CLUSTER_CELLTYPE_PIP, CLUSTER_CREDIBLE_SETS,
+    write_cluster_tables, AnnotationOutputs, CLUSTER_CELLTYPE_EFFECT, CLUSTER_CELLTYPE_EXPLAINED,
+    CLUSTER_CELLTYPE_PIP, CLUSTER_CREDIBLE_SETS,
 };
 use super::susie::{fit_all, SusieConfig};
 use legume_numeric::matrix::common_io::write_lines;
@@ -21,6 +21,7 @@ use legume_numeric::matrix::dense_mat_io::{axis_id_names, Mat};
 use legume_numeric::matrix::traits::IoOps;
 use legume_numeric::matrix::utils::quantiles;
 use log::{info, warn};
+use std::path::Path;
 
 /// Fit the clusters in `inputs` (raw count sums, not a decoder's expectation)
 /// and write the stage's outputs under `out`, pointing `outputs`' label and
@@ -145,8 +146,8 @@ pub fn run(
     let summary: Vec<String> = called.iter().map(|(t, n)| format!("{t} {n}")).collect();
     info!("SuSiE calls (clusters): {}", summary.join(", "));
     // The per-cell files replace the enrichment's: written under a staging
-    // prefix, then moved into place together, so a failure leaves the
-    // enrichment's call whole.
+    // prefix, then moved into place, so a failure while writing them leaves
+    // the enrichment's call whole.
     let staged = format!("{out}.susie-staging");
     let annotation_path = format!("{out}.annotation.parquet");
     annotation.to_parquet_with_names(
@@ -154,18 +155,23 @@ pub fn run(
         (Some(&inputs.cell_names), Some("cell")),
         Some(&inputs.celltype_names),
     )?;
-    graph_embedding_util::type_annotation::write_label_tsvs(
+    graph_embedding_util::type_annotation::write_cell_labels(
         &staged,
         &inputs.cell_names,
         &labels,
         &probs,
     )?;
-    for suffix in [".annotation.parquet", ARGMAX_TSV, ".membership.tsv"] {
-        std::fs::rename(format!("{staged}{suffix}"), format!("{out}{suffix}"))?;
+    let labels_files = graph_embedding_util::type_annotation::CELL_LABEL_FILE_SUFFIXES;
+    // The cleanup list keeps retired names: move only what was written.
+    for suffix in std::iter::once(&".annotation.parquet").chain(labels_files) {
+        let from = format!("{staged}{suffix}");
+        if Path::new(&from).is_file() {
+            std::fs::rename(from, format!("{out}{suffix}"))?;
+        }
     }
     info!("wrote {annotation_path} and the per-cell labels");
 
-    outputs.argmax = Some(format!("{out}{ARGMAX_TSV}"));
+    outputs.argmax = Some(super::outputs::labels_path(out));
     outputs.annotation = Some(annotation_path);
     let mut written = written.into_iter();
     outputs.cluster_celltype_pip = written.next();

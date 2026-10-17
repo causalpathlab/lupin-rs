@@ -113,13 +113,7 @@ fn finish_calls_each_cluster_by_its_group_and_keeps_the_fine_labels() {
         .iter()
         .map(|s| Some((*s).to_string()))
         .collect();
-    write_argmax(
-        &format!("{out}.argmax.tsv"),
-        &cells,
-        &fine,
-        &[0.9, 0.8, 0.7, 0.6],
-    )
-    .unwrap();
+    write_argmax(&out, &cells, &fine, &[0.9, 0.8, 0.7, 0.6]).unwrap();
     let mut q = Mat::zeros(2, 3);
     for (r, row) in [[0.3, 0.3, 0.4], [0.0, 0.1, 0.9]].iter().enumerate() {
         for (c, v) in row.iter().enumerate() {
@@ -212,13 +206,7 @@ fn without_cluster_probabilities_each_cell_keeps_its_own_groups_call() {
     )
     .unwrap();
     let fine = vec![Some("CT1".to_string()), Some("CT3".to_string()), None];
-    write_argmax(
-        &format!("{out}.argmax.tsv"),
-        &cells,
-        &fine,
-        &[0.9, 0.8, 0.1],
-    )
-    .unwrap();
+    write_argmax(&out, &cells, &fine, &[0.9, 0.8, 0.1]).unwrap();
     let mut m = RunManifest::new(crate::manifest::run::RunKind::Topic, "run");
     m.cluster.clusters = Some("run.clusters.parquet".into());
     m.annotate.argmax = Some("run.argmax.tsv".into());
@@ -257,7 +245,7 @@ fn a_susie_round_is_grouped_by_its_own_call_not_the_softmax_share() {
     )
     .unwrap();
     let fine = vec![Some("CT3".to_string()), Some("CT3".to_string())];
-    write_argmax(&format!("{out}.argmax.tsv"), &cells, &fine, &[1.0, 1.0]).unwrap();
+    write_argmax(&out, &cells, &fine, &[1.0, 1.0]).unwrap();
     let rows: Vec<Box<str>> = vec!["K0".into()];
     let cols: Vec<Box<str>> = vec!["CT1".into(), "CT_2".into(), "CT3".into()];
     let table = |values: [f32; 3], name: &str| {
