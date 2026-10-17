@@ -340,7 +340,29 @@ fn key_line(app: &App) -> Vec<&'static str> {
 
 /// The focused pane's keys, most used first.
 fn pane_keys(app: &App) -> &'static [&'static str] {
+    // The thumbnail grid takes its own keys over the figure's.
+    let grid = |pane: &Option<super::figure_pane::FigurePane>| {
+        pane.as_ref().is_some_and(|v| v.shown && v.grid.is_some())
+    };
     match app.focus {
+        Focus::Order if app.in_order() && grid(&app.figures) => &[
+            "←↑→↓ choose",
+            "⏎ open",
+            "1-9 open",
+            "p export",
+            "t c restyle",
+            "V table",
+            "esc w close",
+        ],
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Cells) && grid(&app.cell_map) => &[
+            "←↑→↓ choose",
+            "⏎ open",
+            "1-9 open",
+            "p export",
+            "t c restyle",
+            "V tree",
+            "esc w close",
+        ],
         Focus::Clusters if app.in_order() => &[
             "↑↓ cluster",
             "1-9 take",

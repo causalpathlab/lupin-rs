@@ -892,6 +892,33 @@ fn f_in_the_grid_says_the_strip_is_a_figures_and_opens_nothing() {
 }
 
 #[test]
+fn the_grids_key_line_names_the_grids_keys_not_the_figures() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    press(&mut app, KeyCode::Char('w'));
+    let line = super::super::ui::help(&app);
+    for key in ["⏎ open", "p export", "esc w close", "V table"] {
+        assert!(line.contains(key), "{key}: {line}");
+    }
+    for key in ["f exports", "zoom", "pan"] {
+        assert!(!line.contains(key), "{key}: {line}");
+    }
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('w'));
+    assert!(app.cell_map.as_ref().unwrap().grid.is_some());
+    let line = super::super::ui::help(&app);
+    assert!(
+        line.contains("esc w close") && line.contains("V tree"),
+        "{line}"
+    );
+    assert!(
+        !line.contains("f exports") && !line.contains("zoom"),
+        "{line}"
+    );
+}
+
+#[test]
 fn a_short_pane_gives_the_exports_strip_room_for_its_selected_row() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = map_app(dir.path(), true);
