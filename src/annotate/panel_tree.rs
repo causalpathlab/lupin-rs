@@ -220,6 +220,13 @@ impl PanelTree {
         n.labels.first().map_or(n.name.as_str(), String::as_str)
     }
 
+    /// Whether `label` is one of the panel's types, which a pass scores; a
+    /// node above them is only the group they make.
+    #[must_use]
+    pub fn is_type(&self, label: &str) -> bool {
+        self.of_label.contains_key(&label_key(label))
+    }
+
     /// The CL term panel type `label` sits on, if the ontology has it.
     #[must_use]
     pub fn cl_of(&self, label: &str) -> Option<&str> {

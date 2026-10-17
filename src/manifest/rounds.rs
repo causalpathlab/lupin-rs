@@ -16,6 +16,8 @@
 //!   previous round's panel with the edits applied) and
 //!   `{out}.marker_history.json` (`annotate.marker_history`, per cell type)
 
+use crate::annotate::celltype_tree::{TreePlacement, TypeTree, Via};
+use crate::annotate::markers::label_key;
 use crate::annotate::outputs::{
     write_cluster_tables, CLUSTER_CELLTYPE_ES_STD, CLUSTER_CELLTYPE_NES, CLUSTER_CELLTYPE_P,
     CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_CELLTYPE_Z,
@@ -23,7 +25,7 @@ use crate::annotate::outputs::{
 use crate::annotate::rounds::{
     self, apply, apply_markers, digest, next_cluster_id, parse_cluster_id, prepend_history,
     ClPlacement, ClusterId, Decision, Digest, Evidence, History, MarkerHistory, Method, Stat,
-    Table, Term, TypeEvidence, TypeTables,
+    Table, Term, TieBreak, TypeEvidence, TypeTables,
 };
 use crate::manifest::run::{
     self, annotated_path, parent_dir, rel_to_manifest, resolve, same_file, Loaded,
@@ -268,7 +270,7 @@ pub(crate) fn read_gene_set_terms(loaded: &Loaded) -> Result<BTreeMap<ClusterId,
 }
 
 /// Whatever evidence this round records; a missing table is skipped.
-fn read_evidence(loaded: &Loaded) -> Result<Evidence> {
+fn read_evidence(loaded: &Loaded) -> Result<Evidence<'static>> {
     let a = &loaded.manifest.annotate;
     let at = |rel: &Option<String>| rel.as_deref().map(|r| resolve(&loaded.dir, r));
     let mut ev = Evidence::default();
@@ -336,8 +338,7 @@ pub(crate) fn read_score_cells(loaded: &Loaded, cells: &Cells) -> Result<Option<
         let call = strings[1][i].as_ref();
         out.call.push((call != UNASSIGNED_LABEL).then(|| {
             *code.entry(call).or_insert_with(|| {
-                out.types
-                    .push(crate::annotate::markers::label_key(call).into());
+                out.types.push(label_key(call).into());
                 out.types.len() - 1
             })
         }));
@@ -396,11 +397,18 @@ pub(crate) fn called_by(a: &super::run::RunAnnotate) -> Option<Method> {
 }
 
 /// Every cluster's types with every method's evidence, cluster by cluster.
+#[cfg(test)]
 pub(crate) fn type_evidence(loaded: &Loaded, cells: &Cells) -> Result<Vec<TypeEvidence>> {
-    let score = read_score_cells(loaded, cells)?.map(|s| s.shares(cells));
-    let tables = read_type_tables(loaded, score)?;
+    Ok(evidence_rows(
+        &tie_break(loaded, Some(cells))?.tables,
+        cells,
+    ))
+}
+
+/// `tables`' evidence for every cluster of `cells`, cluster by cluster.
+fn evidence_rows(tables: &TypeTables, cells: &Cells) -> Vec<TypeEvidence> {
     let ids: BTreeSet<ClusterId> = cells.clusters.iter().flatten().copied().collect();
-    Ok(ids.into_iter().flat_map(|id| tables.evidence(id)).collect())
+    ids.into_iter().flat_map(|id| tables.evidence(id)).collect()
 }
 
 /// Write `rows` as the long table `{out}.cluster_evidence.parquet`: cluster
@@ -431,24 +439,59 @@ fn write_type_evidence(path: &str, rows: &[TypeEvidence]) -> Result<()> {
     Ok(())
 }
 
+/// What orders the round's calls tied on q: its type tables (with the
+/// score's shares over `cells`' clusters, when given) under the method that
+/// made its call.
+fn tie_break(loaded: &Loaded, cells: Option<&Cells>) -> Result<TieBreak> {
+    let score = match cells {
+        Some(c) => read_score_cells(loaded, c)?.map(|s| s.shares(c)),
+        None => None,
+    };
+    Ok(TieBreak {
+        tables: read_type_tables(loaded, score)?,
+        method: called_by(&loaded.manifest.annotate).unwrap_or_default(),
+    })
+}
+
+/// The round's type tree (`annotate.celltype_tree`), when it records one
+/// that is still there.
+fn read_tree(loaded: &Loaded) -> Result<Option<TypeTree>> {
+    let Some(path) =
+        (loaded.manifest.annotate.celltype_tree.as_deref()).and_then(|rel| loaded.recorded(rel))
+    else {
+        return Ok(None);
+    };
+    let text = fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
+    Ok(Some(serde_json::from_str(&text)?))
+}
+
 /// Build this round's digest, write `{out}.cluster_summary.json` and record
 /// it in the manifest (which the caller saves).
 pub fn write_summary(loaded: &mut Loaded, out_prefix: &str) -> Result<BTreeMap<ClusterId, Digest>> {
     let cells = read_cells(loaded)?;
-    let mut d = digest(&cells.clusters, &cells.labels, &read_evidence(loaded)?);
+    // A table that cannot be read costs the order of tied calls, never the
+    // summary.
+    let ties = tie_break(loaded, Some(&cells));
+    if let Err(e) = &ties {
+        log::warn!("tied calls by name: {e:#}");
+    }
+    let mut ev = read_evidence(loaded)?;
+    ev.ties = ties.as_ref().ok();
+    let mut d = digest(&cells.clusters, &cells.labels, &ev);
     // A cluster labelled with a coarse group agrees with a top call that is
     // one of the group's types.
-    if let Some(rel) = loaded.manifest.annotate.celltype_tree.as_deref() {
-        let tree: crate::annotate::celltype_tree::TypeTree =
-            serde_json::from_str(&fs::read_to_string(resolve(&loaded.dir, rel))?)?;
+    if let Some(tree) = read_tree(loaded)? {
         let index = tree.index();
         for digest in d.values_mut() {
             let label = digest.label.clone();
-            if let (Some(e), Some(label)) = (digest.evidence.as_mut(), label) {
-                let group = index
-                    .get(&crate::annotate::markers::label_key(&e.top))
-                    .copied();
-                e.agrees |= group.is_some_and(|g| g == label);
+            let group_agrees = label.is_some_and(|label| {
+                digest.top_calls().iter().any(|c| {
+                    let key = label_key(&c.label);
+                    index.get(&key).is_some_and(|g| *g == label)
+                })
+            });
+            if let Some(e) = digest.evidence.as_mut() {
+                e.agrees |= group_agrees;
             }
         }
     }
@@ -460,7 +503,11 @@ pub fn write_summary(loaded: &mut Loaded, out_prefix: &str) -> Result<BTreeMap<C
     // A view of the tables just recorded: one that cannot be read costs the
     // evidence table, never the round; the parent's is never kept.
     loaded.manifest.annotate.cluster_evidence = None;
-    match type_evidence(loaded, &cells).and_then(|rows| write_type_evidence(&evidence, &rows)) {
+    let written = match &ties {
+        Ok(t) => write_type_evidence(&evidence, &evidence_rows(&t.tables, &cells)),
+        Err(e) => Err(anyhow::anyhow!("{e:#}")),
+    };
+    match written {
         Ok(()) => {
             loaded.manifest.annotate.cluster_evidence =
                 Some(rel_to_manifest(&loaded.dir, &evidence));
@@ -1126,7 +1173,6 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
 /// whose markers it edits, and those sharing an edited gene (whose IDF
 /// weight moves).
 fn touched_types(before: &[(String, String)], after: &[(String, String)]) -> BTreeSet<String> {
-    use crate::annotate::markers::label_key;
     let pairs = |p: &[(String, String)]| -> BTreeSet<(String, String)> {
         p.iter().map(|(g, t)| (label_key(t), g.clone())).collect()
     };
@@ -1231,7 +1277,7 @@ fn rescored_calls(r: &super::recalibrate::Rescored) -> Calls {
 
 /// Per cell type, the features the edits add and drop.
 fn marker_diff(before: &[(String, String)], after: &[(String, String)]) -> Value {
-    let key = |(g, t): &(String, String)| (crate::annotate::markers::label_key(t), g.clone());
+    let key = |(g, t): &(String, String)| (label_key(t), g.clone());
     let b: BTreeSet<_> = before.iter().map(key).collect();
     let a: BTreeSet<_> = after.iter().map(key).collect();
     let mut out: BTreeMap<String, (Vec<String>, Vec<String>)> = BTreeMap::new();
@@ -1613,7 +1659,7 @@ pub struct ReviewArgs {
 
     #[arg(
         long,
-        help = "Print JSON (digest and history per cluster) instead of text"
+        help = "Print JSON (per cluster: digest, history, each method's top type, every type's evidence) instead of text"
     )]
     pub json: bool,
 }
@@ -1636,15 +1682,22 @@ Every decision needs a rationale; it is kept in the round's history.
 With several writers (a viewer and an agent), append each decision as one
 write of one newline-terminated line under 4 KB, so lines never interleave.";
 
-/// Print a round's digest and history, for a person or an agent deciding.
-/// The round's digests: its summary when written, else built afresh.
 /// The round's digests: its summary when written, else built from `cells`
-/// (read when needed and not given).
-fn read_digests(loaded: &Loaded, cells: Option<&Cells>) -> Result<BTreeMap<ClusterId, Digest>> {
+/// (read when needed and not given); either way their calls tied on q
+/// settled by `ties`.
+fn read_digests(
+    loaded: &Loaded,
+    cells: Option<&Cells>,
+    ties: &TieBreak,
+) -> Result<BTreeMap<ClusterId, Digest>> {
     if let Some(path) =
         (loaded.manifest.annotate.cluster_summary.as_deref()).and_then(|rel| loaded.recorded(rel))
     {
-        return Ok(serde_json::from_str(&fs::read_to_string(path)?)?);
+        let mut d: BTreeMap<ClusterId, Digest> = serde_json::from_str(&fs::read_to_string(path)?)?;
+        for (id, digest) in &mut d {
+            digest.settle(*id, ties);
+        }
+        return Ok(d);
     }
     let read;
     let cells = match cells {
@@ -1654,32 +1707,77 @@ fn read_digests(loaded: &Loaded, cells: Option<&Cells>) -> Result<BTreeMap<Clust
             &read
         }
     };
-    Ok(digest(
-        &cells.clusters,
-        &cells.labels,
-        &read_evidence(loaded)?,
-    ))
+    let mut ev = read_evidence(loaded)?;
+    ev.ties = Some(ties);
+    Ok(digest(&cells.clusters, &cells.labels, &ev))
+}
+
+/// What `review` shows of a round: per cluster its digest, its history and
+/// its place on the round's type tree; and the type tables.
+struct Reviewed {
+    digests: BTreeMap<ClusterId, Digest>,
+    history: History,
+    tree: Option<TypeTree>,
+    tables: TypeTables,
+}
+
+impl Reviewed {
+    /// The round as review shows it; `every_type` when the types' evidence
+    /// is wanted too (`--json`).
+    fn read(loaded: &Loaded, every_type: bool) -> Result<Self> {
+        // The cells give the score's shares over the current clusters: for
+        // the types' evidence, the digests when no summary was written, and
+        // the order of tied calls when the score made the call. A round
+        // whose cells cannot be read is still reviewed from its summary.
+        let a = &loaded.manifest.annotate;
+        let summary = (a.cluster_summary.as_deref()).and_then(|rel| loaded.recorded(rel));
+        let wants_cells = every_type || summary.is_none() || called_by(a) == Some(Method::Score);
+        let cells = wants_cells
+            .then(|| {
+                read_cells(loaded)
+                    .inspect_err(|e| log::warn!("review without the cells: {e:#}"))
+                    .ok()
+            })
+            .flatten();
+        // A table or tree that cannot be read costs what it adds (the order
+        // of tied calls, the types' evidence, the tree's placement), never
+        // the review.
+        let ties = tie_break(loaded, cells.as_ref()).unwrap_or_else(|e| {
+            log::warn!("review without the type tables: {e:#}");
+            TieBreak {
+                tables: TypeTables::default(),
+                method: called_by(&loaded.manifest.annotate).unwrap_or_default(),
+            }
+        });
+        let tree = read_tree(loaded)
+            .inspect_err(|e| log::warn!("review without the type tree: {e:#}"))
+            .ok()
+            .flatten();
+        Ok(Self {
+            digests: read_digests(loaded, cells.as_ref(), &ties)?,
+            history: read_history(loaded)?,
+            tree,
+            tables: ties.tables,
+        })
+    }
+
+    /// The Cell Ontology term the tree puts cluster `d`'s label on.
+    fn placement(&self, d: &Digest) -> Option<TreePlacement> {
+        self.tree.as_ref()?.placement(d.label.as_deref()?)
+    }
 }
 
 /// `review --json`: per cluster (all, or those in `clusters`), its digest,
-/// its history, each method's top type (`tops`, for the methods that put
-/// one forward) and every type's evidence (`types`).
+/// its history, each method's top type (`tops`, the first of
+/// [`Method::ranked`], for the methods that put one forward), every type's
+/// evidence (`types`) and, when the round has a
+/// type tree, the Cell Ontology term it puts the label on (`cl`).
 pub(crate) fn review_json(
     loaded: &Loaded,
     clusters: &[ClusterId],
 ) -> Result<BTreeMap<ClusterId, Value>> {
-    // The cells give the score's shares over the current clusters; a round
-    // whose cells cannot be read is still reviewed from its summary.
-    let cells = read_cells(loaded)
-        .inspect_err(|e| log::warn!("review without the cells: {e:#}"))
-        .ok();
-    let digests = read_digests(loaded, cells.as_ref())?;
-    let history = read_history(loaded)?;
-    let score = match &cells {
-        Some(c) => read_score_cells(loaded, c)?.map(|s| s.shares(c)),
-        None => None,
-    };
-    let tables = read_type_tables(loaded, score)?;
+    let r = Reviewed::read(loaded, true)?;
+    let (digests, history, tables) = (&r.digests, &r.history, &r.tables);
     Ok(digests
         .iter()
         .filter(|(id, _)| clusters.is_empty() || clusters.contains(id))
@@ -1693,38 +1791,51 @@ pub(crate) fn review_json(
                 })
                 .collect();
             let h = history.get(id).cloned().unwrap_or_default();
-            let v = json!({ "digest": d, "history": h, "tops": tops, "types": types });
+            let mut v = json!({ "digest": d, "history": h, "tops": tops, "types": types });
+            if let Some(cl) = r.placement(d) {
+                v["cl"] = json!(cl);
+            }
             (*id, v)
+        })
+        .collect())
+}
+
+/// `review`'s text: each cluster (all, or those in `clusters`) in turn.
+pub(crate) fn review_text(loaded: &Loaded, clusters: &[ClusterId]) -> Result<String> {
+    let r = Reviewed::read(loaded, false)?;
+    Ok(r.digests
+        .iter()
+        .filter(|(id, _)| clusters.is_empty() || clusters.contains(id))
+        .map(|(id, d)| {
+            let history = r.history.get(id).map_or(&[][..], Vec::as_slice);
+            render(*id, d, r.placement(d).as_ref(), history)
         })
         .collect())
 }
 
 pub fn run_review(args: &ReviewArgs) -> Result<()> {
     let loaded = run::load(&args.from)?;
-    let wanted = |id: &ClusterId| args.cluster.is_empty() || args.cluster.contains(id);
-
     if args.json {
         let out = review_json(&loaded, &args.cluster)?;
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
-    let digests = read_digests(&loaded, None)?;
-    let history = read_history(&loaded)?;
-    for (id, d) in digests.iter().filter(|(id, _)| wanted(id)) {
-        print!(
-            "{}",
-            render(*id, d, history.get(id).map_or(&[][..], Vec::as_slice))
-        );
-    }
+    print!("{}", review_text(&loaded, &args.cluster)?);
     Ok(())
 }
 
-fn render(id: ClusterId, d: &Digest, history: &[rounds::HistoryEntry]) -> String {
+fn render(
+    id: ClusterId,
+    d: &Digest,
+    placed: Option<&TreePlacement>,
+    history: &[rounds::HistoryEntry],
+) -> String {
     use std::fmt::Write;
     let num = |v: Option<f32>| v.map_or_else(|| "-".into(), |v| format!("{v:.3}"));
     let mut s = String::new();
     let label = d.label.as_deref().unwrap_or("unassigned");
-    let _ = writeln!(s, "C{id}  n={}  label={label}", d.size);
+    let name = crate::figures::cluster_name(id);
+    let _ = writeln!(s, "{name}  n={}  label={label}", d.size);
     for c in &d.calls {
         let _ = writeln!(s, "  call  {:<24} q={}", c.label, num(c.q));
     }
@@ -1735,9 +1846,20 @@ fn render(id: ClusterId, d: &Digest, history: &[rounds::HistoryEntry]) -> String
             t.source, t.term, t.effect
         );
     }
-    if let Some(cl) = &d.cl {
-        let abst = if cl.abstained { " (abstained)" } else { "" };
-        let _ = writeln!(s, "  CL    {} {}{abst}", cl.id, cl.name);
+    // The ontology walk's placement, else the type tree's.
+    match (&d.cl, placed) {
+        (Some(cl), _) => {
+            let abst = if cl.abstained { " (abstained)" } else { "" };
+            let _ = writeln!(s, "  CL    {} {}{abst}", cl.id, cl.name);
+        }
+        (None, Some(p)) => {
+            let of = match p.via {
+                Via::Group if p.name != label => format!(" (the group of {label})"),
+                _ => String::new(),
+            };
+            let _ = writeln!(s, "  CL    {} {}{of}", p.id, p.name);
+        }
+        (None, None) => {}
     }
     for h in history {
         let label = h.label.as_deref().unwrap_or("-");

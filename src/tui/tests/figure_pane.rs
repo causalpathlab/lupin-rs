@@ -254,3 +254,88 @@ fn the_axis_keys_say_where_they_work_and_what_they_chose() {
     let said = p.step_pair(true, false);
     assert_eq!(said, p.title(p.current()), "the new pair, as titled");
 }
+
+#[test]
+fn a_file_just_listed_stays_selected_when_the_strip_resorts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    let write = |base: &str| {
+        let pdf = dir.join(format!("{base}.pdf"));
+        std::fs::write(&pdf, "%PDF-1.4 fake").unwrap();
+        pdf
+    };
+    let listed = write("run.trajectory.a");
+    write("run.trajectory.b");
+    let mut x = Exports {
+        prefix: dir.join("run.trajectory").to_string_lossy().into_owned(),
+        gallery: Gallery::open(&dir.join(super::super::gallery::DIR)),
+        open: true,
+        sel: 0,
+        statuses: Vec::new(),
+        not_listed: Vec::new(),
+        delete_armed: None,
+        fits: std::cell::Cell::new(true),
+    };
+    x.gallery
+        .add(&[listed], "a", "a", &dir.join("run.senna.json"))
+        .unwrap();
+    x.refresh();
+    assert_eq!((x.gallery.entries.len(), x.not_listed.len()), (1, 1));
+    // The not-listed row is the second; listing it puts it first.
+    x.sel = 1;
+    x.adopt(&dir.join("run.senna.json")).unwrap();
+    let on = &x.gallery.entries[x.sel].path;
+    assert!(on.ends_with("run.trajectory.b.pdf"), "{}", on.display());
+}
+
+#[test]
+fn the_axes_keys_say_when_there_is_no_diffusion_map_to_step() {
+    let mut p = pane();
+    Arc::get_mut(&mut p.data).unwrap().diffusion = None;
+    let said = p.step_pair(true, false);
+    assert!(!said.contains("m reaches it"), "{said}");
+    assert!(said.contains("no diffusion map"), "{said}");
+    assert!(pane().step_pair(true, false).contains("m reaches it"));
+}
+
+#[test]
+fn the_strips_keys_say_why_when_it_has_no_room() {
+    let mut p = pane();
+    p.exports.not_listed = vec!["run.trajectory.extra.pdf".into()];
+    assert_eq!(p.key(KeyCode::Char('f')), FigureKey::Took);
+    p.exports.fits.set(false);
+    for key in [
+        KeyCode::Enter,
+        KeyCode::Char('d'),
+        KeyCode::Char('D'),
+        KeyCode::Char('M'),
+    ] {
+        match p.key(key) {
+            FigureKey::Say(s) => assert!(s.contains("no room"), "{key:?}: {s}"),
+            k => panic!("{key:?}: {k:?}"),
+        }
+    }
+    assert!(p.exports.not_listed.len() == 1, "nothing listed or removed");
+}
+
+#[test]
+fn a_quick_frame_shows_the_figure_last_drawn_while_the_new_one_is_drawn_apart() {
+    let mut p = pane();
+    let area = Rect::new(0, 0, 30, 10);
+    assert!(
+        matches!(p.drawn_so_far(area), (None, true)),
+        "nothing drawn yet"
+    );
+    // A full frame waits for it.
+    assert!(p.protocol(area).is_ok());
+    assert!(matches!(p.drawn_so_far(area), (Some(_), false)));
+    // A new look: the old drawing stands in until the new one is in.
+    p.style.cycle_labels();
+    assert!(matches!(p.drawn_so_far(area), (Some(_), true)));
+    let start = std::time::Instant::now();
+    while p.drawn_so_far(area).1 {
+        assert!(start.elapsed().as_secs() < 30, "never drawn");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(p.drawn_so_far(area).0.is_some_and(|d| d.is_ok()));
+}

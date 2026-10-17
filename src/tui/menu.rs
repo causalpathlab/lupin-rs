@@ -42,7 +42,8 @@ pub enum Action {
 }
 
 pub struct Choice {
-    pub key: char,
+    /// The key that takes it; none for options past the keys there are.
+    pub key: Option<char>,
     pub label: String,
     /// One line on what choosing it does.
     pub detail: String,
@@ -84,12 +85,13 @@ impl Menu {
     }
 
     /// ↑↓ (and the other list keys) move, Enter or an option's key takes it,
-    /// esc cancels.
+    /// esc or q cancels, as they close the form and the file browser.
     pub fn key(&mut self, code: KeyCode) -> Outcome {
         match code {
             KeyCode::Esc => Outcome::Cancel,
+            KeyCode::Char(c) if CLOSES.contains(c) => Outcome::Cancel,
             KeyCode::Enter => self.take(self.sel),
-            KeyCode::Char(c) => match self.choices.iter().position(|o| o.key == c) {
+            KeyCode::Char(c) => match self.choices.iter().position(|o| o.key == Some(c)) {
                 Some(i) => self.take(i),
                 None => Outcome::Open,
             },
@@ -111,17 +113,26 @@ impl Menu {
     }
 }
 
-/// `label`, keyed `1`, `2`, … in order (then `a`, `b`, … past nine).
+/// The keys besides esc that close a menu, which no option is keyed by.
+const CLOSES: &str = "q";
+
+/// `label`, keyed `1`, `2`, … in order (then `a`, `b`, … past nine, and
+/// `A`, `B`, … past `z`).
 pub fn numbered(items: Vec<(String, String, Action)>) -> Vec<Choice> {
+    numbered_but(items, "")
+}
+
+/// As [`numbered`], skipping the keys in `taken`, which the menu's own
+/// options have.
+pub fn numbered_but(items: Vec<(String, String, Action)>, taken: &str) -> Vec<Choice> {
+    let mut keys = ('1'..='9')
+        .chain('a'..='z')
+        .chain('A'..='Z')
+        .filter(|c| !CLOSES.contains(*c) && !taken.contains(*c));
     items
         .into_iter()
-        .enumerate()
-        .map(|(i, (label, detail, action))| Choice {
-            key: if i < 9 {
-                char::from(b'1' + i as u8)
-            } else {
-                char::from(b'a' + (i - 9) as u8 % 26)
-            },
+        .map(|(label, detail, action)| Choice {
+            key: keys.next(),
             label,
             detail,
             action,
@@ -163,7 +174,32 @@ mod tests {
         let items = (0..11)
             .map(|i| (format!("CT{i}"), String::new(), Action::StateOrder))
             .collect();
-        let keys: String = numbered(items).iter().map(|o| o.key).collect();
+        let keys: String = numbered(items).iter().filter_map(|o| o.key).collect();
         assert_eq!(keys, "123456789ab");
+    }
+
+    #[test]
+    fn q_cancels_and_no_option_is_keyed_by_a_closing_key() {
+        let mut m = menu();
+        assert_eq!(m.key(KeyCode::Char('q')), Outcome::Cancel);
+        let items = |n| {
+            (0..n)
+                .map(|i| (format!("CT{i}"), String::new(), Action::StateOrder))
+                .collect()
+        };
+        let keys: Vec<Option<char>> = numbered(items(70)).iter().map(|o| o.key).collect();
+        assert!(!keys.contains(&Some('q')), "q closes the menu");
+        let keyed: std::collections::BTreeSet<char> = keys.iter().flatten().copied().collect();
+        assert_eq!(keyed.len(), keys.iter().flatten().count(), "no key twice");
+        assert_eq!(keys[9..11], [Some('a'), Some('b')]);
+        assert_eq!(keys[25], Some('r'), "after p comes r");
+        assert_eq!(keys[34], Some('A'), "past z, capitals");
+        assert_eq!(keys[69], None, "past the keys, only the arrows reach it");
+        // Keys an option of the menu's own takes are skipped.
+        let keys: String = numbered_but(items(30), "tn")
+            .iter()
+            .filter_map(|o| o.key)
+            .collect();
+        assert!(!keys.contains(['t', 'n', 'q']), "{keys}");
     }
 }

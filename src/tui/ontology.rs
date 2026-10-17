@@ -259,6 +259,18 @@ impl OntologyView {
         }
     }
 
+    /// The cursor on `id`: on its row of the data's tree when it has one,
+    /// else in the whole ontology around it.
+    pub fn select(&mut self, cl: &ClTerms, id: &str) {
+        match self.row_of(id) {
+            Some(k) => self.sel = k,
+            None => {
+                self.scope = Scope::All;
+                self.refocus(cl, id);
+            }
+        }
+    }
+
     /// Whether `id` shows only the data's terms below it.
     #[must_use]
     pub fn is_hiding(&self, id: &str) -> bool {

@@ -84,9 +84,15 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub fn of(m: &RunManifest) -> Self {
+    /// `m`'s kind, given `source`, the manifest its annotation names as
+    /// its source: a pass on a trajectory run copies that run's trajectory
+    /// section, which does not make the new round a trajectory.
+    pub fn of(m: &RunManifest, source: Option<&RunManifest>) -> Self {
         let t = &m.trajectory;
-        if t.prior.is_some() || t.pseudotime.is_some() {
+        let inherited = source.is_some_and(|s| {
+            (&s.trajectory.prior, &s.trajectory.pseudotime) == (&t.prior, &t.pseudotime)
+        });
+        if (t.prior.is_some() || t.pseudotime.is_some()) && !inherited {
             Kind::Trajectory
         } else if m.annotate.argmax.is_some() {
             Kind::Round
@@ -128,6 +134,9 @@ pub struct Pick {
 
 pub struct Member {
     pub pick: Pick,
+    /// The trajectory under another prefix whose section it carries (see
+    /// [`borrowed_trajectory`]).
+    pub borrowed: Option<String>,
     /// What it holds, in a few words.
     pub holds: String,
     /// Seconds since the epoch of its last change.
@@ -204,9 +213,12 @@ pub fn family(opened: &Path) -> Vec<Member> {
         kin.extend(more);
     }
     let mut out: Vec<Member> = all
-        .into_iter()
-        .filter(|(n, _)| kin.contains(n))
-        .map(|(n, m)| member(&dir, dir.join(n), &m))
+        .iter()
+        .filter(|(n, _)| kin.contains(*n))
+        .map(|(n, m)| {
+            let source = source_name(m).and_then(|s| all.get(&s));
+            member(&dir, dir.join(n), m, source)
+        })
         .collect();
     out.sort_by(|a, b| {
         (a.pick.kind != Kind::Run)
@@ -221,8 +233,16 @@ pub fn family(opened: &Path) -> Vec<Member> {
 pub fn has_round(opened: &Path) -> bool {
     let (dir, names) = manifests_beside(opened);
     let stem = stem(opened);
+    let read = |n: &str| {
+        load(&dir.join(n).to_string_lossy())
+            .ok()
+            .map(|l| l.manifest)
+    };
     names.iter().filter(|n| grows(n, &stem)).any(|n| {
-        load(&dir.join(n).to_string_lossy()).is_ok_and(|l| Kind::of(&l.manifest) == Kind::Round)
+        read(n).is_some_and(|m| {
+            let source = source_name(&m).and_then(|s| read(&s));
+            Kind::of(&m, source.as_ref()) == Kind::Round
+        })
     })
 }
 
@@ -240,8 +260,8 @@ struct Labelled {
     label: Option<String>,
 }
 
-fn member(dir: &Path, path: PathBuf, m: &RunManifest) -> Member {
-    let kind = Kind::of(m);
+fn member(dir: &Path, path: PathBuf, m: &RunManifest, source: Option<&RunManifest>) -> Member {
+    let kind = Kind::of(m, source);
     let clusters = || {
         let rel = m.annotate.cluster_summary.as_deref()?;
         let text = std::fs::read_to_string(resolve(dir, rel)).ok()?;
@@ -272,6 +292,7 @@ fn member(dir: &Path, path: PathBuf, m: &RunManifest) -> Member {
         }
     };
     let modified = std::fs::metadata(&path).map_or(0, |md| mtime_of(&md));
+    let borrowed = borrowed_trajectory(m, &path);
     Member {
         pick: Pick {
             labelled: m.annotate.argmax.is_some(),
@@ -280,7 +301,24 @@ fn member(dir: &Path, path: PathBuf, m: &RunManifest) -> Member {
         },
         holds,
         modified,
+        borrowed,
     }
+}
+
+/// The prefix of the trajectory whose outputs `m` (read from `path`)
+/// records, when they were written under another prefix: a pass on a
+/// trajectory run copies that run's section, made on its labels, into the
+/// new round. `None` for a manifest's own trajectory, or none.
+pub fn borrowed_trajectory(m: &RunManifest, path: &Path) -> Option<String> {
+    use crate::trajectory::run::{PRIOR_SUFFIX, PSEUDOTIME_SUFFIX};
+    let t = &m.trajectory;
+    let (rel, suffix) = match (&t.pseudotime, &t.prior) {
+        (Some(pt), _) => (pt, PSEUDOTIME_SUFFIX),
+        (None, Some(prior)) => (prior, PRIOR_SUFFIX),
+        (None, None) => return None,
+    };
+    let of = file_name(Path::new(rel)).strip_suffix(suffix)?.to_string();
+    (of != derive_out_prefix(&file_name(path))).then_some(of)
 }
 
 /// A file's last change, in seconds since the epoch (0 when unknown).

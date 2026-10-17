@@ -417,7 +417,52 @@ pub struct TypeTree {
     pub groups: Vec<TypeGroup>,
 }
 
+/// Where a round's type tree puts a label on the Cell Ontology.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct TreePlacement {
+    pub id: String,
+    /// The panel type or group the term was matched for.
+    pub name: String,
+    pub via: Via,
+}
+
+/// What placed a label: its own term, or its group's.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Via {
+    Label,
+    Group,
+}
+
 impl TypeTree {
+    /// `label`'s place on the Cell Ontology: the term it matched, else the
+    /// term of the group it is (a coarse label) or belongs to.
+    #[must_use]
+    pub fn placement(&self, label: &str) -> Option<TreePlacement> {
+        let key = label_key(label);
+        if let Some((name, id)) = self.label_cl.iter().find(|(l, _)| label_key(l) == key) {
+            return Some(TreePlacement {
+                id: id.clone(),
+                name: name.clone(),
+                via: Via::Label,
+            });
+        }
+        let group = self
+            .groups
+            .iter()
+            .find(|g| label_key(&g.name) == key)
+            .or_else(|| {
+                self.groups
+                    .iter()
+                    .find(|g| g.members.iter().any(|m| label_key(m) == key))
+            })?;
+        Some(TreePlacement {
+            id: group.cl_id.clone()?,
+            name: group.name.clone(),
+            via: Via::Group,
+        })
+    }
+
     /// The group a fine type belongs to.
     #[cfg(test)]
     #[must_use]

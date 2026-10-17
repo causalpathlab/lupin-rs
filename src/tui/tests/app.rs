@@ -89,9 +89,17 @@ fn tab_reaches_the_go_pane_only_when_the_round_scored_terms() {
             .collect()
     };
     let mut with = app_with_terms(true);
-    assert!(tabs(&mut with) == [Focus::Genes, Focus::Tree, Focus::Go, Focus::Clusters]);
+    assert!(tabs(&mut with) == [Focus::Genes, Focus::Tree, Focus::Candidates, Focus::Go]);
     let mut without = app_with_terms(false);
-    assert!(tabs(&mut without) == [Focus::Genes, Focus::Tree, Focus::Clusters, Focus::Genes]);
+    assert!(
+        tabs(&mut without)
+            == [
+                Focus::Genes,
+                Focus::Tree,
+                Focus::Candidates,
+                Focus::Clusters
+            ]
+    );
 }
 
 #[test]
@@ -212,6 +220,101 @@ fn x_stops_a_pass_only_when_asked_twice_from_any_pane() {
 }
 
 #[test]
+fn a_running_save_offers_no_stop_and_x_says_so_at_once() {
+    let mut app = app_with_terms(false);
+    let child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    app.child = Some(Running::new(child, Job::Save(1)));
+    app.tick();
+    assert!(!app.status.contains("x: stop"), "{}", app.status);
+    assert!(!drawn(&app).contains("x stop"), "the popup offers no stop");
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.status.contains("finishes on its own"), "{}", app.status);
+    assert!(app.child.is_some());
+    if let Some(mut r) = app.child.take() {
+        let _ = r.child.kill();
+        let _ = r.child.wait();
+    }
+}
+
+#[test]
+fn the_status_follows_the_latest_key_and_a_dropped_question_goes_with_it() {
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Backspace);
+    assert!(app.status.contains("to undo"), "{}", app.status);
+    press(&mut app, KeyCode::Down);
+    assert!(!app.status.contains("to undo"), "{}", app.status);
+
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.status.contains("q again"), "{}", app.status);
+    press(&mut app, KeyCode::Down);
+    assert!(
+        !app.status.contains("q again"),
+        "the question is dropped: {}",
+        app.status
+    );
+
+    running(&mut app);
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.status.contains("x again"), "{}", app.status);
+    press(&mut app, KeyCode::Down);
+    assert!(!app.status.contains("x again"), "{}", app.status);
+    app.stop();
+}
+
+#[test]
+fn a_last_stage_running_long_gives_no_eta() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    if let Some(r) = app.child.as_mut() {
+        r.started = Instant::now() - Duration::from_secs(660);
+        r.progress = JobProgress {
+            report: Some(crate::progress::Report {
+                done: 19.0,
+                end: 20.0,
+                total: 20.0,
+                stage: "GO terms".into(),
+            }),
+            reported_at: Duration::from_secs(20),
+        };
+    }
+    let screen = drawn(&app);
+    assert!(screen.contains("elapsed 11m00s"), "{screen}");
+    assert!(
+        !screen.contains("ETA 0s"),
+        "no time left to count on: {screen}"
+    );
+    assert!(screen.contains("no ETA: this stage runs past"), "{screen}");
+    app.stop();
+}
+
+#[test]
+fn a_running_job_redraws_on_the_clock_even_while_a_key_is_asked_again() {
+    let mut app = app_with_terms(false);
+    assert!(!app.redraw_due(Duration::from_secs(5)), "nothing runs");
+    running(&mut app);
+    press(&mut app, KeyCode::Char('x'));
+    app.tick();
+    assert_eq!(
+        app.status, "x again stops it",
+        "the question holds the status"
+    );
+    assert!(!app.redraw_due(Duration::from_millis(200)));
+    assert!(
+        app.redraw_due(Duration::from_secs(1)),
+        "the popup's clock moves"
+    );
+    app.stop();
+}
+
+#[test]
 fn h_hides_a_gene_and_x_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with_terms(false);
@@ -220,6 +323,18 @@ fn h_hides_a_gene_and_x_does_not() {
     assert!(!app.status.starts_with("hiding"), "x hides nothing");
     press(&mut app, KeyCode::Char('h'));
     assert!(app.status.starts_with("hiding GENE1"), "{}", app.status);
+}
+
+#[test]
+fn with_no_round_the_cluster_keys_say_there_are_no_clusters() {
+    let mut app = app_with_terms(false);
+    app.round = None;
+    app.focus = Focus::Clusters;
+    for key in ['1', 'S', 'a'] {
+        press(&mut app, KeyCode::Char(key));
+        assert_eq!(app.status, "no clusters yet", "{key}");
+    }
+    assert!(!app.cand_all, "nothing toggled for the next round");
 }
 
 #[test]
@@ -254,6 +369,24 @@ fn menu(app: &App) -> Option<&super::super::menu::Menu> {
 }
 
 #[test]
+fn a_menus_long_options_are_shown_whole_when_the_screen_has_room() {
+    use super::super::menu::{numbered, Action, Menu};
+    let long = |n: usize| format!("{}end)", "x".repeat(n));
+    let choices = |label: String| numbered(vec![(label, String::new(), Action::ListRuns)]);
+    // The runs list takes the screen's width.
+    let mut app = app_with_terms(false);
+    let mut m = Menu::new("runs", choices(long(120)), "");
+    m.wide = true;
+    app.menu = Some(m);
+    assert!(drawn(&app).contains("xend)"), "{}", drawn(&app));
+    // A menu over the order view's clusters goes past the pane to fit.
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    app.menu = Some(Menu::new("how?", choices(long(70)), ""));
+    assert!(drawn(&app).contains("xend)"), "{}", drawn(&app));
+}
+
+#[test]
 fn with_nothing_to_order_r_asks_how_and_a_root_goes_on_to_the_run() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = order_app(dir.path(), &["CT1", "CT2", "CT3"]);
@@ -279,6 +412,40 @@ fn with_nothing_to_order_r_asks_how_and_a_root_goes_on_to_the_run() {
     app.prompt = None;
     press(&mut app, KeyCode::Char('r'));
     assert!(menu(&app).is_none());
+}
+
+#[test]
+fn a_labels_file_gives_the_order_table_its_types_and_r_asks_how_to_order_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &[]);
+    let labels = dir.path().join("labels.tsv");
+    std::fs::write(&labels, "c1\tCT1\nc2\tCT1\nc3\tCT2\n").unwrap();
+    app.trajectory.labels = Some(labels.to_string_lossy().into());
+    app.reload_order();
+    let TreeMode::Order(v) = &app.tree_mode else {
+        panic!("the order view")
+    };
+    assert_eq!(v.types, [("CT1".to_string(), 2), ("CT2".to_string(), 1)]);
+    press(&mut app, KeyCode::Char('r'));
+    assert!(
+        menu(&app).is_some(),
+        "nothing orders them: the menu asks how"
+    );
+    assert!(app.prompt.is_none());
+}
+
+#[test]
+fn lupin_trajectorys_labels_reach_the_tui_once() {
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        t: crate::trajectory::run::TrajectoryArgs,
+    }
+    let argv = ["lupin", "-f", "run.senna.json", "--labels", "l.tsv"];
+    let t = <Cli as clap::Parser>::parse_from(argv).t;
+    let run = super::super::order::TrajectoryRun::of(&t);
+    assert_eq!(run.labels.as_deref(), Some("l.tsv"));
+    assert!(!run.argv.iter().any(|a| a == "--labels"), "{:?}", run.argv);
 }
 
 #[test]
@@ -317,17 +484,25 @@ fn state_the_order_myself_closes_the_menu_on_the_table_and_esc_cancels() {
 }
 
 #[test]
-fn in_the_order_view_tab_follows_the_columns_clusters_ordering_ontology() {
+fn in_the_order_view_tab_follows_the_columns_clusters_candidates_ordering_ontology() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = order_app(dir.path(), &["CT1", "CT2"]);
     app.focus = Focus::Clusters;
-    let seen: Vec<Focus> = (0..4)
+    let seen: Vec<Focus> = (0..5)
         .map(|_| {
             press(&mut app, KeyCode::Tab);
             app.focus
         })
         .collect();
-    assert!(seen == [Focus::Genes, Focus::Order, Focus::Tree, Focus::Clusters]);
+    assert!(
+        seen == [
+            Focus::Genes,
+            Focus::Candidates,
+            Focus::Order,
+            Focus::Tree,
+            Focus::Clusters
+        ]
+    );
 }
 
 #[test]
@@ -386,6 +561,28 @@ id: CL:106
 name: elsewhere
 is_a: CL:100
 ";
+
+#[test]
+fn the_ontology_opens_on_a_term_the_datas_tree_does_not_list() {
+    let cl = crate::annotate::celltype_tree::ClTerms::parse(
+        TYPES_OBO,
+        &crate::annotate::cl_rules::shipped(),
+    );
+    let mut app = app_with_terms(false);
+    let panel = [
+        ("GENE1".to_string(), "CT1".to_string()),
+        ("GENE2".to_string(), "CT2".to_string()),
+    ];
+    app.tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &panel);
+    app.cl = Some(cl);
+    // `elsewhere` is in no type's lineage: the whole ontology, on it.
+    let v = app.ontology_on(Some("CL:106".into())).unwrap();
+    assert_eq!(v.selected().unwrap().id, "CL:106");
+    // A term the data's tree lists keeps that tree.
+    let v = app.ontology_on(Some("CL:104".into())).unwrap();
+    assert_eq!(v.scope, super::super::ontology::Scope::Data);
+    assert_eq!(v.selected().unwrap().id, "CL:104");
+}
 
 #[test]
 fn annotates_ontology_view_opens_on_the_rounds_labels_and_toggles_with_d() {
@@ -470,7 +667,7 @@ fn b_hides_the_running_job_and_brings_it_back() {
 fn form_app(dir: &std::path::Path) -> App {
     let mut app = order_app(dir, &["CT1", "CT2"]);
     app.source = dir.join("run.senna.json");
-    app.out_chosen = false;
+    (app.out_chosen, app.out_typed) = (false, false);
     app.args.markers = Default::default();
     app
 }
@@ -570,6 +767,33 @@ fn a_pass_that_replaces_a_round_asks_in_the_form_before_it_runs() {
 }
 
 #[test]
+fn picking_a_new_panel_asks_again_before_a_pass_that_replaces_a_round() {
+    use super::super::app::{setting_row, Setting};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = form_app(dir.path());
+    let panel = dir.path().join("panel.tsv");
+    std::fs::write(&panel, "G1\tCT1\nG2\tCT2\n").unwrap();
+    app.args.markers = panel.to_string_lossy().into();
+    app.out_chosen = true;
+    app.args.out = dir.path().join("run.L1").to_string_lossy().into();
+    app.target = dir.path().join("run.L1.senna.json");
+    std::fs::write(&app.target, "{}").unwrap();
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('A'));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.form.as_ref().unwrap().confirm, "asked once");
+    app.set_markers(Some(&panel));
+    assert_eq!(
+        app.form.as_ref().unwrap().row,
+        setting_row(&app.args, Setting::Run)
+    );
+    assert!(
+        !app.form.as_ref().unwrap().confirm,
+        "a new panel asks again, as a new output does"
+    );
+}
+
+#[test]
 fn r_in_annotate_opens_the_same_form_without_a_trajectory() {
     let mut app = app_with_terms(false);
     app.focus = Focus::Clusters;
@@ -590,10 +814,7 @@ fn after_a_pass_from_the_order_view_the_trajectory_is_offered() {
     // As a run from the form leaves things: flags set, the form closed.
     press(&mut app, KeyCode::Char('A'));
     app.form = None;
-    let mut child = std::process::Command::new("true").spawn().unwrap();
-    child.wait().unwrap();
-    app.child = Some(Running::new(child, Job::Pass));
-    app.tick();
+    finished(&mut app, Job::Pass);
     let m = menu(&app).expect("the offer");
     assert_eq!(m.choices[0].label, "Run the trajectory on the new labels");
     press(&mut app, KeyCode::Char('2'));
@@ -658,6 +879,70 @@ fn esc_closes_the_exports_strip_then_the_grid_before_leaving() {
 }
 
 #[test]
+fn f_in_the_grid_says_the_strip_is_a_figures_and_opens_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    press(&mut app, KeyCode::Char('w'));
+    press(&mut app, KeyCode::Char('f'));
+    let v = app.figures.as_ref().unwrap();
+    assert!(!v.exports.open, "no strip the grid would hide");
+    assert!(v.grid.is_some(), "the grid stays");
+    assert!(app.status.contains("opens the tile"), "{}", app.status);
+    assert!(!super::super::figure_pane::GRID_KEYS.contains("f exports"));
+}
+
+#[test]
+fn the_grids_key_line_names_the_grids_keys_not_the_figures() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    press(&mut app, KeyCode::Char('w'));
+    let line = super::super::ui::help(&app);
+    for key in ["⏎ open", "p export", "esc w close", "V table"] {
+        assert!(line.contains(key), "{key}: {line}");
+    }
+    for key in ["f exports", "zoom", "pan"] {
+        assert!(!line.contains(key), "{key}: {line}");
+    }
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('w'));
+    assert!(app.cell_map.as_ref().unwrap().grid.is_some());
+    let line = super::super::ui::help(&app);
+    assert!(
+        line.contains("esc w close") && line.contains("V tree"),
+        "{line}"
+    );
+    assert!(
+        !line.contains("f exports") && !line.contains("zoom"),
+        "{line}"
+    );
+}
+
+#[test]
+fn a_short_pane_gives_the_exports_strip_room_for_its_selected_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    let x = &mut app.cell_map.as_mut().unwrap().exports;
+    x.not_listed = vec!["run.cells.extra.pdf".into()];
+    x.sel = 0;
+    press(&mut app, KeyCode::Char('f'));
+    let screen = drawn_in(&app, 100, 30).concat();
+    assert!(screen.contains(" exports ("), "the strip");
+    assert!(
+        screen.contains("run.cells.extra.pdf"),
+        "and its selected row"
+    );
+    assert!(app.cell_map.as_ref().unwrap().exports.fits.get());
+    use super::super::ui::exports_height;
+    assert_eq!(exports_height(30), Some(8), "room: the strip's own height");
+    assert_eq!(exports_height(12), Some(6), "what the figure leaves");
+    assert_eq!(exports_height(8), Some(3), "a row, taken from the figure");
+    assert_eq!(exports_height(6), Some(3), "down to the figure's own row");
+    assert_eq!(exports_height(5), None, "else not shown");
+}
+
+#[test]
 fn a_grid_tile_opens_with_its_number_or_space() {
     use crate::figures::Panel;
     let dir = tempfile::tempdir().unwrap();
@@ -672,6 +957,31 @@ fn a_grid_tile_opens_with_its_number_or_space() {
     assert!(app.status.contains("tile(s)"), "{}", app.status);
     press(&mut app, KeyCode::Char(' '));
     assert!(app.figures.as_ref().unwrap().grid.is_none());
+}
+
+#[test]
+fn the_status_follows_the_figures_and_t_c_say_only_the_scatter_takes_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    press(&mut app, KeyCode::Char('w'));
+    assert!(app.status.contains("arrows choose"), "{}", app.status);
+    press(&mut app, KeyCode::Char('V'));
+    assert!(!app.status.contains("arrows choose"), "{}", app.status);
+    press(&mut app, KeyCode::Char('v'));
+    let p = app.figures.as_mut().unwrap();
+    p.open_grid();
+    p.grid.as_mut().unwrap().sel = 3;
+    p.open_tile();
+    assert!(!p.current().is_scatter());
+    let style = p.style;
+    for key in ['t', 'c'] {
+        press(&mut app, KeyCode::Char(key));
+        assert!(app.status.contains("scatter"), "{key}: {}", app.status);
+    }
+    assert!(
+        app.figures.as_ref().unwrap().style == style,
+        "nothing changed"
+    );
 }
 
 #[test]
@@ -729,7 +1039,7 @@ fn g_lists_the_family_and_a_round_opens_with_its_clusters() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = family_app(tmp.path());
     // No output chosen: switching offers the next free round.
-    app.out_chosen = false;
+    (app.out_chosen, app.out_typed) = (false, false);
     press(&mut app, KeyCode::Char('g'));
     let m = menu(&app).expect("the runs");
     assert_eq!(m.choices.len(), 5);
@@ -760,6 +1070,66 @@ fn g_lists_the_family_and_a_round_opens_with_its_clusters() {
 }
 
 #[test]
+fn a_pass_run_on_one_run_leaves_the_next_run_its_own_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    // As a pass from the form leaves things, with no output typed.
+    (app.out_chosen, app.out_typed) = (true, false);
+    app.args.out = "X.L1".into();
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    let (_, out) = crate::manifest::family::pass_origin(&tmp.path().join("X.L0.senna.json"));
+    assert_eq!(app.args.out.as_ref(), out, "derived for the run shown");
+    // A typed output stays.
+    app.out_typed = true;
+    app.args.out = "mine".into();
+    app.open_run(pick(tmp.path(), "X"), false);
+    assert_eq!(app.args.out.as_ref(), "mine");
+}
+
+#[test]
+fn a_run_opened_from_the_list_says_whether_its_clusters_are_fixed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    // X without clusters of its own: a pass on it runs Leiden.
+    std::fs::write(
+        tmp.path().join("X.senna.json"),
+        r#"{"version":2,"kind":"topic","prefix":"X"}"#,
+    )
+    .unwrap();
+    app.fixed_clusters = false;
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    assert!(app.fixed_clusters, "a round names its clusters");
+    app.open_run(pick(tmp.path(), "X"), false);
+    assert!(!app.fixed_clusters, "the bare run leaves them to Leiden");
+}
+
+#[test]
+fn a_round_made_on_a_trajectory_run_lists_as_a_round() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    // A pass on X.T1 copies its trajectory section into the new round.
+    std::fs::write(
+        tmp.path().join("X.T1.L1.senna.json"),
+        r#"{"version":2,"kind":"topic","prefix":"X.T1.L1",
+            "cluster":{"clusters":"X.clusters.parquet"},
+            "annotate":{"argmax":"X.L0.argmax.tsv","source":"X.T1.senna.json"},
+            "trajectory":{"prior":"t.tsv"}}"#,
+    )
+    .unwrap();
+    press(&mut app, KeyCode::Char('g'));
+    let m = menu(&app).expect("the runs");
+    let row = |name: &str| {
+        m.choices
+            .iter()
+            .find(|c| c.label.contains(&format!("{name} ·")))
+            .map(|c| c.label.clone())
+            .unwrap()
+    };
+    assert!(row("X.T1.L1").contains("· round ·"), "{}", row("X.T1.L1"));
+    assert!(row("X.T1").contains("· trajectory ·"), "{}", row("X.T1"));
+}
+
+#[test]
 fn a_round_from_the_list_gives_the_order_view_its_labels() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = order_app(tmp.path(), &["CT9"]);
@@ -771,6 +1141,26 @@ fn a_round_from_the_list_gives_the_order_view_its_labels() {
     };
     let types: Vec<&str> = v.types.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(types, ["CT1", "CT2"]);
+}
+
+#[test]
+fn a_save_opens_the_round_after_the_one_saved_whatever_the_pass_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    // The run opened is the round itself: its passes would go to X.L0.L2.
+    app.source = tmp.path().join("X.L0.senna.json");
+    app.target = tmp.path().join("X.L0.L2.senna.json");
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    // As `lupin relabel --next` leaves it: the next round beside it.
+    let text = std::fs::read_to_string(tmp.path().join("X.L0.senna.json")).unwrap();
+    std::fs::write(tmp.path().join("X.L0.r1.senna.json"), text).unwrap();
+    finished(&mut app, Job::Save(0));
+    assert!(
+        app.shown_manifest().ends_with("X.L0.r1.senna.json"),
+        "{}: {}",
+        app.shown_manifest().display(),
+        app.status
+    );
 }
 
 #[test]
@@ -835,6 +1225,17 @@ fn switching_runs_gives_the_order_view_the_edges_of_what_is_shown() {
     );
 }
 
+#[test]
+fn opening_a_run_with_no_trajectory_drops_the_earlier_ones_figures() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = figures_app(tmp.path());
+    app.trajectory_tui = true;
+    let fam = family_app(tmp.path());
+    app.source = fam.source.clone();
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    assert!(app.figures.is_none(), "X.L0 has no trajectory");
+}
+
 /// The form's marker panel, picked in the browser popup over it.
 fn browsing_for_markers(dir: &Path) -> App {
     let mut app = app_with_terms(false);
@@ -879,6 +1280,37 @@ fn the_browser_popup_picks_the_forms_marker_panel_and_draws_over_it() {
 }
 
 #[test]
+fn the_browser_shows_the_end_of_a_long_folder_and_esc_keeps_the_panel() {
+    let root = tempfile::tempdir().unwrap();
+    let deep = root
+        .path()
+        .join("a".repeat(60))
+        .join("b".repeat(60))
+        .join("annotate_here");
+    std::fs::create_dir_all(&deep).unwrap();
+    let mut app = browsing_for_markers(&deep);
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut term = ratatui::Terminal::new(backend).unwrap();
+    term.draw(|f| super::super::ui::draw(f, &app)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        screen.contains("annotate_here"),
+        "the folder's own name: {screen}"
+    );
+    // Cancelled, an earlier panel stays and the status says so.
+    app.args.markers = "earlier.tsv".into();
+    press(&mut app, KeyCode::Esc);
+    assert!(app.status.contains("earlier.tsv"), "{}", app.status);
+    assert!(!app.status.contains("no marker panel"), "{}", app.status);
+}
+
+#[test]
 fn esc_closes_the_browser_popup_and_leaves_the_form() {
     let root = tempfile::tempdir().unwrap();
     let mut app = browsing_for_markers(root.path());
@@ -891,15 +1323,56 @@ fn esc_closes_the_browser_popup_and_leaves_the_form() {
 
 /// The screen `app` draws, as one string.
 fn drawn(app: &App) -> String {
-    let backend = ratatui::backend::TestBackend::new(160, 45);
+    drawn_in(app, 160, 45).concat()
+}
+
+/// The screen `app` draws on a `width` × `height` terminal, by row.
+fn drawn_in(app: &App, width: u16, height: u16) -> Vec<String> {
+    let backend = ratatui::backend::TestBackend::new(width, height);
     let mut term = ratatui::Terminal::new(backend).unwrap();
     term.draw(|f| super::super::ui::draw(f, app)).unwrap();
-    term.backend()
-        .buffer()
+    let buffer = term.backend().buffer();
+    buffer
         .content()
-        .iter()
-        .map(|c| c.symbol())
+        .chunks(usize::from(width))
+        .map(|row| row.iter().map(|c| c.symbol()).collect())
         .collect()
+}
+
+#[test]
+fn a_narrow_cluster_list_leaves_out_the_cell_counts_rather_than_cut_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let annotate = {
+        let mut app = app_with_terms(false);
+        app.focus = Focus::Clusters;
+        app
+    };
+    let order = {
+        let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+        app.round = app_with_terms(false).round.take();
+        app.focus = Focus::Clusters;
+        app
+    };
+    for (what, mut app) in [("annotate", annotate), ("order", order)] {
+        app.round.as_mut().unwrap().clusters[0].cells = 1234567;
+        let row = |screen: &[String]| {
+            screen
+                .iter()
+                .find(|r| r.contains("K0 "))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let wide = drawn_in(&app, 200, 50);
+        assert!(row(&wide).contains("1234567"), "{what}: {}", row(&wide));
+        let narrow = drawn_in(&app, 80, 24);
+        let k0 = row(&narrow);
+        assert!(k0.contains("CT1"), "{what}: {k0}");
+        assert!(!k0.contains(" 1 ") && !k0.contains("123"), "{what}: {k0}");
+        assert!(
+            !narrow.concat().contains("cells   label"),
+            "{what}: no header either"
+        );
+    }
 }
 
 #[test]
@@ -929,6 +1402,31 @@ fn the_susie_setting_toggles_the_stage() {
     assert_eq!(Setting::Susie.value(&a), "off");
     Setting::Susie.adjust(&mut a, false);
     assert!(!a.no_susie);
+}
+
+#[test]
+fn a_narrow_susie_list_keeps_its_label_readable_over_the_evidence() {
+    use super::super::round::Candidate;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    app.round = app_with_terms(false).round.take();
+    if let Some(r) = app.round.as_mut() {
+        let mut c = Candidate::new("CT1_with_a_longer_name", 0.85);
+        (c.evidence.pip, c.evidence.fold) = (Some(1.0), Some(7.0));
+        r.clusters[0].candidates = vec![c];
+        r.clusters[0].label = Some("CT1_with_a_longer_name".into());
+    }
+    app.focus = Focus::Clusters;
+    let screen = drawn_in(&app, 80, 24);
+    let k0 = screen.iter().find(|r| r.contains("K0 ")).unwrap();
+    assert!(k0.contains("CT1_with_a"), "{k0}");
+    assert!(
+        !k0.contains("0.8") && !k0.contains("×7"),
+        "no evidence cut: {k0}"
+    );
+    let wide = drawn_in(&app, 200, 50);
+    let k0 = wide.iter().find(|r| r.contains("K0 ")).unwrap();
+    assert!(k0.contains("0.85") && k0.contains("×7.0"), "{k0}");
 }
 
 #[test]
@@ -972,11 +1470,11 @@ fn arrows_on_a_form_row_that_changes_nothing_leave_the_round_current() {
         app.form.as_mut().unwrap().row = setting_row(&app.args, s);
         press(&mut app, KeyCode::Left);
         press(&mut app, KeyCode::Right);
-        assert!(!app.stale, "{s:?} changed nothing");
+        assert!(!app.stale(), "{s:?} changed nothing");
     }
     app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
     press(&mut app, KeyCode::Right);
-    assert!(app.stale, "knn changed");
+    assert!(app.stale(), "knn changed");
 }
 
 #[test]
@@ -1060,6 +1558,47 @@ fn u_and_k_ask_why_then_backspace_undoes_and_e_waits_for_a_save() {
 }
 
 #[test]
+fn a_clusters_new_label_replaces_its_earlier_one() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    app.edits.push(Edit::Markers {
+        label: "CT1".into(),
+        genes: vec!["GENE1".into()],
+        add: false,
+        reason: "why".into(),
+    });
+    for label in ["CT1", "CT1+CT2"] {
+        app.ask_label(label.into(), "why".into(), None);
+        press(&mut app, KeyCode::Enter);
+    }
+    assert_eq!(app.edits.len(), 2, "the marker edit and one label");
+    assert!(matches!(&app.edits[1], Edit::Label { label, .. } if label == "CT1+CT2"));
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(app.edits.len(), 1, "the marker edit stays");
+}
+
+#[test]
+fn keeping_a_relabelled_cluster_keeps_its_new_label() {
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    app.ask_label("CT2".into(), "why".into(), None);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('k'));
+    assert!(app.prompt.as_ref().unwrap().title.contains("keeps CT2"));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.current_label().as_deref(), Some("CT2"));
+    let r = app.round.as_ref().unwrap();
+    let saved = super::super::round::decisions(&app.edits, r, None);
+    assert_eq!(saved.len(), 1);
+    assert_eq!(
+        saved[0].label.as_deref(),
+        Some("CT2"),
+        "the save records it"
+    );
+}
+
+#[test]
 fn close_bracket_visits_the_flagged_clusters_left_to_decide() {
     use super::super::round::{Candidate, ClusterView};
     let mut app = app_with_terms(false);
@@ -1102,6 +1641,42 @@ fn question_mark_opens_the_guide_and_any_key_closes_it() {
 }
 
 #[test]
+fn a_guide_taller_than_the_screen_scrolls_and_says_there_is_more() {
+    for (trajectory, width, height) in [(true, 140, 45), (true, 200, 55), (false, 100, 30)] {
+        let mut app = app_with_terms(false);
+        app.trajectory_tui = trajectory;
+        press(&mut app, KeyCode::Char('?'));
+        let screen = drawn_in(&app, width, height).concat();
+        assert!(
+            screen.contains("↓ more"),
+            "{width}x{height}: cut, and says so"
+        );
+        assert!(
+            !screen.contains("a marker not enriched"),
+            "the marks are below"
+        );
+        for key in [KeyCode::Down, KeyCode::PageDown, KeyCode::Up, KeyCode::End] {
+            press(&mut app, key);
+            assert!(app.help_open, "{key:?} scrolls, it does not close");
+        }
+        let screen = drawn_in(&app, width, height).concat();
+        assert!(
+            screen.contains("a marker not enriched"),
+            "End shows the last"
+        );
+        assert!(!screen.contains("↓ more"), "nothing more below");
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.help_scroll, 0);
+        press(&mut app, KeyCode::PageDown);
+        assert!(app.help_scroll > 1, "a page");
+        press(&mut app, KeyCode::Char('x'));
+        assert!(!app.help_open, "any other key closes it");
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.help_scroll, 0, "it opens at the top");
+    }
+}
+
+#[test]
 fn gene_keys_add_and_drop_markers_and_backspace_undoes_the_last() {
     use super::super::round::Edit;
     let mut app = app_with_terms(false);
@@ -1125,7 +1700,8 @@ fn gene_keys_add_and_drop_markers_and_backspace_undoes_the_last() {
     app.focus = Focus::Genes;
     press(&mut app, KeyCode::Backspace);
     assert!(
-        app.status.starts_with("undid adding GENE1"),
+        app.status
+            .starts_with("undid adding GENE1 to CT1's markers"),
         "{}",
         app.status
     );
@@ -1175,7 +1751,7 @@ fn in_the_order_table_two_marks_then_precedes_or_unrelated_ask_why() {
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char(' '));
     assert_eq!(app.tree_marked, ["CT1", "CT2"]);
-    for (key, relation) in [('>', Relation::Precedes), ('-', Relation::Unrelated)] {
+    for (key, relation) in [('>', Relation::Precedes), ('u', Relation::Unrelated)] {
         press(&mut app, KeyCode::Char(key));
         assert!(matches!(
             app.prompt.as_ref().map(|p| &p.pending),
@@ -1184,6 +1760,27 @@ fn in_the_order_table_two_marks_then_precedes_or_unrelated_ask_why() {
         ));
         app.prompt = None;
     }
+    // - and + zoom the figures, as on the cell map: in the table they say so.
+    for key in ['-', '+'] {
+        press(&mut app, KeyCode::Char(key));
+        assert!(app.prompt.is_none(), "{key} states nothing");
+        assert!(app.status.contains("zoom"), "{key}: {}", app.status);
+        assert!(app.status.contains("u unrelated"), "{key}: {}", app.status);
+    }
+    let bar = super::super::ui::help(&app);
+    assert!(
+        bar.contains("u unrelated") && !bar.contains("- unrelated"),
+        "{bar}"
+    );
+    let order: String = super::super::ui::guide(true)
+        .filter(|(s, _)| s.starts_with("order view"))
+        .flat_map(|(_, keys)| keys)
+        .map(|(key, what)| format!("{key} {what}\n"))
+        .collect();
+    assert!(
+        order.contains("u the two marked types are unrelated"),
+        "{order}"
+    );
 }
 
 #[test]
@@ -1360,6 +1957,103 @@ fn a_running_jobs_progress_leaves_an_armed_question_on_screen() {
 }
 
 #[test]
+fn a_long_pinned_label_keeps_its_note_whole() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    let long = "hematopoietic_oligopotent_progenitor_cell";
+    let panel = [("GENE1".to_string(), long.to_string())];
+    app.tree = crate::manifest::ontology::panel_tree_on(None, &panel);
+    app.edits = vec![Edit::Label {
+        cluster: 0,
+        label: long.into(),
+        reason: "why".into(),
+    }];
+    let screen = drawn(&app);
+    assert!(screen.contains("not called (did not pass FDR)"), "{screen}");
+}
+
+#[test]
+fn a_typed_name_off_the_panel_is_not_said_to_have_failed_fdr() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    let label = |app: &mut App, label: &str| {
+        app.edits = vec![Edit::Label {
+            cluster: 0,
+            label: label.into(),
+            reason: "why".into(),
+        }];
+    };
+    label(&mut app, "Test_Custom_Type");
+    let screen = drawn(&app);
+    assert!(screen.contains("not a panel type"), "{screen}");
+    assert!(!screen.contains("did not pass FDR"), "{screen}");
+    // A panel type with no share was tested and not called.
+    label(&mut app, "CT1");
+    assert!(drawn(&app).contains("did not pass FDR"));
+}
+
+#[test]
+fn a_round_with_no_cluster_expression_says_so_and_calls_no_marker_weak() {
+    let mut app = app_with_terms(false);
+    if let Some(r) = app.round.as_mut() {
+        r.markers.insert("CT1".into(), ["GENE1".into()].into());
+        r.clusters[0].genes.clear();
+    }
+    app.gene_view = GeneView::Markers;
+    let screen = drawn(&app);
+    assert!(screen.contains("1 markers of CT1"), "{screen}");
+    assert!(
+        !screen.contains("1 weak"),
+        "unmeasured is not weak: {screen}"
+    );
+    assert!(!screen.contains("weak "), "{screen}");
+    assert!(screen.contains("no cluster expression"), "{screen}");
+    app.gene_view = GeneView::Specific;
+    assert!(drawn(&app).contains("no cluster expression"));
+}
+
+#[test]
+fn a_panel_leaf_picked_on_the_tree_gives_its_own_evidence_as_the_reason() {
+    use super::super::round::Candidate;
+    let mut app = app_with_terms(false);
+    if let Some(r) = app.round.as_mut() {
+        r.clusters[0].candidates = vec![Candidate::new("CT1", 0.18)];
+    }
+    let leaf = app.tree.node_of("CT1").unwrap();
+    app.pick_node(leaf);
+    let why = app.prompt.as_ref().unwrap().text.clone();
+    assert!(!why.contains("ontology"), "a panel type: {why}");
+    assert!(!why.contains("over CT1"), "not pooled with itself: {why}");
+    assert!(why.contains("0.18"), "{why}");
+}
+
+#[test]
+fn a_marker_edits_reason_says_specific_only_as_the_fold_change_does() {
+    use legume_numeric::matrix::dense_mat_io::Mat;
+    use legume_numeric::matrix::traits::MatWithNames;
+    let mut app = app_with_terms(false);
+    if let Some(r) = app.round.as_mut() {
+        r.expression = Some(super::super::round::Expression::new(MatWithNames {
+            rows: vec!["UP".into(), "DOWN".into()],
+            cols: vec!["K0".into(), "K1".into()],
+            mat: Mat::from_row_slice(2, 2, &[20.0, 1.0, 1.0, 20.0]),
+        }));
+        r.markers
+            .insert("CT1".into(), ["UP".into(), "DOWN".into()].into());
+    }
+    let why = |app: &mut App, gene: &str, add: bool| {
+        app.marked = vec![gene.into()];
+        app.ask_markers_of("CT1".into(), add);
+        app.prompt.take().map(|p| p.text).unwrap_or_default()
+    };
+    let up = why(&mut app, "UP", false);
+    assert!(!up.contains("not specific"), "UP is up in K0: {up}");
+    assert!(up.contains("UP +"), "{up}");
+    let down = why(&mut app, "DOWN", false);
+    assert!(down.contains("not specific"), "{down}");
+}
+
+#[test]
 fn a_relabelled_cluster_shows_the_evidence_of_its_new_label() {
     use super::super::round::{Candidate, Edit};
     let cand = |label: &str, fold| {
@@ -1481,6 +2175,28 @@ fn the_projection_row_cycles_the_runs_choice_the_score_and_the_ora() {
 }
 
 #[test]
+fn the_counts_note_is_checked_again_each_time_the_form_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    app.source = dir.path().join("run.senna.json");
+    std::fs::write(
+        &app.source,
+        r#"{"version": 2, "kind": "svd", "prefix": "run",
+            "data": {"input": ["a.zarr.zip"]}}"#,
+    )
+    .unwrap();
+    let note = |app: &App| app.form.as_ref().unwrap().expression.clone();
+    press(&mut app, KeyCode::Char('r'));
+    assert!(note(&app).is_some_and(|n| n.contains("will fail")));
+    press(&mut app, KeyCode::Esc);
+    // The counts are reachable now: the form, opened again, says nothing.
+    std::fs::write(dir.path().join("a.zarr.zip"), "").unwrap();
+    press(&mut app, KeyCode::Char('r'));
+    assert_eq!(note(&app), None);
+}
+
+#[test]
 fn the_counts_note_is_the_enrichments_and_not_shown_for_projection() {
     use crate::annotate_cmd::AnnotateMethod;
     let mut app = app_with_terms(false);
@@ -1521,7 +2237,7 @@ fn the_cluster_list_shows_a_susie_calls_share_not_its_pip() {
     assert_eq!(
         cluster_list_header(true),
         ["", "cells", "label", "explains", "fold", ""],
-        "named apart from the enrichment's share, which a rescore puts in its place"
+        "named apart from the enrichment's share"
     );
     let mut no_susie = cand.clone();
     (no_susie.evidence.pip, no_susie.evidence.fold) = (None, None);
@@ -1562,6 +2278,33 @@ fn a_round_with_a_layout_shows_its_cells_lit_on_the_selected_cluster() {
 }
 
 #[test]
+fn a_quick_frame_shows_a_keys_status_at_once_and_leaves_the_map_for_the_next() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Clusters;
+    drawn(&app);
+    running(&mut app);
+    press(&mut app, KeyCode::Char('x'));
+    app.tick();
+    press(&mut app, KeyCode::Down);
+    app.tick();
+    app.quick_frame.set(true);
+    let screen = drawn(&app);
+    assert!(screen.starts_with(" lupin annotate  pass…"), "{screen}");
+    assert!(
+        app.frame_behind.take(),
+        "the map lit on K1 is still to draw"
+    );
+    app.quick_frame.set(false);
+    drawn(&app);
+    assert!(!app.frame_behind.get());
+    app.quick_frame.set(true);
+    drawn(&app);
+    assert!(!app.frame_behind.get(), "drawn: nothing is behind");
+    app.stop();
+}
+
+#[test]
 fn the_maps_keys_act_from_the_tree_pane_and_capital_v_shows_the_tree() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = map_app(dir.path(), true);
@@ -1581,6 +2324,88 @@ fn the_maps_keys_act_from_the_tree_pane_and_capital_v_shows_the_tree() {
         matches!(app.tree_mode, TreeMode::Cells),
         "v the cells again"
     );
+}
+
+#[test]
+fn o_from_the_maps_ontology_goes_back_to_the_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.cl = Some(crate::annotate::celltype_tree::ClTerms::parse(
+        TYPES_OBO,
+        &crate::annotate::cl_rules::shipped(),
+    ));
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('o'));
+    assert!(
+        matches!(app.tree_mode, TreeMode::Ontology(_)),
+        "{}",
+        app.status
+    );
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("o back to the cells"), "{bar}");
+    press(&mut app, KeyCode::Char('o'));
+    assert!(
+        matches!(app.tree_mode, TreeMode::Cells),
+        "the map, not the tree"
+    );
+    // From the panel tree, o still goes back to it.
+    press(&mut app, KeyCode::Char('V'));
+    press(&mut app, KeyCode::Char('o'));
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("o panel"), "{bar}");
+    press(&mut app, KeyCode::Char('o'));
+    assert!(matches!(app.tree_mode, TreeMode::Panel));
+    let map = super::super::ui::guide(false)
+        .filter(|(s, _)| *s == "tree")
+        .flat_map(|(_, keys)| keys)
+        .find(|(key, _)| *key == "v / V")
+        .map(|(_, what)| what)
+        .unwrap();
+    assert!(map.contains("o the Cell Ontology"), "{map}");
+}
+
+#[test]
+fn each_panes_key_line_names_its_keys_and_a_narrow_one_ends_with_more() {
+    use super::super::ui::{help, help_in};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    let wants = [
+        (Focus::Clusters, &["u unassign", "⌫ undo", "r form"][..]),
+        (
+            Focus::Genes,
+            &[
+                "space mark",
+                "X hide by pattern",
+                "⌫ undo marker",
+                "esc clusters",
+            ][..],
+        ),
+        (Focus::Tree, &["o ontology"][..]),
+    ];
+    for (focus, want) in wants {
+        app.focus = focus;
+        let bar = help(&app);
+        for w in want {
+            assert!(bar.contains(w), "{focus:?} {w}: {bar}");
+        }
+        assert!(bar.starts_with(" ? keys · "), "{bar}");
+        let narrow = help_in(&app, 80);
+        assert!(
+            ratatui::text::Line::from(narrow.as_str()).width() <= 80,
+            "{narrow}"
+        );
+        assert!(narrow.ends_with(" · ? more"), "{focus:?}: {narrow}");
+        let shown: Vec<&str> = narrow.trim().split(" · ").collect();
+        let all: Vec<&str> = bar.trim().split(" · ").skip(1).collect();
+        assert_eq!(
+            shown[..shown.len() - 1],
+            all[..shown.len() - 1],
+            "the first keys, whole"
+        );
+    }
+    app.focus = Focus::Clusters;
+    let wide = help(&app);
+    assert_eq!(help_in(&app, 400), wide, "all fit: no more to say");
 }
 
 #[test]
@@ -1740,4 +2565,994 @@ fn esc_closes_the_choices_and_arrows_move_in_them() {
     assert_eq!(app.menu.as_ref().unwrap().sel, 1);
     press(&mut app, KeyCode::Esc);
     assert!(app.menu.is_none());
+}
+
+#[test]
+fn on_the_map_the_trajectory_tuis_bar_names_capital_t_for_the_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.trajectory_tui = true;
+    app.focus = Focus::Tree;
+    let bar = super::super::ui::help(&app);
+    assert!(
+        !bar.contains("t order"),
+        "t restyles the labels here: {bar}"
+    );
+    assert!(bar.contains("T order"), "{bar}");
+    press(&mut app, KeyCode::Char('T'));
+    assert!(app.in_order(), "T opens the order view");
+}
+
+#[test]
+fn the_annotate_guide_names_the_maps_grid_and_exports_strip() {
+    let text: String = super::super::ui::guide(false)
+        .filter(|(section, _)| *section == "tree")
+        .flat_map(|(_, keys)| keys.into_iter())
+        .map(|(key, what)| format!("{key} {what}\n"))
+        .collect();
+    for want in [
+        "an open branch",
+        "w all figures",
+        "f the exports strip",
+        "M move",
+        "D D delete",
+    ] {
+        assert!(text.contains(want), "{want}: {text}");
+    }
+}
+
+#[test]
+fn the_forms_keys_fit_its_popup_with_or_without_shift_enter() {
+    for shift_enter in [false, true] {
+        let mut app = app_with_terms(false);
+        app.shift_enter = shift_enter;
+        press(&mut app, KeyCode::Char('r'));
+        assert!(app.form.is_some());
+        let screen = drawn(&app);
+        assert!(screen.contains("esc/q close"), "shift+enter {shift_enter}");
+    }
+}
+
+#[test]
+fn the_order_views_cluster_keys_name_s_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    app.focus = Focus::Clusters;
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("s save"), "{bar}");
+}
+
+#[test]
+fn with_the_guide_open_b_closes_it_and_leaves_the_jobs_popup() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    app.help_open = true;
+    press(&mut app, KeyCode::Char('b'));
+    assert!(!app.help_open, "any key closes the guide");
+    assert!(!app.progress_hidden, "and does nothing else");
+}
+
+#[test]
+fn the_trajectory_guide_agrees_with_itself_and_the_keys() {
+    let entry = |section: &str, key: &str| {
+        super::super::ui::guide(true)
+            .find(|(s, _)| s.starts_with(section))
+            .and_then(|(_, keys)| keys.into_iter().find(|(k, _)| *k == key))
+            .map(|(_, what)| what)
+            .unwrap()
+    };
+    let r = entry("anywhere", "r");
+    assert!(r.contains("runs the trajectory"), "{r}");
+    let c = entry("figures", "c");
+    for colouring in ["cluster", "score call", "margin"] {
+        assert!(c.contains(colouring), "{colouring}: {c}");
+    }
+    assert!(entry("figures", "+ - 0").contains("[ ]"));
+}
+
+#[test]
+fn the_guide_says_a_save_is_not_stopped_and_t_on_the_map_restyles() {
+    let entry = |section: &str, key: &str| {
+        super::super::ui::guide(true)
+            .find(|(s, _)| s.starts_with(section))
+            .and_then(|(_, keys)| keys.into_iter().find(|(k, _)| *k == key))
+            .map(|(_, what)| what)
+            .unwrap()
+    };
+    let x = entry("anywhere", "x");
+    assert!(x.contains("a save"), "x does not stop a save: {x}");
+    let order = super::super::ui::guide(true)
+        .map(|(s, _)| s)
+        .find(|s| s.starts_with("order view"))
+        .unwrap();
+    assert!(order.contains("T on the cell map"), "{order}");
+}
+
+#[test]
+fn the_log_pane_leaves_out_the_svg_fonts_fallback_notes() {
+    use log::{Level, LevelFilter, Log, Metadata};
+    fn at(target: &str, level: Level) -> Metadata<'_> {
+        Metadata::builder().target(target).level(level).build()
+    }
+    let pane = crate::tui::PaneLogger(LevelFilter::Info);
+    assert!(!pane.enabled(&at("usvg::text", Level::Warn)), "font noise");
+    assert!(pane.enabled(&at("lupin::figures", Level::Warn)));
+    assert!(pane.enabled(&at("lupin::tui", Level::Info)));
+    // With -v, everything.
+    let verbose = crate::tui::PaneLogger(LevelFilter::Debug);
+    assert!(verbose.enabled(&at("usvg::text", Level::Warn)));
+}
+
+/// A stand-in for a running `job`.
+fn running_job(app: &mut App, job: Job) {
+    let child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    app.child = Some(Running::new(child, job));
+}
+
+/// `job`, ended well, taken in as the main loop does: one tick says it is
+/// done (the screen shows that before the reading), the next reads its output.
+fn finished(app: &mut App, job: Job) {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    child.wait().unwrap();
+    app.child = Some(Running::new(child, job));
+    app.tick();
+    assert!(app.job_ended(), "{}", app.status);
+    assert!(app.status.contains(" done in "), "{}", app.status);
+    app.tick();
+    assert!(app.child.is_none());
+}
+
+#[test]
+fn a_job_that_ends_says_so_before_its_output_is_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.target = tmp.path().join("X.L0.senna.json");
+    running(&mut app);
+    app.tick();
+    assert!(app.status.starts_with("pass…"), "{}", app.status);
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    child.wait().unwrap();
+    let mut sleeping = std::mem::replace(&mut app.child.as_mut().unwrap().child, child);
+    let _ = (sleeping.kill(), sleeping.wait());
+    app.tick();
+    assert!(app.status.starts_with("pass done in"), "{}", app.status);
+    assert!(app.status.contains("reading"), "{}", app.status);
+    assert!(app.job_ended() && app.round.is_none(), "not read yet");
+    app.tick();
+    assert!(app.child.is_none() && app.round.is_some());
+    assert!(app.status.starts_with("pass done in"), "{}", app.status);
+}
+
+#[test]
+fn a_keys_reply_holds_the_status_against_the_progress_for_a_while() {
+    let mut app = app_with_terms(false);
+    running_job(&mut app, Job::Save(1));
+    press(&mut app, KeyCode::Char('x'));
+    app.tick();
+    assert!(app.status.contains("finishes on its own"), "{}", app.status);
+    // Once the reply has been up its while, the progress takes over again.
+    app.replied = app.replied.map(|t| t - KEY_REPLY_HOLD);
+    app.tick();
+    assert!(app.status.starts_with("save…"), "{}", app.status);
+    // A key that says nothing leaves the progress at once.
+    press(&mut app, KeyCode::Down);
+    app.tick();
+    assert!(app.status.starts_with("save…"), "{}", app.status);
+    app.stop();
+    if let Some(mut r) = app.child.take() {
+        let _ = r.child.kill();
+        let _ = r.child.wait();
+    }
+
+    running(&mut app);
+    for code in [KeyCode::Char('r'), KeyCode::Char('A')] {
+        app.focus = Focus::Clusters;
+        press(&mut app, code);
+        app.tick();
+        assert!(app.status.contains("wait for"), "{code:?}: {}", app.status);
+    }
+    app.stop();
+}
+
+#[test]
+fn the_settings_note_does_not_offer_r_while_a_job_refuses_it() {
+    let mut app = app_with_terms(false);
+    app.form = Some(Form::default());
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Esc);
+    assert!(drawn(&app).contains("r to re-run"));
+    running_job(&mut app, Job::Save(0));
+    let screen = drawn(&app);
+    assert!(screen.contains("settings changed"), "{screen}");
+    assert!(!screen.contains("r to re-run"), "{screen}");
+    if let Some(mut r) = app.child.take() {
+        let _ = r.child.kill();
+        let _ = r.child.wait();
+    }
+}
+
+#[test]
+fn a_question_asked_again_lapses_and_any_other_key_drops_it() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.status.contains("q again"), "{}", app.status);
+    press(&mut app, KeyCode::Char('b'));
+    press(&mut app, KeyCode::Char('q'));
+    assert!(!app.quit, "b dropped the question: q asks again");
+    assert!(app.child.is_some());
+    assert!(app.status.contains("q again"), "{}", app.status);
+
+    // Asked long ago, the question has lapsed: q asks again.
+    let age = |app: &mut App| {
+        if let Some((_, at, _)) = &mut app.armed {
+            *at -= KEY_REPLY_HOLD;
+        }
+        if let Some(t) = &mut app.replied {
+            *t -= KEY_REPLY_HOLD;
+        }
+    };
+    age(&mut app);
+    press(&mut app, KeyCode::Char('q'));
+    assert!(!app.quit, "the question had lapsed");
+    assert!(app.child.is_some());
+    // And with nothing pressed the progress takes the status back.
+    age(&mut app);
+    app.tick();
+    assert!(app.armed.is_none());
+    assert!(app.status.starts_with("pass…"), "{}", app.status);
+    press(&mut app, KeyCode::Char('x'));
+    age(&mut app);
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.child.is_some(), "x's question lapses as well");
+    app.stop();
+
+    // With no job, a lapsed question leaves the status.
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.status.contains("q again"), "{}", app.status);
+    age(&mut app);
+    app.tick();
+    assert!(!app.status.contains("q again"), "{}", app.status);
+}
+
+#[test]
+fn a_lapsed_question_leaves_a_status_that_replaced_it() {
+    let mut app = app_with_terms(false);
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.status.contains("q again"), "{}", app.status);
+    // A job's end says so before the question lapses.
+    app.status = "pass done in 30s".into();
+    if let Some((_, at, _)) = &mut app.armed {
+        *at -= KEY_REPLY_HOLD;
+    }
+    app.tick();
+    assert!(app.armed.is_none());
+    assert_eq!(app.status, "pass done in 30s");
+}
+
+#[test]
+fn q_closes_a_menu_as_esc_does_and_the_hints_say_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    press(&mut app, KeyCode::Char('g'));
+    assert!(app.menu.is_some());
+    assert!(drawn(&app).contains("esc or q cancels"));
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.menu.is_none(), "q closes the runs list");
+    assert!(!app.quit, "and does not quit");
+
+    let mut app = app_with_two_readings();
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.menu.is_none(), "q closes the label choices");
+    assert!(app.prompt.is_none() && !app.quit);
+
+    press(&mut app, KeyCode::Char('r'));
+    assert!(drawn(&app).contains("esc/q close"), "the form's hint");
+    let q = super::super::ui::guide(false)
+        .find(|(s, _)| s.starts_with("anywhere"))
+        .and_then(|(_, keys)| keys.into_iter().find(|(k, _)| k.starts_with('q')))
+        .map(|(_, what)| what)
+        .unwrap();
+    assert!(q.contains("closes a menu"), "{q}");
+}
+
+#[test]
+fn the_settings_note_goes_once_a_pass_runs_with_them_or_they_are_set_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    let perm = |app: &mut App, right: bool| {
+        app.form = Some(Form::default());
+        app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
+        press(app, if right { KeyCode::Right } else { KeyCode::Left });
+        app.form = None;
+    };
+    perm(&mut app, true);
+    assert!(app.stale());
+    perm(&mut app, false);
+    assert!(!app.stale(), "set back: the round is current again");
+
+    perm(&mut app, true);
+    running(&mut app);
+    assert!(!app.stale(), "the pass running has them");
+    assert!(!drawn(&app).contains("settings changed"));
+    app.stop();
+    assert!(app.stale(), "stopped, it never reached the round");
+
+    // A save's round was made with the settings of the round before it.
+    let text = std::fs::read_to_string(tmp.path().join("X.L0.senna.json")).unwrap();
+    std::fs::write(tmp.path().join("X.L0.r1.senna.json"), text).unwrap();
+    finished(&mut app, Job::Save(0));
+    assert!(app.shown_manifest().ends_with("X.L0.r1.senna.json"));
+    assert!(app.stale(), "a save keeps the note");
+    app.target = tmp.path().join("X.L9.senna.json");
+    finished(&mut app, Job::Pass);
+    assert!(!app.stale(), "a pass done ran with them");
+}
+
+#[test]
+fn the_settings_note_stays_when_g_shows_another_round() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    app.form = Some(Form::default());
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
+    press(&mut app, KeyCode::Right);
+    app.form = None;
+    assert!(app.stale());
+    // The round g shows was made with the settings as they stood before.
+    app.open_run(pick(tmp.path(), "X.L0.L1"), false);
+    assert!(app.shown_manifest().ends_with("X.L0.L1.senna.json"));
+    assert!(app.stale(), "the edited settings are not the round's");
+    assert!(drawn(&app).contains("settings changed"));
+    // The run itself has no round to differ from; its rounds still do.
+    app.open_run(pick(tmp.path(), "X"), false);
+    assert!(!app.stale());
+    app.open_run(pick(tmp.path(), "X.L0.L1"), false);
+    assert!(app.stale());
+    // Set back, they are the round's again, whichever run passes start from.
+    app.form = Some(Form::default());
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
+    press(&mut app, KeyCode::Left);
+    assert!(!app.stale(), "{:?}", app.args.from);
+}
+
+#[test]
+fn a_long_status_gives_way_to_the_headers_notes_and_manifest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    app.form = Some(Form::default());
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
+    press(&mut app, KeyCode::Right);
+    app.form = None;
+    app.status = "a status of many words ".repeat(12);
+    let name = app.shown_manifest().display().to_string();
+    for width in [200, 140] {
+        let header = &drawn_in(&app, width, 40)[0];
+        assert!(header.contains("settings changed, r to re-run"), "{header}");
+        assert!(header.trim_end().ends_with(&name), "{width}: {header}");
+        let cut = header.split('…').next().unwrap();
+        let last = cut.rsplit(' ').next().unwrap();
+        assert!(
+            header.contains('…') && ["a", "status", "of", "many", "words"].contains(&last),
+            "cut between words: {header}"
+        );
+    }
+    // Too narrow for the manifest beside a readable status: the status.
+    for width in [100, 80] {
+        let header = &drawn_in(&app, width, 24)[0];
+        assert!(header.contains("a status of many"), "{header}");
+        assert!(header.contains("settings changed"), "{header}");
+        assert!(!header.contains("X.L0"), "{header}");
+    }
+    // With no status, no gap where it would be.
+    app.status.clear();
+    let header = &drawn_in(&app, 200, 40)[0];
+    assert!(
+        header.starts_with(" lupin annotate  · settings changed"),
+        "{header}"
+    );
+}
+
+#[test]
+fn a_jobs_progress_reads_with_single_spaces() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    app.tick();
+    assert_eq!(app.status, "pass… 0s (x: stop)");
+    if let Some(r) = app.child.as_mut() {
+        r.progress.report = Some(crate::progress::Report {
+            done: 1.0,
+            end: 2.0,
+            total: 4.0,
+            stage: "enrichment".into(),
+        });
+    }
+    app.progress_hidden = true;
+    app.tick();
+    assert!(app.status.ends_with("b shows (x: stop)"), "{}", app.status);
+    app.stop();
+}
+
+#[test]
+fn the_jobs_popup_wraps_its_latest_log_line_rather_than_cut_it() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    app.push_log(
+        "[2026 INFO lupin] Running cluster × marker enrichment: 3 clusters × 4 types, with nulls drawn many times over and ending here"
+            .into(),
+    );
+    // The popup's rows, between its thick borders.
+    let popup: String = drawn(&app)
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(160)
+        .map(|r| r.iter().collect::<String>())
+        .filter_map(|r| Some(r.split('┃').nth(1)?.to_string()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(popup.contains("Running cluster"), "{popup}");
+    assert!(popup.contains("ending here"), "{popup}");
+    app.stop();
+}
+
+#[test]
+fn the_header_names_a_manifest_without_a_leading_dot() {
+    use super::super::ui::shown_path;
+    assert_eq!(
+        shown_path(Path::new("./X.r3.senna.json")),
+        "X.r3.senna.json"
+    );
+    assert_eq!(shown_path(Path::new("X.r3.senna.json")), "X.r3.senna.json");
+    assert_eq!(shown_path(Path::new("/d/X.senna.json")), "/d/X.senna.json");
+}
+
+#[test]
+fn annotate_opened_on_a_round_shows_that_round() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.trajectory_tui = false;
+    app.source = tmp.path().join("X.L0.senna.json");
+    app.target = tmp.path().join("X.L0.L2.senna.json");
+    app.open_start(true);
+    assert!(
+        app.shown_manifest().ends_with("X.L0.senna.json"),
+        "{}",
+        app.status
+    );
+    assert_eq!(app.round.as_ref().map(|r| r.clusters.len()), Some(2));
+    // The run itself, with a round left under the output: that round.
+    let mut app = family_app(tmp.path());
+    app.trajectory_tui = false;
+    app.target = tmp.path().join("X.L0.senna.json");
+    app.open_start(false);
+    assert!(app.shown_manifest().ends_with("X.L0.senna.json"));
+    // A round with work an earlier session saved under the output: that
+    // work, not the round it started from.
+    let mut app = family_app(tmp.path());
+    app.trajectory_tui = false;
+    app.source = tmp.path().join("X.L0.senna.json");
+    app.target = tmp.path().join("X.L0.L1.senna.json");
+    app.open_start(true);
+    assert!(
+        app.shown_manifest().ends_with("X.L0.L1.senna.json"),
+        "{}",
+        app.status
+    );
+}
+
+#[test]
+fn after_a_trajectory_run_g_marks_the_new_trajectory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.trajectory_tui = true;
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    // As a trajectory run leaves its figures, read from X.T1.
+    let mut pane = super::super::figure_pane::tests::pane();
+    std::sync::Arc::get_mut(&mut pane.data).unwrap().manifest = tmp.path().join("X.T1.senna.json");
+    app.figures = Some(pane);
+    press(&mut app, KeyCode::Char('g'));
+    let m = menu(&app).expect("the runs");
+    let marked: Vec<&str> = m
+        .choices
+        .iter()
+        .filter(|c| c.label.starts_with('●'))
+        .map(|c| c.label.as_str())
+        .collect();
+    assert_eq!(marked.len(), 1, "{marked:?}");
+    assert!(marked[0].starts_with("● X.T1 ·"), "{marked:?}");
+}
+
+#[test]
+fn a_trajectory_done_names_its_manifest_once_in_the_header() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.trajectory_tui = true;
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    let made = tmp.path().join("X.T1.senna.json");
+    app.trajectory_done(&made, 211);
+    assert!(
+        app.status.starts_with("trajectory done in 211s"),
+        "{}",
+        app.status
+    );
+    let header = &drawn_in(&app, 200, 40)[0];
+    assert_eq!(header.matches("X.T1.senna.json").count(), 1, "{header}");
+}
+
+#[test]
+fn clusters_from_the_manifest_leave_the_leiden_rows_fixed_and_passed_over() {
+    use super::super::app::{setting_row, Setting};
+    let mut app = app_with_terms(false);
+    app.fixed_clusters = true;
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('r'));
+    // The three sit together: down from the row above them lands on the
+    // row below, and up comes back.
+    let above = setting_row(&app.args, Setting::Knn) - 1;
+    let after = setting_row(&app.args, Setting::NumClusters) + 1;
+    assert_eq!(after - above, 4);
+    app.form.as_mut().unwrap().row = above;
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.form.as_ref().unwrap().row, after);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.form.as_ref().unwrap().row, above);
+    // On one of them, left and right change nothing.
+    let before = format!("{:?}", app.args);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Resolution);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Left);
+    assert_eq!(format!("{:?}", app.args), before);
+    assert!(!app.stale(), "no settings changed");
+    let screen = drawn(&app);
+    assert_eq!(screen.matches("from the manifest").count(), 4, "{screen}");
+}
+
+#[test]
+fn another_runs_trajectory_is_named_over_its_figures_and_in_g() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    // A pass on X.T1 copies its trajectory section into the new round.
+    std::fs::write(
+        tmp.path().join("X.T1.L1.senna.json"),
+        r#"{"version":2,"kind":"topic","prefix":"X.T1.L1",
+            "cluster":{"clusters":"X.clusters.parquet"},
+            "annotate":{"argmax":"X.L0.argmax.tsv","source":"X.T1.senna.json"},
+            "trajectory":{"prior":"t.tsv","pseudotime":"X.T1.cell_pseudotime.parquet"}}"#,
+    )
+    .unwrap();
+    app.trajectory_tui = true;
+    press(&mut app, KeyCode::Char('g'));
+    let m = menu(&app).expect("the runs");
+    let detail = |name: &str| {
+        m.choices
+            .iter()
+            .find(|c| c.label.contains(&format!("{name} ·")))
+            .map(|c| c.detail.clone())
+            .unwrap()
+    };
+    let note = "X.T1's trajectory, on its labels: r runs one for this round";
+    assert!(detail("X.T1.L1").contains(note), "{}", detail("X.T1.L1"));
+    assert!(!detail("X.T1").contains(note), "{}", detail("X.T1"));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = figures_app(tmp.path());
+    std::sync::Arc::get_mut(&mut app.figures.as_mut().unwrap().data)
+        .unwrap()
+        .trajectory_of = Some("X.T1".into());
+    let screen = drawn(&app);
+    assert!(
+        screen.contains("figures from X.T1's trajectory"),
+        "{screen}"
+    );
+}
+
+/// The app with cluster 0's candidates `CT1` … `CT{n}`, the enrichment
+/// ranking them in that order.
+fn app_with_candidates(n: usize) -> App {
+    use super::super::round::Candidate;
+    let mut app = app_with_terms(false);
+    let c = &mut app.round.as_mut().unwrap().clusters[0];
+    c.candidates = (0..n)
+        .map(|k| Candidate {
+            ranks: [Some(k), None, None],
+            ..Candidate::new(&format!("CT{}", k + 1), 0.5 / (k + 1) as f32)
+        })
+        .collect();
+    app.focus = Focus::Clusters;
+    app
+}
+
+#[test]
+fn the_candidates_show_their_first_ten_where_the_screen_allows_and_say_how_many_more() {
+    let app = app_with_candidates(14);
+    let screen = drawn(&app);
+    assert!(screen.contains("CT10"), "the tenth fits: {screen}");
+    assert!(!screen.contains("CT11"), "{screen}");
+    assert!(screen.contains("4 more"), "{screen}");
+}
+
+#[test]
+fn tab_reaches_the_candidates_which_scroll_with_their_selection_and_enter_takes_one() {
+    let mut app = app_with_candidates(30);
+    press(&mut app, KeyCode::Char('a'));
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Tab);
+    assert!(app.focus == Focus::Candidates);
+    press(&mut app, KeyCode::End);
+    let screen = drawn(&app);
+    assert!(screen.contains("CT30"), "scrolled to the last: {screen}");
+    assert!(
+        !screen.contains("CT2 "),
+        "the first rows scrolled off: {screen}"
+    );
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Label { label, .. }) if label == "CT29"
+    ));
+    app.prompt = None;
+    // A number takes that row here too; esc goes back to the clusters.
+    press(&mut app, KeyCode::Char('2'));
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Label { label, .. }) if label == "CT2"
+    ));
+    app.prompt = None;
+    press(&mut app, KeyCode::Esc);
+    assert!(app.focus == Focus::Clusters);
+    // Another cluster's list starts at its top.
+    app.cand_sel = 5;
+    app.select_cluster(0);
+    assert_eq!(app.cand_sel, 0);
+}
+
+#[test]
+fn a_selection_past_a_shorter_list_holds_at_its_last_candidate() {
+    let mut app = app_with_candidates(30);
+    press(&mut app, KeyCode::Char('a'));
+    app.focus = Focus::Candidates;
+    press(&mut app, KeyCode::End);
+    // As a save or rescoring leaves the cluster fewer candidates.
+    app.round.as_mut().unwrap().clusters[0]
+        .candidates
+        .truncate(8);
+    let screen = drawn(&app);
+    assert!(screen.contains("CT8"), "{screen}");
+    assert!(!screen.contains("no candidate passed FDR"), "{screen}");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Label { label, .. }) if label == "CT8"
+    ));
+}
+
+#[test]
+fn candidates_sorted_by_the_score_show_its_reading_once() {
+    use crate::annotate::rounds::Method;
+    let mut app = app_with_candidates(3);
+    for (k, c) in app.round.as_mut().unwrap().clusters[0]
+        .candidates
+        .iter_mut()
+        .enumerate()
+    {
+        c.ranks[Method::Score.index()] = Some(k);
+        c.evidence.score = Some(0.4 - 0.1 * k as f32);
+    }
+    app.cand_by = Some(Method::Score);
+    let screen = drawn_in(&app, 160, 60);
+    let header = screen
+        .iter()
+        .find(|l| l.contains(" type "))
+        .expect("the candidates' header");
+    assert_eq!(header.matches("score").count(), 1, "{header}");
+}
+
+#[test]
+fn each_candidate_a_number_takes_shows_it_and_the_rest_show_none() {
+    let mut app = app_with_candidates(12);
+    press(&mut app, KeyCode::Char('a'));
+    let screen = drawn(&app);
+    assert!(screen.contains("9 CT9 "), "{screen}");
+    // No key takes the tenth: it shows no digit, not a cut-off `1`.
+    assert!(
+        screen.contains("  CT10 ") && !screen.contains("1 CT10"),
+        "{screen}"
+    );
+    // The label choices show their own numbers.
+    press(&mut app, KeyCode::Enter);
+    assert!(drawn(&app).contains(" 1  CT1 "), "{}", drawn(&app));
+}
+
+#[test]
+fn the_candidates_value_column_follows_the_method_they_are_sorted_by() {
+    use super::super::round::Candidate;
+    let mut app = app_with_terms(false);
+    let c = &mut app.round.as_mut().unwrap().clusters[0];
+    let mut cand = Candidate {
+        ranks: [Some(0), Some(0), None],
+        ..Candidate::new("CT1", 0.61)
+    };
+    (
+        cand.evidence.enrichment,
+        cand.evidence.pip,
+        cand.evidence.explained,
+    ) = (Some(0.61), Some(1.0), Some(0.33));
+    c.candidates = vec![cand];
+    app.focus = Focus::Clusters;
+    let screen = drawn(&app);
+    assert!(
+        screen.contains("enrich") && !screen.contains("0.33"),
+        "{screen}"
+    );
+    press(&mut app, KeyCode::Char('S'));
+    assert!(app.status.contains("susie"), "{}", app.status);
+    let screen = drawn(&app);
+    assert!(
+        screen.contains("susie") && screen.contains("0.33"),
+        "{screen}"
+    );
+}
+
+/// The candidates pane's rows on a `width` × `height` screen, inside its
+/// borders: the title row first.
+fn candidates_pane(app: &App, width: u16, height: u16) -> Vec<String> {
+    let screen = drawn_in(app, width, height);
+    let top = screen
+        .iter()
+        .rposition(|r| r.contains("┌ K0 "))
+        .expect("the candidates pane");
+    let at = screen[top].find("┌ K0 ").unwrap();
+    let left = screen[top][..at].chars().count();
+    screen[top..]
+        .iter()
+        .take_while(|r| r.chars().nth(left).is_none_or(|c| c != '└'))
+        .map(|r| {
+            r.chars()
+                .skip(left + 1)
+                .take_while(|&c| c != '│' && c != '┐')
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn the_candidates_show_their_numbers_whole_or_leave_them_out_at_any_size() {
+    use super::super::round::Candidate;
+    let mut app = app_with_candidates(14);
+    let c = &mut app.round.as_mut().unwrap().clusters[0];
+    for t in &mut c.candidates {
+        let e = &mut t.evidence;
+        (e.enrichment, e.pip, e.fold, e.nes, e.p, e.q, e.score) = (
+            Some(0.5),
+            Some(1.0),
+            Some(12.5),
+            Some(-1.25),
+            Some(0.00001),
+            Some(0.0005),
+            Some(0.75),
+        );
+    }
+    c.candidates[0] = Candidate {
+        evidence: crate::annotate::rounds::TypeEvidence {
+            label: "CT_of_a_rather_long_name".into(),
+            ..c.candidates[0].evidence.clone()
+        },
+        ..c.candidates[0].clone()
+    };
+    c.label = Some("CT_of_a_rather_long_name".into());
+    let whole = [
+        "type", "enrich", "PIP", "fold", "NES", "p", "q", "score", "0.50", "1.00", "×12.5",
+        "-1.25", "1e-5", "5e-4", "0.75",
+    ];
+    let title_parts = [
+        "K0",
+        "10 cells",
+        "CT_of_a_rather_long_name",
+        "by enrichment",
+        "4 more",
+    ];
+    for (w, h) in [(200, 55), (160, 45), (100, 30), (80, 24)] {
+        let pane = candidates_pane(&app, w, h);
+        let title = pane[0].trim_matches(|c| c == '─' || c == ' ');
+        for part in title.split(" · ") {
+            assert!(title_parts.contains(&part), "{w}: {part:?} in {title:?}");
+        }
+        assert!(title.starts_with("K0 · "), "{w}: {title}");
+        for row in &pane[1..] {
+            for token in row.split_whitespace() {
+                let fine = whole.contains(&token)
+                    || token.chars().all(|c| c == '█')
+                    || token.starts_with("CT")
+                    || token.parse::<usize>().is_ok()
+                    // A long type may be cut, keeping its first columns.
+                    || ("CT_of_a_rather_long_name".starts_with(token) && token.len() >= 14);
+                assert!(fine, "{w}x{h}: {token:?} cut in {row:?}");
+            }
+        }
+        let header = pane.iter().find(|r| r.contains("type")).unwrap();
+        assert!(header.contains("enrich"), "{w}: {header}");
+        if w >= 160 {
+            assert!(
+                header.contains("score") && header.contains("PIP"),
+                "{header}"
+            );
+        }
+        assert!(
+            pane.iter().any(|r| r.contains("CT_of_a_rather")),
+            "{w}: the type stays readable"
+        );
+    }
+}
+
+#[test]
+fn a_candidates_column_no_listed_type_has_is_left_out() {
+    let mut app = app_with_candidates(3);
+    let c = &mut app.round.as_mut().unwrap().clusters[0];
+    for t in &mut c.candidates {
+        (t.evidence.enrichment, t.evidence.nes, t.evidence.q) = (Some(0.3), Some(1.2), Some(0.01));
+    }
+    let pane = candidates_pane(&app, 160, 45);
+    let header = pane.iter().find(|r| r.contains("type")).unwrap();
+    assert!(header.contains("NES") && header.contains(" q"), "{header}");
+    for absent in ["PIP", "fold", "score", " p "] {
+        assert!(!header.contains(absent), "{absent}: {header}");
+    }
+    assert!(!pane.concat().contains('—'), "{pane:?}");
+}
+
+#[test]
+fn a_rescored_susie_round_keeps_its_call_and_says_what_is_from_before_the_edit() {
+    use crate::annotate::rounds::{Method, TypeEvidence};
+    let mut app = app_with_terms(false);
+    let r = app.round.as_mut().unwrap();
+    r.by = Some(Method::Susie);
+    let e = TypeEvidence {
+        label: "CT1".into(),
+        enrichment: Some(0.7),
+        pip: Some(1.0),
+        fold: Some(6.0),
+        explained: Some(0.6),
+        ..TypeEvidence::default()
+    };
+    (r.clusters[0].candidates, r.clusters[0].shares) =
+        super::super::round::ranked_view(&[e], Method::Susie);
+    let flagged = r.clusters[0].flagged();
+    app.show_scores(
+        r#"{"scores": {"0": [{"label": "CT1", "share": 0.2, "nes": 1.0, "p": 0.01, "q": 0.05}]}}"#,
+    );
+    let c = &app.round.as_ref().unwrap().clusters[0];
+    assert_eq!(
+        (c.candidates[0].pip, c.candidates[0].enrichment),
+        (Some(1.0), Some(0.2))
+    );
+    assert_eq!(
+        c.flagged(),
+        flagged,
+        "no flag for what the rescore did not redo"
+    );
+    assert!(drawn(&app).contains("before the edit"), "{}", drawn(&app));
+    // A label's reason says which of its numbers are from before the edit.
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('1'));
+    let why = &app.prompt.as_ref().expect("asks why").text;
+    assert!(why.contains("SuSiE's from before"), "{why}");
+}
+
+#[test]
+fn a_saved_round_called_by_another_method_says_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.source = tmp.path().join("X.L0.senna.json");
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    // A SuSiE round whose save, with a marker edit, has no SuSiE call.
+    app.round.as_mut().unwrap().by = Some(crate::annotate::rounds::Method::Susie);
+    let text = std::fs::read_to_string(tmp.path().join("X.L0.senna.json")).unwrap();
+    std::fs::write(tmp.path().join("X.L0.r1.senna.json"), text).unwrap();
+    finished(&mut app, Job::Save(0));
+    assert!(app.shown_manifest().ends_with("X.L0.r1.senna.json"));
+    assert!(
+        app.status.starts_with(
+            "saved 0 edit(s), called by enrichment: susie's call needs a new pass (r)"
+        ),
+        "{}",
+        app.status
+    );
+    // The files go to the log; the status keeps to what to do next.
+    assert!(!app.status.contains(".senna.json"), "{}", app.status);
+    assert!(!app.status.contains(".parquet"), "{}", app.status);
+    assert!(app.status.contains("to look at"), "{}", app.status);
+    assert!(app.log.iter().any(|l| l.contains("does not redo susie")));
+}
+
+#[test]
+fn a_tree_group_picked_as_a_label_is_not_said_to_have_failed_fdr() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    let panel =
+        [("G1", "CT1"), ("G1", "CT2"), ("G2", "CT3")].map(|(g, t)| (g.to_string(), t.to_string()));
+    app.tree = crate::manifest::ontology::panel_tree_on(None, &panel);
+    let group = (0..app.tree.nodes.len())
+        .find(|&i| !app.tree.nodes[i].children.is_empty())
+        .expect("CT1 and CT2 share a marker");
+    app.edits = vec![Edit::Label {
+        cluster: 0,
+        label: app.tree.label(group).to_string(),
+        reason: "why".into(),
+    }];
+    let screen = drawn(&app);
+    assert!(screen.contains("a tree group"), "{screen}");
+    assert!(!screen.contains("did not pass FDR"), "{screen}");
+}
+
+#[test]
+fn a_narrow_menu_is_wide_enough_for_its_keys_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2", "CT3"]);
+    press(&mut app, KeyCode::Char('r'));
+    assert!(menu(&app).is_some());
+    for (w, h) in [(200, 55), (100, 30), (80, 24)] {
+        let screen = drawn_in(&app, w, h).concat();
+        assert!(screen.contains("esc or q cancels ┛"), "{w}: {screen}");
+    }
+    press(&mut app, KeyCode::Char('1'));
+    let screen = drawn_in(&app, 200, 55).concat();
+    assert!(
+        screen.contains("esc or q cancels ┛"),
+        "the root menu: {screen}"
+    );
+}
+
+#[test]
+fn the_root_menu_leaves_out_the_types_below_min_cells_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &[]);
+    let labels = dir.path().join("labels.tsv");
+    std::fs::write(&labels, "c1\tCT1\nc2\tCT1\nc3\tCT2\nc4\tCT3\nc5\tCT3\n").unwrap();
+    app.trajectory.labels = Some(labels.to_string_lossy().into());
+    app.trajectory.argv = vec!["--min-cells".into(), "2".into()];
+    app.reload_order();
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Char('1'));
+    let m = menu(&app).expect("the root menu");
+    let roots: Vec<&str> = m.choices.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(roots, ["CT1", "CT3"], "CT2's one cell makes no node");
+    assert!(m.question.contains("CT2"), "{}", m.question);
+    assert!(m.question.contains("--min-cells 2"), "{}", m.question);
+}
+
+#[test]
+fn a_statement_on_a_type_below_min_cells_leaves_the_order_menu_to_ask_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("lupin")).unwrap();
+    std::fs::write(
+        dir.path().join("lupin").join("precedence.tsv"),
+        "CT1\tCT2\tprecedes\n",
+    )
+    .unwrap();
+    let mut app = order_app(dir.path(), &[]);
+    let labels = dir.path().join("labels.tsv");
+    std::fs::write(&labels, "c1\tCT1\nc2\tCT1\nc3\tCT2\n").unwrap();
+    app.trajectory.labels = Some(labels.to_string_lossy().into());
+    app.trajectory.argv = vec!["--min-cells".into(), "2".into()];
+    app.reload_order();
+    press(&mut app, KeyCode::Char('r'));
+    let m = menu(&app).expect("CT2 has 1 cell: nothing orders the nodes");
+    assert!(m.question.contains("--min-cells 2"), "{}", m.question);
+    assert!(m.question.contains("CT1 precedes CT2"), "{}", m.question);
 }

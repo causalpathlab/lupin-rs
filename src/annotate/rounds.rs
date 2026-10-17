@@ -43,7 +43,48 @@ pub struct Digest {
     pub evidence: Option<EvidenceCheck>,
 }
 
-/// The top call and whether the cluster's label agrees with it.
+impl Digest {
+    /// The calls tied with the first on q: the top calls.
+    #[must_use]
+    pub fn top_calls(&self) -> &[Call] {
+        let Some(first) = self.calls.first() else {
+            return &[];
+        };
+        let n = self.calls.iter().take_while(|c| c.q == first.q).count();
+        &self.calls[..n]
+    }
+
+    /// Settle the calls of cluster `id` tied on q by `ties`, as a digest
+    /// made with them would be: a digest written before ties were settled
+    /// reads the same as one written after.
+    pub fn settle(&mut self, id: ClusterId, ties: &TieBreak) {
+        let types = ties.tables.evidence(id);
+        sort_calls(&mut self.calls, &types, ties.method);
+        let agrees = self.evidence.as_ref().is_some_and(|e| e.agrees);
+        self.check_evidence();
+        if let Some(e) = &mut self.evidence {
+            e.agrees |= agrees;
+        }
+    }
+
+    /// The top call beside the label: it agrees when the label is one of
+    /// the top calls.
+    fn check_evidence(&mut self) {
+        let agrees = self.label.as_deref().is_some_and(|l| {
+            self.top_calls()
+                .iter()
+                .any(|c| label_key(l) == label_key(&c.label))
+        });
+        self.evidence = self.calls.first().map(|c| EvidenceCheck {
+            top: c.label.clone(),
+            q: c.q,
+            agrees,
+        });
+    }
+}
+
+/// The top call and whether the cluster's label agrees with it (or with
+/// any call tied with it).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct EvidenceCheck {
     pub top: String,
@@ -280,12 +321,13 @@ impl Method {
     }
 
     /// The types this method puts forward in one cluster's `evidence`, best
-    /// first: a share above zero, or for SuSiE a PIP of at least
-    /// [`MIN_CANDIDATE_PIP`], ranked as SuSiE calls
-    /// ([`crate::annotate::susie::call_order`]).
+    /// first. SuSiE puts forward a PIP of at least [`MIN_CANDIDATE_PIP`],
+    /// ranked as SuSiE calls ([`crate::annotate::susie::call_order`]). The
+    /// others put forward a share above zero, largest first; types of one
+    /// share go by their q, smallest first, then their NES, largest first,
+    /// unknowns last; types tied on all three stay in `evidence`'s order.
     #[must_use]
     pub fn ranked(self, evidence: &[TypeEvidence]) -> Vec<&TypeEvidence> {
-        let of = |v: Option<f32>| v.unwrap_or(0.0);
         let mut put: Vec<&TypeEvidence> = evidence
             .iter()
             .filter(|e| match self {
@@ -295,9 +337,19 @@ impl Method {
             .collect();
         match self {
             Method::Susie => {
+                let of = |v: Option<f32>| v.unwrap_or(0.0);
                 crate::annotate::susie::call_order(&mut put, |e| (of(e.pip), of(e.explained)));
             }
-            _ => put.sort_by(|a, b| of(self.reading(b)).total_cmp(&of(self.reading(a)))),
+            _ => {
+                let low = |v: Option<f32>| v.unwrap_or(f32::INFINITY);
+                let high = |v: Option<f32>| v.unwrap_or(f32::NEG_INFINITY);
+                put.sort_by(|a, b| {
+                    high(self.reading(b))
+                        .total_cmp(&high(self.reading(a)))
+                        .then(low(a.q).total_cmp(&low(b.q)))
+                        .then(high(b.nes).total_cmp(&high(a.nes)))
+                });
+            }
         }
         put
     }
@@ -342,12 +394,49 @@ pub fn call_shares(clusters: &[Option<ClusterId>], calls: &[Option<&str>]) -> Ta
 
 /// Everything a digest is built from; each part is optional.
 #[derive(Default)]
-pub struct Evidence {
+pub struct Evidence<'a> {
     /// Cluster × label FDR q-values.
     pub q: Option<Table>,
     /// Per cluster, terms in rank order.
     pub terms: BTreeMap<ClusterId, Vec<Term>>,
     pub cl: BTreeMap<ClusterId, ClPlacement>,
+    /// What orders calls tied on q; by name without it.
+    pub ties: Option<&'a TieBreak>,
+}
+
+/// Calls tied on q go by the round's method's reading of each type (the
+/// enrichment's share, SuSiE's explained share, the score's share of
+/// cells), then by its NES.
+pub struct TieBreak {
+    pub tables: TypeTables,
+    pub method: Method,
+}
+
+/// Smallest q first (unknowns last), then the method's reading and the NES
+/// of each call's type in `types`, largest first; the sort is stable, so
+/// calls tied on all of them stay by name.
+fn sort_calls(calls: &mut Vec<Call>, types: &[TypeEvidence], method: Method) {
+    let v = |x: Option<f32>| x.unwrap_or(f32::NEG_INFINITY);
+    let of: BTreeMap<String, (f32, f32)> = types
+        .iter()
+        .map(|e| (label_key(&e.label), (v(method.reading(e)), v(e.nes))))
+        .collect();
+    let mut keyed: Vec<(f32, f32, f32, Call)> = calls
+        .drain(..)
+        .map(|c| {
+            let (r, n) = of
+                .get(&label_key(&c.label))
+                .copied()
+                .unwrap_or((f32::NEG_INFINITY, f32::NEG_INFINITY));
+            (c.q.unwrap_or(f32::INFINITY), r, n, c)
+        })
+        .collect();
+    keyed.sort_by(|(qa, ra, na, _), (qb, rb, nb, _)| {
+        qa.total_cmp(qb)
+            .then(rb.total_cmp(ra))
+            .then(nb.total_cmp(na))
+    });
+    calls.extend(keyed.into_iter().map(|(.., c)| c));
 }
 
 /// Labels a table may carry that are not a call.
@@ -382,14 +471,7 @@ pub fn digest(
             .map(|t| t.iter().take(TOP).cloned().collect())
             .unwrap_or_default();
         d.cl = ev.cl.get(id).cloned();
-        d.evidence = d.calls.first().map(|c| EvidenceCheck {
-            top: c.label.clone(),
-            q: c.q,
-            agrees: d
-                .label
-                .as_deref()
-                .is_some_and(|l| label_key(l) == label_key(&c.label)),
-        });
+        d.check_evidence();
     }
     out
 }
@@ -412,11 +494,12 @@ fn calls_for(id: ClusterId, ev: &Evidence) -> Vec<Call> {
     };
     take(&ev.q, |c, v| c.q = Some(v));
     let mut calls: Vec<Call> = by_label.into_values().collect();
-    // Smallest q first; unknowns last.
-    calls.sort_by(|a, b| {
-        let q = |c: &Call| c.q.unwrap_or(f32::INFINITY);
-        q(a).total_cmp(&q(b))
-    });
+    // Ties settled before the cut, so the best of them are kept.
+    let (types, method) = match ev.ties {
+        Some(t) => (t.tables.evidence(id), t.method),
+        None => (Vec::new(), Method::default()),
+    };
+    sort_calls(&mut calls, &types, method);
     calls.truncate(TOP);
     calls
 }

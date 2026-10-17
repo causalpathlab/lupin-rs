@@ -72,23 +72,33 @@ fn a_score_round_clears_an_earlier_rounds_posterior() {
     );
 }
 
+/// Write `dir/name`, a cluster × type table: rows K0 and K1, columns A and
+/// B, `values` row by row.
+fn cluster_type_table(dir: &std::path::Path, name: &str, values: [f32; 4]) {
+    use legume_numeric::matrix::dense_mat_io::Mat;
+    use legume_numeric::matrix::traits::IoOps;
+    Mat::from_row_slice(2, 2, &values)
+        .to_parquet_with_names(
+            &dir.join(name).to_string_lossy(),
+            (Some(&["K0".into(), "K1".into()][..]), Some("cluster")),
+            Some(&["A".into(), "B".into()]),
+        )
+        .unwrap();
+}
+
 /// A score round on the toy run, with an enrichment Q table added beside it
 /// (cluster 0: A 0.7, B 0.3; cluster 1: B 1.0): two methods' readings.
 pub(crate) fn round_with_both(dir: &std::path::Path) -> run::Loaded {
-    use legume_numeric::matrix::dense_mat_io::Mat;
-    use legume_numeric::matrix::traits::IoOps;
     let (manifest, panel) = toy::write_run(dir);
     let loaded = run::load(&manifest).unwrap();
     let out = dir.join("run.L1").to_string_lossy().into_owned();
     annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
     let round_path = annotated_path(&loaded.file, &out);
-    let q = Mat::from_row_slice(2, 2, &[0.7, 0.3, 0.0, 1.0]);
-    q.to_parquet_with_names(
-        &format!("{out}.cluster_celltype_q.parquet"),
-        (Some(&["K0".into(), "K1".into()][..]), Some("cluster")),
-        Some(&["A".into(), "B".into()]),
-    )
-    .unwrap();
+    cluster_type_table(
+        dir,
+        "run.L1.cluster_celltype_q.parquet",
+        [0.7, 0.3, 0.0, 1.0],
+    );
     let mut round = run::load(&round_path.to_string_lossy()).unwrap();
     round.manifest.annotate.cluster_celltype_q = Some("run.L1.cluster_celltype_q.parquet".into());
     round.manifest.save(&round.file).unwrap();
@@ -234,6 +244,30 @@ fn review_json_gives_each_methods_top_and_every_types_evidence() {
 }
 
 #[test]
+fn review_json_tops_tied_on_the_share_go_by_q_then_nes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut round = round_with_both(dir.path());
+    let table = |name: &str, values| cluster_type_table(dir.path(), name, values);
+    // Cluster 0's share is split evenly; B's q is the smaller. Cluster 1's
+    // share is split too, both at one q: B's NES is the larger.
+    table("run.L1.cluster_celltype_q.parquet", [0.5, 0.5, 0.5, 0.5]);
+    table(
+        "run.L1.cluster_celltype_q_values.parquet",
+        [0.05, 0.01, 0.01, 0.01],
+    );
+    table("run.L1.cluster_celltype_nes.parquet", [3.0, 1.0, 1.0, 2.0]);
+    let a = &mut round.manifest.annotate;
+    a.cluster_celltype_q_values = Some("run.L1.cluster_celltype_q_values.parquet".into());
+    a.cluster_celltype_nes = Some("run.L1.cluster_celltype_nes.parquet".into());
+    round.manifest.save(&round.file).unwrap();
+    let round = run::load(&round.file.to_string_lossy()).unwrap();
+
+    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    assert_eq!(v[&0]["tops"]["enrichment"], "B", "{}", v[&0]["tops"]);
+    assert_eq!(v[&1]["tops"]["enrichment"], "B", "{}", v[&1]["tops"]);
+}
+
+#[test]
 fn the_scores_calls_take_the_panels_spelling() {
     use legume_numeric::matrix::parquet::{write_named_table, Column};
     let dir = tempfile::tempdir().unwrap();
@@ -294,6 +328,24 @@ fn review_reads_a_round_from_its_summary_when_its_cells_are_gone() {
 }
 
 #[test]
+fn review_reads_a_round_whose_tree_is_gone_and_a_table_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut round = round_with_both(dir.path());
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::rounds::write_summary(&mut round, &out).unwrap();
+    round.manifest.annotate.celltype_tree = Some("run.L1.celltype_tree.json".into());
+    std::fs::write(
+        dir.path().join("run.L1.cluster_celltype_q.parquet"),
+        "not parquet",
+    )
+    .unwrap();
+    let text = crate::manifest::rounds::review_text(&round, &[]).unwrap();
+    assert!(text.starts_with("K0  "), "{text}");
+    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    assert!(v.contains_key(&0), "{v:?}");
+}
+
+#[test]
 fn an_unreadable_table_costs_the_evidence_not_the_summary() {
     let dir = tempfile::tempdir().unwrap();
     let mut round = round_with_both(dir.path());
@@ -321,4 +373,55 @@ fn the_score_pass_writes_its_labels_as_parquet_too() {
     annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
     let labels = read_argmax(&format!("{out}.argmax.parquet")).unwrap();
     assert_eq!(labels["c00"].0, "A");
+}
+
+#[test]
+fn review_settles_tied_calls_names_clusters_k_and_places_them_on_the_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut round = round_with_both(dir.path());
+    // Both types tied on q in cluster 1, whose share is all B's.
+    cluster_type_table(
+        dir.path(),
+        "run.L1.cluster_celltype_q_values.parquet",
+        [0.01, 0.5, 0.01, 0.01],
+    );
+    std::fs::write(
+        dir.path().join("run.L1.celltype_tree.json"),
+        r#"{"source":"cell_ontology","label_cl":{"A":"CL:9000001"},
+            "groups":[{"name":"group_ab","cl_id":"CL:9000009","members":["A","B"]}]}"#,
+    )
+    .unwrap();
+    let a = &mut round.manifest.annotate;
+    a.cluster_celltype_q_values = Some("run.L1.cluster_celltype_q_values.parquet".into());
+    a.celltype_tree = Some("run.L1.celltype_tree.json".into());
+    // The summary as a pass with these tables writes it.
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::rounds::write_summary(&mut round, &out).unwrap();
+    round.manifest.save(&round.file).unwrap();
+    let round = run::load(&round.file.to_string_lossy()).unwrap();
+
+    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    let e = &v[&1]["digest"]["evidence"];
+    assert_eq!(e["top"], "B", "{e}");
+    assert_eq!(e["agrees"], true, "{e}");
+    assert_eq!(v[&0]["cl"]["id"], "CL:9000001");
+    assert_eq!(v[&0]["cl"]["via"], "label");
+    assert_eq!(v[&1]["cl"]["id"], "CL:9000009");
+    assert_eq!(v[&1]["cl"]["name"], "group_ab");
+
+    let text = crate::manifest::rounds::review_text(&round, &[]).unwrap();
+    assert!(text.starts_with("K0  "), "{text}");
+    assert!(text.contains("\nK1  "), "{text}");
+    assert!(text.contains("CL    CL:9000001 A\n"), "{text}");
+    assert!(
+        text.contains("CL    CL:9000009 group_ab (the group of B)\n"),
+        "{text}"
+    );
+    let calls: Vec<&str> = text
+        .lines()
+        .skip_while(|l| !l.starts_with("K1"))
+        .filter_map(|l| l.trim().strip_prefix("call"))
+        .map(|l| l.split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(calls, ["B", "A"], "{text}");
 }

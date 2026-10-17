@@ -16,7 +16,7 @@ fn the_view_shows_the_project_statements_as_edges_and_records_new_ones() {
     )
     .unwrap();
     let search = SearchPath::new(Some(dir));
-    let v = OrderView::load(types(), None, &search, Vec::new());
+    let v = OrderView::load(types(), None, &search, Vec::new(), 0);
     assert_eq!(
         v.file.as_deref(),
         Some(dir.join("lupin").join(PRECEDENCE).as_path())
@@ -31,7 +31,7 @@ fn the_view_shows_the_project_statements_as_edges_and_records_new_ones() {
 
     v.record("B", "C", Relation::Precedes, "stated in the TUI")
         .unwrap();
-    let v = OrderView::load(types(), None, &search, Vec::new());
+    let v = OrderView::load(types(), None, &search, Vec::new(), 0);
     assert_eq!(v.edges().len(), 2);
     assert_eq!(v.edges()[1].to, "C");
 
@@ -49,7 +49,7 @@ fn the_view_shows_the_project_statements_as_edges_and_records_new_ones() {
 
     // A cycle written by hand is shown as one.
     std::fs::write(&file, format!("{before}C\tA\tprecedes\ta mistake\n")).unwrap();
-    let v = OrderView::load(types(), None, &search, Vec::new());
+    let v = OrderView::load(types(), None, &search, Vec::new(), 0);
     assert!(v.prior.is_none());
     assert!(
         v.error.as_deref().is_some_and(|e| e.contains("cycle")),
@@ -59,7 +59,7 @@ fn the_view_shows_the_project_statements_as_edges_and_records_new_ones() {
 
     // A statement about the same pair replaces it.
     v.record("A", "C", Relation::Precedes, "undone").unwrap();
-    let v = OrderView::load(types(), None, &search, Vec::new());
+    let v = OrderView::load(types(), None, &search, Vec::new(), 0);
     assert_eq!(v.edges().len(), 2);
     // `unrelated` on a pair the rest of the prior orders is refused.
     let err = v.record("A", "C", Relation::Unrelated, "x").unwrap_err();
@@ -69,7 +69,7 @@ fn the_view_shows_the_project_statements_as_edges_and_records_new_ones() {
 #[test]
 fn without_a_project_directory_there_is_nowhere_to_write() {
     let search = SearchPath::new(None);
-    let v = OrderView::load(types(), None, &search, Vec::new());
+    let v = OrderView::load(types(), None, &search, Vec::new(), 0);
     assert!(v.file.is_none());
     assert!(v.record("A", "B", Relation::Precedes, "x").is_err());
 }
@@ -163,4 +163,73 @@ fn a_rerun_reuses_the_labels_file_the_last_trajectory_recorded() {
     std::fs::write(dir.join("labels.tsv"), "c1\tCT1\n").unwrap();
     let got = recorded_labels(&loaded()).unwrap();
     assert!(std::path::Path::new(&got).ends_with("labels.tsv"), "{got}");
+}
+
+#[test]
+fn a_statement_on_a_type_below_min_cells_makes_no_edge_and_is_set_aside() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::create_dir_all(dir.join("lupin")).unwrap();
+    std::fs::write(
+        dir.join("lupin").join(PRECEDENCE),
+        "A\tC\tprecedes\tknown\n",
+    )
+    .unwrap();
+    let search = SearchPath::new(Some(dir));
+    // C has 3 cells: below 4 it is no node, as `lupin trajectory` has it.
+    let v = OrderView::load(types(), None, &search, Vec::new(), 4);
+    assert!(v.edges().is_empty(), "no edge between nodes");
+    let aside: Vec<(&str, &str)> = v
+        .set_aside
+        .iter()
+        .map(|s| (s.from.as_str(), s.to.as_str()))
+        .collect();
+    assert_eq!(aside, [("A", "C")]);
+    assert_eq!(
+        OrderView::load(types(), None, &search, Vec::new(), 3)
+            .edges()
+            .len(),
+        1
+    );
+    // With no cell counts (the panel's types), every type is a node.
+    let unknown = vec![("A".to_string(), 0), ("C".to_string(), 0)];
+    let v = OrderView::load(unknown, None, &search, Vec::new(), 4);
+    assert_eq!(v.edges().len(), 1);
+    assert!(v.set_aside.is_empty());
+}
+
+#[test]
+fn statements_through_a_type_below_min_cells_that_order_nodes_are_not_set_aside() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::create_dir_all(dir.join("lupin")).unwrap();
+    std::fs::write(
+        dir.join("lupin").join(PRECEDENCE),
+        "A\tC\tprecedes\tknown\nC\tB\tprecedes\tknown\n",
+    )
+    .unwrap();
+    let search = SearchPath::new(Some(dir));
+    // C is no node, but A → C → B still orders A before B, as in the run.
+    let v = OrderView::load(types(), None, &search, Vec::new(), 4);
+    let edges: Vec<(String, String)> = v
+        .edges()
+        .iter()
+        .map(|e| (e.from.clone(), e.to.clone()))
+        .collect();
+    assert_eq!(edges, [("A".to_string(), "B".to_string())]);
+    assert!(v.set_aside.is_empty(), "{:?}", v.set_aside);
+}
+
+#[test]
+fn a_run_given_no_min_cells_counts_types_as_the_run_does() {
+    use super::TrajectoryRun;
+    assert_eq!(
+        TrajectoryRun::default().min_cells(),
+        crate::trajectory::run::DEFAULT_MIN_CELLS
+    );
+    let given = TrajectoryRun {
+        argv: vec!["--min-cells".into(), "5".into()],
+        ..TrajectoryRun::default()
+    };
+    assert_eq!(given.min_cells(), 5);
 }

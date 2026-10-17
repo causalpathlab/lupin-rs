@@ -29,6 +29,10 @@ use std::time::{Duration, Instant};
 const LOG_KEEP: usize = 1000;
 /// A cluster whose top candidate has less of its evidence than this is flagged.
 pub const CONTESTED: f32 = 0.5;
+/// How long a key's reply holds the status line while a job runs, before
+/// the job's progress takes it back; and how long a key asked again (`x`,
+/// `q`) waits for its second press.
+pub const KEY_REPLY_HOLD: Duration = Duration::from_secs(4);
 
 /// The annotation form's state: the selected row, and why it did not run
 /// or what running it again will do (`confirm`: the user has been told the
@@ -72,6 +76,8 @@ pub enum Focus {
     Order,
     /// The selected cluster's GO terms, when the round scored them.
     Go,
+    /// The selected cluster's candidates, which scroll with their selection.
+    Candidates,
 }
 
 /// The rows of the annotation form, in the order it lists them.
@@ -130,6 +136,13 @@ pub fn setting_row(a: &AnnotateCliArgs, s: Setting) -> usize {
 }
 
 impl Setting {
+    /// The Leiden knobs, which a source naming its own clusters leaves
+    /// fixed.
+    #[must_use]
+    pub fn leiden(self) -> bool {
+        matches!(self, Self::Knn | Self::Resolution | Self::NumClusters)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Markers => "marker panel",
@@ -412,6 +425,12 @@ impl Job {
             Self::Trajectory(_) => "trajectory",
         }
     }
+
+    /// Whether `x` stops it: a save is not stopped midway.
+    #[must_use]
+    pub fn stoppable(&self) -> bool {
+        !matches!(self, Self::Save(_))
+    }
 }
 
 /// A `lupin relabel --preview` rescoring the round against `edits`.
@@ -444,6 +463,9 @@ pub struct Running {
     pub job: Job,
     /// As its `@progress` lines report it.
     pub progress: JobProgress,
+    /// It ended well and the status says so; the next tick reads what it
+    /// wrote, once the screen has shown that.
+    ended: bool,
 }
 
 impl Running {
@@ -453,6 +475,7 @@ impl Running {
             started: Instant::now(),
             job,
             progress: JobProgress::default(),
+            ended: false,
         }
     }
 }
@@ -487,6 +510,8 @@ pub struct App {
     pub focus: Focus,
     pub cluster_sel: usize,
     pub gene_sel: usize,
+    /// The selected row of the candidates as listed.
+    pub cand_sel: usize,
     /// The selected row of the GO pane.
     pub go_sel: usize,
     /// Words of the selected GO term's name slid out of view (← →).
@@ -509,6 +534,10 @@ pub struct App {
     pub form: Option<Form>,
     /// The key guide is open.
     pub help_open: bool,
+    /// The guide's first line on screen, and how far it scrolls as last
+    /// drawn (0 when it fits).
+    pub help_scroll: usize,
+    pub help_scrolls: std::cell::Cell<usize>,
     pub prompt: Option<Prompt>,
     /// A choice among options (see [`super::menu`]), which takes keys.
     pub menu: Option<super::menu::Menu>,
@@ -523,9 +552,15 @@ pub struct App {
     /// The round's own scores while rescored ones are shown.
     pub recorded: Option<super::round::Scores>,
     pub status: String,
-    /// Settings changed since the round on screen was made.
-    pub stale: bool,
-    armed: Option<Armed>,
+    /// When a key last left a reply in the status: while it is recent the
+    /// running job's progress does not replace it.
+    replied: Option<Instant>,
+    /// The pass settings before the first change made since the round on
+    /// screen (see [`App::stale`]); none while unchanged.
+    settings_base: Option<Vec<String>>,
+    /// A key that asked to be pressed again, when, and the status that
+    /// asks: the question lapses after [`KEY_REPLY_HOLD`].
+    armed: Option<(Armed, Instant, String)>,
     pub quit: bool,
     /// The trajectory figures of the manifests on screen, when they have any.
     pub figures: Option<super::figure_pane::FigurePane>,
@@ -535,6 +570,9 @@ pub struct App {
     map_hint: Option<String>,
     /// The user put the tree in the cell map's place (`V`).
     map_off: bool,
+    /// The Cell Ontology on screen was opened from the cell map, which `o`
+    /// goes back to.
+    pub ontology_from_map: bool,
     /// The method the candidates are listed by (`S`); the round's own when
     /// none was chosen.
     cand_by: Option<crate::annotate::rounds::Method>,
@@ -543,6 +581,9 @@ pub struct App {
     /// The output prefix was given or confirmed; until then the first pass
     /// asks for it.
     pub out_chosen: bool,
+    /// The output prefix was given (`-o`) or typed, not only run with: it
+    /// stays when another run is opened.
+    pub out_typed: bool,
     /// How the order view runs `lupin trajectory`.
     pub trajectory: super::order::TrajectoryRun,
     /// Started as `lupin trajectory`'s TUI: only it has the order view.
@@ -555,8 +596,12 @@ pub struct App {
     after_pass: AfterPass,
     /// The terminal's picture protocol, asked for once.
     picker: Option<ratatui_image::picker::Picker>,
-    /// [`expression_note`] for a run, kept until a pass writes a new round.
-    expression_notes: Option<(PathBuf, Option<String>)>,
+    /// The frame being drawn goes out at once: the figures show as last
+    /// drawn while a new one is rasterised, so a key's reply is not held
+    /// up by drawing one anew. Off, a frame waits for its figures.
+    pub quick_frame: std::cell::Cell<bool>,
+    /// A quick frame showed a figure not yet drawn anew.
+    pub frame_behind: std::cell::Cell<bool>,
 }
 
 impl App {
@@ -578,6 +623,7 @@ impl App {
             focus: Focus::Clusters,
             cluster_sel: 0,
             gene_sel: 0,
+            cand_sel: 0,
             go_sel: 0,
             go_shift: 0,
             gene_view: GeneView::Specific,
@@ -589,6 +635,8 @@ impl App {
             tree_sel: 0,
             form: None,
             help_open: false,
+            help_scroll: 0,
+            help_scrolls: Default::default(),
             prompt: None,
             menu: None,
             log: Vec::new(),
@@ -599,7 +647,8 @@ impl App {
             scored_for: Vec::new(),
             recorded: None,
             status: "r: run a pass".into(),
-            stale: false,
+            replied: None,
+            settings_base: None,
             armed: None,
             quit: false,
             shift_enter: false,
@@ -607,16 +656,19 @@ impl App {
             cell_map: None,
             map_hint: None,
             map_off: false,
+            ontology_from_map: false,
             cand_by: None,
             cand_all: false,
             out_chosen: true,
+            out_typed: true,
             trajectory: super::order::TrajectoryRun::default(),
             trajectory_tui: false,
             want_file: None,
             browser: None,
             after_pass: AfterPass::Nothing,
             picker: None,
-            expression_notes: None,
+            quick_frame: Default::default(),
+            frame_behind: Default::default(),
             progress_hidden: false,
             failed: None,
         }
@@ -646,24 +698,43 @@ impl App {
             self.push_log(line);
         }
         self.keep_scores_current();
+        // A question asked again lapses, and the status with it unless
+        // something has said more since.
+        if let Some((_, _, asked)) = self
+            .armed
+            .take_if(|(_, at, _)| at.elapsed() >= KEY_REPLY_HOLD)
+        {
+            if self.status == asked {
+                self.status.clear();
+            }
+        }
         let Some(r) = &mut self.child else {
             return;
         };
         let (secs, job) = (r.started.elapsed().as_secs(), r.job.clone());
         match r.child.try_wait() {
-            // The progress, unless a key waits to be pressed again.
-            Ok(None) if self.armed.is_some() => {}
+            // The progress, unless a key waits to be pressed again or a
+            // key's reply is still fresh.
+            Ok(None)
+                if self.armed.is_some()
+                    || self.replied.is_some_and(|t| t.elapsed() < KEY_REPLY_HOLD) => {}
             Ok(None) => {
                 let elapsed = r.started.elapsed();
+                let stop = if job.stoppable() { " (x: stop)" } else { "" };
                 self.status = match r.progress.estimate(elapsed) {
                     Some(e) if self.progress_hidden => format!(
-                        "{} {:.0}% · {} · b shows  (x: stop)",
+                        "{} {:.0}% · {} · b shows{stop}",
                         job.name(),
                         100.0 * e.fraction,
                         crate::progress::eta_text(&e)
                     ),
-                    _ => format!("{}… {secs}s  (x: stop)", job.name()),
+                    _ => format!("{}… {secs}s{stop}", job.name()),
                 };
+            }
+            // Said first: reading the output can take a moment.
+            Ok(Some(st)) if st.success() && !r.ended => {
+                r.ended = true;
+                self.status = format!("{} done in {secs}s: reading what it wrote…", job.name());
             }
             Ok(Some(st)) if st.success() => {
                 self.child = None;
@@ -678,35 +749,78 @@ impl App {
                     AfterPass::Nothing
                 };
                 // A new pass rewrote the base round: rounds made on the old
-                // one no longer apply, and it may have cached new statistics.
+                // one no longer apply.
                 if job == Job::Pass {
-                    self.expression_notes = None;
                     if let Err(e) = crate::manifest::rounds::supersede_later(&self.target) {
                         self.push_log(format!("could not set the old rounds aside: {e:#}"));
                     }
                 }
-                let (latest, _) = chain_rounds(&self.target);
+                // A save writes the round after the one on screen; a pass,
+                // its output's.
+                let saved = match (&job, &self.round) {
+                    (Job::Save(_), Some(r)) => r.manifest.clone(),
+                    _ => self.target.clone(),
+                };
+                let (latest, _) = chain_rounds(&saved);
+                // A save's round was made with the settings of the one before
+                // it, so a change to them still waits; a pass ran with them.
+                let base = self.settings_base.take();
                 // Edits made while a save ran were not in it: carry them into
                 // the new round (a save keeps the clusters' ids).
                 let later = match job {
                     Job::Save(n) => self.edits.split_off(n.min(self.edits.len())),
                     _ => Vec::new(),
                 };
+                let by_before = self.round.as_ref().and_then(|r| r.by);
                 self.open(&latest);
+                self.settings_base = if job == Job::Pass { None } else { base };
                 if self.in_order() {
                     self.reload_order();
                 }
                 let kept = later.len();
                 self.edits = later;
+                // A marker edit's save drops SuSiE's and the score's
+                // readings, made on the old panel: the new round's call is
+                // another method's, which may flag other clusters.
+                let by_after = self.round.as_ref().and_then(|r| r.by);
+                let saved_other = |b: &crate::annotate::rounds::Method| {
+                    matches!(job, Job::Save(_)) && by_after != Some(*b)
+                };
+                let called = match by_before.filter(saved_other) {
+                    Some(before) => {
+                        let after = by_after.unwrap_or_default().name();
+                        self.push_log(format!(
+                            "the new round is called by {after}: a save does not redo {}'s call (r re-runs the pass)",
+                            before.name()
+                        ));
+                        format!(
+                            ", called by {after}: {}'s call needs a new pass (r)",
+                            before.name()
+                        )
+                    }
+                    None => String::new(),
+                };
+                // The status keeps to what to do next: the files exported
+                // are named in the log.
+                let exported = |app: &mut Self| match app.export() {
+                    Ok(_) => "labels and markers exported".to_string(),
+                    Err(e) => e,
+                };
                 let done = match job {
                     Job::Save(n) if kept > 0 => format!(
-                        "saved {n} edit(s), {kept} made since still unsaved; {}",
-                        self.export()
+                        "saved {n} edit(s){called}, {kept} made since still unsaved; {}",
+                        exported(self)
                     ),
-                    Job::Save(n) => format!("saved {n} edit(s); {}", self.export()),
+                    Job::Save(n) => format!("saved {n} edit(s){called}; {}", exported(self)),
                     _ => format!("pass done in {secs}s"),
                 };
-                self.status = format!("{done}. {}", self.status);
+                // The round's counts, as opening it says them; the header
+                // names it.
+                let counts = self.round.as_ref().map(round_counts);
+                self.status = match (&job, counts) {
+                    (Job::Save(_), Some(c)) => format!("{done}; {c}"),
+                    _ => format!("{done}. {}", self.status),
+                };
                 match after {
                     AfterPass::Run if !self.asking() => self.ask_trajectory_out(),
                     AfterPass::Run => self.status += " r in the order view runs the trajectory.",
@@ -729,6 +843,20 @@ impl App {
         }
     }
 
+    /// The job has ended and the next tick reads what it wrote: keys wait
+    /// for that.
+    #[must_use]
+    pub fn job_ended(&self) -> bool {
+        self.child.as_ref().is_some_and(|r| r.ended)
+    }
+
+    /// Whether the screen is due a redraw `since` the last one with nothing
+    /// else changed: a running job's elapsed time and ETA move on the clock.
+    #[must_use]
+    pub fn redraw_due(&self, since: Duration) -> bool {
+        self.child.is_some() && since >= Duration::from_secs(1)
+    }
+
     /// The running job for its popup: what it is and how long it has run.
     pub fn running_job(&self) -> Option<(String, std::time::Duration)> {
         let Running { started, job, .. } = self.child.as_ref()?;
@@ -744,18 +872,27 @@ impl App {
     pub fn open(&mut self, manifest: &Path) {
         match RoundView::load(manifest) {
             Ok(r) => {
-                let flagged = r.clusters.iter().filter(|c| c.flagged()).count();
-                self.status = format!(
-                    "{}: {} clusters, {flagged} to look at (]: next)",
-                    file_name(manifest),
-                    r.clusters.len()
-                );
+                self.status = format!("{}: {}", file_name(manifest), round_counts(&r));
                 self.set_round(Some(r));
             }
             Err(e) => {
                 self.status = format!("could not read {}: {e:#}", manifest.display());
                 self.push_log(format!("[WARN] {}", self.status));
             }
+        }
+    }
+
+    /// Show the round the TUI opens on: in annotate, the latest round an
+    /// earlier session left under the output; else the manifest opened,
+    /// when it is `annotated`. The trajectory TUI starts from the manifest
+    /// named, as the batch run would.
+    pub fn open_start(&mut self, annotated: bool) {
+        if self.target.is_file() && !self.trajectory_tui {
+            let (latest, _) = chain_rounds(&self.target);
+            self.open(&latest);
+        } else if annotated {
+            let opened = self.source.clone();
+            self.open(&opened);
         }
     }
 
@@ -772,7 +909,7 @@ impl App {
         self.marked.clear();
         self.tree_marked.clear();
         self.gene_sel = 0;
-        self.stale = false;
+        self.settings_base = None;
         self.cluster_sel = self.cluster_sel.min(self.n_clusters().saturating_sub(1));
         self.sync_map_focus();
     }
@@ -906,12 +1043,13 @@ impl App {
             Ok(v) => v,
             Err(_) => return self.rescore_failed("rescoring gave no readable result; see the log"),
         };
-        let scores = super::round::parse_scores(&preview);
-        let Some(scores) = scores else {
+        let rescored = super::round::parse_scores(&preview);
+        let Some(rescored) = rescored else {
             return self
                 .rescore_failed("this round cannot be rescored: marker edits are scored on save");
         };
         let Some(round) = &mut self.round else { return };
+        let scores = round.rescored(self.recorded.as_ref(), &rescored);
         let old = round.swap_scores(scores);
         // The round's own are what is kept, across several rescorings.
         if self.recorded.is_none() {
@@ -989,8 +1127,8 @@ impl App {
     }
 
     /// The method the candidates are listed by: the one chosen (`S`), else
-    /// the round's, while it ranks the selected cluster's candidates (a
-    /// rescoring ranks by the enrichment alone); else the first that does.
+    /// the round's, while it ranks the selected cluster's candidates; else
+    /// the first that does.
     pub fn cand_method(&self) -> crate::annotate::rounds::Method {
         use crate::annotate::rounds::Method;
         let ranks = |m: &Method| {
@@ -1049,6 +1187,7 @@ impl App {
     fn select_cluster(&mut self, i: usize) {
         self.cluster_sel = i;
         self.gene_sel = 0;
+        self.cand_sel = 0;
         self.go_sel = 0;
         self.go_shift = 0;
         self.marked.clear();
@@ -1179,12 +1318,13 @@ impl App {
         let label = self
             .current_label()
             .unwrap_or_else(|| UNASSIGNED_LABEL.into());
-        let reason = match c.candidates.iter().find(|t| t.label == label) {
+        let own = c.candidates.iter().find(|t| t.label == label);
+        let reason = match own {
             Some(t) => format!("keep {label} ({})", evidence(t)),
             None => format!("keep {label}"),
         };
         let id = c.id;
-        let reason = self.rescored_note(reason);
+        let reason = self.rescored_note(reason, own);
         self.prompt = Some(Prompt {
             title: format!(" K{id} keeps {label}: why? "),
             text: reason,
@@ -1216,22 +1356,10 @@ impl App {
                     Setting::Run
                 },
             ),
-            expression: self.expression_note(),
+            // Asked each time: the counts may have come or gone since.
+            expression: expression_note(&self.source),
             ..Form::default()
         });
-    }
-
-    /// Where a pass on the run gets its expression, in words, asked once per
-    /// run: the answer reads the run's family.
-    fn expression_note(&mut self) -> Option<String> {
-        match &self.expression_notes {
-            Some((run, note)) if *run == self.source => note.clone(),
-            _ => {
-                let note = expression_note(&self.source);
-                self.expression_notes = Some((self.source.clone(), note.clone()));
-                note
-            }
-        }
     }
 
     /// Close the form without running.
@@ -1374,6 +1502,31 @@ impl App {
         }
     }
 
+    /// Record a cluster's label or keep, in place of its earlier one (unless
+    /// a running save is writing that).
+    fn decide(&mut self, edit: Edit) {
+        let saving = self.saving();
+        let id = edit.cluster();
+        let mut k = 0;
+        self.edits.retain(|e| {
+            k += 1;
+            k <= saving || e.cluster() != id
+        });
+        self.edits.push(edit);
+    }
+
+    /// Whether the pass settings differ from those the round on screen was
+    /// made with (as they stood when it was shown): not while a pass runs
+    /// with them, nor once they are set back, nor with no round on screen.
+    pub fn stale(&self) -> bool {
+        !self.pass_running()
+            && self.round.is_some()
+            && self
+                .settings_base
+                .as_ref()
+                .is_some_and(|b| *b != pass_settings(&self.args))
+    }
+
     /// Whether a pass is running, which is about to replace the clusters.
     fn pass_running(&self) -> bool {
         self.child.as_ref().is_some_and(|r| r.job == Job::Pass)
@@ -1416,10 +1569,11 @@ impl App {
         }
     }
 
-    /// Write the open round's cell annotation and marker table; says where.
-    fn export(&mut self) -> String {
+    /// Write the open round's cell annotation and marker table, logging
+    /// where; says where, or why not.
+    fn export(&mut self) -> Result<String, String> {
         let Some(r) = &self.round else {
-            return "nothing to export".into();
+            return Err("nothing to export".into());
         };
         match super::export::write(r, &self.tree, self.cl.as_ref(), &self.mixed, &self.original) {
             Ok((cells, markers)) => {
@@ -1428,9 +1582,13 @@ impl App {
                     cells.display(),
                     markers.display()
                 ));
-                format!("exported {}, {}", file_name(&cells), file_name(&markers))
+                Ok(format!(
+                    "exported {}, {}",
+                    file_name(&cells),
+                    file_name(&markers)
+                ))
             }
-            Err(e) => format!("export failed: {e:#}"),
+            Err(e) => Err(format!("export failed: {e:#}")),
         }
     }
 
@@ -1477,7 +1635,7 @@ impl App {
     /// Open the label choices for the selected cluster: each method's top
     /// types ([`super::round::choices`]), then the tree and a typed name.
     fn open_choice(&mut self) {
-        use super::menu::{numbered, Choice, Menu};
+        use super::menu::{numbered_but, Choice, Menu};
         let Some(c) = self.selected() else { return };
         let options = super::round::choices(&c.candidates)
             .into_iter()
@@ -1491,16 +1649,16 @@ impl App {
                 (label, detail, action)
             })
             .collect();
-        let mut choices = numbered(options);
+        let mut choices = numbered_but(options, "tn");
         choices.extend([
             Choice {
-                key: 't',
+                key: Some('t'),
                 label: "on the tree…".into(),
                 detail: "Pick the type, or a coarser node, on the panel tree.".into(),
                 action: Action::LabelOnTree,
             },
             Choice {
-                key: 'n',
+                key: Some('n'),
                 label: "a name…".into(),
                 detail: "Type any name; it is scored once the edits are saved.".into(),
                 action: Action::LabelByName { cluster: c.id },
@@ -1578,29 +1736,61 @@ impl App {
             ),
             _ => format!("top candidate {} ({})", pick.label, evidence(&pick)),
         };
-        let reason = self.rescored_note(reason);
+        let reason = self.rescored_note(reason, Some(&pick));
         self.ask_label(pick.evidence.label, reason, None);
     }
 
-    /// `reason`, noting when the numbers it quotes are a rescoring's.
-    fn rescored_note(&self, reason: String) -> String {
-        if self.recorded.is_some() {
+    /// `reason`, noting when the numbers it quotes of candidate `t` are a
+    /// rescoring's, and which a rescoring did not redo.
+    fn rescored_note(&self, reason: String, t: Option<&super::round::Candidate>) -> String {
+        if self.recorded.is_none() {
+            return reason;
+        }
+        let old: Vec<&str> = t
+            .into_iter()
+            .flat_map(|t| {
+                [
+                    (t.pip.is_some(), "SuSiE's"),
+                    (t.score.is_some(), "the score's"),
+                ]
+            })
+            .filter_map(|(has, name)| has.then_some(name))
+            .collect();
+        if old.is_empty() {
             format!("{reason}; rescored with the marker edits")
         } else {
-            reason
+            format!(
+                "{reason}; the enrichment's rescored with the marker edits, {} from before them",
+                old.join(" and ")
+            )
         }
     }
 
     /// Label the selected cluster by tree node `i`.
     fn pick_node(&mut self, i: usize) {
         let label = self.tree.label(i).to_string();
+        let key = label_key(&label);
         let under = self.tree.labels_under(i);
-        let pooled = self.pooled(|t| under.contains(&label_key(t).as_str()));
-        let reason = if pooled.is_empty() {
+        // A panel type is the label's own evidence; the types under it pool.
+        let own = self
+            .selected()
+            .and_then(|c| c.candidates.iter().find(|t| label_key(&t.label) == key))
+            .map(evidence);
+        let pooled = self.pooled(|t| {
+            let t = label_key(t);
+            t != key && under.contains(&t.as_str())
+        });
+        let mut reason = if self.tree.nodes[i].labels.is_empty() {
             format!("{label} from the ontology")
         } else {
-            format!("{label} from the ontology, over {}", pooled.join(" + "))
+            format!("{label} on the panel tree")
         };
+        if let Some(own) = own {
+            reason += &format!(" ({own})");
+        }
+        if !pooled.is_empty() {
+            reason += &format!(", over {}", pooled.join(" + "));
+        }
         self.ask_label(label, reason, None);
     }
 
@@ -1627,11 +1817,14 @@ impl App {
         self.status = match last.map(|i| self.edits.remove(i)) {
             Some(Edit::Markers {
                 label, genes, add, ..
-            }) => format!(
-                "undid {} {} {label}'s markers",
-                if add { "adding" } else { "dropping" },
-                genes.join(", ")
-            ),
+            }) => {
+                let (did, to) = if add {
+                    ("adding", "to")
+                } else {
+                    ("dropping", "from")
+                };
+                format!("undid {did} {} {to} {label}'s markers", genes.join(", "))
+            }
             _ => "no marker edit to undo".into(),
         };
     }
@@ -1780,20 +1973,21 @@ impl App {
             };
             return;
         }
+        let folds: Vec<Option<f32>> = genes.iter().map(|g| r.fold_change(c.id, g)).collect();
         let fc: Vec<String> = genes
             .iter()
-            .map(|g| {
-                r.fold_change(c.id, g)
-                    .map_or_else(|| format!("{g} not measured"), |f| format!("{g} {f:+.1}"))
-            })
+            .zip(&folds)
+            .map(|(g, f)| f.map_or_else(|| format!("{g} not measured"), |f| format!("{g} {f:+.1}")))
             .collect();
-        let (verb, reason) = if add {
-            ("add", format!("specific to K{} ({})", c.id, fc.join(", ")))
-        } else {
-            (
-                "drop",
-                format!("not specific to K{} ({})", c.id, fc.join(", ")),
-            )
+        // Specific (or not) only as every gene's fold change says.
+        let up = |f: &Option<f32>| f.is_some_and(|f| f > 0.0);
+        let down = |f: &Option<f32>| f.is_some_and(|f| f <= 0.0);
+        let (id, fc) = (c.id, fc.join(", "));
+        let (verb, reason) = match add {
+            true if folds.iter().all(up) => ("add", format!("specific to K{id} ({fc})")),
+            true => ("add", format!("markers of {label} (in K{id}: {fc})")),
+            false if folds.iter().all(down) => ("drop", format!("not specific to K{id} ({fc})")),
+            false => ("drop", format!("not markers of {label} (in K{id}: {fc})")),
         };
         self.prompt = Some(Prompt {
             title: format!(" {verb} {} as markers of {label}: why? ", genes.join(", ")),
@@ -1848,7 +2042,7 @@ impl App {
                         remember,
                     } => {
                         // As the panel writes its types, so every pane matches it.
-                        self.edits.push(Edit::Label {
+                        self.decide(Edit::Label {
                             cluster,
                             label: label_key(&label),
                             reason,
@@ -1872,7 +2066,21 @@ impl App {
                         }
                     }
                     Pending::Keep { cluster } => {
-                        self.edits.push(Edit::Keep { cluster, reason });
+                        // Keeping a label picked here keeps that label, not
+                        // the round's.
+                        let now = self.round.as_ref().and_then(|r| {
+                            let own = &r.clusters.iter().find(|c| c.id == cluster)?.label;
+                            let now = r.label_of(cluster, &self.edits);
+                            (now != *own).then(|| now.unwrap_or_else(|| UNASSIGNED_LABEL.into()))
+                        });
+                        self.decide(match now {
+                            Some(label) => Edit::Label {
+                                cluster,
+                                label,
+                                reason,
+                            },
+                            None => Edit::Keep { cluster, reason },
+                        });
                     }
                     Pending::Hide => self.hide(&reason),
                     Pending::LabelName { cluster } => {
@@ -1987,13 +2195,22 @@ impl App {
     }
 
     pub fn key(&mut self, k: KeyEvent) {
+        // The status says what the latest key did: an older one, or a
+        // question the key has dropped (`x again`, `q again`), goes.
+        self.status.clear();
         self.key_unsynced(k);
+        self.replied = (!self.status.is_empty()).then(Instant::now);
         self.sync_map_focus();
     }
 
     fn key_unsynced(&mut self, k: KeyEvent) {
+        // Any key but a timely second press drops a question asked again.
+        let armed = self
+            .armed
+            .take()
+            .filter(|(_, at, _)| at.elapsed() < KEY_REPLY_HOLD)
+            .map(|(a, ..)| a);
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
-            let armed = self.armed.take();
             return self.request_quit(armed, "ctrl-c");
         }
         // The popups take keys from the top down, as `ui::draw_overlays`
@@ -2043,21 +2260,24 @@ impl App {
                 return;
             }
         }
+        if self.help_open {
+            // The arrows, pages and ends scroll the guide; any other key
+            // closes it.
+            if !step(&mut self.help_scroll, self.help_scrolls.get() + 1, k.code) {
+                self.help_open = false;
+            }
+            return;
+        }
         // `b` hides the running job's popup, or brings it back.
         if k.code == KeyCode::Char('b') && self.child.is_some() {
             self.progress_hidden = !self.progress_hidden;
             return;
         }
-        if self.help_open {
-            // Any key closes the guide.
-            self.help_open = false;
-            return;
-        }
         if k.code == KeyCode::Char('?') {
             self.help_open = true;
+            self.help_scroll = 0;
             return;
         }
-        let armed = self.armed.take();
         if self.form.is_some() {
             return self.settings_key(k);
         }
@@ -2065,15 +2285,14 @@ impl App {
         if k.code == KeyCode::Char('g') {
             return self.list_runs();
         }
-        // `x` stops a running job from any pane, asked twice.
+        // `x` stops a running job from any pane, asked twice; a save, which
+        // is not stopped, says so at once.
         if k.code == KeyCode::Char('x') {
-            if self.child.is_some() {
-                if armed == Some(Armed::Stop) {
-                    self.stop();
-                } else {
-                    self.armed = Some(Armed::Stop);
-                    self.status = "x again stops it".into();
-                }
+            match self.child.as_ref().map(|r| r.job.stoppable()) {
+                Some(false) => self.stop(),
+                Some(true) if armed == Some(Armed::Stop) => self.stop(),
+                Some(true) => self.ask_again(Armed::Stop, "x again stops it".into()),
+                None => {}
             }
             return;
         }
@@ -2093,7 +2312,7 @@ impl App {
             KeyCode::Char('s') => self.save(),
             KeyCode::Char('e') => {
                 self.status = if self.edits.is_empty() {
-                    self.export()
+                    self.export().unwrap_or_else(|e| e)
                 } else {
                     "save the edits first (s): the export is of a saved round".into()
                 };
@@ -2102,6 +2321,12 @@ impl App {
             KeyCode::BackTab => self.focus = self.cycle(false),
             _ => {}
         }
+    }
+
+    /// Ask for `a`'s key again with `status`, for [`KEY_REPLY_HOLD`].
+    fn ask_again(&mut self, a: Armed, status: String) {
+        self.status.clone_from(&status);
+        self.armed = Some((a, Instant::now(), status));
     }
 
     /// Quit on `key` (`q` or `ctrl-c`), asking again first while a pass runs
@@ -2115,21 +2340,21 @@ impl App {
         if matches!(busy, Some(Job::Save(_))) {
             self.status = format!("saving… {key} once it is done");
         } else if let (true, Some(job)) = (armed != Some(Armed::Quit), &busy) {
-            self.armed = Some(Armed::Quit);
-            self.status = format!(
+            let asked = format!(
                 "a {} is running{unsaved}: {key} again stops it and quits",
                 job.name()
             );
+            self.ask_again(Armed::Quit, asked);
         } else if armed == Some(Armed::Quit) || self.edits.is_empty() {
             self.stop();
             self.stop_rescoring();
             self.quit = true;
         } else {
-            self.armed = Some(Armed::Quit);
-            self.status = format!(
+            let asked = format!(
                 "{} unsaved edit(s): {key} again to quit, s to save",
                 self.edits.len()
             );
+            self.ask_again(Armed::Quit, asked);
         }
     }
 
@@ -2149,14 +2374,24 @@ impl App {
             | KeyCode::End
             | KeyCode::PageUp
             | KeyCode::PageDown => {
+                let from = form.row;
                 step(&mut form.row, rows.len(), code);
+                // Clusters from the manifest: the cursor passes over the
+                // Leiden rows, which sit between others.
+                while self.fixed_clusters && rows[form.row].leiden() {
+                    if form.row > from {
+                        form.row += 1;
+                    } else {
+                        form.row -= 1;
+                    }
+                }
             }
+            KeyCode::Left | KeyCode::Right if self.fixed_clusters && at.leiden() => {}
             KeyCode::Left | KeyCode::Right => {
-                // Stale only when the pass's arguments really changed.
-                let before = self.args.to_argv();
+                let before = pass_settings(&self.args);
                 at.adjust(&mut self.args, code == KeyCode::Right);
-                if self.args.to_argv() != before {
-                    self.stale = self.round.is_some();
+                if self.round.is_some() {
+                    self.settings_base.get_or_insert(before);
                 }
             }
             KeyCode::Enter if self.shift_enter && k.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -2173,13 +2408,14 @@ impl App {
     }
 
     fn cycle(&self, forward: bool) -> Focus {
-        use Focus::{Clusters, Genes, Go, Order, Tree};
-        // The order view's columns, left to right: clusters (genes below
-        // them), ordering, ontology.
+        use Focus::{Candidates, Clusters, Genes, Go, Order, Tree};
+        // The order view's columns, left to right: clusters (genes and
+        // candidates below them), ordering, ontology; annotate's: clusters
+        // and genes, then the tree and the candidates below it.
         let mut order = if self.in_order() {
-            vec![Clusters, Genes, Order, Tree]
+            vec![Clusters, Genes, Candidates, Order, Tree]
         } else {
-            vec![Clusters, Genes, Tree]
+            vec![Clusters, Genes, Tree, Candidates]
         };
         if self.has_go() && !self.in_order() {
             order.push(Go);
@@ -2191,6 +2427,47 @@ impl App {
         } else {
             (i + n - 1) % n
         }]
+    }
+
+    /// The keys on the selected cluster's candidates, from the clusters or
+    /// the candidates pane: a number takes that row, `S` lists them by the
+    /// next method and `a` lists all; `false` for any other key.
+    fn candidate_key(&mut self, code: KeyCode) -> bool {
+        if !matches!(code, KeyCode::Char('1'..='9' | 'S' | 'a')) {
+            return false;
+        }
+        if self.selected().is_none() {
+            self.status = "no clusters yet".into();
+            return true;
+        }
+        match code {
+            KeyCode::Char(c @ '1'..='9') => {
+                let k = c as usize - '1' as usize;
+                let n = self.listed_candidates().len();
+                if k < n {
+                    self.pick_candidate(k);
+                } else {
+                    self.status = format!("this cluster has {n} candidate(s)");
+                }
+            }
+            KeyCode::Char('S') => {
+                self.next_cand_method();
+                self.cand_sel = 0;
+            }
+            _ => {
+                self.cand_all = !self.cand_all;
+                self.cand_sel = 0;
+                self.status = if self.cand_all {
+                    "all candidates listed".into()
+                } else {
+                    format!(
+                        "the first {} candidates and each method's top",
+                        super::round::LISTED
+                    )
+                };
+            }
+        }
+        true
     }
 
     /// The focused pane's binding for `code`, if it has one: `false` leaves
@@ -2209,28 +2486,22 @@ impl App {
                 if sel != before {
                     self.select_cluster(sel);
                 }
+                // The keys that act on a cluster wait for a round.
+                let on_cluster = matches!(
+                    code,
+                    KeyCode::Char('u' | 'k' | ']')
+                        | KeyCode::Backspace
+                        | KeyCode::Delete
+                        | KeyCode::Enter
+                );
+                if on_cluster && self.selected().is_none() {
+                    self.status = "no clusters yet".into();
+                    return true;
+                }
+                if self.candidate_key(code) {
+                    return true;
+                }
                 match code {
-                    KeyCode::Char(c @ '1'..='9') => {
-                        let k = c as usize - '1' as usize;
-                        let n = self.listed_candidates().len();
-                        if k < n {
-                            self.pick_candidate(k);
-                        } else {
-                            self.status = format!("this cluster has {n} candidate(s)");
-                        }
-                    }
-                    KeyCode::Char('S') => self.next_cand_method(),
-                    KeyCode::Char('a') => {
-                        self.cand_all = !self.cand_all;
-                        self.status = if self.cand_all {
-                            "all candidates listed".into()
-                        } else {
-                            format!(
-                                "the first {} candidates and each method's top",
-                                super::round::LISTED
-                            )
-                        };
-                    }
                     KeyCode::Char('u') => self.unassign(),
                     KeyCode::Char('k') => self.keep(),
                     KeyCode::Backspace | KeyCode::Delete => self.undo(),
@@ -2297,6 +2568,19 @@ impl App {
                     }
                     KeyCode::Esc => self.focus = Focus::Clusters,
                     _ => return false,
+                }
+            }
+            Focus::Candidates => {
+                let n = self.listed_candidates().len();
+                // A save or rescoring may have left the list shorter.
+                self.cand_sel = self.cand_sel.min(n.saturating_sub(1));
+                move_in(&mut self.cand_sel, n);
+                match code {
+                    KeyCode::Enter if self.selected().is_some() => {
+                        self.pick_candidate(self.cand_sel);
+                    }
+                    KeyCode::Esc => self.focus = Focus::Clusters,
+                    _ => return self.candidate_key(code),
                 }
             }
             Focus::Go => {
@@ -2425,6 +2709,7 @@ impl App {
             format!("{label} has no Cell Ontology term: at {name}, the nearest above it (o back to the panel)")
         };
         self.tree_mode = TreeMode::Ontology(Box::new(v));
+        self.ontology_from_map = false;
     }
 
     /// Panel node `i`'s Cell Ontology term: the one it was placed on, else
@@ -2461,7 +2746,7 @@ impl App {
             }
         }
         self.reload_order();
-        self.status = "order view: space marks a type, then > states the first precedes the second, - that they are unrelated".into();
+        self.status = "order view: space marks a type, then > states the first precedes the second, u that they are unrelated".into();
     }
 
     /// The manifests whose trajectory outputs the order view shows: the
@@ -2494,7 +2779,7 @@ impl App {
             return;
         }
         if out == self.args.out.as_ref() {
-            self.out_chosen = true;
+            (self.out_chosen, self.out_typed) = (true, true);
             return;
         }
         if !self.edits.is_empty() {
@@ -2506,7 +2791,7 @@ impl App {
         }
         self.args.out = out.into();
         self.target = annotated_path(&self.source, out);
-        self.out_chosen = true;
+        (self.out_chosen, self.out_typed) = (true, true);
         if self.target.is_file() {
             let (latest, _) = chain_rounds(&self.target);
             self.open(&latest);
@@ -2655,8 +2940,20 @@ impl App {
             }
             None => "no Cell Ontology is at hand".into(),
         };
+        // Statements on types too small to be nodes order none of them.
+        let aside = match &v.set_aside[..] {
+            [] => String::new(),
+            st => format!(
+                " Set aside, naming a type below --min-cells {}: {}.",
+                v.min_cells,
+                st.iter()
+                    .map(|s| format!("{} precedes {}", s.from, s.to))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
         let question = format!(
-            "{}Nothing orders these types yet ({why}). How should the trajectory get its order?",
+            "{}Nothing orders these types yet ({why}).{aside} How should the trajectory get its order?",
             note.map_or(String::new(), |n| format!("{n}. "))
         );
         self.show(Menu::new(
@@ -2669,7 +2966,7 @@ impl App {
                 ),
                 (
                     "State the order myself".into(),
-                    "in the order table: space marks two types, > says the first precedes the second, - that they are unrelated; then r".into(),
+                    "in the order table: space marks two types, > says the first precedes the second, u that they are unrelated; then r".into(),
                     Action::StateOrder,
                 ),
                 (
@@ -2687,15 +2984,18 @@ impl App {
         ));
     }
 
-    /// The menu of types to start from, with their cell counts.
+    /// The menu of types to start from, with their cell counts: the nodes
+    /// of the run's prior, as a root below `--min-cells` makes the run fail.
     fn ask_root_type(&mut self) {
         let TreeMode::Order(v) = &self.tree_mode else {
             return;
         };
-        let items = v
-            .types
+        let (nodes, small): (Vec<usize>, Vec<usize>) =
+            (0..v.types.len()).partition(|&i| v.is_node[i]);
+        let items = nodes
             .iter()
-            .map(|(t, n)| {
+            .map(|&i| {
+                let (t, n) = &v.types[i];
                 (
                     t.clone(),
                     format!("start from {t} ({n} cells), kept for later runs"),
@@ -2703,12 +3003,27 @@ impl App {
                 )
             })
             .collect();
+        const NAMED: usize = 8;
+        let small: Vec<&str> = small.iter().map(|&i| v.types[i].0.as_str()).collect();
+        let left_out = match small.len() {
+            0 => String::new(),
+            n => format!(
+                " Left out, below --min-cells {}: {}{}.",
+                v.min_cells,
+                small[..n.min(NAMED)].join(", "),
+                if n > NAMED {
+                    format!(" and {} more", n - NAMED)
+                } else {
+                    String::new()
+                }
+            ),
+        };
         let mut menu = Menu::new(
-            "Which type does the trajectory start from?",
+            format!("Which type does the trajectory start from?{left_out}"),
             numbered(items),
             NOT_STARTED,
         );
-        menu.sel = v.sel.min(menu.choices.len().saturating_sub(1));
+        menu.sel = nodes.iter().position(|&i| i >= v.sel).unwrap_or(0);
         self.show(menu);
     }
 
@@ -2726,7 +3041,7 @@ impl App {
                 if let Some(f) = &mut self.figures {
                     f.shown = false;
                 }
-                self.status = "space marks two types, > says the first precedes the second, - that they are unrelated; then r runs".into();
+                self.status = "space marks two types, > says the first precedes the second, u that they are unrelated; then r runs".into();
             }
             Action::PriorFile => self.want_file = Some(FileWant::Prior),
             Action::LabelCl => self.want_file = Some(FileWant::LabelCl),
@@ -2764,9 +3079,13 @@ impl App {
         }
     }
 
-    /// The manifest on screen: the round shown, else the run passes start
-    /// from.
+    /// The manifest on screen: the trajectory whose figures the trajectory
+    /// TUI shows (a run made here, until another run is opened), else the
+    /// round shown, else the run passes start from.
     pub(super) fn shown_manifest(&self) -> PathBuf {
+        if let Some(f) = self.figures.as_ref().filter(|_| self.trajectory_tui) {
+            return f.data.manifest.clone();
+        }
         self.round
             .as_ref()
             .map_or_else(|| self.source.clone(), |r| r.manifest.clone())
@@ -2800,7 +3119,12 @@ impl App {
                     m.holds,
                     super::gallery::ago(m.modified, now)
                 );
-                let detail = m.pick.kind.detail(self.trajectory_tui).to_string();
+                let mut detail = m.pick.kind.detail(self.trajectory_tui).to_string();
+                if let Some(of) = m.borrowed.as_ref().filter(|_| self.trajectory_tui) {
+                    detail += &format!(
+                        "; it carries {of}'s trajectory, on its labels: r runs one for this round"
+                    );
+                }
                 let action = Action::OpenRun {
                     pick: m.pick,
                     drop_edits: false,
@@ -2850,27 +3174,41 @@ impl App {
                 "kept the run on screen (s saves the edits)",
             ));
         }
+        // The round shown was made with the settings as they stood before
+        // any change: a change made since still waits for a pass.
+        let base = self.settings_base.take();
         if pick.labelled {
             self.open(path);
         } else {
             self.set_round(None);
         }
+        self.settings_base = base;
         if !crate::manifest::run::same_file(path, &self.source) {
             let (source, out) = pass_origin(path);
             self.source = source;
-            if !self.out_chosen {
+            // The form's Leiden rows follow the new source: fixed when it
+            // names its own clusters.
+            match crate::manifest::run::load(&self.source.to_string_lossy()) {
+                Ok(l) => self.fixed_clusters = l.manifest.cluster.clusters.is_some(),
+                Err(e) => self.push_log(format!("[WARN] {e:#}")),
+            }
+            // A pass run on the old run chose its output for that run only.
+            if !self.out_typed {
                 self.args.out = out.into_boxed_str();
+                self.out_chosen = false;
             }
             self.args.from = Some(self.source.to_string_lossy().into());
             self.target = annotated_path(&self.source, &self.args.out);
         }
         // Only `lupin trajectory`'s TUI shows a trajectory's figures.
+        // Another run's figures (and the edges read from them) never stay.
         let trajectory = pick.kind == Kind::Trajectory && self.trajectory_tui;
+        let shown = self.figures.take().is_none_or(|f| f.shown);
         if trajectory {
             let picker = self.picker().clone();
             match super::figure_pane::FigurePane::load(&[path], &picker) {
                 Ok(Some(mut v)) => {
-                    v.shown = self.figures.as_ref().is_none_or(|f| f.shown);
+                    v.shown = shown;
                     self.figures = Some(v);
                 }
                 Ok(None) => {}
@@ -3057,7 +3395,14 @@ impl App {
     /// annotation form, which stays open to run).
     pub fn set_markers(&mut self, path: Option<&Path>) {
         let Some(path) = path else {
-            self.status = "no marker panel picked".into();
+            self.status = if self.args.markers.is_empty() {
+                "no marker panel picked".into()
+            } else {
+                format!(
+                    "kept the marker panel {}",
+                    file_name(Path::new(self.args.markers.as_ref()))
+                )
+            };
             return;
         };
         let p = path.to_string_lossy();
@@ -3074,6 +3419,7 @@ impl App {
                 self.args.markers = p.into();
                 if let Some(f) = &mut self.form {
                     f.note = None;
+                    f.confirm = false;
                     f.row = setting_row(&self.args, Setting::Run);
                 }
             }
@@ -3087,6 +3433,9 @@ impl App {
         match path {
             Some(p) => {
                 self.trajectory.labels = Some(p.to_string_lossy().into_owned());
+                if self.in_order() {
+                    self.reload_order();
+                }
                 self.ask_trajectory_out();
             }
             None => self.status = "no labels file picked".into(),
@@ -3116,7 +3465,12 @@ impl App {
         if self.in_order() {
             self.reload_order();
         }
-        self.status = format!("trajectory done in {secs}s: {}", manifest.display());
+        // The header names the manifest whose figures are up.
+        self.status = if self.figures.is_some() && self.trajectory_tui {
+            format!("trajectory done in {secs}s: its figures (g lists the runs)")
+        } else {
+            format!("trajectory done in {secs}s: {}", file_name(manifest))
+        };
     }
 
     /// The labels on screen with their cell counts: the round's labels, else
@@ -3129,7 +3483,8 @@ impl App {
                 .filter(|(l, _)| l != UNASSIGNED_LABEL)
                 .collect(),
             // No round yet (`lupin trajectory`): the trajectory run's
-            // types with their cells, else the panel's types.
+            // types with their cells, else the labels file's, else the
+            // panel's types.
             None => match &self.figures {
                 Some(f) => {
                     let mut n: std::collections::BTreeMap<String, usize> = Default::default();
@@ -3140,9 +3495,33 @@ impl App {
                         .filter(|(l, _)| l != UNASSIGNED_LABEL)
                         .collect()
                 }
-                None => self.original.keys().map(|k| (k.clone(), 0)).collect(),
+                None => match self.labels_file_types() {
+                    Some(types) => types,
+                    None => self.original.keys().map(|k| (k.clone(), 0)).collect(),
+                },
             },
         }
+    }
+
+    /// The trajectory's labels file's types with their cells.
+    fn labels_file_types(&self) -> Option<Vec<(String, usize)>> {
+        let path = self.trajectory.labels.as_deref()?;
+        let labels = match crate::cell_labels::read_cell_labels(path) {
+            Ok(l) => l,
+            Err(e) => {
+                log::warn!("the labels file: {e:#}");
+                return None;
+            }
+        };
+        let mut n: std::collections::BTreeMap<String, usize> = Default::default();
+        for (_, t) in labels.iter() {
+            *n.entry(t.to_string()).or_default() += 1;
+        }
+        Some(
+            n.into_iter()
+                .filter(|(l, _)| l != UNASSIGNED_LABEL)
+                .collect(),
+        )
     }
 
     /// (Re)build the order view from the labels on screen and the data files.
@@ -3177,6 +3556,7 @@ impl App {
             self.cl.as_ref(),
             &self.data_search,
             edges,
+            self.trajectory.min_cells(),
         );
         v.sel = sel.min(v.types.len().saturating_sub(1));
         if let Some(e) = &v.error {
@@ -3237,7 +3617,7 @@ impl App {
             }
             (KeyCode::Char('o'), at) => {
                 let term = at.and_then(|i| v.tree.nodes[i].cl_id.clone());
-                let view = self.ontology_at(term);
+                let view = self.ontology_on(term);
                 if let TreeMode::Order(v) = &mut self.tree_mode {
                     v.ontology = view;
                 }
@@ -3283,7 +3663,7 @@ impl App {
         }
     }
 
-    /// Keys of the order view: move, `>` / `-` on two marked types (the
+    /// Keys of the order view: move, `>` / `u` on two marked types (the
     /// figure pane's keys come first, in `pane_key`).
     fn order_key(&mut self, code: KeyCode) -> bool {
         let shown = self.figures_shown();
@@ -3300,7 +3680,13 @@ impl App {
                 return true;
             }
             KeyCode::Char('>') => Relation::Precedes,
-            KeyCode::Char('-') => Relation::Unrelated,
+            KeyCode::Char('u') => Relation::Unrelated,
+            // `+` and `-` zoom the figures (taken above when shown), as on
+            // the cell map.
+            KeyCode::Char('+' | '=' | '-' | '_') => {
+                self.status = "+ - zoom the figures (v shows them) · u unrelated".into();
+                return true;
+            }
             KeyCode::Esc => {
                 self.focus = Focus::Clusters;
                 return true;
@@ -3312,7 +3698,7 @@ impl App {
             return true;
         }
         if self.tree_marked.len() != 2 {
-            self.status = "mark exactly two types with space, in order, then > or -".into();
+            self.status = "mark exactly two types with space, in order, then > or u".into();
             return true;
         }
         let (from, to) = (self.tree_marked[0].clone(), self.tree_marked[1].clone());
@@ -3401,9 +3787,15 @@ impl App {
     /// the ontology opening on the selected node's term, else the cluster's.
     fn toggle_ontology(&mut self) {
         if matches!(self.tree_mode, TreeMode::Ontology(_)) {
-            self.tree_mode = TreeMode::Panel;
+            let map = std::mem::take(&mut self.ontology_from_map) && self.cell_map.is_some();
+            self.tree_mode = if map {
+                TreeMode::Cells
+            } else {
+                TreeMode::Panel
+            };
             return;
         }
+        let from_map = matches!(self.tree_mode, TreeMode::Cells);
         let from_node = self
             .tree
             .visible()
@@ -3413,8 +3805,9 @@ impl App {
             .cl
             .as_ref()
             .and_then(|cl| super::ontology::term_of(cl, &self.tree, &self.label_or_top()?));
-        if let Some(v) = self.ontology_at(from_node.or(from_cluster)) {
+        if let Some(v) = self.ontology_on(from_node.or(from_cluster)) {
             self.tree_mode = TreeMode::Ontology(Box::new(v));
+            self.ontology_from_map = from_map;
         }
     }
 
@@ -3431,6 +3824,16 @@ impl App {
         let data = self.ontology_data();
         let cl = self.cl.as_ref()?;
         Some(super::ontology::OntologyView::in_data(cl, data, &focus))
+    }
+
+    /// [`Self::ontology_at`] with the cursor on `term` (`o`): a term the
+    /// data's tree does not list opens the whole ontology around it.
+    fn ontology_on(&mut self, term: Option<String>) -> Option<super::ontology::OntologyView> {
+        let mut v = self.ontology_at(term.clone())?;
+        if let (Some(id), Some(cl)) = (term.filter(|id| v.focus == *id), &self.cl) {
+            v.select(cl, &id);
+        }
+        Some(v)
     }
 
     /// The types in the data by the Cell Ontology term each sits on, with
@@ -3560,6 +3963,31 @@ impl Drop for App {
         }
         self.stop_rescoring();
     }
+}
+
+/// A round's clusters and how many need a look, as the status says them.
+fn round_counts(r: &RoundView) -> String {
+    let flagged = r.clusters.iter().filter(|c| c.flagged()).count();
+    format!(
+        "{} clusters, {flagged} to look at (]: next)",
+        r.clusters.len()
+    )
+}
+
+/// A pass's arguments but its run and output, which are what it reads and
+/// where it writes, not how.
+fn pass_settings(args: &AnnotateCliArgs) -> Vec<String> {
+    let argv = args.to_argv();
+    let mut kept = Vec::with_capacity(argv.len());
+    let mut it = argv.into_iter();
+    while let Some(a) = it.next() {
+        if a == "--out" || a == "--from" {
+            it.next();
+        } else {
+            kept.push(a);
+        }
+    }
+    kept
 }
 
 /// The status line when a trajectory menu is closed without a choice.

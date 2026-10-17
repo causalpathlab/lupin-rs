@@ -560,3 +560,31 @@ name: innate lymphoid cell
         "a name starting with it, then a name with it, then a synonym"
     );
 }
+
+#[test]
+fn a_label_is_placed_on_its_own_term_else_its_groups() {
+    let tree = TypeTree {
+        source: TreeSource::CellOntology,
+        release: None,
+        label_cl: [("CT1".to_string(), "CL:9000001".to_string())].into(),
+        groups: vec![TypeGroup {
+            name: "group_a".into(),
+            cl_id: Some("CL:9000009".into()),
+            members: vec!["CT1".into(), "CT2".into()],
+        }],
+    };
+    let at = |l: &str| tree.placement(l).map(|p| (p.id, p.name, p.via));
+    assert_eq!(
+        at("CT1"),
+        Some(("CL:9000001".into(), "CT1".into(), Via::Label))
+    );
+    assert_eq!(
+        at("CT2"),
+        Some(("CL:9000009".into(), "group_a".into(), Via::Group))
+    );
+    assert_eq!(
+        at("group_a"),
+        Some(("CL:9000009".into(), "group_a".into(), Via::Group))
+    );
+    assert_eq!(at("CT9"), None);
+}

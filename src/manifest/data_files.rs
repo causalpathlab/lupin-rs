@@ -595,40 +595,8 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
                 .map(|f| super::run::load(f).map(|l| l.dir))
                 .transpose()?;
             let search = SearchPath::new(run_dir.as_deref());
-            let show = |label: &str, dir: Option<PathBuf>| {
-                let dir = dir.map_or_else(|| "-".to_string(), |d| d.display().to_string());
-                println!("{label:<9} {dir}");
-            };
-            show("install", search.install.clone());
-            show("source", search.source.clone());
-            show("cache", search.cache.clone());
-            show("user", search.user.clone());
-            show("project", search.project.clone());
-            println!();
-            let gafs = [Species::Human, Species::Mouse].map(Species::gaf_file);
-            println!(
-                "aliases   the shared {ALIASES} (downloaded), then the panel's sidecar (x.tsv.gz → x.cl.tsv), then user and project {ALIASES}, then --label-cl"
-            );
-            for p in search.alias_layers(false) {
-                println!("  {}", p.display());
-            }
-            for name in [RULES, ONTOLOGY, GO_ONTOLOGY].into_iter().chain(gafs) {
-                let found = search.layers(name, false);
-                println!("{name}:");
-                if found.is_empty() {
-                    println!(
-                        "  (none; `lupin data fetch`{})",
-                        match name {
-                            ONTOLOGY => " or --obo",
-                            GO_ONTOLOGY => " or --go-obo",
-                            _ if is_external(name) => " or --gaf",
-                            _ => "",
-                        }
-                    );
-                }
-                for p in found {
-                    println!("  {}", p.display());
-                }
+            for line in where_report(&search) {
+                println!("{line}");
             }
             Ok(())
         }
@@ -664,6 +632,56 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `lupin data where`: the search path and the files each layer contributes.
+fn where_report(search: &SearchPath) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut show = |label: &str, dir: Option<PathBuf>| {
+        let dir = dir.map_or_else(|| "-".to_string(), |d| d.display().to_string());
+        out.push(format!("{label:<9} {dir}"));
+    };
+    show("install", search.install.clone());
+    show("source", search.source.clone());
+    show("cache", search.cache.clone());
+    show("user", search.user.clone());
+    show("project", search.project.clone());
+    out.push(String::new());
+    let gafs = [Species::Human, Species::Mouse].map(Species::gaf_file);
+    out.push(format!(
+        "aliases   the shared {ALIASES} (downloaded), then the panel's sidecar (x.tsv.gz → x.cl.tsv), then user and project {ALIASES}, then --label-cl"
+    ));
+    for p in search.alias_layers(false) {
+        out.push(format!("  {}", p.display()));
+    }
+    for name in [RULES, ONTOLOGY, GO_ONTOLOGY].into_iter().chain(gafs) {
+        let found = search.layers(name, false);
+        out.push(format!("{name}:"));
+        if found.is_empty() {
+            out.push(format!(
+                "  (none; `lupin data fetch`{})",
+                match name {
+                    ONTOLOGY => " or --obo",
+                    GO_ONTOLOGY => " or --go-obo",
+                    _ if is_external(name) => " or --gaf",
+                    _ => "",
+                }
+            ));
+        }
+        for p in found {
+            out.push(format!("  {}", p.display()));
+        }
+    }
+    // The order statements `lupin trajectory` and the order view read.
+    out.push(format!("{PRECEDENCE}: the user's, then the project's"));
+    let found = search.user_and_project_files(PRECEDENCE);
+    if found.is_empty() {
+        out.push("  (none; the order view writes the project's)".into());
+    }
+    for (_, p) in found {
+        out.push(format!("  {}", p.display()));
+    }
+    out
 }
 
 #[cfg(test)]

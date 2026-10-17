@@ -141,6 +141,11 @@ impl Gallery {
         Self::open(Path::new(DIR))
     }
 
+    /// The directory the log is in.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     fn reload(&mut self) {
         let fresh = Self::open(&self.dir);
         self.entries = fresh.entries;

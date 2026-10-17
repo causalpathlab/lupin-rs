@@ -181,11 +181,12 @@ pub fn estimate(r: &Report, at: Duration, now: Duration) -> Estimate {
     }
 }
 
-/// `ETA 1m10s`, `ETA 40s+` past a stage's share, or `estimating…`.
+/// `ETA 1m10s`, `estimating…`, or no ETA past a stage's share: its end is
+/// unknown, and the later stages' time alone reads as nearly done.
 pub fn eta_text(e: &Estimate) -> String {
     match e.left {
         None => "estimating…".into(),
-        Some(d) if e.over => format!("ETA {}+ (this stage is slower)", duration_text(d)),
+        Some(_) if e.over => "no ETA: this stage runs past its estimate".into(),
         Some(d) => format!("ETA {}", duration_text(d)),
     }
 }
@@ -305,7 +306,7 @@ mod tests {
         }
         assert_eq!(
             eta_text(&estimate(&r, at, s(30))),
-            "ETA 8s+ (this stage is slower)"
+            "no ETA: this stage runs past its estimate"
         );
         assert_eq!(eta_text(&estimate(&r, at, s(8))), "ETA 12s");
         assert_eq!(duration_text(s(45)), "45s");

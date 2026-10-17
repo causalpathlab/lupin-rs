@@ -8,7 +8,7 @@ use crate::annotate::markers::label_key;
 use enrichment::UNASSIGNED_LABEL;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, BorderType, Borders, Cell, Clear, LineGauge, Paragraph, Row, Table, TableState, Wrap,
 };
@@ -47,8 +47,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     };
     let [clusters, genes] =
         Layout::vertical([Constraint::Min(8), Constraint::Length(16)]).areas(left);
-    let [tree, candidates] =
-        Layout::vertical([Constraint::Min(8), Constraint::Length(12)]).areas(right);
+    let [tree, candidates] = Layout::vertical([
+        Constraint::Min(8),
+        Constraint::Length(candidates_height(app, right.height.saturating_sub(8))),
+    ])
+    .areas(right);
 
     draw_header(f, header, app);
     draw_clusters(f, clusters, app);
@@ -60,7 +63,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     draw_summary(f, summary, app);
     draw_log(f, log, app);
-    f.render_widget(Paragraph::new(help(app)).dim(), keys);
+    f.render_widget(
+        Paragraph::new(help_in(app, usize::from(keys.width))).dim(),
+        keys,
+    );
     draw_overlays(f, app, f.area());
 }
 
@@ -73,7 +79,7 @@ fn draw_overlays(f: &mut Frame, app: &App, menu_area: Rect) {
         draw_settings(f, app, form);
     }
     if app.help_open {
-        draw_guide(f, app.trajectory_tui);
+        draw_guide(f, app);
     }
     draw_progress(f, app);
     if app.prompt.is_some() {
@@ -98,7 +104,7 @@ fn draw_browser(f: &mut Frame, b: &super::picker::Picker) {
         over.width.saturating_sub(4).min(100),
         over.height.saturating_sub(4).min(30),
     );
-    let (hint, note) = b.hint("esc cancel");
+    let (hint, note) = b.hint("esc/q cancel");
     let hint = Line::from(hint);
     let hint = if note {
         hint.fg(Color::LightYellow)
@@ -115,11 +121,24 @@ fn draw_browser(f: &mut Frame, b: &super::picker::Picker) {
         Constraint::Min(1),
     ])
     .areas(inner);
+    // A long folder keeps its end, where its own name is.
+    let path = b.dir().display().to_string();
     f.render_widget(
-        Paragraph::new(b.dir().display().to_string()).style(POPUP.fg(Color::Indexed(245))),
+        Paragraph::new(tail(&path, dir.width as usize)).style(POPUP.fg(Color::Indexed(245))),
         dir,
     );
     b.draw_list(f, list);
+}
+
+/// `text` in `width` columns: its end, after `…`, when it is longer.
+fn tail(text: &str, width: usize) -> String {
+    let n = text.chars().count();
+    if n <= width {
+        return text.to_string();
+    }
+    let keep = width.saturating_sub(1);
+    let rest: String = text.chars().skip(n - keep).collect();
+    format!("…{rest}")
 }
 
 /// The trajectory's order view: the clusters on the left, the ordering (or
@@ -147,7 +166,7 @@ fn draw_order_screen(f: &mut Frame, app: &App, [header, body, summary, log, keys
     let [clusters, genes, candidates] = Layout::vertical([
         Constraint::Min(8),
         Constraint::Length(12),
-        Constraint::Length(10),
+        Constraint::Length(candidates_height(app, left.height.saturating_sub(20))),
     ])
     .areas(left);
     draw_header(f, header, app);
@@ -164,7 +183,10 @@ fn draw_order_screen(f: &mut Frame, app: &App, [header, body, summary, log, keys
     draw_candidates(f, candidates, app);
     draw_summary(f, summary, app);
     draw_log(f, log, app);
-    f.render_widget(Paragraph::new(help(app)).dim(), keys);
+    f.render_widget(
+        Paragraph::new(help_in(app, usize::from(keys.width))).dim(),
+        keys,
+    );
     // A choice leaves the ordering and the ontology in sight: it opens over
     // the clusters.
     draw_overlays(f, app, left);
@@ -194,7 +216,7 @@ fn draw_failed(f: &mut Frame, app: &App) {
 }
 
 /// The running job's popup: what it is, its stage, a bar, the time so far
-/// and left, and its latest log line.
+/// and left, and its latest log line over the two rows below.
 fn draw_progress(f: &mut Frame, app: &App) {
     if app.progress_hidden || app.failed.is_some() {
         return;
@@ -206,11 +228,24 @@ fn draw_progress(f: &mut Frame, app: &App) {
     let Some(p) = app.child.as_ref().map(|r| &r.progress) else {
         return;
     };
-    let block = popup(format!(" {what} "), " x stop · b hide ");
+    let stoppable = app.child.as_ref().is_some_and(|r| r.job.stoppable());
+    let hint = if stoppable {
+        " x stop · b hide "
+    } else {
+        " b hide "
+    };
+    let block = popup(format!(" {what} "), hint);
     let inner = block.inner(area);
     f.render_widget(Clear, area);
     f.render_widget(block, area);
-    let [stage, bar, times, _, last] = Layout::vertical([Constraint::Length(1); 5]).areas(inner);
+    let [stage, bar, times, _, last] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .areas(inner);
     let stage_text = match &p.report {
         Some(r) if !r.stage.is_empty() => r.stage.as_str(),
         _ => "starting…",
@@ -245,59 +280,254 @@ fn draw_progress(f: &mut Frame, app: &App) {
         Some((_, m)) => m.trim_start(),
         None => latest,
     };
-    let tail: String = msg.chars().take(last.width as usize).collect();
+    // Wrapped between words over the rows left, cut only past them.
+    let lines: Vec<Line> = wrap(
+        msg,
+        usize::from(last.width.max(1)),
+        usize::from(last.height),
+    )
+    .into_iter()
+    .map(Line::from)
+    .collect();
     f.render_widget(
-        Paragraph::new(tail).style(POPUP.fg(Color::Indexed(245))),
+        Paragraph::new(lines).style(POPUP.fg(Color::Indexed(245))),
         last,
     );
 }
 
-/// The bottom line: where the key guide is, and the pane's main keys.
+/// The bottom line: where the key guide is, and the pane's keys, whole.
+#[cfg(test)]
 pub(super) fn help(app: &App) -> String {
-    let keys = pane_keys(app);
-    // Only `lupin trajectory`'s TUI has the order view.
-    if app.trajectory_tui && app.focus == Focus::Tree && !app.in_order() {
-        format!("{keys} · t order")
-    } else {
-        keys.to_string()
-    }
+    help_in(app, usize::MAX)
 }
 
-/// The focused pane's main keys.
-fn pane_keys(app: &App) -> &'static str {
+/// The bottom line in `width` columns: the pane's keys, most used first,
+/// as many as fit whole; `? more` ends it when some are left out (the
+/// guide has them all).
+pub(super) fn help_in(app: &App, width: usize) -> String {
+    let keys = key_line(app);
+    let all = format!(" ? keys · {}", keys.join(" · "));
+    if Line::from(all.as_str()).width() <= width {
+        return all;
+    }
+    // Each key with its separator, and `? more` after the last that fits.
+    let mut line = String::new();
+    for k in keys {
+        let next = format!("{line} {k} ·");
+        if Line::from(format!("{next} ? more")).width() > width {
+            break;
+        }
+        line = next;
+    }
+    format!("{line} ? more")
+}
+
+/// The focused pane's keys, most used first: on the trajectory's tree pane
+/// the way to the order view among the first (on the cell map `t` restyles
+/// the labels and `T` leaves for the order).
+fn key_line(app: &App) -> Vec<&'static str> {
+    let mut keys = pane_keys(app).to_vec();
+    if app.trajectory_tui && app.focus == Focus::Tree && !app.in_order() {
+        let order = if matches!(app.tree_mode, TreeMode::Cells) {
+            "T order"
+        } else {
+            "t order"
+        };
+        keys.insert(keys.len().min(2), order);
+    }
+    keys
+}
+
+/// The focused pane's keys, most used first.
+fn pane_keys(app: &App) -> &'static [&'static str] {
+    // The thumbnail grid takes its own keys over the figure's.
+    let grid = |pane: &Option<super::figure_pane::FigurePane>| {
+        pane.as_ref().is_some_and(|v| v.shown && v.grid.is_some())
+    };
     match app.focus {
-        Focus::Clusters if app.in_order() => {
-            " ? keys · ↑↓ cluster · 1-9 take · ⏎ choices · S sort · a all · k keep · ] next flagged · A annotate · g runs · r run · tab pane · q quit"
-        }
-        Focus::Clusters => {
-            " ? keys · ↑↓ cluster · 1-9 take · ⏎ choices · S sort · a all · k keep · ] next flagged · A annotate · g runs · tab pane · s save · q quit"
-        }
-        Focus::Genes => {
-            " ? keys · ↑↓ gene · a add · A add to a type · d drop · h hide · H hidden · m view · tab pane"
-        }
+        Focus::Order if app.in_order() && grid(&app.figures) => &[
+            "←↑→↓ choose",
+            "⏎ open",
+            "1-9 open",
+            "p export",
+            "t c restyle",
+            "V table",
+            "esc w close",
+        ],
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Cells) && grid(&app.cell_map) => &[
+            "←↑→↓ choose",
+            "⏎ open",
+            "1-9 open",
+            "p export",
+            "t c restyle",
+            "V tree",
+            "esc w close",
+        ],
+        Focus::Clusters if app.in_order() => &[
+            "↑↓ cluster",
+            "1-9 take",
+            "⏎ choices",
+            "k keep",
+            "u unassign",
+            "⌫ undo",
+            "] next flagged",
+            "S sort",
+            "a all",
+            "r run",
+            "A annotate",
+            "g runs",
+            "tab pane",
+            "s save",
+            "q quit",
+        ],
+        Focus::Clusters => &[
+            "↑↓ cluster",
+            "1-9 take",
+            "⏎ choices",
+            "k keep",
+            "u unassign",
+            "⌫ undo",
+            "] next flagged",
+            "S sort",
+            "a all",
+            "r form",
+            "g runs",
+            "tab pane",
+            "s save",
+            "q quit",
+        ],
+        Focus::Genes => &[
+            "↑↓ gene",
+            "space mark",
+            "a add",
+            "A add to a type",
+            "d drop",
+            "⌫ undo marker",
+            "h hide",
+            "X hide by pattern",
+            "H hidden",
+            "m view",
+            "tab pane",
+            "esc clusters",
+        ],
         Focus::Tree if app.in_order() => {
             if matches!(&app.tree_mode, TreeMode::Order(v) if v.ontology.is_some()) {
-                " ? keys · ↑↓ term · → children · ← parents · h hide / show unmatched below · d in the data / all · / search · o the run's types · T tree · tab clusters"
+                &[
+                    "↑↓ term",
+                    "→ children",
+                    "← parents",
+                    "h hide / show unmatched below",
+                    "d in the data / all",
+                    "/ search",
+                    "o the run's types",
+                    "T tree",
+                    "tab clusters",
+                    "esc clusters",
+                ]
             } else {
-                " ? keys · ↑↓ type on the ontology · ← → fold · space mark · o full ontology · T tree · tab clusters"
+                &[
+                    "↑↓ type on the ontology",
+                    "← → fold",
+                    "space mark",
+                    "o full ontology",
+                    "T tree",
+                    "tab clusters",
+                    "esc clusters",
+                ]
             }
         }
-        Focus::Order if app.figures_shown() => {
-            " ? keys · v next · w all · V table · t c m labels colour layout · , . [ ] axes · +-0 zoom · ←↑→↓ pan · p export · f exports · r run · esc clusters"
+        Focus::Order if app.figures_shown() => &[
+            "v next",
+            "w all",
+            "V table",
+            "t c m labels colour layout",
+            ", . [ ] axes",
+            "+-0 zoom",
+            "←↑→↓ pan",
+            "p export",
+            "f exports",
+            "r run",
+            "esc clusters",
+        ],
+        Focus::Order => &[
+            "↑↓ type",
+            "space mark",
+            "> precedes",
+            "u unrelated",
+            "r run",
+            "v figures",
+            "tab ontology",
+            "T tree",
+            "esc clusters",
+        ],
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Cells) => &[
+            "c colour",
+            "t labels",
+            "m layout",
+            "+-0 zoom",
+            "←↑→↓ pan",
+            "o ontology",
+            "w all",
+            "p export",
+            "f exports",
+            "V tree",
+            "esc clusters",
+            "the selected cluster lit",
+        ],
+        // `o` goes back to where the ontology was opened from.
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Ontology(_)) && app.ontology_from_map => {
+            &[
+                "↑↓ term",
+                "enter label",
+                "space mark",
+                "+ mixed label",
+                "→ children",
+                "← parents",
+                "h hide / show unmatched below",
+                "d in the data / all",
+                "/ search",
+                "o back to the cells",
+                "esc clusters",
+            ]
         }
-        Focus::Order => {
-            " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab ontology · T tree"
-        }
-        Focus::Tree if matches!(app.tree_mode, TreeMode::Cells) => {
-            " ? keys · the selected cluster lit · c colour · t labels · m layout · +-0 zoom · ←↑→↓ pan · w all · p export · f exports · V tree"
-        }
-        Focus::Tree if matches!(app.tree_mode, TreeMode::Ontology(_)) => {
-            " ? keys · ↑↓ term · enter label · space mark · + mixed label · → children · ← parents · h hide / show unmatched below · d in the data / all · / search · o panel"
-        }
-        Focus::Tree => {
-            " ? keys · ↑↓ node · enter label · space mark · + mixed label · → into the ontology · o ontology · / search · v cells"
-        }
-        Focus::Go => " ? keys · ↑↓ term · ← → read a long name · tab pane · esc clusters",
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Ontology(_)) => &[
+            "↑↓ term",
+            "enter label",
+            "space mark",
+            "+ mixed label",
+            "→ children",
+            "← parents",
+            "h hide / show unmatched below",
+            "d in the data / all",
+            "/ search",
+            "o panel",
+            "esc clusters",
+        ],
+        Focus::Tree => &[
+            "↑↓ node",
+            "enter label",
+            "space mark",
+            "+ mixed label",
+            "→ into the ontology",
+            "o ontology",
+            "/ search",
+            "v cells",
+            "esc clusters",
+        ],
+        Focus::Go => &[
+            "↑↓ term",
+            "← → read a long name",
+            "tab pane",
+            "esc clusters",
+        ],
+        Focus::Candidates => &[
+            "↑↓ candidate",
+            "⏎ or 1-9 take",
+            "S sort",
+            "a all",
+            "tab pane",
+            "esc clusters",
+        ],
     }
 }
 
@@ -311,20 +541,20 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
     (
         "anywhere",
         &[
-            ("?", "this guide (any key closes it)"),
+            ("?", "this guide (↑↓, pgup/dn and home/end scroll it, any other key closes it)"),
             (
                 "tab / shift-tab",
-                "next / previous pane: clusters → genes → tree → GO terms (when scored)",
+                "next / previous pane: clusters → genes → tree → candidates → GO terms (when scored)",
             ),
             ("pgup/dn home/end", "a page / to either end of the pane's list"),
             ("r", "the annotation form (marker panel, output, settings; ▶ run or shift+enter runs the pass)"),
             ("g", "the run's family: the run, its annotated rounds and its trajectories; pick one to show it"),
-            ("x", "while a job runs: stop it (asks again), from any pane"),
+            ("x", "while a job runs: stop it (asks again), from any pane; a save runs to its end"),
             ("b", "while a job runs: hide or show its progress popup"),
             ("esc", "back to the clusters from any other pane; closes a prompt, menu, form, the grid or the exports strip first"),
             ("s", "save the edits as the next round, and export"),
             ("e", "export the open round"),
-            ("q / ctrl-c", "quit (asks again with unsaved edits)"),
+            ("q / ctrl-c", "quit (asks again with unsaved edits or a running job); q first closes a menu, the form or the file browser, as esc does"),
         ],
     ),
     (
@@ -343,14 +573,22 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "candidates",
+        &[
+            ("↑↓", "select a candidate; the list scrolls with it"),
+            ("enter / 1-9", "label the cluster with the selected / that candidate"),
+            ("S / a", "as in the clusters: the next method's order / every candidate"),
+        ],
+    ),
+    (
         "tree",
         &[
             ("↑↓", "select a node"),
             ("enter", "label the cluster with it"),
-            ("← →", "fold / unfold; → on a panel leaf goes on into the Cell Ontology at its term (ontology: up / into a term; in the data: → opens a folded chain, then the term in place on all its Cell Ontology children, ▸ more to show, ← closes)"),
+            ("← →", "fold / unfold; → on a panel leaf or an open branch goes on into the Cell Ontology at its term (ontology: up / into a term; in the data: → opens a folded chain, then the term in place on all its Cell Ontology children, ▸ more to show, ← closes)"),
             ("h", "in the data's tree: hide / show the terms not in the data below the selected term (◈ hiding)"),
-            ("o", "panel tree ↔ the Cell Ontology"),
-            ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, p export) / the tree again"),
+            ("o", "panel tree ↔ the Cell Ontology; from the cell map, the Cell Ontology and o back to the map"),
+            ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, o the Cell Ontology, w all figures, p export, f the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, R re-check) / the tree again"),
             ("d", "Cell Ontology: the terms in the data (the labels, under their common ancestor) ↔ all"),
             (
                 "/",
@@ -387,15 +625,15 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
-        "order view (t or T in the tree pane)",
+        "order view (t or T in the tree pane; T on the cell map)",
         &[
             ("↑↓", "a cell type on screen, with its cells"),
             ("space", "mark a type; mark two, first the earlier one (in the table, not the figures)"),
             (">", "the first marked type precedes the second (asks why)"),
-            ("-", "the two marked types are unrelated (asks why)"),
+            ("u", "the two marked types are unrelated (asks why); + - zoom the figures, as on the cell map"),
             ("r", "from any pane: run lupin trajectory on the labels on screen (asks for the output prefix; when nothing orders the types, asks how)"),
             ("A", "in the clusters: the annotation form, then a choice to run the trajectory"),
-            ("tab", "panes: clusters → genes → ordering → ontology; the Cell Ontology beside the table: ↑↓ selects a type in both, space marks it, o the full ontology, there d in the data ↔ all"),
+            ("tab", "panes: clusters → genes → candidates → ordering → ontology; the Cell Ontology beside the table: ↑↓ selects a type in both, space marks it, o the full ontology, there d in the data ↔ all"),
             ("T / esc", "back to the tree / to the clusters (t restyles the figures' labels)"),
             ("", "statements go to the project's precedence.tsv; edges show source and, after a trajectory run, verdict"),
         ],
@@ -405,12 +643,12 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         &[
             ("v / V", "next figure: scatter, order, connectivity / back to the table"),
             ("t", "type labels on the scatter: small, medium, large, largest, off"),
-            ("c", "colour the cells by pseudotime, cell type, lineage or component"),
+            ("c", "colour the cells by what the run has: pseudotime, cell type, cluster, score call, score margin, lineage or component"),
             ("m", "the scatter's layout: each layout the run has (PHATE first), then the diffusion map"),
             (", .", "the diffusion map's y axis: the previous or next component"),
             ("[ ]", "the diffusion map's x axis: the previous or next component"),
-            ("w", "all figures as thumbnails: arrows choose, enter, space or 1-9 opens, p exports the tile, f exports, V the table, esc or w closes"),
-            ("+ - 0", "zoom the scatter in / out / show it whole (m and , . also show it whole)"),
+            ("w", "all figures as thumbnails: arrows choose, enter, space or 1-9 opens, p exports the tile, V the table, esc or w closes"),
+            ("+ - 0", "zoom the scatter in / out / show it whole (m, , . and [ ] also show it whole)"),
             ("arrows", "pan a zoomed scatter (with the exports strip open, ↑↓ move in the strip)"),
             ("p", "export the figure as on screen (zoomed too) as {run}.trajectory.{figure}.svg + .pdf and log it"),
             ("f", "the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, esc closes"),
@@ -432,14 +670,29 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// `r` anywhere in `lupin trajectory`'s TUI, where the order view takes it.
+const R_IN_TRAJECTORY: &str = "the annotation form (marker panel, output, settings; ▶ run or shift+enter runs the pass); in the order view r runs the trajectory instead";
+
 /// The key guide; without `trajectory`, the annotate TUI's: no order view
 /// and no figures.
 pub(super) fn guide(
     trajectory: bool,
-) -> impl Iterator<Item = (&'static str, &'static [(&'static str, &'static str)])> {
-    GUIDE.iter().copied().filter(move |(section, _)| {
-        trajectory || !(section.starts_with("order view") || section.starts_with("figures"))
-    })
+) -> impl Iterator<Item = (&'static str, Vec<(&'static str, &'static str)>)> {
+    GUIDE
+        .iter()
+        .filter(move |(section, _)| {
+            trajectory || !(section.starts_with("order view") || section.starts_with("figures"))
+        })
+        .map(move |&(section, keys)| {
+            let keys = keys
+                .iter()
+                .map(|&(key, what)| match (section, key) {
+                    ("anywhere", "r") if trajectory => (key, R_IN_TRAJECTORY),
+                    _ => (key, what),
+                })
+                .collect();
+            (section, keys)
+        })
 }
 
 /// The width of the guide's key column.
@@ -462,14 +715,16 @@ fn guide_section(section: &str, keys: &[(&str, &str)], width: usize) -> Vec<Line
     lines
 }
 
-fn draw_guide(f: &mut Frame, trajectory: bool) {
+/// The guide, scrolled to `app.help_scroll` when taller than the screen.
+fn draw_guide(f: &mut Frame, app: &App) {
+    let trajectory = app.trajectory_tui;
     let screen = f.area();
     // Two columns side by side when the terminal is wide enough.
     let columns: u16 = if screen.width >= 150 { 2 } else { 1 };
     let width = screen.width.saturating_sub(4).min(110 * columns);
     let col = usize::from((width.saturating_sub(2)) / columns);
     let sections: Vec<Vec<Line>> = guide(trajectory)
-        .map(|(section, keys)| guide_section(section, keys, col))
+        .map(|(section, keys)| guide_section(section, &keys, col))
         .collect();
     // The first `split` sections go left, the rest right: the split whose
     // taller column is shortest.
@@ -491,9 +746,19 @@ fn draw_guide(f: &mut Frame, trajectory: bool) {
     }
     let tallest = cols.iter().map(Vec::len).max().unwrap_or(0);
     let height = (tallest as u16 + 2).min(screen.height);
+    // The columns scroll together; the key that reaches past the end is
+    // held at it.
+    let scrolls = tallest.saturating_sub(usize::from(height.saturating_sub(2)));
+    app.help_scrolls.set(scrolls);
+    let at = app.help_scroll.min(scrolls);
+    let hint = match (scrolls, at < scrolls) {
+        (0, _) => " any key closes ",
+        (_, true) => " ↓ more · ↑↓ pgup/dn home/end scroll · any other key closes ",
+        (_, false) => " ↑↓ pgup/dn home/end scroll · any other key closes ",
+    };
     let area = centered(screen, width, height);
     f.render_widget(Clear, area);
-    let block = popup(" keys ".into(), " any key closes ");
+    let block = popup(" keys ".into(), hint);
     let inner = block.inner(area);
     f.render_widget(block.style(POPUP), area);
     let parts = Layout::horizontal(vec![
@@ -502,7 +767,8 @@ fn draw_guide(f: &mut Frame, trajectory: bool) {
     ])
     .split(inner);
     for (lines, part) in cols.into_iter().zip(parts.iter()) {
-        f.render_widget(Paragraph::new(lines).style(POPUP), *part);
+        let shown: Vec<Line> = lines.into_iter().skip(at).collect();
+        f.render_widget(Paragraph::new(shown).style(POPUP), *part);
     }
 }
 
@@ -550,23 +816,27 @@ fn bar(share: f32) -> String {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    // The status first, where it is seen; the run's file last.
-    let mut spans = vec![
-        Span::from(if app.trajectory_tui {
-            " lupin trajectory "
-        } else {
-            " lupin annotate "
-        })
-        .bold()
-        .reversed(),
-        Span::from(format!(" {} ", app.status)).bold(),
-    ];
+    // The status first, where it is seen; the notes and the run's file
+    // after it, whole: the status gets the room they leave, cut between
+    // words, and the file goes when that leaves too little to read.
+    const STATUS_LEAST: usize = 24;
+    let title = Span::from(if app.trajectory_tui {
+        " lupin trajectory "
+    } else {
+        " lupin annotate "
+    })
+    .bold()
+    .reversed();
+    let mut notes = Vec::new();
     if !app.edits.is_empty() {
-        spans.push(Span::from(format!("· {} unsaved ", app.edits.len())).yellow());
+        notes.push(Span::from(format!("· {} unsaved ", app.edits.len())).yellow());
     }
-    if app.stale {
-        spans.push(
-            Span::from(if app.in_order() {
+    if app.stale() {
+        notes.push(
+            // Neither key runs while a job does.
+            Span::from(if app.child.is_some() {
+                "· settings changed, not yet run "
+            } else if app.in_order() {
                 "· settings changed, A in the clusters re-annotates "
             } else {
                 "· settings changed, r to re-run "
@@ -574,15 +844,59 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             .yellow(),
         );
     }
-    spans.push(Span::from(format!("· {}", app.shown_manifest().display())).dim());
+    let manifest = Span::from(format!("· {}", shown_path(&app.shown_manifest()))).dim();
+    // The status's two spaces around it, or one in its place.
+    let fixed = title.width() + notes.iter().map(Span::width).sum::<usize>() + 2;
+    let total = usize::from(area.width);
+    let mut room = total.saturating_sub(fixed + manifest.width());
+    let keep_manifest = app.status.chars().count() <= room || room >= STATUS_LEAST;
+    if !keep_manifest {
+        room = total.saturating_sub(fixed);
+    }
+    let status = match app.status.as_str() {
+        "" => " ".to_string(),
+        s if s.chars().count() <= room => format!(" {s} "),
+        s => format!(" {} ", cut_words(s, room)),
+    };
+    let mut spans = vec![title, Span::from(status).bold()];
+    spans.extend(notes);
+    if keep_manifest {
+        spans.push(manifest);
+    }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// `text` in `width` columns: the words that fit before a `…`, or its
+/// first word cut when even that one does not.
+fn cut_words(text: &str, width: usize) -> String {
+    let mut kept = String::new();
+    for word in text.split_whitespace() {
+        let with = if kept.is_empty() {
+            word.to_string()
+        } else {
+            format!("{kept} {word}")
+        };
+        if with.chars().count() + 1 > width {
+            break;
+        }
+        kept = with;
+    }
+    if kept.is_empty() {
+        kept = text.chars().take(width.saturating_sub(1)).collect();
+    }
+    format!("{kept}…")
+}
+
+/// A manifest's path as the header names it: without a leading `./`.
+pub(super) fn shown_path(path: &std::path::Path) -> String {
+    path.strip_prefix(".").unwrap_or(path).display().to_string()
 }
 
 /// The cluster list's header: a SuSiE round's calls show the share of the
 /// deviance they explain and their fold, not their PIP (a type's inclusion
 /// in the cluster's model, near 1 for every type a mixed cluster holds,
-/// which beside the call reads as certainty); otherwise the enrichment's
-/// share, named apart so a rescore's switch shows.
+/// which beside the call reads as certainty; a rescoring keeps them, from
+/// before the edit); otherwise the enrichment's share.
 pub(super) fn cluster_list_header(susie: bool) -> Vec<&'static str> {
     if susie {
         vec!["", "cells", "label", "explains", "fold", ""]
@@ -617,6 +931,32 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let susie = r.clusters.iter().any(|c| c.call_evidence().is_some());
+    // SuSiE's readings stay from before the edit while a rescoring is shown.
+    let stale = susie && app.recorded.is_some();
+    // Numbers are shown whole or not at all: a narrow pane leaves out the
+    // cell counts, which want a label of `LABEL` columns beside them, then
+    // the evidence, which wants `LEAST`.
+    const LABEL: u16 = 20;
+    const LEAST: u16 = 10;
+    let counts_w = r
+        .clusters
+        .iter()
+        .map(|c| c.cells.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max("cells".len()) as u16;
+    // The label's room beside the name, `more` columns and the flag, a
+    // column between each.
+    let inner = area.width.saturating_sub(2);
+    let label_room =
+        |more: &[u16]| inner.saturating_sub(5 + 1 + 2 + more.iter().map(|w| w + 1).sum::<u16>());
+    let all_evidence: &[u16] = if susie { &[8, 6] } else { &[5] };
+    let evidence_w = if label_room(all_evidence) >= LEAST {
+        all_evidence
+    } else {
+        &[]
+    };
+    let counts = label_room(&[&[counts_w][..], evidence_w].concat()) >= LABEL;
     let rows: Vec<Row> = r
         .clusters
         .iter()
@@ -637,13 +977,21 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
                 .iter()
                 .find(|t| key.as_deref() == Some(label_key(&t.label).as_str()));
             let evidence = cluster_list_evidence(susie, of_label);
-            let mut cells = vec![
-                crate::figures::cluster_name(c.id),
-                c.cells.to_string(),
-                shown,
-            ];
-            cells.extend(evidence);
-            cells.push(flag.to_string());
+            let mut cells = vec![Cell::from(crate::figures::cluster_name(c.id))];
+            if counts {
+                cells.push(Cell::from(c.cells.to_string()));
+            }
+            cells.push(Cell::from(shown));
+            let evidence = evidence.into_iter().take(evidence_w.len());
+            cells.extend(evidence.map(|e| {
+                let cell = Cell::from(e);
+                if stale {
+                    cell.dim()
+                } else {
+                    cell
+                }
+            }));
+            cells.push(Cell::from(flag));
             let row = Row::new(cells);
             if app.edited(c.id) {
                 row.yellow()
@@ -654,25 +1002,18 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
             }
         })
         .collect();
-    let header = Row::new(cluster_list_header(susie)).bold();
-    let widths = if susie {
-        vec![
-            Constraint::Length(5),
-            Constraint::Length(6),
-            Constraint::Min(20),
-            Constraint::Length(8),
-            Constraint::Length(6),
-            Constraint::Length(1),
-        ]
-    } else {
-        vec![
-            Constraint::Length(5),
-            Constraint::Length(6),
-            Constraint::Min(20),
-            Constraint::Length(5),
-            Constraint::Length(1),
-        ]
-    };
+    let mut header = cluster_list_header(susie);
+    // The evidence's headers sit between the label's and the flag's.
+    header.drain(3 + evidence_w.len()..header.len() - 1);
+    let mut widths = vec![Constraint::Length(5), Constraint::Length(counts_w)];
+    if !counts {
+        header.remove(1);
+        widths.pop();
+    }
+    widths.push(Constraint::Fill(1));
+    widths.extend(evidence_w.iter().map(|&w| Constraint::Length(w)));
+    widths.push(Constraint::Length(1));
+    let header = Row::new(header).bold();
     let done = r.clusters.iter().filter(|c| app.edited(c.id)).count();
     let mut state = TableState::default().with_selected(Some(app.cluster_sel));
     let t = Table::new(rows, widths)
@@ -712,10 +1053,13 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
     } else {
         "Leiden on the cell embedding"
     };
-    let keys = format!(
-        " ↑↓ row · ←→ change · enter picks or edits · {} runs · esc close ",
-        app.run_keys()
-    );
+    // Short enough for the popup's 80 columns.
+    let runs = if app.shift_enter {
+        "shift+enter"
+    } else {
+        "enter on ▶ run"
+    };
+    let keys = format!(" ↑↓ row · ←→ change · enter picks or edits · {runs} runs · esc/q close ");
     let block = popup(format!(" annotate · {source} "), keys);
     let inner = block.inner(area);
     f.render_widget(Clear, area);
@@ -743,6 +1087,10 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
                 }
                 Setting::Run => Row::new([Cell::from(s.name())])
                     .style(Style::new().fg(Color::LightGreen).bold()),
+                // Fixed: the cursor passes over them.
+                _ if app.fixed_clusters && s.leiden() => {
+                    Row::new([Cell::from(s.name()), Cell::from("from the manifest")]).dim()
+                }
                 _ => Row::new([Cell::from(s.name()), value]),
             }
         })
@@ -778,36 +1126,222 @@ fn pval(v: Option<f32>) -> String {
 /// The GO column's effect, p and q widths, before the term name.
 const GO_STAT_WIDTHS: [u16; 3] = [6, 6, 6];
 
+/// The selected cluster's label when the candidates as listed do not hold
+/// it: a new type, or one that did not pass FDR, pinned above them.
+fn pinned_label(app: &App) -> Option<String> {
+    let now = app.current_label()?;
+    let listed = app.listed_candidates();
+    (!listed
+        .iter()
+        .any(|cand| label_key(&cand.label) == label_key(&now)))
+    .then_some(now)
+}
+
+/// The candidates pane's height: its rows (at least the first
+/// [`super::round::LISTED`]) with their header and borders, within `room`.
+fn candidates_height(app: &App, room: u16) -> u16 {
+    let pinned = if pinned_label(app).is_some() { 2 } else { 0 };
+    let rows = app.listed_candidates().len().max(super::round::LISTED) + pinned;
+    u16::try_from(rows + 3).unwrap_or(u16::MAX).min(room).max(4)
+}
+
+/// A column of the candidates pane after the key and the type.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CandColumn {
+    Value,
+    Bar,
+    Pip,
+    Fold,
+    Nes,
+    P,
+    Q,
+    Score,
+}
+
+impl CandColumn {
+    /// The columns the pane keeps when it has room, most wanted first (it
+    /// shows them in [`CandColumn`]'s order): the sorting method's reading,
+    /// FDR's q, the NES, SuSiE's PIP and fold, the score, the p-value and
+    /// the reading's bar.
+    const WANTED: [Self; 8] = [
+        Self::Value,
+        Self::Q,
+        Self::Nes,
+        Self::Pip,
+        Self::Fold,
+        Self::Score,
+        Self::P,
+        Self::Bar,
+    ];
+
+    fn header(self, by: crate::annotate::rounds::Method) -> &'static str {
+        match self {
+            Self::Value => value_header(by),
+            Self::Bar => "",
+            Self::Pip => "PIP",
+            Self::Fold => "fold",
+            Self::Nes => "NES",
+            Self::P => "p",
+            Self::Q => "q",
+            Self::Score => "score",
+        }
+    }
+
+    /// Its reading of `cand`, which the sorting method `by` reads for the value.
+    fn reading(
+        self,
+        cand: &super::round::Candidate,
+        by: crate::annotate::rounds::Method,
+    ) -> Option<f32> {
+        match self {
+            Self::Value | Self::Bar => by.reading(cand),
+            Self::Pip => cand.pip,
+            Self::Fold => cand.fold,
+            Self::Nes => cand.nes,
+            Self::P => cand.p,
+            Self::Q => cand.q,
+            Self::Score => cand.score,
+        }
+    }
+
+    /// `v` as the column writes it.
+    fn text(self, v: Option<f32>) -> String {
+        match self {
+            Self::Bar => v.map(bar).unwrap_or_default(),
+            Self::Fold => v.map_or_else(|| "—".into(), |f| format!("×{f:.1}")),
+            Self::P | Self::Q => pval(v),
+            _ => num(v, 2),
+        }
+    }
+
+    /// Read from the panel before the marker edits, while a rescoring is
+    /// shown: SuSiE's and the score's (the value too, when it is theirs).
+    fn before_the_edit(self, by: crate::annotate::rounds::Method) -> bool {
+        match self {
+            Self::Value | Self::Bar => by != crate::annotate::rounds::Method::Enrichment,
+            Self::Pip | Self::Fold | Self::Score => true,
+            Self::Nes | Self::P | Self::Q => false,
+        }
+    }
+}
+
 fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
+    let focused = app.focus == Focus::Candidates;
     let Some(c) = app.selected() else {
-        f.render_widget(
-            Block::default().borders(Borders::ALL).title(" cluster "),
-            area,
-        );
+        f.render_widget(pane(" cluster ".into(), focused), area);
         return;
     };
     let now = app.current_label();
     let listed = app.listed_candidates();
-    let mut rows: Vec<Row> = listed
+    let pinned = pinned_label(app);
+    // The value column is the reading of the method the list is sorted by.
+    let by = app.cand_method();
+    // While a rescoring is shown, only the enrichment's readings are of the
+    // edited panel: SuSiE's and the score's are dimmed, from before the edit.
+    let stale = app.recorded.is_some();
+    // Only the rows that fit are built, from the one that keeps the
+    // selection in sight; the pinned label stays on top.
+    let height = usize::from(area.height.saturating_sub(3))
+        .saturating_sub(if pinned.is_some() { 2 } else { 0 })
+        .max(1);
+    // A save or rescoring may have left the list shorter than the selection.
+    let sel = app.cand_sel.min(listed.len().saturating_sub(1));
+    let start = sel.saturating_sub(height - 1);
+    let window = start.min(listed.len())..(start + height).min(listed.len());
+    let shown = &listed[window.clone()];
+    // A label picked off the candidates (a new type, or one that did not
+    // pass FDR) is shown too: it is scored once the edits are saved. Its
+    // note goes by the round's share, its value by the sorting method's.
+    let pinned_share = pinned.as_deref().and_then(|l| {
+        c.shares
+            .iter()
+            .find(|(t, _)| label_key(t) == label_key(l))
+            .map(|(_, s)| *s)
+    });
+    let pinned_value = pinned.as_deref().and_then(|l| {
+        match c
+            .candidates
+            .iter()
+            .find(|t| label_key(&t.label) == label_key(l))
+        {
+            Some(t) => by.reading(t),
+            None => pinned_share.filter(|_| Some(by) == app.round.as_ref().and_then(|r| r.by)),
+        }
+    });
+    // Numbers are shown whole or not at all: each column as wide as its
+    // widest entry, the ones most wanted while the type keeps `LABEL`
+    // columns (or its longest name); a column no row shown has a reading
+    // for is left out. The sorting method's value always shows.
+    const LABEL: usize = 20;
+    let width = |t: &str| Span::from(t).width();
+    let col_width = |col: CandColumn| {
+        shown
+            .iter()
+            .map(|t| width(&col.text(col.reading(t, by))))
+            .chain(std::iter::once(width(col.header(by))))
+            .chain(
+                (col == CandColumn::Value || col == CandColumn::Bar)
+                    .then(|| width(&col.text(pinned_value))),
+            )
+            .max()
+            .unwrap_or(0)
+    };
+    // Sorted by the score, the value column is its reading already.
+    let has = |col: CandColumn| match col {
+        CandColumn::Value => true,
+        CandColumn::Score if by == crate::annotate::rounds::Method::Score => false,
+        _ => shown.iter().any(|t| col.reading(t, by).is_some()),
+    };
+    let longest = shown
         .iter()
-        .enumerate()
-        .map(|(k, cand)| {
-            let row = Row::new(vec![
-                Cell::from(format!("{}", k + 1)).dim(),
-                Cell::from(cand.label.clone()),
-                Cell::from(format!("{:.2}", cand.share)),
-                Cell::from(bar(cand.share)).fg(if cand.share >= CONTESTED {
-                    Color::Green
+        .map(|t| width(&t.label))
+        .chain(pinned.as_deref().map(width))
+        .max()
+        .unwrap_or(0);
+    let label_least = LABEL.min(longest.max(width("type")));
+    // The key and the type, each with the column after it.
+    let inner = usize::from(area.width.saturating_sub(2));
+    let mut used = 1 + 1 + label_least;
+    let mut columns: Vec<(CandColumn, usize)> = Vec::new();
+    for col in CandColumn::WANTED.into_iter().filter(|&c| has(c)) {
+        let w = col_width(col);
+        if used + 1 + w <= inner {
+            used += 1 + w;
+            columns.push((col, w));
+        }
+    }
+    columns.sort();
+    let mut rows: Vec<Row> = shown
+        .iter()
+        .zip(window.clone())
+        .map(|(cand, k)| {
+            // The key that takes the row, 1-9 (as the label choices show
+            // theirs); none past the ninth.
+            let key = if k < 9 {
+                (k + 1).to_string()
+            } else {
+                String::new()
+            };
+            let mut cells = vec![Cell::from(key).cyan(), Cell::from(cand.label.clone())];
+            cells.extend(columns.iter().map(|&(col, _)| {
+                let v = col.reading(cand, by);
+                let cell = Cell::from(col.text(v));
+                let cell = if col == CandColumn::Bar {
+                    cell.fg(if v.is_some_and(|v| v >= CONTESTED) {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    })
                 } else {
-                    Color::Yellow
-                }),
-                Cell::from(num(cand.pip, 2)),
-                Cell::from(cand.fold.map_or_else(|| "—".into(), |f| format!("×{f:.1}"))),
-                Cell::from(num(cand.nes, 2)),
-                Cell::from(pval(cand.p)),
-                Cell::from(pval(cand.q)),
-                Cell::from(num(cand.score, 2)),
-            ]);
+                    cell
+                };
+                if stale && col.before_the_edit(by) {
+                    cell.dim()
+                } else {
+                    cell
+                }
+            }));
+            let row = Row::new(cells);
             if now.as_deref() == Some(cand.label.as_str()) {
                 row.bold()
             } else {
@@ -815,30 +1349,20 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             }
         })
         .collect();
-    // A label picked off the candidates (a new type, or one that did not
-    // pass FDR) is shown too: it is scored once the edits are saved.
-    if let Some(l) = now.as_deref().filter(|l| {
-        !listed
-            .iter()
-            .any(|cand| label_key(&cand.label) == label_key(l))
-    }) {
-        let share = c
-            .shares
-            .iter()
-            .find(|(t, _)| label_key(t) == label_key(l))
-            .map(|(_, s)| *s);
-        rows.insert(
-            0,
-            Row::new(vec![
-                Cell::from("→"),
-                Cell::from(Line::from(vec![
-                    Span::from(l.to_string()).bold(),
-                    Span::from(pinned_note(app, l, share)).dim(),
-                ])),
-                Cell::from(share.map_or_else(|| "—".into(), |s| format!("{s:.2}"))),
-                Cell::from(share.map(bar).unwrap_or_default()),
-            ]),
-        );
+    if let Some(l) = pinned.as_deref() {
+        // The note on a line of its own: a long ontology name would cut it.
+        let mut cells = vec![
+            Cell::from("→"),
+            Cell::from(Text::from(vec![
+                Line::from(l.to_string()).bold(),
+                Line::from(pinned_note(app, l, pinned_share)).dim(),
+            ])),
+        ];
+        cells.extend(columns.iter().map(|&(col, _)| match col {
+            CandColumn::Value | CandColumn::Bar => Cell::from(col.text(pinned_value)),
+            _ => Cell::from(""),
+        }));
+        rows.insert(0, Row::new(cells).height(2));
     }
     if rows.is_empty() {
         rows.push(Row::new(["", "no candidate passed FDR"]).dim());
@@ -852,48 +1376,108 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             .join(" › ")
     });
     let scored = if app.rescoring.is_some() {
-        " · rescoring…"
+        Some("rescoring…")
     } else if app.recorded.is_some() {
-        " · rescored with your marker edits"
+        Some("rescored with your marker edits")
     } else {
-        ""
+        None
     };
-    let title = format!(
-        " K{} · {} cells · {}{scored} · by {}{} ",
-        c.id,
-        c.cells,
-        now.as_deref().unwrap_or(UNASSIGNED_LABEL),
-        app.cand_method().name(),
-        if app.cand_all { " · all" } else { "" },
+    // The candidates out of sight: scrolled past, or past the first ten.
+    let more = match c.candidates.len() - window.len() {
+        0 => None,
+        n => Some(format!("{n} more")),
+    };
+    // The title's parts, whole; those least needed go first when the pane
+    // is narrow, and the label is cut last.
+    let label = now.as_deref().unwrap_or(UNASSIGNED_LABEL).to_string();
+    let parts: Vec<(u8, String)> = [
+        (0, Some(format!("K{}", c.id))),
+        (6, Some(format!("{} cells", c.cells))),
+        (1, Some(label)),
+        (2, scored.map(str::to_string)),
+        (3, Some(format!("by {}", by.name()))),
+        (5, app.cand_all.then(|| "all".to_string())),
+        (4, more),
+    ]
+    .into_iter()
+    .filter_map(|(rank, p)| Some((rank, p?)))
+    .collect();
+    let title = fitted_title(&parts, usize::from(area.width.saturating_sub(2)));
+    let mut widths = vec![
+        Constraint::Length(1),
+        Constraint::Min(u16::try_from(label_least).unwrap_or(u16::MAX)),
+    ];
+    widths.extend(
+        columns
+            .iter()
+            .map(|&(_, w)| Constraint::Length(u16::try_from(w).unwrap_or(u16::MAX))),
     );
-    let t = Table::new(
-        rows,
-        [
-            Constraint::Length(1),
-            Constraint::Min(14),
-            Constraint::Length(5),
-            Constraint::Length(BAR as u16),
-            Constraint::Length(5),
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Length(5),
-        ],
-    )
-    .header(
-        Row::new([
-            "", "type", "share", "", "PIP", "fold", "NES", "p", "q", "score",
-        ])
-        .bold(),
-    )
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(title)
-            .title_bottom(Line::from(format!(" {} ", path.unwrap_or_default())).cyan()),
-    );
-    f.render_widget(t, area);
+    let mut header = vec!["", "type"];
+    header.extend(columns.iter().map(|&(col, _)| col.header(by)));
+    let t = Table::new(rows, widths)
+        .header(Row::new(header).bold())
+        .block(
+            pane(title, focused).title_bottom(
+                Line::from(format!(
+                    " {}{} ",
+                    if stale {
+                        "dim: before the edit · "
+                    } else {
+                        ""
+                    },
+                    path.unwrap_or_default()
+                ))
+                .cyan(),
+            ),
+        )
+        .row_highlight_style(highlight(focused));
+    let at = sel.saturating_sub(start) + usize::from(pinned.is_some());
+    let mut state = TableState::default().with_selected(focused.then_some(at));
+    f.render_stateful_widget(t, area, &mut state);
+}
+
+/// A pane's title of `parts` joined by ` · ` in `width` columns: the parts
+/// ranked highest (by their number) leave first, then the first part left
+/// standing beside the key (the label) is cut between words.
+fn fitted_title(parts: &[(u8, String)], width: usize) -> String {
+    let join = |kept: &[&(u8, String)]| {
+        format!(
+            " {} ",
+            kept.iter()
+                .map(|(_, p)| p.as_str())
+                .collect::<Vec<_>>()
+                .join(" · ")
+        )
+    };
+    let mut kept: Vec<&(u8, String)> = parts.iter().collect();
+    while Span::from(join(&kept)).width() > width && kept.len() > 2 {
+        let worst = kept
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, (rank, _))| *rank)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        kept.remove(worst);
+    }
+    let title = join(&kept);
+    if Span::from(title.as_str()).width() <= width || kept.len() < 2 {
+        return title;
+    }
+    // The key and the label: the label cut to the room the key leaves.
+    let room = width.saturating_sub(Span::from(join(&kept[..1])).width() + 3);
+    format!(" {} · {} ", kept[0].1, cut_words(&kept[1].1, room))
+}
+
+/// The candidates' value column's header: the method whose reading it is
+/// (the enrichment's share, SuSiE's explained share, the score's share of
+/// cells), in its six columns.
+fn value_header(by: crate::annotate::rounds::Method) -> &'static str {
+    use crate::annotate::rounds::Method;
+    match by {
+        Method::Enrichment => "enrich",
+        Method::Susie => "susie",
+        Method::Score => "score",
+    }
 }
 
 /// Why a cluster's label is not among its candidates.
@@ -902,10 +1486,15 @@ fn pinned_note(app: &App, label: &str, share: Option<f32>) -> &'static str {
         matches!(e, super::round::Edit::Markers { label: l, .. } if label_key(l) == label_key(label))
     });
     match share {
-        Some(s) if s > 0.0 => " · below the top candidates",
-        _ if app.rescoring.is_some() => " · rescoring…",
-        _ if edited && app.recorded.is_none() => " · scored on save",
-        _ => " · not called (did not pass FDR)",
+        Some(s) if s > 0.0 => "below the top candidates",
+        _ if app.rescoring.is_some() => "rescoring…",
+        _ if edited && app.recorded.is_none() => "scored on save",
+        // A typed name has no markers: nothing tested it.
+        _ if app.tree.node_of(label).is_none() => "not a panel type: no markers to score",
+        // A node above the types: TreeBH tests it only as their family, and
+        // a pass calls the types, never the group.
+        _ if !app.tree.is_type(label) => "a tree group: the pass calls its panel types",
+        _ => "not called (did not pass FDR)",
     }
 }
 
@@ -968,13 +1557,15 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 "H: show hidden"
             };
-            (
-                rows,
+            let title = if r.expression.is_none() {
+                " no specific genes: the round has no cluster expression ".to_string()
+            } else {
                 format!(
                     " {} specific genes · log2 FC · new = in no panel · {shown} ",
                     listed.len()
-                ),
-            )
+                )
+            };
+            (rows, title)
         }
         GeneView::Markers => {
             let Some(label) = now.as_deref() else {
@@ -990,7 +1581,8 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
                 .iter()
                 .map(|(g, fc, added)| {
                     // A marker not enriched in this cluster: missed here.
-                    let weak = fc.is_none_or(|v| v <= 0.0);
+                    // One not measured is not weak.
+                    let weak = fc.is_some_and(|v| v <= 0.0);
                     let tag = match (added, weak) {
                         (true, _) => "added",
                         (false, true) => "weak",
@@ -1004,22 +1596,29 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
                     ]);
                     match (added, weak) {
                         (true, _) => row.yellow(),
-                        (false, false) => row.green(),
-                        (false, true) => row.dim(),
+                        (false, false) if fc.is_some() => row.green(),
+                        (false, _) => row.dim(),
                     }
                 })
                 .collect();
             let weak = listed
                 .iter()
-                .filter(|(_, fc, _)| fc.is_none_or(|v| v <= 0.0))
+                .filter(|(_, fc, _)| fc.is_some_and(|v| v <= 0.0))
                 .count();
+            let unmeasured = listed.iter().filter(|(_, fc, _)| fc.is_none()).count();
+            let fc = if r.expression.is_none() {
+                "FC not measured: no cluster expression".to_string()
+            } else if unmeasured > 0 {
+                format!(
+                    "{weak} weak (FC ≤ 0 in K{}) · {unmeasured} not measured",
+                    c.id
+                )
+            } else {
+                format!("{weak} weak (FC ≤ 0 in K{})", c.id)
+            };
             (
                 rows,
-                format!(
-                    " {} markers of {label} · {weak} weak (FC ≤ 0 in K{}) ",
-                    listed.len(),
-                    c.id
-                ),
+                format!(" {} markers of {label} · {fc} ", listed.len()),
             )
         }
     };
@@ -1093,6 +1692,10 @@ fn draw_go(f: &mut Frame, area: Rect, app: &App) {
 /// `text` in lines of at most `width` characters, broken between words, at
 /// most `max` lines (the last ends in `…` when cut).
 fn wrap(text: &str, width: usize, max: usize) -> Vec<String> {
+    // No rows (a popup squeezed to its border): nothing to write on.
+    if max == 0 {
+        return Vec::new();
+    }
     let mut lines: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
         match lines.last_mut() {
@@ -1467,8 +2070,34 @@ fn draw_prompt(f: &mut Frame, app: &App) {
 
 /// A choice popup within `over`: the question, the numbered options with
 /// the selected one highlighted, and what choosing it does.
+/// A menu's keys, along its bottom border.
+const MENU_HINT: &str = " ↑↓ choose · enter or its key takes it · esc or q cancels ";
+
 fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
-    let width = over.width.saturating_sub(2).clamp(20.min(over.width), 100);
+    let key = |o: &super::menu::Choice| o.key.unwrap_or(' ');
+    let option = |o: &super::menu::Choice| format!(" {}  {}", key(o), o.label).chars().count();
+    // Wide enough for its longest option and its keys: past `over`, or
+    // past the usual 100 columns of a wide menu, as far as the screen goes.
+    let longest = m
+        .choices
+        .iter()
+        .map(option)
+        .chain(std::iter::once(Span::from(MENU_HINT).width()))
+        .max()
+        .unwrap_or(0);
+    let need = u16::try_from(longest).unwrap_or(u16::MAX).saturating_add(2);
+    let mut width = over.width.saturating_sub(2).clamp(20.min(over.width), 100);
+    let over = if need > width {
+        let screen = f.area();
+        width = need.min(screen.width.saturating_sub(2));
+        Rect {
+            x: screen.x,
+            width: screen.width,
+            ..over
+        }
+    } else {
+        over
+    };
     let inner = width.saturating_sub(2).max(1) as usize;
     let mut lines: Vec<Line> = wrap(&m.question, inner, 6)
         .into_iter()
@@ -1489,7 +2118,7 @@ fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
     // The options, scrolled to keep the selected one in sight.
     let first = m.sel.saturating_sub(room.saturating_sub(1));
     for (i, o) in m.choices.iter().enumerate().skip(first).take(room) {
-        let line = Line::from(format!(" {}  {}", o.key, o.label));
+        let line = Line::from(format!(" {}  {}", key(o), o.label));
         lines.push(if i == m.sel { line.reversed() } else { line });
     }
     if m.choices.len() > first + room {
@@ -1501,10 +2130,9 @@ fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
     let area = centered(over, width, height);
     f.render_widget(Clear, area);
     f.render_widget(
-        Paragraph::new(lines).style(POPUP).block(popup(
-            String::new(),
-            " ↑↓ choose · enter or its key takes it · esc cancels ",
-        )),
+        Paragraph::new(lines)
+            .style(POPUP)
+            .block(popup(String::new(), MENU_HINT)),
         area,
     );
 }
@@ -1520,14 +2148,21 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
             .map_or("  ".to_string(), |i| format!("{} ", i + 1))
     };
     let dim = Style::default().add_modifier(Modifier::DIM);
+    // A type below `--min-cells` is dimmed: no node of the prior.
     let mut rows: Vec<Row> = v
         .types
         .iter()
-        .map(|(t, n)| {
-            Row::new(vec![
+        .zip(&v.is_node)
+        .map(|((t, n), &node)| {
+            let row = Row::new(vec![
                 Cell::from(format!("{}{}", mark(t), t)),
                 Cell::from(format!("{n}")),
-            ])
+            ]);
+            if node {
+                row
+            } else {
+                row.style(dim)
+            }
         })
         .collect();
     rows.push(Row::new(vec![Cell::from("")]));
@@ -1570,6 +2205,19 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
             &s.to,
             format!("{} · unrelated", s.source.as_str()),
         ));
+    }
+    if !v.set_aside.is_empty() {
+        rows.push(
+            Row::new(vec![Cell::from(format!(
+                "{} statement(s) on a type below --min-cells {}, no node",
+                v.set_aside.len(),
+                v.min_cells
+            ))])
+            .style(dim),
+        );
+        for s in &v.set_aside {
+            rows.push(pair(&s.from, "→", &s.to, s.source.as_str().to_string()));
+        }
     }
     let inferred = v.inferred();
     if !inferred.is_empty() {
@@ -1626,11 +2274,14 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
     if let Some(g) = &v.grid {
         return draw_grid(f, area, v, g, focused);
     }
-    let (figure, strip) = if v.exports.open {
-        let [a, b] = Layout::vertical([Constraint::Min(6), Constraint::Length(8)]).areas(area);
-        (a, Some(b))
-    } else {
-        (area, None)
+    let room = exports_height(area.height);
+    v.exports.fits.set(room.is_some());
+    let (figure, strip) = match room.filter(|_| v.exports.open) {
+        Some(h) => {
+            let [a, b] = Layout::vertical([Constraint::Fill(1), Constraint::Length(h)]).areas(area);
+            (a, Some(b))
+        }
+        None => (area, None),
     };
     let title = format!(
         " {} ({}/{}) ",
@@ -1639,18 +2290,56 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
         v.panels.len()
     );
     let block = pane(title, focused);
-    let inner = block.inner(figure);
+    let mut inner = block.inner(figure);
     f.render_widget(block, figure);
-    match &*v.protocol(inner) {
-        Ok(p) => f.render_widget(ratatui_image::Image::new(p), inner),
-        Err(e) => f.render_widget(
+    // Figures the round carries from the run it was made on, plainly so.
+    if let Some(of) = &v.data.trajectory_of {
+        let text =
+            format!("figures from {of}'s trajectory, on its labels: r runs one for this round");
+        let note = wrap(&text, usize::from(inner.width.max(1)), 3);
+        let [top, rest] =
+            Layout::vertical([Constraint::Length(note.len() as u16), Constraint::Min(1)])
+                .areas(inner);
+        let lines: Vec<Line> = note.into_iter().map(Line::from).collect();
+        f.render_widget(
+            Paragraph::new(lines).style(Style::new().fg(Color::Yellow)),
+            top,
+        );
+        inner = rest;
+    }
+    // A quick frame shows the figure as last drawn; the next draws it.
+    let drawn = if app.quick_frame.get() {
+        let (drawn, behind) = v.drawn_so_far(inner);
+        if behind {
+            app.frame_behind.set(true);
+        }
+        drawn
+    } else {
+        Some(v.protocol(inner))
+    };
+    match drawn.as_deref() {
+        Some(Ok(p)) => f.render_widget(ratatui_image::Image::new(p), inner),
+        Some(Err(e)) => f.render_widget(
             Paragraph::new(e.as_str()).wrap(Wrap { trim: true }).dim(),
             inner,
         ),
+        None => f.render_widget(Paragraph::new("drawing…").dim(), inner),
     }
     if let Some(strip) = strip {
         draw_exports(f, strip, &v.exports, focused);
     }
+}
+
+/// The exports strip's height in a figure pane `height` rows tall: its
+/// own, else what the figure's six rows leave, else rows taken from the
+/// figure for at least the strip's frame and its selected row, down to
+/// the figure's frame and a row; `None` when even that does not fit.
+pub(super) fn exports_height(height: u16) -> Option<u16> {
+    const STRIP: u16 = 8;
+    const FIGURE: u16 = 6;
+    const LEAST: u16 = 3;
+    let h = height.saturating_sub(FIGURE).clamp(LEAST, STRIP);
+    (height >= h + LEAST).then_some(h)
 }
 
 /// The thumbnail grid: each figure in a tile, the selected one highlighted.
@@ -1780,5 +2469,10 @@ mod wrap_tests {
         assert_eq!(wrap("aa bb cc dd ee", 5, 2), ["aa bb", "cc d…"]);
         assert_eq!(wrap("abcdefgh", 4, 3), ["abcd"]);
         assert_eq!(wrap("", 4, 3), [""]);
+    }
+
+    #[test]
+    fn no_rows_to_wrap_over_gives_no_lines() {
+        assert!(wrap("aa bb", 5, 0).is_empty());
     }
 }

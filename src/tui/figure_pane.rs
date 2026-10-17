@@ -17,6 +17,8 @@ use ratatui_image::{FilterType, Resize};
 use rayon::prelude::*;
 use std::cell::{Ref, RefCell};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::Arc;
 
 /// How figures reach the terminal, as `senna view` offers it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -45,6 +47,8 @@ pub struct Exports {
     pub not_listed: Vec<PathBuf>,
     /// The export a first `D` asked to delete.
     delete_armed: Option<PathBuf>,
+    /// The pane, as last drawn, has room for the strip's selected row.
+    pub fits: std::cell::Cell<bool>,
 }
 
 impl Exports {
@@ -57,6 +61,7 @@ impl Exports {
             statuses: Vec::new(),
             not_listed: Vec::new(),
             delete_armed: None,
+            fits: std::cell::Cell::new(true),
         };
         e.refresh();
         e
@@ -65,7 +70,8 @@ impl Exports {
     /// Re-read the gallery and check every entry against its files.
     pub fn refresh(&mut self) {
         let set_aside = self.gallery.set_aside.take();
-        self.gallery = Gallery::here();
+        let dir = self.gallery.dir().to_path_buf();
+        self.gallery = Gallery::open(&dir);
         self.gallery.set_aside = self.gallery.set_aside.take().or(set_aside);
         self.statuses = self.gallery.check();
         self.not_listed = self.gallery.not_listed(&self.prefix);
@@ -106,6 +112,11 @@ impl Exports {
         let panel = name.strip_prefix(&stem).unwrap_or(&name);
         self.gallery.add(&files, &name, panel, manifest)?;
         self.refresh();
+        // The list is newest first: the selection follows the file.
+        let listed = crate::manifest::data_files::absolute(&pdf);
+        if let Some(i) = self.gallery.entries.iter().position(|e| e.path == listed) {
+            self.sel = i;
+        }
         Ok(format!("listed {}", pdf.display()))
     }
 
@@ -161,6 +172,12 @@ type Drawn = Result<Protocol, String>;
 /// A figure on screen: what it shows, at a size in terminal cells.
 type Sized = (Look, (u16, u16));
 
+/// A look being rasterised, and where its pixels will come.
+type Rasterising = (Look, Receiver<Result<DynamicImage, String>>);
+
+/// Why a figure rasterised off the screen's thread never came.
+const NOT_DRAWN: &str = "the figure was not drawn";
+
 /// Thumbnails kept across openings of the grid before they are dropped.
 const TILES_KEPT: usize = 32;
 
@@ -212,10 +229,15 @@ pub enum FigureKey {
 
 /// What the thumbnail grid's keys do.
 pub const GRID_KEYS: &str =
-    "arrows choose · Enter, space or 1-9 opens · p exports it · f exports · t c restyle · V leaves the figures · esc or w closes";
+    "arrows choose · Enter, space or 1-9 opens · p exports it · t c restyle · V leaves the figures · esc or w closes";
+
+/// Why the exports strip's keys do nothing: the pane is too short for it.
+const STRIP_NO_ROOM: &str =
+    "the exports strip has no room in this pane: a taller terminal shows it (f closes it)";
 
 pub struct FigurePane {
-    pub data: CellFigures,
+    /// Shared with the thread rasterising a figure off the screen's.
+    pub data: Arc<CellFigures>,
     pub panels: Vec<Panel>,
     pub sel: usize,
     /// Show the figure instead of the order table.
@@ -231,6 +253,8 @@ pub struct FigurePane {
     rendered: RefCell<Option<(Sized, Drawn)>>,
     /// The figure on screen rasterised once; a new pane size only re-fits it.
     image: RefCell<Option<(Look, Result<DynamicImage, String>)>>,
+    /// A figure being rasterised off the screen's thread, for a quick frame.
+    pending: RefCell<Option<Rasterising>>,
     /// Thumbnails drawn, kept while the grid closes and opens again.
     tiles: RefCell<Vec<(Sized, Drawn)>>,
     /// The thumbnail grid, while it is open.
@@ -258,7 +282,7 @@ impl FigurePane {
         let style = Style::opening(&data);
         Self {
             panels: data.panels(),
-            data,
+            data: Arc::new(data),
             sel: 0,
             shown: false,
             style,
@@ -266,6 +290,7 @@ impl FigurePane {
             pair: (1, 2),
             picker: picker.clone(),
             image: RefCell::new(None),
+            pending: RefCell::new(None),
             rendered: RefCell::new(None),
             tiles: RefCell::new(Vec::new()),
             grid: None,
@@ -336,17 +361,21 @@ impl FigurePane {
                 KeyCode::Char('p') => Say(self
                     .export()
                     .unwrap_or_else(|e| format!("export failed: {e:#}"))),
+                // The strip is drawn under a figure, never over the grid.
                 KeyCode::Char('f') => {
-                    self.exports.open = !self.exports.open;
-                    Took
+                    Say("f lists the exports under a figure: enter opens the tile".into())
                 }
                 KeyCode::Char(c) if !"qrxseT".contains(c) => Say(GRID_KEYS.into()),
                 _ => Ignored,
             };
         }
         // The strip's keys act only while it is on screen; the arrows it
-        // does not take pan.
-        let strip = self.shown && self.exports.open;
+        // does not take pan. Open in a pane too short for it, they say so.
+        let open = self.shown && self.exports.open;
+        let strip = open && self.exports.fits.get();
+        if open && !strip && matches!(code, KeyCode::Enter | KeyCode::Char('d' | 'D' | 'M')) {
+            return Say(STRIP_NO_ROOM.into());
+        }
         if strip {
             let rows = self.exports.rows();
             if step(&mut self.exports.sel, rows, code) {
@@ -378,6 +407,10 @@ impl FigurePane {
             KeyCode::Char('[') if shown => Say(self.step_pair(false, true)),
             KeyCode::Char(']') if shown => Say(self.step_pair(true, true)),
             // senna view's keys: labels, colouring, layout.
+            // Labels and colours are the scatter's.
+            KeyCode::Char('t' | 'c') if shown && !self.current().is_scatter() => {
+                Say("t and c restyle the scatter (v reaches it)".into())
+            }
             KeyCode::Char('t') if shown => Say(self.style.cycle_labels()),
             KeyCode::Char('c') if shown => Say(self.style.cycle_colouring(&self.data.colourings())),
             KeyCode::Char('m') if shown => Say(self.next_layout()),
@@ -408,7 +441,11 @@ impl FigurePane {
                 .unwrap_or_else(|e| format!("export failed: {e:#}"))),
             KeyCode::Char('f') => {
                 self.exports.open = !self.exports.open;
-                Took
+                if self.exports.open && !self.exports.fits.get() {
+                    Say(STRIP_NO_ROOM.into())
+                } else {
+                    Took
+                }
             }
             KeyCode::Char('R') => {
                 let x = &mut self.exports;
@@ -477,7 +514,11 @@ impl FigurePane {
     /// Another pair of diffusion components, when that panel is shown.
     pub fn step_pair(&mut self, forward: bool, x_axis: bool) -> String {
         let Panel::Diffusion { x, y } = self.current() else {
-            return "the axes step on the diffusion map (m reaches it)".into();
+            return if self.data.diffusion.is_some() {
+                "the axes step on the diffusion map (m reaches it)".into()
+            } else {
+                "no diffusion map here: the axes step on a trajectory's".into()
+            };
         };
         self.pair = self.data.next_pair(x, y, forward, x_axis);
         self.view = View::default();
@@ -666,15 +707,7 @@ impl FigurePane {
             .as_ref()
             .is_none_or(|(k, _)| *k != key)
         {
-            let drawn = self.image(look, area).and_then(|img| {
-                self.picker
-                    .new_protocol(
-                        img,
-                        Size::new(area.width, area.height),
-                        Resize::Fit(Some(FilterType::Triangle)),
-                    )
-                    .map_err(|e| format!("{e:#}"))
-            });
+            let drawn = self.fit(self.image(look, area), area);
             *self.rendered.borrow_mut() = Some((key, drawn));
         }
         Ref::map(self.rendered.borrow(), |s| {
@@ -682,24 +715,114 @@ impl FigurePane {
         })
     }
 
-    /// `look` rasterised, from the cache when it is the one last drawn.
-    fn image(&self, look: Look, area: Rect) -> Result<DynamicImage, String> {
-        if let Some((l, img)) = self.image.borrow().as_ref() {
-            if *l == look {
-                return img.clone();
+    /// The figure as last drawn, without waiting: for a frame that goes
+    /// out at once, the current figure for `area` once it is rasterised
+    /// (which starts off the screen's thread), else whatever is drawn so
+    /// far (none when nothing was), and whether the figure is still due.
+    pub fn drawn_so_far(&self, area: Rect) -> (Option<Ref<'_, Drawn>>, bool) {
+        let look = self.look(self.current(), self.view);
+        let key = (look, (area.width, area.height));
+        let current = |r: &Option<(Sized, Drawn)>| r.as_ref().is_some_and(|(k, _)| *k == key);
+        if !current(&self.rendered.borrow()) {
+            if let Some(img) = self.image_ready(look, area) {
+                *self.rendered.borrow_mut() = Some((key, self.fit(img, area)));
             }
         }
-        let px = self.picker.font_size();
-        let w = (u32::from(area.width) * u32::from(px.width)).max(64);
-        let h = (u32::from(area.height) * u32::from(px.height)).max(64);
-        let img = self
-            .data
-            .figure(look.panel, w, h, &self.style, look.view)
+        let rendered = self.rendered.borrow();
+        let behind = !current(&rendered);
+        let drawn = Ref::filter_map(rendered, |s| s.as_ref().map(|(_, d)| d)).ok();
+        (drawn, behind)
+    }
+
+    /// `img` fitted to `area` as the terminal draws it.
+    fn fit(&self, img: Result<DynamicImage, String>, area: Rect) -> Drawn {
+        img.and_then(|img| {
+            self.picker
+                .new_protocol(
+                    img,
+                    Size::new(area.width, area.height),
+                    Resize::Fit(Some(FilterType::Triangle)),
+                )
+                .map_err(|e| format!("{e:#}"))
+        })
+    }
+
+    /// `look` rasterised from `data` for `area`, at its pixel size.
+    fn rasterised(
+        data: &CellFigures,
+        look: Look,
+        style: &Style,
+        px: (u32, u32),
+        area: Rect,
+    ) -> Result<DynamicImage, String> {
+        let w = (u32::from(area.width) * px.0).max(64);
+        let h = (u32::from(area.height) * px.1).max(64);
+        data.figure(look.panel, w, h, style, look.view)
             .and_then(|f| figures::render(&f))
             .map(DynamicImage::ImageRgba8)
-            .map_err(|e| format!("{e:#}"));
+            .map_err(|e| format!("{e:#}"))
+    }
+
+    /// The terminal cell's size in pixels.
+    fn cell_px(&self) -> (u32, u32) {
+        let px = self.picker.font_size();
+        (u32::from(px.width), u32::from(px.height))
+    }
+
+    /// `look` rasterised, when it is the one last drawn.
+    fn cached(&self, look: Look) -> Option<Result<DynamicImage, String>> {
+        let cache = self.image.borrow();
+        cache
+            .as_ref()
+            .filter(|(l, _)| *l == look)
+            .map(|(_, img)| img.clone())
+    }
+
+    /// `look` rasterised, from the cache when it is the one last drawn;
+    /// else waiting for the one being rasterised, or drawing it here.
+    fn image(&self, look: Look, area: Rect) -> Result<DynamicImage, String> {
+        if let Some(img) = self.cached(look) {
+            return img;
+        }
+        let waiting = self.pending.borrow_mut().take();
+        let img = match waiting {
+            Some((l, rx)) if l == look => rx.recv().unwrap_or_else(|_| Err(NOT_DRAWN.into())),
+            _ => Self::rasterised(&self.data, look, &self.style, self.cell_px(), area),
+        };
         *self.image.borrow_mut() = Some((look, img.clone()));
         img
+    }
+
+    /// `look` rasterised when it is, without waiting: from the cache, or
+    /// from the one being rasterised; else that is started (off the
+    /// screen's thread) and `None` said.
+    fn image_ready(&self, look: Look, area: Rect) -> Option<Result<DynamicImage, String>> {
+        if let Some(img) = self.cached(look) {
+            return Some(img);
+        }
+        // One figure is rasterised at a time: a look moved past is let
+        // finish before the latest starts, so keys held down start few.
+        let mut pending = self.pending.borrow_mut();
+        if let Some((l, rx)) = pending.as_ref() {
+            let img = match rx.try_recv() {
+                Ok(img) => img,
+                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Disconnected) => Err(NOT_DRAWN.into()),
+            };
+            let l = *l;
+            *pending = None;
+            if l == look {
+                *self.image.borrow_mut() = Some((look, img.clone()));
+                return Some(img);
+            }
+        }
+        let (tx, rx) = channel();
+        let (data, style, px) = (Arc::clone(&self.data), self.style, self.cell_px());
+        std::thread::spawn(move || {
+            let _ = tx.send(Self::rasterised(&data, look, &style, px, area));
+        });
+        *pending = Some((look, rx));
+        None
     }
 
     /// Export the current panel as it is on screen and log it; with the

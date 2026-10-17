@@ -79,7 +79,7 @@ instead of starting a run that can only fail: start from one type
 runs), state the order in the table, a precedence file (`--prior`), or a
 `label<TAB>CL:id` file (`--label-cl`) so the ontology's develops-from links
 order the types (asked again if they still do not). In every menu ↑↓
-choose, Enter or the option's key takes it, and esc cancels.
+choose, Enter or the option's key takes it, and esc or q cancels.
 
 `g`, from any pane, lists the run's family: the run, the annotation rounds
 made from it (`X.L0`, `X.L0.L1`, `X.r2`, …) and the trajectories made from
@@ -291,7 +291,7 @@ ancestor, each marked with its types and cells; a chain of terms that only
 leads on to one term is folded into that term's line (→ opens it, ← folds
 it). `d` switches to the whole ontology around the same term and back. A
 search (`/`) lists the matches in the data's tree, or in the whole ontology
-when none are there, and says so. Mark type A, mark type B, then `>` for "A precedes B" or `-` for
+when none are there, and says so. Mark type A, mark type B, then `>` for "A precedes B" or `u` for
 "unrelated" (`x` stops a running job from any pane); a short
 reason is asked for, as for other edits. Enter on the reason writes the
 statement to the project layer's `precedence.tsv` at once (no save step);
@@ -307,7 +307,7 @@ The figure panels take the order table's place in the middle column while
 they are shown (`v` shows them and steps through them, `V` brings the table
 back). Their keys act while the ordering column has the focus; the ontology
 column keeps its own. With the figures shown, space and `>` only say that
-types are marked in the table, `-` zooms out, and `t` restyles the labels
+types are marked in the table, `+` and `-` zoom as on the cell map, and `t` restyles the labels
 (with the table shown, `t` says so and `T` leaves the order view). `f` and
 `R` belong to the figures too. The
 panels are drawn from the run's trajectory outputs, the same set the bench summary shows:
@@ -346,7 +346,8 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
   diffusion map at the pair last shown, the order and the connectivity as
   thumbnails, drawn whole with the labels and colouring on screen. The
   arrows choose one, Enter, space or its number (1-9) opens it in the pane, `p` exports it as its tile
-  shows it, `f` opens the exports strip, `V` goes back to the order table,
+  shows it, `f` says the exports strip is a figure's (it is drawn under a
+  figure, not over the grid), `V` goes back to the order table,
   and esc or `w` closes the grid on the figure it came from. `t` and `c`
   also work there.
 - The direct prior edges with their connectivity, order agreement and verdict
@@ -372,7 +373,9 @@ entry by path, not by row). The list is written to a temporary file and
 renamed into place, and a list that cannot be read is set aside as
 `saved.json.bad` and reported, never treated as empty. Each entry records the
 panel, the manifest it came from, and each file's absolute path, size,
-modification time and content hash. A strip in the TUI (`f`) shows the list;
+modification time and content hash. A strip in the TUI (`f`) shows the list, under the figure, which gives it
+rows down to the strip's selected one (a pane too short for even that keeps
+the figure, and the strip's keys say so);
 an entry can be moved (`M`; nothing is replaced, and a failed move is undone),
 removed from the list (`d`), or removed with its files (`D`, which deletes
 only on a second `D` on the same export). Exporting (`p`), deleting (`D`) and

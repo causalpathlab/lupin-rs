@@ -38,7 +38,10 @@ struct PaneLogger(log::LevelFilter);
 
 impl log::Log for PaneLogger {
     fn enabled(&self, m: &log::Metadata) -> bool {
-        m.level() <= self.0
+        // The SVG renderer's notes (a font it falls back from) are noise
+        // in the pane, unless asked for with -v.
+        let svg_note = m.target().starts_with("usvg") && self.0 < log::LevelFilter::Debug;
+        m.level() <= self.0 && !svg_note
     }
     fn log(&self, r: &log::Record) {
         if self.enabled(r.metadata()) {
@@ -86,12 +89,7 @@ pub fn run_trajectory(t: &crate::trajectory::run::TrajectoryArgs) -> Result<()> 
     a.obo.clone_from(&t.obo);
     a.label_cl.clone_from(&t.label_cl);
     a.graphics = t.graphics;
-    let run_with = order::TrajectoryRun {
-        argv: t.child_argv(),
-        out: t.out.as_deref().map(str::to_string),
-        labels: None,
-    };
-    run(&a, Some(run_with))
+    run(&a, Some(order::TrajectoryRun::of(t)))
 }
 
 /// Run the TUI on `args`; with `trajectory`, it opens on the order view and
@@ -191,7 +189,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     let target = annotated_path(&loaded.file, &args.out);
     let mut app = App::new(args, loaded.file.clone(), target.clone(), tree);
     app.fixed_clusters = loaded.manifest.cluster.clusters.is_some();
-    app.out_chosen = out_chosen;
+    (app.out_chosen, app.out_typed) = (out_chosen, out_chosen);
     app.trajectory = trajectory.unwrap_or_default();
     if !app.args.markers.is_empty() {
         app.original = round::panel_sets(&app.args.markers)?;
@@ -203,20 +201,12 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     app.hidden = genes::GeneFilter::load(&search)?;
     app.mixed = ontology::Mixed::load(&search)?;
     app.data_search = search;
-    // Pick up where an earlier session left this prefix: its latest round.
-    // The trajectory TUI starts from the manifest named instead, as the
-    // batch run would.
-    if target.is_file() && !start_in_order {
-        let (latest, _) = crate::manifest::rounds::chain_rounds(&target);
-        app.open(&latest);
-    }
+    // Annotate picks up where an earlier session left this prefix; else a
+    // run that is already annotated shows its round in the cluster panes
+    // (the trajectory then reads the same labels).
     app.trajectory_tui = start_in_order;
+    app.open_start(loaded.manifest.annotate.argmax.is_some());
     if start_in_order {
-        // A run that is already annotated shows its round in the cluster
-        // panes; the trajectory then reads the same labels.
-        if loaded.manifest.annotate.argmax.is_some() {
-            app.open(&loaded.file);
-        }
         app.focus = app::Focus::Tree;
         app.toggle_order(true);
         // The ordering is this view's main job: start there.
@@ -231,8 +221,14 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     app.shift_enter = push_keys();
     let result = (|| -> Result<()> {
         // Drawn when something changed: a key, a resize, the log, the status
-        // or a rescoring starting or ending.
+        // or a rescoring starting or ending; and each second a job runs.
+        // Every frame goes out at once, the figures as last drawn while a
+        // new one is rasterised off this thread; the screen is drawn again
+        // shortly until it is in (`behind`).
+        app.quick_frame.set(true);
         let mut dirty = true;
+        let mut behind = false;
+        let mut drawn = std::time::Instant::now();
         while !app.quit {
             let (logged, status) = (app.log.len(), app.status.clone());
             let rescoring = app.rescoring.is_some();
@@ -242,10 +238,14 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
             dirty |= app.log.len() != logged
                 || app.status != status
                 || app.rescoring.is_some() != rescoring
-                || app.child.as_ref().map(|r| r.progress.reported_at) != progress;
-            if dirty {
+                || app.child.as_ref().map(|r| r.progress.reported_at) != progress
+                || app.redraw_due(drawn.elapsed());
+            if dirty || behind {
+                app.frame_behind.set(false);
                 terminal.draw(|f| ui::draw(f, &app))?;
+                behind = app.frame_behind.get();
                 dirty = false;
+                drawn = std::time::Instant::now();
             }
             if let Some(want) = app.want_file.take() {
                 // The file browser opens in a popup over what asked for it.
@@ -274,7 +274,11 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
             }
             // Every event already waiting is handled before the next draw, so
             // a held key draws only where it ends.
-            let mut wait = Duration::from_millis(150);
+            // A job that has ended is read before the next key.
+            if app.job_ended() {
+                continue;
+            }
+            let mut wait = Duration::from_millis(if behind { 30 } else { 150 });
             while !app.quit && app.want_file.is_none() && event::poll(wait)? {
                 wait = Duration::ZERO;
                 match event::read()? {
