@@ -2926,6 +2926,28 @@ fn a_jobs_progress_reads_with_single_spaces() {
 }
 
 #[test]
+fn the_jobs_popup_wraps_its_latest_log_line_rather_than_cut_it() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    app.push_log(
+        "[2026 INFO lupin] Running cluster × marker enrichment: 3 clusters × 4 types, with nulls drawn many times over and ending here"
+            .into(),
+    );
+    // The popup's rows, between its thick borders.
+    let popup: String = drawn(&app)
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(160)
+        .map(|r| r.iter().collect::<String>())
+        .filter_map(|r| Some(r.split('┃').nth(1)?.to_string()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(popup.contains("Running cluster"), "{popup}");
+    assert!(popup.contains("ending here"), "{popup}");
+    app.stop();
+}
+
+#[test]
 fn the_header_names_a_manifest_without_a_leading_dot() {
     use super::super::ui::shown_path;
     assert_eq!(

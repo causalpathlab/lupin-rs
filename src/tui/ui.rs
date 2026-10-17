@@ -216,7 +216,7 @@ fn draw_failed(f: &mut Frame, app: &App) {
 }
 
 /// The running job's popup: what it is, its stage, a bar, the time so far
-/// and left, and its latest log line.
+/// and left, and its latest log line over the two rows below.
 fn draw_progress(f: &mut Frame, app: &App) {
     if app.progress_hidden || app.failed.is_some() {
         return;
@@ -238,7 +238,14 @@ fn draw_progress(f: &mut Frame, app: &App) {
     let inner = block.inner(area);
     f.render_widget(Clear, area);
     f.render_widget(block, area);
-    let [stage, bar, times, _, last] = Layout::vertical([Constraint::Length(1); 5]).areas(inner);
+    let [stage, bar, times, _, last] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .areas(inner);
     let stage_text = match &p.report {
         Some(r) if !r.stage.is_empty() => r.stage.as_str(),
         _ => "starting…",
@@ -273,9 +280,17 @@ fn draw_progress(f: &mut Frame, app: &App) {
         Some((_, m)) => m.trim_start(),
         None => latest,
     };
-    let tail: String = msg.chars().take(last.width as usize).collect();
+    // Wrapped between words over the rows left, cut only past them.
+    let lines: Vec<Line> = wrap(
+        msg,
+        usize::from(last.width.max(1)),
+        usize::from(last.height),
+    )
+    .into_iter()
+    .map(Line::from)
+    .collect();
     f.render_widget(
-        Paragraph::new(tail).style(POPUP.fg(Color::Indexed(245))),
+        Paragraph::new(lines).style(POPUP.fg(Color::Indexed(245))),
         last,
     );
 }
