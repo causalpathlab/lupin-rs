@@ -130,3 +130,16 @@ fn a_scan_that_ends_early_leaves_nothing_reading() {
     assert!(p.entries.iter().all(|e| !e.pending), "none still reading");
     assert!(!p.hint("q").0.contains("reading"), "{}", p.hint("q").0);
 }
+
+#[test]
+fn a_round_export_with_its_type_column_first_reads_as_type_then_gene() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("r1.celltype_markers.tsv");
+    std::fs::write(
+        &file,
+        "celltype\tgene\tsource\tlog2fc\nT1\tG1\tpanel\t1.5\nT1\tG2\tpanel\t\nT2\tG3\tadded\t2.0\n",
+    )
+    .unwrap();
+    let p = read_panel(&file, None).expect("a panel");
+    assert_eq!((p.types, p.genes), (2, 3), "the header names its columns");
+}

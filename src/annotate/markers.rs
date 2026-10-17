@@ -33,23 +33,37 @@ pub fn label_key(label: &str) -> String {
 /// line with a tab splits on its tabs, one without is CSV (a quoted label
 /// keeps its commas), and cells keep their columns, unquoted. Blank lines,
 /// `#`/`%` comments and a `gene`/`symbol` header are skipped, and skipped rows
-/// are counted in a warning. Reads through gzip.
+/// are counted in a warning. A header that names the type column first
+/// (`celltype<TAB>gene`, as a round's `celltype_markers.tsv` export has it)
+/// reads the two columns the other way round. Reads through gzip.
 pub fn read_marker_pairs(path: &str) -> anyhow::Result<Vec<(Box<str>, Box<str>)>> {
     Ok(key_labels(
         read_membership_pairs(path).context("reading marker panel")?,
     ))
 }
 
-/// Pairs with their labels in [`label_key`] form, dropping a label that keys
-/// to nothing (`_`, `,`).
-pub fn key_labels(pairs: Vec<(Box<str>, Box<str>)>) -> Vec<(Box<str>, Box<str>)> {
+/// A panel's rows as `(gene, label)` pairs, the label in [`label_key`] form,
+/// dropping a label that keys to nothing (`_`, `,`). Rows under a
+/// type-then-gene header are turned round, the header dropped.
+pub fn key_labels(mut pairs: Vec<(Box<str>, Box<str>)>) -> Vec<(Box<str>, Box<str>)> {
+    let type_first = pairs.first().is_some_and(|(a, b)| names_type_then_gene(a, b));
+    if type_first {
+        pairs.remove(0);
+    }
     pairs
         .into_iter()
+        .map(|(a, b)| if type_first { (b, a) } else { (a, b) })
         .filter_map(|(gene, label)| {
             let label = label_key(&label);
             (!label.is_empty()).then(|| (gene, label.into_boxed_str()))
         })
         .collect()
+}
+
+/// Whether a header row names a cell-type column, then a gene column.
+fn names_type_then_gene(first: &str, second: &str) -> bool {
+    let is = |cell: &str, names: &[&str]| names.iter().any(|n| cell.eq_ignore_ascii_case(n));
+    is(first, &["celltype", "cell_type", "type", "label"]) && is(second, &["gene", "symbol"])
 }
 
 /// [`read_marker_pairs`] as owned `(gene, cell type)` strings.
