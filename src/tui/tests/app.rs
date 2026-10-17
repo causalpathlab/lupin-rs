@@ -361,6 +361,24 @@ fn menu(app: &App) -> Option<&super::super::menu::Menu> {
 }
 
 #[test]
+fn a_menus_long_options_are_shown_whole_when_the_screen_has_room() {
+    use super::super::menu::{numbered, Action, Menu};
+    let long = |n: usize| format!("{}end)", "x".repeat(n));
+    let choices = |label: String| numbered(vec![(label, String::new(), Action::ListRuns)]);
+    // The runs list takes the screen's width.
+    let mut app = app_with_terms(false);
+    let mut m = Menu::new("runs", choices(long(120)), "");
+    m.wide = true;
+    app.menu = Some(m);
+    assert!(drawn(&app).contains("xend)"), "{}", drawn(&app));
+    // A menu over the order view's clusters goes past the pane to fit.
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    app.menu = Some(Menu::new("how?", choices(long(70)), ""));
+    assert!(drawn(&app).contains("xend)"), "{}", drawn(&app));
+}
+
+#[test]
 fn with_nothing_to_order_r_asks_how_and_a_root_goes_on_to_the_run() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = order_app(dir.path(), &["CT1", "CT2", "CT3"]);

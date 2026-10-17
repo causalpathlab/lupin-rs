@@ -1525,7 +1525,22 @@ fn draw_prompt(f: &mut Frame, app: &App) {
 /// A choice popup within `over`: the question, the numbered options with
 /// the selected one highlighted, and what choosing it does.
 fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
-    let width = over.width.saturating_sub(2).clamp(20.min(over.width), 100);
+    let option = |o: &super::menu::Choice| format!(" {}  {}", o.key, o.label).chars().count();
+    // Wide enough for its longest option: past `over`, or past the usual
+    // 100 columns of a wide menu, as far as the screen goes.
+    let need = m.choices.iter().map(option).max().unwrap_or(0) as u16 + 2;
+    let mut width = over.width.saturating_sub(2).clamp(20.min(over.width), 100);
+    let over = if need > width {
+        let screen = f.area();
+        width = need.min(screen.width.saturating_sub(2));
+        Rect {
+            x: screen.x,
+            width: screen.width,
+            ..over
+        }
+    } else {
+        over
+    };
     let inner = width.saturating_sub(2).max(1) as usize;
     let mut lines: Vec<Line> = wrap(&m.question, inner, 6)
         .into_iter()
