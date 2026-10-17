@@ -1757,3 +1757,21 @@ fn on_the_map_the_trajectory_tuis_bar_names_capital_t_for_the_order() {
     press(&mut app, KeyCode::Char('T'));
     assert!(app.in_order(), "T opens the order view");
 }
+
+#[test]
+fn the_annotate_guide_names_the_maps_grid_and_exports_strip() {
+    let text: String = super::super::ui::guide(false)
+        .filter(|(section, _)| *section == "tree")
+        .flat_map(|(_, keys)| keys.iter())
+        .map(|(key, what)| format!("{key} {what}\n"))
+        .collect();
+    for want in [
+        "an open branch",
+        "w all figures",
+        "f the exports strip",
+        "M move",
+        "D D delete",
+    ] {
+        assert!(text.contains(want), "{want}: {text}");
+    }
+}

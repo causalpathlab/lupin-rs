@@ -353,10 +353,10 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         &[
             ("↑↓", "select a node"),
             ("enter", "label the cluster with it"),
-            ("← →", "fold / unfold; → on a panel leaf goes on into the Cell Ontology at its term (ontology: up / into a term; in the data: → opens a folded chain, then the term in place on all its Cell Ontology children, ▸ more to show, ← closes)"),
+            ("← →", "fold / unfold; → on a panel leaf or an open branch goes on into the Cell Ontology at its term (ontology: up / into a term; in the data: → opens a folded chain, then the term in place on all its Cell Ontology children, ▸ more to show, ← closes)"),
             ("h", "in the data's tree: hide / show the terms not in the data below the selected term (◈ hiding)"),
             ("o", "panel tree ↔ the Cell Ontology"),
-            ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, p export) / the tree again"),
+            ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, w all figures, p export, f the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, R re-check) / the tree again"),
             ("d", "Cell Ontology: the terms in the data (the labels, under their common ancestor) ↔ all"),
             (
                 "/",
