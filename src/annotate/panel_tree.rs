@@ -4,7 +4,8 @@
 //! [`ClTerms`]) it shares with another panel type, nearest first, so the
 //! tree offers every level worth calling a cluster at: a fine type, or a
 //! class over several. A type the ontology has only a kind of term for is a
-//! leaf below that term. Without an ontology, the groups of types that share
+//! leaf below that term. A class that adds no level is left out: one no type
+//! ends up below, or one whose types are all its one child term's. Without an ontology, the groups of types that share
 //! markers ([`TypeTree::from_markers`]) stand over their types. Folding a
 //! node only hides its subtree; it changes no label.
 //!
@@ -148,8 +149,66 @@ impl PanelTree {
                 tree.push_leaf(m, parent);
             }
         }
+        tree.prune();
         tree.link();
         Some(tree)
+    }
+
+    /// Leave out the classes that add no level: one with no panel type
+    /// below it (its types all hang under nearer classes on other paths), and
+    /// one with a single way down to another term, whose types are that
+    /// term's. Before [`Self::link`]: only the parents are set.
+    fn prune(&mut self) {
+        let n = self.nodes.len();
+        let mut below = vec![0usize; n];
+        for i in 0..n {
+            if self.nodes[i].labels.is_empty() {
+                continue;
+            }
+            let mut at = Some(i);
+            while let Some(j) = at {
+                below[j] += 1;
+                at = self.nodes[j].parent;
+            }
+        }
+        // Per node, its ways down; one to a type with no term of its own is
+        // that type's only place on the ontology, so it is no way through.
+        let mut ways = vec![0usize; n];
+        let mut to_termless = vec![false; n];
+        for i in (0..n).filter(|&i| below[i] > 0) {
+            if let Some(p) = self.nodes[i].parent {
+                ways[p] += 1;
+                to_termless[p] |= self.nodes[i].cl_id.is_none();
+            }
+        }
+        let through = |i: usize| ways[i] == 1 && !to_termless[i];
+        let keep: Vec<bool> = (0..n)
+            .map(|i| below[i] > 0 && (!self.nodes[i].labels.is_empty() || !through(i)))
+            .collect();
+        // Each node's nearest kept ancestor, and where a kept node moves to.
+        let up = |mut p: Option<usize>| {
+            while let Some(j) = p.filter(|&j| !keep[j]) {
+                p = self.nodes[j].parent;
+            }
+            p
+        };
+        let parents: Vec<Option<usize>> = (0..n).map(|i| up(self.nodes[i].parent)).collect();
+        let mut at = vec![None; n];
+        for (k, i) in (0..n).filter(|&i| keep[i]).enumerate() {
+            at[i] = Some(k);
+        }
+        let nodes = std::mem::take(&mut self.nodes);
+        self.nodes = (nodes.into_iter().enumerate())
+            .filter(|(i, _)| keep[*i])
+            .map(|(i, mut node)| {
+                node.parent = parents[i].and_then(|p| at[p]);
+                node
+            })
+            .collect();
+        // A panel type's node holds it, so it is kept.
+        for v in self.of_label.values_mut() {
+            *v = at[*v].unwrap_or(*v);
+        }
     }
 
     /// The groups of a marker-sharing [`TypeTree`], each over its types.
