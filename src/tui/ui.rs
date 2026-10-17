@@ -718,10 +718,13 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
     } else {
         "Leiden on the cell embedding"
     };
-    let keys = format!(
-        " ↑↓ row · ←→ change · enter picks or edits · {} runs · esc close ",
-        app.run_keys()
-    );
+    // Short enough for the popup's 80 columns.
+    let runs = if app.shift_enter {
+        "shift+enter"
+    } else {
+        "enter on ▶ run"
+    };
+    let keys = format!(" ↑↓ row · ←→ change · enter picks or edits · {runs} runs · esc close ");
     let block = popup(format!(" annotate · {source} "), keys);
     let inner = block.inner(area);
     f.render_widget(Clear, area);

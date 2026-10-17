@@ -1775,3 +1775,15 @@ fn the_annotate_guide_names_the_maps_grid_and_exports_strip() {
         assert!(text.contains(want), "{want}: {text}");
     }
 }
+
+#[test]
+fn the_forms_keys_fit_its_popup_with_or_without_shift_enter() {
+    for shift_enter in [false, true] {
+        let mut app = app_with_terms(false);
+        app.shift_enter = shift_enter;
+        press(&mut app, KeyCode::Char('r'));
+        assert!(app.form.is_some());
+        let screen = drawn(&app);
+        assert!(screen.contains("esc close"), "shift+enter {shift_enter}");
+    }
+}
