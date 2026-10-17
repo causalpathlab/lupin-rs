@@ -160,6 +160,35 @@ fn the_planted_type_explains_most_of_its_cluster() {
     );
 }
 
+#[test]
+fn types_sharing_markers_split_at_most_the_whole_cluster() {
+    // Four genes both types mark, far up; three more only type 1 marks, flat.
+    // The t's tail is flat, so either effect alone fits the shared genes
+    // almost as badly as neither, and each type's loss on removal alone
+    // counts nearly all of them; type 1's flat genes take from the total.
+    let mut types_of = vec![vec![0, 1]; 4];
+    types_of.extend([vec![1], vec![1], vec![1]]);
+    let panel = model::Panel::new(types_of, 2, &[0.05; 7]);
+    let cluster = model::Cluster {
+        x: [4.0, 4.0, 4.0, 4.0, 0.0, 0.0, 0.0].to_vec(),
+        sampling: vec![0.05; 7],
+    };
+    let data = model::ClusterLogFold {
+        panel: &panel,
+        cluster: &cluster,
+    };
+    let shares = data.explained(&[2.0, 2.0]);
+    assert!(
+        shares.iter().all(|s| (0.0..=1.0).contains(s)),
+        "shares {shares:?}"
+    );
+    assert!(
+        shares.iter().sum::<f32>() <= 1.0 + 1e-6,
+        "shares {shares:?}"
+    );
+    assert!(shares[0] > shares[1], "shares {shares:?}");
+}
+
 /// A fit with the given PIPs, effects and shares, every type in its own
 /// credible set except those with PIP 0.
 fn fit_of(pip: &[f32], theta: &[f32], explained: &[f32]) -> ClusterFit {

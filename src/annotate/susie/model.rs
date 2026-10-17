@@ -156,23 +156,34 @@ impl ClusterLogFold<'_> {
     }
 
     /// Each type's share of the log-likelihood θ gains over the background:
-    /// the log-likelihood lost when its effect alone is removed, over the
-    /// log-likelihood θ gains on θ = 0 (0 for types without an effect).
+    /// the log-likelihood lost when its effect alone is removed (0 if it
+    /// gains nothing), over the log-likelihood θ gains on θ = 0, or over the
+    /// losses' sum when that is larger (0 for types without an effect). On
+    /// markers two types share, the t's flat tail can make either removal
+    /// alone cost nearly what removing both does, so the losses can count the
+    /// gain more than once; dividing by their sum then splits the gain
+    /// between them as their losses stand, keeping every share in [0, 1],
+    /// their sum at most 1 and their order in the cluster.
     pub(super) fn explained(&self, theta: &[f32]) -> Vec<f32> {
         let total = self.log_lik(theta) - self.log_lik(&vec![0.0; theta.len()]);
+        if total <= 0.0 {
+            return vec![0.0; theta.len()];
+        }
         let etas = self.panel.etas(theta);
-        (0..theta.len())
+        let lost: Vec<f64> = (0..theta.len())
             .map(|c| {
-                if theta[c] <= 0.0 || total <= 0.0 {
+                if theta[c] <= 0.0 {
                     return 0.0;
                 }
                 let lost: f64 = self.panel.genes_of[c]
                     .iter()
                     .map(|&g| self.term(g, etas[g]) - self.term(g, etas[g] - theta[c]))
                     .sum();
-                (lost / total).max(0.0) as f32
+                lost.max(0.0)
             })
-            .collect()
+            .collect();
+        let over = total.max(lost.iter().sum());
+        lost.iter().map(|&l| (l / over) as f32).collect()
     }
 
     /// The change in log-likelihood from adding `effect` to type c's markers,
