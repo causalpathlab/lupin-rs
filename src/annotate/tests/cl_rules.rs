@@ -11,6 +11,7 @@ fn without_a_rules_file_matching_is_literal() {
     assert_eq!(r.normalise("T Cells"), "t cells", "no plural rule");
     assert_eq!(r.singular("t cells"), "t cells");
     assert!(!r.any_word_order);
+    assert!(r.implied.suffixes.is_empty(), "no word is implied");
     assert!(!r.classes.is_class(&["cellxgene_subset".into()]));
 }
 
@@ -33,6 +34,7 @@ fn the_shipped_rules_reproduce_the_matching_lupin_had() {
         "not `ss`, not short words"
     );
     assert!(r.any_word_order);
+    assert_eq!(r.implied.suffixes, ["cell"]);
     assert!(r.classes.is_class(&["blood_and_immune_upper_slim".into()]));
     assert!(!r
         .classes
