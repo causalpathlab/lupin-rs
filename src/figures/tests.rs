@@ -487,7 +487,9 @@ fn a_table_that_repeats_a_name_gives_each_cell_its_own_row() {
 
 /// The figures of the round `l`.
 fn of_round(l: &crate::manifest::run::Loaded) -> CellFigures {
-    CellFigures::of_round(l, &crate::manifest::rounds::read_cells(l).unwrap())
+    let cells = crate::manifest::rounds::read_cells(l).unwrap();
+    let score = crate::manifest::rounds::read_score_cells(l, &cells).unwrap();
+    CellFigures::of_round(l, &cells, score)
 }
 
 /// A round on four cells in two clusters, labelled A and B, with a UMAP.
@@ -664,4 +666,67 @@ fn a_round_drawn_by_pseudotime_it_lacks_is_grey_not_a_panic() {
     let f = of_round(&round_with_layout(dir.path()));
     let fig = draw(&f, Panel::Layout { k: 0 }, &Style::default());
     assert!(fig.svg.contains("<svg"));
+}
+
+/// [`round`] with the projection score's per-cell table beside it: c0, c1
+/// called B with margins 0.1 and 0.9, c2 called A; c3 has no row.
+fn round_with_score(dir: &Path) -> crate::manifest::run::Loaded {
+    use legume_numeric::matrix::parquet::{write_named_table, Column};
+    let mut l = round(dir, true);
+    let cells: Vec<Box<str>> = ["c0", "c1", "c2"].map(Box::from).to_vec();
+    let call: Vec<Box<str>> = ["B", "B", "A"].map(Box::from).to_vec();
+    let table = dir.join("r.marker_score.parquet");
+    write_named_table(
+        &table.to_string_lossy(),
+        "cell",
+        &cells,
+        &[
+            ("cluster".into(), Column::I32(&[0, 0, 1])),
+            ("call".into(), Column::Str(&call)),
+            ("margin".into(), Column::F32(&[0.1, 0.9, 0.5])),
+        ],
+    )
+    .unwrap();
+    l.manifest.annotate.marker_score = Some("r.marker_score.parquet".into());
+    l
+}
+
+#[test]
+fn a_round_with_the_score_colours_by_its_calls_and_their_margins() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = of_round(&round_with_score(dir.path()));
+    let colourings = f.colourings();
+    assert!(colourings.contains(&Colouring::Call), "{colourings:?}");
+    assert!(colourings.contains(&Colouring::Margin), "{colourings:?}");
+
+    let (calls, legend) = f.cell_colours(Colouring::Call);
+    assert_eq!(calls[0], calls[1], "both called B");
+    assert_ne!(calls[0], calls[2], "A apart");
+    assert!(
+        calls[3].is_none(),
+        "a cell the score has no row for is grey"
+    );
+    let names: Vec<&str> = legend.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["A", "B"]);
+
+    let (margins, _) = f.cell_colours(Colouring::Margin);
+    assert!(margins[..3].iter().all(Option::is_some) && margins[3].is_none());
+    assert_ne!(margins[0], margins[1], "a wide margin from a narrow one");
+
+    let style = Style {
+        colouring: Colouring::Call,
+        ..Style::opening(&f)
+    };
+    let svg = draw(&f, Panel::Layout { k: 0 }, &style).svg;
+    assert!(
+        svg.contains(">B</text>"),
+        "coloured by call, the labels name the calls"
+    );
+}
+
+#[test]
+fn a_round_without_the_score_has_no_call_or_margin_colouring() {
+    let dir = tempfile::tempdir().unwrap();
+    let colourings = of_round(&round_with_layout(dir.path())).colourings();
+    assert!(!colourings.contains(&Colouring::Call) && !colourings.contains(&Colouring::Margin));
 }

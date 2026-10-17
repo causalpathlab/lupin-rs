@@ -122,19 +122,37 @@ impl ClusterFit {
     /// the cluster each explains; `None` without a credible set.
     #[must_use]
     pub fn call(&self) -> Option<usize> {
-        self.credible_sets.iter().flatten().copied().reduce(|a, b| {
-            let (pa, pb) = (self.pip[a], self.pip[b]);
-            let b_wins = if (pa - pb).abs() < 0.01 {
-                self.explained[b] > self.explained[a]
-            } else {
-                pb > pa
-            };
-            if b_wins {
-                b
-            } else {
-                a
-            }
-        })
+        let mut members: Vec<usize> = self.credible_sets.iter().flatten().copied().collect();
+        call_order(&mut members, |&k| (self.pip[k], self.explained[k]));
+        members.first().copied()
+    }
+}
+
+/// PIPs closer than this are tied in SuSiE's call, the tie broken by the
+/// share of the cluster each type explains.
+const PIP_TIE: f32 = 0.01;
+
+/// Put `items` in SuSiE's call order by their (PIP, explained share), best
+/// first: by PIP, each run of PIPs within [`PIP_TIE`] below the run's first
+/// taken as tied and ordered by the larger explained share. A total order
+/// (the tie alone is not transitive); a NaN PIP comes last.
+pub fn call_order<T>(items: &mut [T], key: impl Fn(&T) -> (f32, f32)) {
+    let pip = |t: &T| {
+        Some(key(t).0)
+            .filter(|p| !p.is_nan())
+            .unwrap_or(f32::NEG_INFINITY)
+    };
+    items.sort_by(|a, b| pip(b).total_cmp(&pip(a)));
+    let mut start = 0;
+    while start < items.len() {
+        let lead = pip(&items[start]);
+        // At least the lead itself, whose own gap is NaN when it is −∞.
+        let end = start
+            + items[start..]
+                .partition_point(|t| lead - pip(t) < PIP_TIE)
+                .max(1);
+        items[start..end].sort_by(|a, b| key(b).1.total_cmp(&key(a).1));
+        start = end;
     }
 }
 

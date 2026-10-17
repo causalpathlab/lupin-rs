@@ -12,6 +12,14 @@ ways (`--projection`):
   with a gene embedding, and for embedding files given directly (`--feature-embedding`), whose
   table lupin cannot tell. It is kept for one release, for comparison.
 
+Under `--method auto` (the default) a run that decodes cells is called by the enrichment, and
+the score rides beside it as a second reading (an explicit `--method enrichment` skips it): the
+round records the score's per-cell table
+(`annotate.marker_score`), the round view and `review --json` show both, and every type's
+evidence from every method goes to `{out}.cluster_evidence.parquet`
+(`annotate.cluster_evidence`). The score's own call needs `--method projection` or
+`--projection score`.
+
 ---
 
 ## 0. The embedding marker score (`--projection score`)

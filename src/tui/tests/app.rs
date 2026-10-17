@@ -70,7 +70,7 @@ fn app_with_terms(terms: bool) -> App {
         loose_cells: 0,
         decided: std::collections::BTreeSet::new(),
         rescorable: false,
-        score_calls: false,
+        by: Default::default(),
         figures: Default::default(),
     });
     app.focus = Focus::Genes;
@@ -904,19 +904,12 @@ fn drawn(app: &App) -> String {
 
 #[test]
 fn a_susie_candidate_shows_its_pip_and_fold() {
-    use super::super::round::{Candidate, SusieEvidence};
+    use super::super::round::Candidate;
     let mut app = app_with_terms(false);
-    let cand = Candidate {
-        label: "CT1".into(),
-        share: 0.85,
-        susie: Some(SusieEvidence {
-            pip: 1.0,
-            fold: 7.0,
-        }),
-        nes: Some(2.16),
-        p: Some(0.0001),
-        q: Some(0.001),
-    };
+    let mut cand = Candidate::new("CT1", 0.85);
+    let e = &mut cand.evidence;
+    (e.pip, e.fold, e.nes, e.p, e.q) =
+        (Some(1.0), Some(7.0), Some(2.16), Some(0.0001), Some(0.001));
     if let Some(r) = app.round.as_mut() {
         r.clusters[0].candidates = vec![cand.clone()];
     }
@@ -940,20 +933,12 @@ fn the_susie_setting_toggles_the_stage() {
 
 #[test]
 fn a_susie_rounds_cluster_list_shows_the_calls_share_and_fold() {
-    use super::super::round::{Candidate, SusieEvidence};
+    use super::super::round::Candidate;
     let mut app = app_with_terms(false);
     if let Some(r) = app.round.as_mut() {
-        r.clusters[0].candidates = vec![Candidate {
-            label: "CT1".into(),
-            share: 0.85,
-            susie: Some(SusieEvidence {
-                pip: 1.0,
-                fold: 7.0,
-            }),
-            nes: None,
-            p: None,
-            q: None,
-        }];
+        let mut c = Candidate::new("CT1", 0.85);
+        (c.evidence.pip, c.evidence.fold) = (Some(1.0), Some(7.0));
+        r.clusters[0].candidates = vec![c];
     }
     let screen = drawn(&app);
     // The screen is 160 cells a row; the list's header row names cells and label.
@@ -1007,9 +992,10 @@ fn enter_on_a_cluster_selects_its_type_only_in_a_tree_on_screen() {
         app.focus = Focus::Clusters;
         app
     };
-    // On the panel tree, Enter selects the cluster's type.
+    // On the panel tree, Enter's "on the tree" selects the cluster's type.
     let mut app = with_ct2();
     press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('t'));
     assert_eq!(app.tree.label(app.tree.visible()[app.tree_sel]), "CT2");
     assert!(app.focus == Focus::Tree);
 
@@ -1022,6 +1008,7 @@ fn enter_on_a_cluster_selects_its_type_only_in_a_tree_on_screen() {
     app.focus = Focus::Clusters;
     let before = app.tree_sel;
     press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('t'));
     assert_eq!(app.tree_sel, before, "the hidden panel tree is untouched");
     assert!(app.status.contains("panel"), "{}", app.status);
 }
@@ -1086,18 +1073,7 @@ fn close_bracket_visits_the_flagged_clusters_left_to_decide() {
         genes: vec![("GENE1".into(), 1.0)],
         terms: Vec::new(),
     };
-    let sure = cluster(
-        1,
-        Some("CT1"),
-        vec![Candidate {
-            label: "CT1".into(),
-            share: 1.0,
-            susie: None,
-            nes: None,
-            p: None,
-            q: None,
-        }],
-    );
+    let sure = cluster(1, Some("CT1"), vec![Candidate::new("CT1", 1.0)]);
     let open = cluster(2, None, Vec::new());
     r.clusters.extend([sure, open]);
     app.focus = Focus::Clusters;
@@ -1385,14 +1361,11 @@ fn a_running_jobs_progress_leaves_an_armed_question_on_screen() {
 
 #[test]
 fn a_relabelled_cluster_shows_the_evidence_of_its_new_label() {
-    use super::super::round::{Candidate, Edit, SusieEvidence};
-    let cand = |label: &str, fold| Candidate {
-        label: label.into(),
-        share: 0.5,
-        susie: Some(SusieEvidence { pip: 1.0, fold }),
-        nes: None,
-        p: None,
-        q: None,
+    use super::super::round::{Candidate, Edit};
+    let cand = |label: &str, fold| {
+        let mut c = Candidate::new(label, 0.5);
+        (c.evidence.pip, c.evidence.fold) = (Some(1.0), Some(fold));
+        c
     };
     let mut app = app_with_terms(false);
     if let Some(r) = app.round.as_mut() {
@@ -1525,7 +1498,7 @@ fn the_counts_note_is_the_enrichments_and_not_shown_for_projection() {
 fn a_score_rounds_marker_edits_wait_for_a_new_pass() {
     use super::super::round::Edit;
     let mut app = app_with_terms(false);
-    app.round.as_mut().unwrap().score_calls = true;
+    app.round.as_mut().unwrap().by = Some(crate::annotate::rounds::Method::Score);
     app.edits.push(Edit::Markers {
         label: "CT1".into(),
         genes: vec!["GENE1".into()],
@@ -1538,31 +1511,20 @@ fn a_score_rounds_marker_edits_wait_for_a_new_pass() {
 
 #[test]
 fn the_cluster_list_shows_a_susie_calls_share_not_its_pip() {
-    use super::super::round::{Candidate, SusieEvidence};
+    use super::super::round::Candidate;
     use super::super::ui::{cluster_list_evidence, cluster_list_header};
     // A PIP is a type's inclusion in the cluster's model, near 1 for every
     // type a mixed cluster holds: next to the call it reads as certainty.
-    let cand = Candidate {
-        label: "CT1".into(),
-        share: 0.20,
-        susie: Some(SusieEvidence {
-            pip: 1.0,
-            fold: 12.0,
-        }),
-        nes: None,
-        p: None,
-        q: None,
-    };
+    let mut cand = Candidate::new("CT1", 0.20);
+    (cand.evidence.pip, cand.evidence.fold) = (Some(1.0), Some(12.0));
     assert_eq!(cluster_list_evidence(true, Some(&cand)), ["0.20", "×12.0"]);
     assert_eq!(
         cluster_list_header(true),
         ["", "cells", "label", "explains", "fold", ""],
         "named apart from the enrichment's share, which a rescore puts in its place"
     );
-    let no_susie = Candidate {
-        susie: None,
-        ..cand
-    };
+    let mut no_susie = cand.clone();
+    (no_susie.evidence.pip, no_susie.evidence.fold) = (None, None);
     assert_eq!(
         cluster_list_evidence(true, Some(&no_susie)),
         ["0.20", "—"],
@@ -1665,4 +1627,117 @@ fn a_new_round_keeps_the_tree_chosen_over_the_map_and_the_maps_look() {
     press(&mut app, KeyCode::Char('V'));
     app.open(&file);
     assert!(matches!(app.tree_mode, TreeMode::Panel), "the tree kept");
+}
+
+#[test]
+fn capital_s_sorts_the_candidates_by_the_next_method_and_a_number_picks_what_is_shown() {
+    use super::super::round::Candidate;
+    let mut app = app_with_terms(false);
+    let c = &mut app.round.as_mut().unwrap().clusters[0];
+    c.candidates = vec![
+        Candidate {
+            ranks: [Some(0), None, Some(1)],
+            ..Candidate::new("CT1", 0.6)
+        },
+        Candidate {
+            ranks: [Some(1), None, Some(0)],
+            ..Candidate::new("CT2", 0.3)
+        },
+    ];
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('S'));
+    assert!(app.status.contains("score"), "{}", app.status);
+    press(&mut app, KeyCode::Char('1'));
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Label { label, .. }) if label == "CT2"
+    ));
+    app.prompt = None;
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.status.contains("all"), "{}", app.status);
+}
+
+/// The app with cluster 0's candidates ranked by two methods: CT1 the
+/// enrichment's top, CT2 the score's, CT3 the enrichment's third.
+fn app_with_two_readings() -> App {
+    use super::super::round::Candidate;
+    let mut app = app_with_terms(false);
+    let c = &mut app.round.as_mut().unwrap().clusters[0];
+    let cand = |label: &str, share, ranks: [Option<usize>; 3]| {
+        let mut c = Candidate {
+            ranks,
+            ..Candidate::new(label, share)
+        };
+        (c.evidence.enrichment, c.evidence.score) = (Some(share), ranks[2].map(|_| 0.5));
+        c
+    };
+    c.candidates = vec![
+        cand("CT1", 0.6, [Some(0), None, Some(1)]),
+        cand("CT3", 0.3, [Some(1), None, None]),
+        cand("CT2", 0.1, [Some(2), None, Some(0)]),
+    ];
+    app.focus = Focus::Clusters;
+    app
+}
+
+#[test]
+fn enter_offers_each_methods_top_choices_first_then_the_tree_and_a_name() {
+    let mut app = app_with_two_readings();
+    press(&mut app, KeyCode::Enter);
+    let labels: Vec<String> = app
+        .menu
+        .as_ref()
+        .expect("the label choices")
+        .choices
+        .iter()
+        .map(|c| c.label.clone())
+        .collect();
+    assert_eq!(
+        labels,
+        ["CT1", "CT2", "CT3", "on the tree…", "a name…"],
+        "the methods' tops first"
+    );
+    let screen = drawn(&app);
+    assert!(
+        screen.contains("on the tree") && screen.contains("a name"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("score"),
+        "the highlighted choice's evidence"
+    );
+
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.menu.is_none());
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Label { label, .. }) if label == "CT2"
+    ));
+}
+
+#[test]
+fn a_name_typed_in_the_choices_labels_the_cluster() {
+    let mut app = app_with_two_readings();
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('n'));
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::LabelName { .. })
+    ));
+    app.prompt.as_mut().unwrap().text = "Novel".into();
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Label { label, .. }) if label == "Novel"
+    ));
+}
+
+#[test]
+fn esc_closes_the_choices_and_arrows_move_in_them() {
+    let mut app = app_with_two_readings();
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.menu.as_ref().unwrap().sel, 1);
+    press(&mut app, KeyCode::Esc);
+    assert!(app.menu.is_none());
 }

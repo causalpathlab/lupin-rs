@@ -71,3 +71,243 @@ fn a_score_round_clears_an_earlier_rounds_posterior() {
         "no earlier posterior beside the score's calls"
     );
 }
+
+/// A score round on the toy run, with an enrichment Q table added beside it
+/// (cluster 0: A 0.7, B 0.3; cluster 1: B 1.0): two methods' readings.
+pub(crate) fn round_with_both(dir: &std::path::Path) -> run::Loaded {
+    use legume_numeric::matrix::dense_mat_io::Mat;
+    use legume_numeric::matrix::traits::IoOps;
+    let (manifest, panel) = toy::write_run(dir);
+    let loaded = run::load(&manifest).unwrap();
+    let out = dir.join("run.L1").to_string_lossy().into_owned();
+    annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
+    let round_path = annotated_path(&loaded.file, &out);
+    let q = Mat::from_row_slice(2, 2, &[0.7, 0.3, 0.0, 1.0]);
+    q.to_parquet_with_names(
+        &format!("{out}.cluster_celltype_q.parquet"),
+        (Some(&["K0".into(), "K1".into()][..]), Some("cluster")),
+        Some(&["A".into(), "B".into()]),
+    )
+    .unwrap();
+    let mut round = run::load(&round_path.to_string_lossy()).unwrap();
+    round.manifest.annotate.cluster_celltype_q = Some("run.L1.cluster_celltype_q.parquet".into());
+    round.manifest.save(&round.file).unwrap();
+    run::load(&round_path.to_string_lossy()).unwrap()
+}
+
+#[test]
+fn every_types_evidence_from_every_method_is_one_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut round = round_with_both(dir.path());
+    let cells = crate::manifest::rounds::read_cells(&round).unwrap();
+    let rows = crate::manifest::rounds::type_evidence(&round, &cells).unwrap();
+    let get = |k: u32, l: &str| {
+        rows.iter()
+            .find(|r| r.cluster == k && r.label == l)
+            .unwrap()
+    };
+    assert_eq!(
+        (get(0, "A").enrichment, get(0, "A").score),
+        (Some(0.7), Some(1.0))
+    );
+    assert_eq!(
+        get(0, "B").enrichment,
+        Some(0.3),
+        "the enrichment's runner-up"
+    );
+    assert_eq!(
+        get(0, "B").score,
+        Some(0.0),
+        "the score called none of cluster 0 B"
+    );
+    assert_eq!(
+        (get(1, "B").enrichment, get(1, "B").score),
+        (Some(1.0), Some(1.0))
+    );
+
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::rounds::write_summary(&mut round, &out).unwrap();
+    let rel = round
+        .manifest
+        .annotate
+        .cluster_evidence
+        .as_deref()
+        .expect("recorded");
+    let path = resolve(&round.dir, rel);
+    let fields = legume_numeric::matrix::parquet::peek_parquet_field_names(&path).unwrap();
+    for f in [
+        "cluster",
+        "celltype",
+        "share",
+        "nes",
+        "p",
+        "q",
+        "pip",
+        "fold",
+        "explained",
+        "score",
+    ] {
+        assert!(fields.iter().any(|x| x.as_ref() == f), "{f} in {fields:?}");
+    }
+}
+
+#[test]
+fn beside_an_enrichment_the_score_takes_its_cells_and_clusters() {
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, panel) = toy::write_run(dir.path());
+    let loaded = run::load(&manifest).unwrap();
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    // The enrichment's cells in its own order, one cell of the run left out,
+    // in clusters of its own numbering.
+    let names: Vec<Box<str>> = (0..20)
+        .rev()
+        .filter(|&i| i != 3)
+        .map(|i| format!("c{i:02}").into())
+        .collect();
+    let groups: Vec<usize> = names
+        .iter()
+        .map(|n| usize::from(n.as_ref() < "c10") * 7)
+        .collect();
+    let table = score_beside(&loaded, &panel, &out, &names, &groups)
+        .unwrap()
+        .expect("the run decodes cells");
+    let (strings, _) = read_table_columns(&table, &["cell", "call"], &[]).unwrap();
+    assert_eq!(strings[0].len(), 19, "the enrichment's cells only");
+    for (cell, call) in strings[0].iter().zip(&strings[1]) {
+        let want = if cell.as_ref() < "c10" { "A" } else { "B" };
+        assert_eq!(call.as_ref(), want, "{cell}");
+    }
+}
+
+#[test]
+fn a_run_that_does_not_decode_has_no_score_beside_its_enrichment() {
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, panel) = toy::write_run(dir.path());
+    let mut loaded = run::load(&manifest).unwrap();
+    loaded.manifest.outputs.feature_embedding = None;
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    let names: Vec<Box<str>> = vec!["c00".into()];
+    assert!(score_beside(&loaded, &panel, &out, &names, &[0])
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn each_method_ranks_the_types_it_puts_forward() {
+    use crate::annotate::rounds::Method;
+    let dir = tempfile::tempdir().unwrap();
+    let round = round_with_both(dir.path());
+    let cells = crate::manifest::rounds::read_cells(&round).unwrap();
+    let rows = crate::manifest::rounds::type_evidence(&round, &cells).unwrap();
+    let k0: Vec<_> = rows.iter().filter(|r| r.cluster == 0).cloned().collect();
+    let labels =
+        |m: Method| -> Vec<String> { m.ranked(&k0).iter().map(|r| r.label.clone()).collect() };
+    assert_eq!(labels(Method::Enrichment), ["A", "B"]);
+    assert_eq!(
+        labels(Method::Score),
+        ["A"],
+        "a type no cell was called is not put forward"
+    );
+    assert!(labels(Method::Susie).is_empty(), "SuSiE did not run");
+}
+
+#[test]
+fn review_json_gives_each_methods_top_and_every_types_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let round = round_with_both(dir.path());
+    let v =
+        serde_json::to_value(crate::manifest::rounds::review_json(&round, &[]).unwrap()).unwrap();
+    let k0 = &v["0"];
+    assert_eq!(k0["tops"]["enrichment"], "A");
+    assert_eq!(k0["tops"]["score"], "A");
+    assert!(k0["tops"].get("susie").is_none(), "{}", k0["tops"]);
+    let a = k0["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["celltype"] == "A")
+        .expect("A's evidence");
+    assert!((a["share"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+    assert_eq!(a["score"], 1.0);
+    assert!(a.get("pip").is_none(), "no SuSiE reading");
+    assert!(k0.get("digest").is_some() && k0.get("history").is_some());
+}
+
+#[test]
+fn the_scores_calls_take_the_panels_spelling() {
+    use legume_numeric::matrix::parquet::{write_named_table, Column};
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, _) = toy::write_run(dir.path());
+    let mut loaded = run::load(&manifest).unwrap();
+    let call: Vec<Box<str>> = vec!["CD4  T, cell".into()];
+    write_named_table(
+        &dir.path()
+            .join("run.marker_score.parquet")
+            .to_string_lossy(),
+        "cell",
+        &["c00".into()],
+        &[
+            ("cluster".into(), Column::I32(&[0])),
+            ("call".into(), Column::Str(&call)),
+            ("margin".into(), Column::F32(&[0.5])),
+        ],
+    )
+    .unwrap();
+    loaded.manifest.annotate.marker_score = Some("run.marker_score.parquet".into());
+    let cells = crate::manifest::rounds::read_cells(&loaded).unwrap();
+    let score = crate::manifest::rounds::read_score_cells(&loaded, &cells)
+        .unwrap()
+        .unwrap();
+    assert_eq!(score.types, ["CD4_T_cell".into()] as [Box<str>; 1]);
+}
+
+#[test]
+fn a_rounds_method_is_the_one_it_records_making_its_call() {
+    use crate::annotate::rounds::Method;
+    use crate::manifest::rounds::called_by;
+    let dir = tempfile::tempdir().unwrap();
+    let mut round = round_with_both(dir.path());
+    assert_eq!(
+        called_by(&round.manifest.annotate),
+        Some(Method::Score),
+        "a score round with a Q table beside it is still the score's"
+    );
+    round.manifest.annotate.drop_marker_score();
+    assert_eq!(round.manifest.annotate.called_by, None);
+    assert_eq!(
+        called_by(&round.manifest.annotate),
+        Some(Method::Enrichment),
+        "unrecorded, the tables tell"
+    );
+}
+
+#[test]
+fn review_reads_a_round_from_its_summary_when_its_cells_are_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut round = round_with_both(dir.path());
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::rounds::write_summary(&mut round, &out).unwrap();
+    round.manifest.cluster.clusters = None;
+    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    assert!(v.contains_key(&0), "{v:?}");
+    assert_eq!(v[&0]["tops"]["enrichment"], "A", "the tables need no cells");
+}
+
+#[test]
+fn an_unreadable_table_costs_the_evidence_not_the_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut round = round_with_both(dir.path());
+    std::fs::write(
+        dir.path().join("run.L1.cluster_celltype_q.parquet"),
+        "not parquet",
+    )
+    .unwrap();
+    round.manifest.annotate.cluster_evidence = Some("an earlier round's".into());
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::rounds::write_summary(&mut round, &out).unwrap();
+    assert!(round.manifest.annotate.cluster_summary.is_some());
+    assert_eq!(
+        round.manifest.annotate.cluster_evidence, None,
+        "no evidence, and none of another round's"
+    );
+}

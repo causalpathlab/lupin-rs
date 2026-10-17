@@ -84,8 +84,10 @@ enum Commands {
                       co-embedding).\n\
                       `--feature-embedding` + `--cell-embedding` run projection on those files directly\n\
                       (the ORA unless `--projection score`).\n\
-                      `--method auto` (default) picks projection when the run has the gene table it\n\
-                      reads and no GO terms are asked for, else enrichment; the TUI opens on enrichment.\n\
+                      `--method auto` (default) calls by enrichment and, where the run decodes cells,\n\
+                      adds the projection score beside it as a second reading; projection's own call\n\
+                      needs `--projection score`, or a run with only the co-embedding (the ORA).\n\
+                      GO terms and runs without a panel are the enrichment's.\n\
                       Ontology-only follow-up: `--from` + `--obo` + `--label-cl` without markers."
     )]
     Annotate(AnnotateCliArgs),

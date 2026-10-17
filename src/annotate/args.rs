@@ -119,6 +119,11 @@ pub struct AnnotateArgs {
     /// calls by the enrichment's softmax share.
     #[serde(default)]
     pub susie: Option<crate::annotate::susie::SusieConfig>,
+
+    /// Score the cells with the projection score too, beside the call, where
+    /// the run decodes cells: what `--method auto` asks for.
+    #[serde(default)]
+    pub score_beside: bool,
 }
 
 impl AnnotateArgs {

@@ -32,7 +32,7 @@ use legume_numeric::matrix::dense_mat_io::Mat;
 
 use anyhow::{anyhow, Context, Result};
 use legume_numeric::matrix::dmatrix_io::DMatrix;
-use legume_numeric::matrix::traits::IoOps;
+use legume_numeric::matrix::traits::{IoOps, MatWithNames};
 use log::info;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
@@ -96,6 +96,20 @@ pub fn annotate_by_enrichment(
         }
         _ => {}
     }
+    // The score's reading beside the enrichment's, as auto asks, where the
+    // run decodes cells; NON-FATAL, as the enrichment's call stands without it.
+    if args.score_beside && !plan.ontology_mode && !args.markers.is_empty() {
+        match score_beside(
+            loaded,
+            &args.markers,
+            &args.out,
+            &inputs.cell_names,
+            &inputs.cluster_labels,
+        ) {
+            Ok(table) => outputs.marker_score = table,
+            Err(e) => log::warn!("no projection score beside the enrichment: {e:#}"),
+        }
+    }
     // The ids the cluster tables' `K{id}` rows refer to, so later rounds and
     // viewers key on the same clusters.
     let clusters_path = format!("{}{}", args.out, rounds::CLUSTERS);
@@ -151,11 +165,7 @@ pub fn annotate_by_enrichment(
 /// embedding, centred on its clusters (`--clusters`, else the run's, else
 /// internal Leiden), which also become the round's cluster table.
 pub fn annotate_by_marker_score(args: &MarkerScoreArgs, loaded: &Loaded) -> Result<()> {
-    let run = loaded.file.display().to_string();
-    let feat = load_feature_embedding(&loaded.manifest, &loaded.dir, &run)?;
-    let cell_path = loaded.geometry_latent_path()?;
-    let cells = Mat::from_parquet(&cell_path)
-        .with_context(|| format!("reading cell embedding {cell_path}"))?;
+    let (feat, cells) = score_tables(loaded)?;
     let (groups, _) = resolve_clusters(
         args.clusters.as_deref(),
         &args.leiden,
@@ -175,6 +185,61 @@ pub fn annotate_by_marker_score(args: &MarkerScoreArgs, loaded: &Loaded) -> Resu
         "projection",
         projection_settings(args, ProjectionMethod::Score)?,
     )
+}
+
+/// What the score reads: the run's decoder gene table and its cell embedding.
+fn score_tables(loaded: &Loaded) -> Result<(MatWithNames<Mat>, MatWithNames<Mat>)> {
+    let run = loaded.file.display().to_string();
+    let feat = load_feature_embedding(&loaded.manifest, &loaded.dir, &run)?;
+    let cell_path = loaded.geometry_latent_path()?;
+    let cells = Mat::from_parquet(&cell_path)
+        .with_context(|| format!("reading cell embedding {cell_path}"))?;
+    Ok((feat, cells))
+}
+
+/// The projection score as a second reading beside another pass: when the
+/// run decodes cells, score those of `cells` (in `groups`, that pass's
+/// clusters) and write only the score's per-cell table under `out`; its
+/// path, or `None` when the run has no decoder gene table.
+pub fn score_beside(
+    loaded: &Loaded,
+    markers: &str,
+    out: &str,
+    cells: &[Box<str>],
+    groups: &[usize],
+) -> Result<Option<String>> {
+    if crate::marker_embedding::projection_gene_table(&loaded.manifest, ProjectionMethod::Score)
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let (feat, embedding) = score_tables(loaded)?;
+    // The pass's cells in its order: the embedding as it is when they are
+    // its rows already.
+    if embedding.rows.as_slice() == cells {
+        return marker_score::alongside(markers, out, &feat, &embedding, groups).map(Some);
+    }
+    let row: HashMap<&str, usize> = embedding
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.as_ref(), i))
+        .collect();
+    let (rows, kept): (Vec<usize>, Vec<usize>) = cells
+        .iter()
+        .zip(groups)
+        .filter_map(|(c, &g)| Some((*row.get(c.as_ref())?, g)))
+        .unzip();
+    anyhow::ensure!(
+        !rows.is_empty(),
+        "the cell embedding shares no cell with the pass's cells"
+    );
+    let picked = MatWithNames {
+        mat: embedding.mat.select_rows(&rows),
+        rows: rows.iter().map(|&i| embedding.rows[i].clone()).collect(),
+        cols: embedding.cols,
+    };
+    marker_score::alongside(markers, out, &feat, &picked, &kept).map(Some)
 }
 
 /// A projection pass's settings, naming the way it called.
@@ -251,6 +316,20 @@ pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &Loaded) -> Result
     )
 }
 
+/// The method whose reading made a `method` pass's call, by what it wrote:
+/// a projection pass with the score's per-cell table is the score's; SuSiE's
+/// tables, the enrichment's share, or nothing named (the ORA).
+fn called_by(method: &str, out: &AnnotationOutputs) -> Option<crate::annotate::rounds::Method> {
+    use crate::annotate::rounds::Method;
+    if method == "projection" {
+        out.marker_score.as_ref().map(|_| Method::Score)
+    } else if out.cluster_celltype_pip.is_some() {
+        Some(Method::Susie)
+    } else {
+        out.cluster_celltype_q.as_ref().map(|_| Method::Enrichment)
+    }
+}
+
 /// A pass's effective settings: its own arguments plus the fixed constants.
 fn settings(args: &impl serde::Serialize) -> Result<serde_json::Value> {
     let mut v = serde_json::to_value(args)?;
@@ -322,6 +401,7 @@ fn record(
             a.cluster_celltype_pip = rel(&out.cluster_celltype_pip);
             a.cluster_celltype_effect = rel(&out.cluster_celltype_effect);
             a.cluster_celltype_explained = rel(&out.cluster_celltype_explained);
+            a.called_by = called_by(method, out);
             a.cluster_expression = rel(&out.cluster_expression);
             a.ontology_assignment = rel(&out.ontology_assignment);
             a.ontology_node_mass = rel(&out.ontology_node_mass);
@@ -835,4 +915,4 @@ fn build_batch_labels(labels: Vec<Box<str>>, n_cells: usize) -> Result<(Vec<usiz
 
 #[cfg(test)]
 #[path = "tests/projection_score.rs"]
-mod projection_score_tests;
+pub(crate) mod projection_score_tests;

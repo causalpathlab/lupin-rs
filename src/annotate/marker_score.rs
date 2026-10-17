@@ -73,7 +73,41 @@ pub fn run(
     if !args.no_clean {
         clean_outputs(out, &OUTPUTS);
     }
-    let score = score_cells(feat, &cells.mat, groups, &args.markers)?;
+    let (table, call) = score_and_write(&args.markers, out, feat, cells, groups)?;
+    let probs = vec![f32::NAN; cells.rows.len()];
+    graph_embedding_util::type_annotation::write_label_tsvs(out, &cells.rows, &call, &probs)?;
+
+    Ok(AnnotationOutputs {
+        argmax: Some(format!("{out}{ARGMAX_TSV}")),
+        marker_score: Some(table),
+        ..AnnotationOutputs::default()
+    })
+}
+
+/// The score as a second reading beside another pass (an enrichment round
+/// carries it): score `cells` and write only the per-cell table
+/// (`marker_score.parquet`) under `out`, leaving the round's call alone.
+/// Returns the table's path.
+pub fn alongside(
+    markers: &str,
+    out: &str,
+    feat: &MatWithNames<Mat>,
+    cells: &MatWithNames<Mat>,
+    groups: &[usize],
+) -> Result<String> {
+    Ok(score_and_write(markers, out, feat, cells, groups)?.0)
+}
+
+/// Score the cells and write their cluster, call and margin; the table's
+/// path and the calls.
+fn score_and_write(
+    markers: &str,
+    out: &str,
+    feat: &MatWithNames<Mat>,
+    cells: &MatWithNames<Mat>,
+    groups: &[usize],
+) -> Result<(String, Vec<Box<str>>)> {
+    let score = score_cells(feat, &cells.mat, groups, markers)?;
     let call: Vec<Box<str>> = score
         .calls
         .iter()
@@ -82,9 +116,6 @@ pub fn run(
                 .into()
         })
         .collect();
-    let probs = vec![f32::NAN; cells.rows.len()];
-    graph_embedding_util::type_annotation::write_label_tsvs(out, &cells.rows, &call, &probs)?;
-
     let table = format!("{out}{MARKER_SCORE_PARQUET}");
     let cluster: Vec<i32> = groups
         .iter()
@@ -101,12 +132,7 @@ pub fn run(
             ("margin".into(), Column::F32(&margin)),
         ],
     )?;
-
-    Ok(AnnotationOutputs {
-        argmax: Some(format!("{out}{ARGMAX_TSV}")),
-        marker_score: Some(table),
-        ..AnnotationOutputs::default()
-    })
+    Ok((table, call))
 }
 
 /// A planted toy run for tests: six genes (g0..g2 load on axis 0, g3..g5 on
