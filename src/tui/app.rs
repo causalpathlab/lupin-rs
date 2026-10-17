@@ -3077,6 +3077,7 @@ impl App {
                 self.args.markers = p.into();
                 if let Some(f) = &mut self.form {
                     f.note = None;
+                    f.confirm = false;
                     f.row = setting_row(&self.args, Setting::Run);
                 }
             }

@@ -570,6 +570,33 @@ fn a_pass_that_replaces_a_round_asks_in_the_form_before_it_runs() {
 }
 
 #[test]
+fn picking_a_new_panel_asks_again_before_a_pass_that_replaces_a_round() {
+    use super::super::app::{setting_row, Setting};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = form_app(dir.path());
+    let panel = dir.path().join("panel.tsv");
+    std::fs::write(&panel, "G1\tCT1\nG2\tCT2\n").unwrap();
+    app.args.markers = panel.to_string_lossy().into();
+    app.out_chosen = true;
+    app.args.out = dir.path().join("run.L1").to_string_lossy().into();
+    app.target = dir.path().join("run.L1.senna.json");
+    std::fs::write(&app.target, "{}").unwrap();
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('A'));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.form.as_ref().unwrap().confirm, "asked once");
+    app.set_markers(Some(&panel));
+    assert_eq!(
+        app.form.as_ref().unwrap().row,
+        setting_row(&app.args, Setting::Run)
+    );
+    assert!(
+        !app.form.as_ref().unwrap().confirm,
+        "a new panel asks again, as a new output does"
+    );
+}
+
+#[test]
 fn r_in_annotate_opens_the_same_form_without_a_trajectory() {
     let mut app = app_with_terms(false);
     app.focus = Focus::Clusters;
