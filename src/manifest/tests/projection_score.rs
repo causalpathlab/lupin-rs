@@ -294,6 +294,24 @@ fn review_reads_a_round_from_its_summary_when_its_cells_are_gone() {
 }
 
 #[test]
+fn review_reads_a_round_whose_tree_is_gone_and_a_table_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut round = round_with_both(dir.path());
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::rounds::write_summary(&mut round, &out).unwrap();
+    round.manifest.annotate.celltype_tree = Some("run.L1.celltype_tree.json".into());
+    std::fs::write(
+        dir.path().join("run.L1.cluster_celltype_q.parquet"),
+        "not parquet",
+    )
+    .unwrap();
+    let text = crate::manifest::rounds::review_text(&round, &[]).unwrap();
+    assert!(text.starts_with("K0  "), "{text}");
+    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    assert!(v.contains_key(&0), "{v:?}");
+}
+
+#[test]
 fn an_unreadable_table_costs_the_evidence_not_the_summary() {
     let dir = tempfile::tempdir().unwrap();
     let mut round = round_with_both(dir.path());

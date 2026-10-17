@@ -1087,6 +1087,23 @@ fn a_pass_run_on_one_run_leaves_the_next_run_its_own_output() {
 }
 
 #[test]
+fn a_run_opened_from_the_list_says_whether_its_clusters_are_fixed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    // X without clusters of its own: a pass on it runs Leiden.
+    std::fs::write(
+        tmp.path().join("X.senna.json"),
+        r#"{"version":2,"kind":"topic","prefix":"X"}"#,
+    )
+    .unwrap();
+    app.fixed_clusters = false;
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    assert!(app.fixed_clusters, "a round names its clusters");
+    app.open_run(pick(tmp.path(), "X"), false);
+    assert!(!app.fixed_clusters, "the bare run leaves them to Leiden");
+}
+
+#[test]
 fn a_round_made_on_a_trajectory_run_lists_as_a_round() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = family_app(tmp.path());
@@ -2838,18 +2855,18 @@ fn the_settings_note_goes_once_a_pass_runs_with_them_or_they_are_set_back() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = family_app(tmp.path());
     app.open_run(pick(tmp.path(), "X.L0"), false);
-    let knn = |app: &mut App, right: bool| {
+    let perm = |app: &mut App, right: bool| {
         app.form = Some(Form::default());
-        app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
+        app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
         press(app, if right { KeyCode::Right } else { KeyCode::Left });
         app.form = None;
     };
-    knn(&mut app, true);
+    perm(&mut app, true);
     assert!(app.stale());
-    knn(&mut app, false);
+    perm(&mut app, false);
     assert!(!app.stale(), "set back: the round is current again");
 
-    knn(&mut app, true);
+    perm(&mut app, true);
     running(&mut app);
     assert!(!app.stale(), "the pass running has them");
     assert!(!drawn(&app).contains("settings changed"));
@@ -2873,7 +2890,7 @@ fn the_settings_note_stays_when_g_shows_another_round() {
     let mut app = family_app(tmp.path());
     app.open_run(pick(tmp.path(), "X.L0"), false);
     app.form = Some(Form::default());
-    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
     press(&mut app, KeyCode::Right);
     app.form = None;
     assert!(app.stale());
@@ -2889,7 +2906,7 @@ fn the_settings_note_stays_when_g_shows_another_round() {
     assert!(app.stale());
     // Set back, they are the round's again, whichever run passes start from.
     app.form = Some(Form::default());
-    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
     press(&mut app, KeyCode::Left);
     assert!(!app.stale(), "{:?}", app.args.from);
 }
@@ -2900,7 +2917,7 @@ fn a_long_status_gives_way_to_the_headers_notes_and_manifest() {
     let mut app = family_app(tmp.path());
     app.open_run(pick(tmp.path(), "X.L0"), false);
     app.form = Some(Form::default());
-    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
     press(&mut app, KeyCode::Right);
     app.form = None;
     app.status = "a status of many words ".repeat(12);

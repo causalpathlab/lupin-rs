@@ -397,11 +397,18 @@ pub(crate) fn called_by(a: &super::run::RunAnnotate) -> Option<Method> {
 }
 
 /// Every cluster's types with every method's evidence, cluster by cluster.
+#[cfg(test)]
 pub(crate) fn type_evidence(loaded: &Loaded, cells: &Cells) -> Result<Vec<TypeEvidence>> {
-    let score = read_score_cells(loaded, cells)?.map(|s| s.shares(cells));
-    let tables = read_type_tables(loaded, score)?;
+    Ok(evidence_rows(
+        &tie_break(loaded, Some(cells))?.tables,
+        cells,
+    ))
+}
+
+/// `tables`' evidence for every cluster of `cells`, cluster by cluster.
+fn evidence_rows(tables: &TypeTables, cells: &Cells) -> Vec<TypeEvidence> {
     let ids: BTreeSet<ClusterId> = cells.clusters.iter().flatten().copied().collect();
-    Ok(ids.into_iter().flat_map(|id| tables.evidence(id)).collect())
+    ids.into_iter().flat_map(|id| tables.evidence(id)).collect()
 }
 
 /// Write `rows` as the long table `{out}.cluster_evidence.parquet`: cluster
@@ -446,12 +453,14 @@ fn tie_break(loaded: &Loaded, cells: Option<&Cells>) -> Result<TieBreak> {
     })
 }
 
-/// The round's type tree (`annotate.celltype_tree`), when it records one.
+/// The round's type tree (`annotate.celltype_tree`), when it records one
+/// that is still there.
 fn read_tree(loaded: &Loaded) -> Result<Option<TypeTree>> {
-    let Some(rel) = loaded.manifest.annotate.celltype_tree.as_deref() else {
+    let Some(path) =
+        (loaded.manifest.annotate.celltype_tree.as_deref()).and_then(|rel| loaded.recorded(rel))
+    else {
         return Ok(None);
     };
-    let path = resolve(&loaded.dir, rel);
     let text = fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
     Ok(Some(serde_json::from_str(&text)?))
 }
@@ -462,11 +471,12 @@ pub fn write_summary(loaded: &mut Loaded, out_prefix: &str) -> Result<BTreeMap<C
     let cells = read_cells(loaded)?;
     // A table that cannot be read costs the order of tied calls, never the
     // summary.
-    let ties = tie_break(loaded, Some(&cells))
-        .inspect_err(|e| log::warn!("tied calls by name: {e:#}"))
-        .ok();
+    let ties = tie_break(loaded, Some(&cells));
+    if let Err(e) = &ties {
+        log::warn!("tied calls by name: {e:#}");
+    }
     let mut ev = read_evidence(loaded)?;
-    ev.ties = ties.as_ref();
+    ev.ties = ties.as_ref().ok();
     let mut d = digest(&cells.clusters, &cells.labels, &ev);
     // A cluster labelled with a coarse group agrees with a top call that is
     // one of the group's types.
@@ -493,7 +503,11 @@ pub fn write_summary(loaded: &mut Loaded, out_prefix: &str) -> Result<BTreeMap<C
     // A view of the tables just recorded: one that cannot be read costs the
     // evidence table, never the round; the parent's is never kept.
     loaded.manifest.annotate.cluster_evidence = None;
-    match type_evidence(loaded, &cells).and_then(|rows| write_type_evidence(&evidence, &rows)) {
+    let written = match &ties {
+        Ok(t) => write_type_evidence(&evidence, &evidence_rows(&t.tables, &cells)),
+        Err(e) => Err(anyhow::anyhow!("{e:#}")),
+    };
+    match written {
         Ok(()) => {
             loaded.manifest.annotate.cluster_evidence =
                 Some(rel_to_manifest(&loaded.dir, &evidence));
@@ -1715,11 +1729,24 @@ impl Reviewed {
         let cells = read_cells(loaded)
             .inspect_err(|e| log::warn!("review without the cells: {e:#}"))
             .ok();
-        let ties = tie_break(loaded, cells.as_ref())?;
+        // A table or tree that cannot be read costs what it adds (the order
+        // of tied calls, the types' evidence, the tree's placement), never
+        // the review.
+        let ties = tie_break(loaded, cells.as_ref()).unwrap_or_else(|e| {
+            log::warn!("review without the type tables: {e:#}");
+            TieBreak {
+                tables: TypeTables::default(),
+                method: called_by(&loaded.manifest.annotate).unwrap_or_default(),
+            }
+        });
+        let tree = read_tree(loaded)
+            .inspect_err(|e| log::warn!("review without the type tree: {e:#}"))
+            .ok()
+            .flatten();
         Ok(Self {
             digests: read_digests(loaded, cells.as_ref(), &ties)?,
             history: read_history(loaded)?,
-            tree: read_tree(loaded)?,
+            tree,
             tables: ties.tables,
         })
     }

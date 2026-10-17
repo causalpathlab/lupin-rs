@@ -3184,6 +3184,12 @@ impl App {
         if !crate::manifest::run::same_file(path, &self.source) {
             let (source, out) = pass_origin(path);
             self.source = source;
+            // The form's Leiden rows follow the new source: fixed when it
+            // names its own clusters.
+            match crate::manifest::run::load(&self.source.to_string_lossy()) {
+                Ok(l) => self.fixed_clusters = l.manifest.cluster.clusters.is_some(),
+                Err(e) => self.push_log(format!("[WARN] {e:#}")),
+            }
             // A pass run on the old run chose its output for that run only.
             if !self.out_typed {
                 self.args.out = out.into_boxed_str();
