@@ -10,7 +10,10 @@
     "_doc": "Terms in these OBO subsets are the analysis classes panel types are grouped under.",
     "subsets": ["cellxgene_subset"],
     "subset_suffixes": ["_upper_slim"],
-    "exclude_subset_suffixes": ["upper_level"]
+    "exclude_subset_suffixes": ["upper_level"],
+    "_lineage": "Terms in these subsets are lineages: the first round's groups below one lineage are one group (T cell types under alpha-beta T cell). The general slim names whole systems, too broad for that.",
+    "lineage_suffixes": ["_upper_slim"],
+    "lineage_exclude": ["general_cell_types_upper_slim"]
   },
   "plural": {
     "_doc": "Trailing word replacements, then a trailing 's' dropped from words of at least min_len letters (not 'ss').",

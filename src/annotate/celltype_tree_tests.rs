@@ -860,3 +860,37 @@ fn a_group_inside_another_joins_it() {
     );
     assert_eq!(tree.groups.len(), 2);
 }
+
+#[test]
+fn groups_below_one_curated_lineage_are_one_group() {
+    // CT4 and CT8 are both T; lin T and lin B both sit in one general system,
+    // which is no lineage.
+    let obo = "[Term]\nid: CL:0\nname: root cell\n\n\
+               [Term]\nid: CL:1\nname: sys cell\nsubset: general_cell_types_upper_slim\nis_a: CL:0\n\n\
+               [Term]\nid: CL:2\nname: lin T cell\nsubset: blood_and_immune_upper_slim\nis_a: CL:1\n\n\
+               [Term]\nid: CL:3\nname: CT4 T cell\nsubset: cellxgene_subset\nis_a: CL:2\n\n\
+               [Term]\nid: CL:4\nname: CT8 T cell\nsubset: cellxgene_subset\nis_a: CL:2\n\n\
+               [Term]\nid: CL:11\nname: naive CT4 T cell\nis_a: CL:3\n\n\
+               [Term]\nid: CL:12\nname: CM CT4 T cell\nis_a: CL:3\n\n\
+               [Term]\nid: CL:13\nname: naive CT8 T cell\nis_a: CL:4\n\n\
+               [Term]\nid: CL:14\nname: CM CT8 T cell\nis_a: CL:4\n\n\
+               [Term]\nid: CL:20\nname: lin B cell\nsubset: blood_and_immune_upper_slim\nis_a: CL:1\n\n\
+               [Term]\nid: CL:21\nname: CT5 cell\nis_a: CL:20\n\n\
+               [Term]\nid: CL:22\nname: CT6 cell\nis_a: CL:20\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let p = panel(&[
+        ("G1", "Naive CT4 T"),
+        ("G2", "CM CT4 T"),
+        ("G3", "Naive CT8 T"),
+        ("G4", "CM CT8 T"),
+        ("G5", "CT5"),
+        ("G6", "CT6"),
+    ]);
+    let tree = TypeTree::from_ontology(&t, &p).unwrap();
+    assert_eq!(
+        members(&tree, "lin_T_cell"),
+        ["CM CT4 T", "CM CT8 T", "Naive CT4 T", "Naive CT8 T"]
+    );
+    assert_eq!(members(&tree, "lin_B_cell"), ["CT5", "CT6"]);
+    assert_eq!(tree.groups.len(), 2);
+}

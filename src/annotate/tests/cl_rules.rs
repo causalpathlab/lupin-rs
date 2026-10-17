@@ -40,6 +40,16 @@ fn the_shipped_rules_reproduce_the_matching_lupin_had() {
     assert!(r.any_word_order);
     assert_eq!(r.implied.suffixes, ["cell"]);
     assert!(r.classes.is_class(&["blood_and_immune_upper_slim".into()]));
+    assert!(r
+        .classes
+        .is_lineage(&["blood_and_immune_upper_slim".into()]));
+    assert!(
+        !r.classes.is_lineage(&[
+            "general_cell_types_upper_slim".into(),
+            "cellxgene_subset".into()
+        ]),
+        "a whole system is no lineage"
+    );
     assert!(!r
         .classes
         .is_class(&["cellxgene_subset".into(), "upper_level".into()]));

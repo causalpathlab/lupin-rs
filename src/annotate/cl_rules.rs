@@ -18,9 +18,26 @@ pub struct ClassRules {
     pub subsets: Vec<String>,
     pub subset_suffixes: Vec<String>,
     pub exclude_subset_suffixes: Vec<String>,
+    /// Subsets whose terms are lineages: groups of the first round below
+    /// one lineage are one group.
+    pub lineage_suffixes: Vec<String>,
+    /// Subsets too general to be a lineage.
+    pub lineage_exclude: Vec<String>,
 }
 
 impl ClassRules {
+    /// Whether a term in `subsets` is a lineage.
+    #[must_use]
+    pub fn is_lineage(&self, subsets: &[String]) -> bool {
+        subsets.iter().any(|s| {
+            !self.lineage_exclude.contains(s)
+                && self
+                    .lineage_suffixes
+                    .iter()
+                    .any(|x| s.ends_with(x.as_str()))
+        })
+    }
+
     /// Whether a term in `subsets` is a class.
     #[must_use]
     pub fn is_class(&self, subsets: &[String]) -> bool {

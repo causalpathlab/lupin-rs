@@ -8,7 +8,8 @@
 //! among the ontology's analysis classes (its curated `*_upper_slim` subsets
 //! and `cellxgene_subset`) that it shares with another panel type, short of
 //! one that is a panel type's own term over a kind of it; a group whose
-//! class is a kind of another group's then joins that one, so the groups
+//! class is a kind of another group's then joins that one, and groups below
+//! one curated lineage (a domain `*_upper_slim` term) are one, so the groups
 //! are one level. A type
 //! the ontology has only a kind of term for (`Early X` for `X`) groups as
 //! that term; one that matches no term joins the group sharing its most
@@ -47,6 +48,8 @@ pub struct ClTerms {
     develops_from: HashMap<String, Vec<String>>,
     /// Terms in the analysis subsets the rules name (`ClassRules`).
     classes: BTreeSet<String>,
+    /// Terms in the lineage subsets the rules name (`ClassRules`).
+    lineages: BTreeSet<String>,
     /// The words the ontology uses for kinds of a term (see `PartRules`).
     modifiers: BTreeSet<String>,
     /// The file's `data-version`, when it states one.
@@ -127,6 +130,9 @@ impl Stanza {
         }
         if let Some(first) = self.names.first() {
             terms.name_of.insert(self.id.clone(), first.clone());
+        }
+        if terms.rules.classes.is_lineage(&self.subsets) {
+            terms.lineages.insert(self.id.clone());
         }
         if terms.rules.classes.is_class(&self.subsets) {
             terms.classes.insert(self.id.clone());
@@ -915,6 +921,37 @@ impl TypeTree {
                 into.extend(moved);
                 into.sort_unstable();
             }
+        }
+        // Groups below one lineage are one group: each group's lineage is the
+        // nearest above its class, or above its lone type's own term.
+        let mut by_lineage: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (id, members) in &groups {
+            let class = match &members[..] {
+                [m] => mapped[m.as_str()],
+                _ => id.as_str(),
+            };
+            let lineage = (terms.ancestors_or_self(class).into_iter())
+                .filter(|t| terms.lineages.contains(t))
+                .max_by_key(|t| terms.depth(t));
+            if let Some(l) = lineage {
+                by_lineage.entry(l).or_default().push(id.clone());
+            }
+        }
+        // Every merging group is taken out before any lineage is put in, as
+        // a lineage may be the class of a group merging elsewhere.
+        let merged: Vec<(String, Vec<String>)> = (by_lineage.into_iter())
+            .filter(|(_, ids)| ids.len() >= 2)
+            .map(|(lineage, ids)| {
+                let members = (ids.iter())
+                    .flat_map(|id| groups.remove(id).unwrap_or_default())
+                    .collect();
+                (lineage, members)
+            })
+            .collect();
+        for (lineage, members) in merged {
+            let into = groups.entry(lineage).or_default();
+            into.extend(members);
+            into.sort_unstable();
         }
         let mut groups: Vec<TypeGroup> = groups
             .into_iter()
