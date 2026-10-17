@@ -916,6 +916,8 @@ fn pinned_note(app: &App, label: &str, share: Option<f32>) -> &'static str {
         Some(s) if s > 0.0 => "below the top candidates",
         _ if app.rescoring.is_some() => "rescoring…",
         _ if edited && app.recorded.is_none() => "scored on save",
+        // A typed name has no markers: nothing tested it.
+        _ if app.tree.node_of(label).is_none() => "not a panel type: no markers to score",
         _ => "not called (did not pass FDR)",
     }
 }

@@ -1404,6 +1404,26 @@ fn a_long_pinned_label_keeps_its_note_whole() {
 }
 
 #[test]
+fn a_typed_name_off_the_panel_is_not_said_to_have_failed_fdr() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    let label = |app: &mut App, label: &str| {
+        app.edits = vec![Edit::Label {
+            cluster: 0,
+            label: label.into(),
+            reason: "why".into(),
+        }];
+    };
+    label(&mut app, "Test_Custom_Type");
+    let screen = drawn(&app);
+    assert!(screen.contains("not a panel type"), "{screen}");
+    assert!(!screen.contains("did not pass FDR"), "{screen}");
+    // A panel type with no share was tested and not called.
+    label(&mut app, "CT1");
+    assert!(drawn(&app).contains("did not pass FDR"));
+}
+
+#[test]
 fn a_relabelled_cluster_shows_the_evidence_of_its_new_label() {
     use super::super::round::{Candidate, Edit};
     let cand = |label: &str, fold| {
