@@ -2981,15 +2981,19 @@ impl App {
         ));
     }
 
-    /// The menu of types to start from, with their cell counts.
+    /// The menu of types to start from, with their cell counts: the nodes
+    /// of the run's prior, as a root below `--min-cells` makes the run fail.
     fn ask_root_type(&mut self) {
         let TreeMode::Order(v) = &self.tree_mode else {
             return;
         };
-        let items = v
-            .types
+        let nodes: Vec<usize> = (0..v.types.len())
+            .filter(|&i| v.is_node.get(i).copied().unwrap_or(true))
+            .collect();
+        let items = nodes
             .iter()
-            .map(|(t, n)| {
+            .map(|&i| {
+                let (t, n) = &v.types[i];
                 (
                     t.clone(),
                     format!("start from {t} ({n} cells), kept for later runs"),
@@ -2997,12 +3001,30 @@ impl App {
                 )
             })
             .collect();
+        const NAMED: usize = 8;
+        let small: Vec<&str> = (0..v.types.len())
+            .filter(|i| !nodes.contains(i))
+            .map(|i| v.types[i].0.as_str())
+            .collect();
+        let left_out = match small.len() {
+            0 => String::new(),
+            n => format!(
+                " Left out, below --min-cells {}: {}{}.",
+                v.min_cells,
+                small[..n.min(NAMED)].join(", "),
+                if n > NAMED {
+                    format!(" and {} more", n - NAMED)
+                } else {
+                    String::new()
+                }
+            ),
+        };
         let mut menu = Menu::new(
-            "Which type does the trajectory start from?",
+            format!("Which type does the trajectory start from?{left_out}"),
             numbered(items),
             NOT_STARTED,
         );
-        menu.sel = v.sel.min(menu.choices.len().saturating_sub(1));
+        menu.sel = nodes.iter().position(|&i| i >= v.sel).unwrap_or(0);
         self.show(menu);
     }
 

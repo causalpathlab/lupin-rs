@@ -3383,6 +3383,24 @@ fn a_tree_group_picked_as_a_label_is_not_said_to_have_failed_fdr() {
 }
 
 #[test]
+fn the_root_menu_leaves_out_the_types_below_min_cells_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &[]);
+    let labels = dir.path().join("labels.tsv");
+    std::fs::write(&labels, "c1\tCT1\nc2\tCT1\nc3\tCT2\nc4\tCT3\nc5\tCT3\n").unwrap();
+    app.trajectory.labels = Some(labels.to_string_lossy().into());
+    app.trajectory.argv = vec!["--min-cells".into(), "2".into()];
+    app.reload_order();
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Char('1'));
+    let m = menu(&app).expect("the root menu");
+    let roots: Vec<&str> = m.choices.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(roots, ["CT1", "CT3"], "CT2's one cell makes no node");
+    assert!(m.question.contains("CT2"), "{}", m.question);
+    assert!(m.question.contains("--min-cells 2"), "{}", m.question);
+}
+
+#[test]
 fn a_statement_on_a_type_below_min_cells_leaves_the_order_menu_to_ask_and_says_so() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("lupin")).unwrap();
