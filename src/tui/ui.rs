@@ -851,10 +851,11 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
     let susie = r.clusters.iter().any(|c| c.call_evidence().is_some());
     // SuSiE's readings stay from before the edit while a rescoring is shown.
     let stale = susie && app.recorded.is_some();
-    // The cell counts, whole, beside a label of at least `LABEL` columns;
-    // a narrower pane leaves them out rather than cut them.
+    // Numbers are shown whole or not at all: a narrow pane leaves out the
+    // cell counts, which want a label of `LABEL` columns beside them, then
+    // the evidence, which wants `LEAST`.
     const LABEL: u16 = 20;
-    let evidence_w: &[u16] = if susie { &[8, 6] } else { &[5] };
+    const LEAST: u16 = 10;
     let counts_w = r
         .clusters
         .iter()
@@ -862,10 +863,18 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         .max()
         .unwrap_or(0)
         .max("cells".len()) as u16;
-    // The name, the label, the evidence and the flag, a column between each.
-    let others = 5 + LABEL + evidence_w.iter().sum::<u16>() + 1;
-    let gaps = 3 + evidence_w.len() as u16;
-    let counts = others + gaps + counts_w <= area.width.saturating_sub(2);
+    // The label's room beside the name, `more` columns and the flag, a
+    // column between each.
+    let inner = area.width.saturating_sub(2);
+    let label_room =
+        |more: &[u16]| inner.saturating_sub(5 + 1 + 2 + more.iter().map(|w| w + 1).sum::<u16>());
+    let all_evidence: &[u16] = if susie { &[8, 6] } else { &[5] };
+    let evidence_w = if label_room(all_evidence) >= LEAST {
+        all_evidence
+    } else {
+        &[]
+    };
+    let counts = label_room(&[&[counts_w][..], evidence_w].concat()) >= LABEL;
     let rows: Vec<Row> = r
         .clusters
         .iter()
@@ -891,7 +900,8 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
                 cells.push(Cell::from(c.cells.to_string()));
             }
             cells.push(Cell::from(shown));
-            cells.extend(evidence.into_iter().map(|e| {
+            let evidence = evidence.into_iter().take(evidence_w.len());
+            cells.extend(evidence.map(|e| {
                 let cell = Cell::from(e);
                 if stale {
                     cell.dim()
@@ -911,6 +921,8 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     let mut header = cluster_list_header(susie);
+    // The evidence's headers sit between the label's and the flag's.
+    header.drain(3 + evidence_w.len()..header.len() - 1);
     let mut widths = vec![Constraint::Length(5), Constraint::Length(counts_w)];
     if !counts {
         header.remove(1);

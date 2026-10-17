@@ -1367,6 +1367,31 @@ fn the_susie_setting_toggles_the_stage() {
 }
 
 #[test]
+fn a_narrow_susie_list_keeps_its_label_readable_over_the_evidence() {
+    use super::super::round::Candidate;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    app.round = app_with_terms(false).round.take();
+    if let Some(r) = app.round.as_mut() {
+        let mut c = Candidate::new("CT1_with_a_longer_name", 0.85);
+        (c.evidence.pip, c.evidence.fold) = (Some(1.0), Some(7.0));
+        r.clusters[0].candidates = vec![c];
+        r.clusters[0].label = Some("CT1_with_a_longer_name".into());
+    }
+    app.focus = Focus::Clusters;
+    let screen = drawn_in(&app, 80, 24);
+    let k0 = screen.iter().find(|r| r.contains("K0 ")).unwrap();
+    assert!(k0.contains("CT1_with_a"), "{k0}");
+    assert!(
+        !k0.contains("0.8") && !k0.contains("×7"),
+        "no evidence cut: {k0}"
+    );
+    let wide = drawn_in(&app, 200, 50);
+    let k0 = wide.iter().find(|r| r.contains("K0 ")).unwrap();
+    assert!(k0.contains("0.85") && k0.contains("×7.0"), "{k0}");
+}
+
+#[test]
 fn a_susie_rounds_cluster_list_shows_the_calls_share_and_fold() {
     use super::super::round::Candidate;
     let mut app = app_with_terms(false);
