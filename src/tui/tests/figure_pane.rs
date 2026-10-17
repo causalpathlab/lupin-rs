@@ -286,3 +286,13 @@ fn a_file_just_listed_stays_selected_when_the_strip_resorts() {
     let on = &x.gallery.entries[x.sel].path;
     assert!(on.ends_with("run.trajectory.b.pdf"), "{}", on.display());
 }
+
+#[test]
+fn the_axes_keys_say_when_there_is_no_diffusion_map_to_step() {
+    let mut p = pane();
+    p.data.diffusion = None;
+    let said = p.step_pair(true, false);
+    assert!(!said.contains("m reaches it"), "{said}");
+    assert!(said.contains("no diffusion map"), "{said}");
+    assert!(pane().step_pair(true, false).contains("m reaches it"));
+}

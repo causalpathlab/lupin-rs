@@ -483,7 +483,11 @@ impl FigurePane {
     /// Another pair of diffusion components, when that panel is shown.
     pub fn step_pair(&mut self, forward: bool, x_axis: bool) -> String {
         let Panel::Diffusion { x, y } = self.current() else {
-            return "the axes step on the diffusion map (m reaches it)".into();
+            return if self.data.diffusion.is_some() {
+                "the axes step on the diffusion map (m reaches it)".into()
+            } else {
+                "no diffusion map here: the axes step on a trajectory's".into()
+            };
         };
         self.pair = self.data.next_pair(x, y, forward, x_axis);
         self.view = View::default();
