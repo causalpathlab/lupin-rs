@@ -1997,6 +1997,9 @@ impl App {
     }
 
     pub fn key(&mut self, k: KeyEvent) {
+        // The status says what the latest key did: an older one, or a
+        // question the key has dropped (`x again`, `q again`), goes.
+        self.status.clear();
         self.key_unsynced(k);
         self.sync_map_focus();
     }

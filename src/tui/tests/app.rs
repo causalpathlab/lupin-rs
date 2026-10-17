@@ -232,6 +232,36 @@ fn a_running_save_offers_no_stop_and_x_says_so_at_once() {
 }
 
 #[test]
+fn the_status_follows_the_latest_key_and_a_dropped_question_goes_with_it() {
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Backspace);
+    assert!(app.status.contains("to undo"), "{}", app.status);
+    press(&mut app, KeyCode::Down);
+    assert!(!app.status.contains("to undo"), "{}", app.status);
+
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.status.contains("q again"), "{}", app.status);
+    press(&mut app, KeyCode::Down);
+    assert!(
+        !app.status.contains("q again"),
+        "the question is dropped: {}",
+        app.status
+    );
+
+    running(&mut app);
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.status.contains("x again"), "{}", app.status);
+    press(&mut app, KeyCode::Down);
+    assert!(!app.status.contains("x again"), "{}", app.status);
+    app.stop();
+}
+
+#[test]
 fn h_hides_a_gene_and_x_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with_terms(false);
