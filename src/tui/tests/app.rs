@@ -1125,7 +1125,8 @@ fn gene_keys_add_and_drop_markers_and_backspace_undoes_the_last() {
     app.focus = Focus::Genes;
     press(&mut app, KeyCode::Backspace);
     assert!(
-        app.status.starts_with("undid adding GENE1"),
+        app.status
+            .starts_with("undid adding GENE1 to CT1's markers"),
         "{}",
         app.status
     );

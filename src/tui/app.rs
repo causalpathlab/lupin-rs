@@ -1627,11 +1627,14 @@ impl App {
         self.status = match last.map(|i| self.edits.remove(i)) {
             Some(Edit::Markers {
                 label, genes, add, ..
-            }) => format!(
-                "undid {} {} {label}'s markers",
-                if add { "adding" } else { "dropping" },
-                genes.join(", ")
-            ),
+            }) => {
+                let (did, to) = if add {
+                    ("adding", "to")
+                } else {
+                    ("dropping", "from")
+                };
+                format!("undid {did} {} {to} {label}'s markers", genes.join(", "))
+            }
             _ => "no marker edit to undo".into(),
         };
     }
