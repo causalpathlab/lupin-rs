@@ -3,14 +3,16 @@
 //! first call is the group its evidence adds up to.
 //!
 //! The groups come from the Cell Ontology when there is one: the panel's
-//! types are matched to CL terms under the matching rules
-//! ([`ClTerms::map_labels`]), and each goes
-//! under its nearest ancestor among the ontology's analysis classes (its
-//! curated `*_upper_slim` subsets and `cellxgene_subset`) that it shares with
-//! another panel type; a type that matches no term joins the group sharing
-//! its most specific markers. A fine panel collapses to lineage classes; a
-//! broad one stays about as it is. Without an ontology, or when too few
-//! types match, types that share specific markers are grouped together.
+//! types are placed on CL terms under the matching rules
+//! ([`ClTerms::place_labels`]), and each goes under its nearest ancestor
+//! among the ontology's analysis classes (its curated `*_upper_slim` subsets
+//! and `cellxgene_subset`) that it shares with another panel type. A type
+//! the ontology has only a kind of term for (`Early X` for `X`) groups as
+//! that term; one that matches no term joins the group sharing its most
+//! specific markers, keeping to the lineage its words hint at. A fine panel
+//! collapses to lineage classes; a broad one stays about as it is. Without
+//! an ontology, or when too few types match, types that share specific
+//! markers are grouped together.
 //! Nothing here names a cell type; every group is derived from the panel and
 //! the ontology at run time.
 //!
@@ -42,6 +44,8 @@ pub struct ClTerms {
     develops_from: HashMap<String, Vec<String>>,
     /// Terms in the analysis subsets the rules name (`ClassRules`).
     classes: BTreeSet<String>,
+    /// The words the ontology uses for kinds of a term (see `PartRules`).
+    modifiers: BTreeSet<String>,
     /// The file's `data-version`, when it states one.
     pub release: Option<String>,
 }
@@ -283,7 +287,55 @@ impl ClTerms {
                 name(a).cmp(&name(b))
             });
         }
+        terms.modifiers = terms.modifier_words();
         terms
+    }
+
+    /// The words the ontology uses for kinds of a term (see `PartRules`):
+    /// over every pair of own names `X` and `X` with one word more, those
+    /// whose added word makes a kind of `X` in enough pairs and in enough of
+    /// its pairs.
+    fn modifier_words(&self) -> BTreeSet<String> {
+        let Some(min) = self.rules.part.min_pairs else {
+            return BTreeSet::new();
+        };
+        let mut by_bag: HashMap<Vec<String>, Vec<&str>> = HashMap::new();
+        for (id, name) in &self.name_of {
+            let single = self.rules.singular(&self.rules.normalise(name));
+            let mut bag: Vec<String> = words(&single).map(String::from).collect();
+            bag.sort_unstable();
+            by_bag.entry(bag).or_default().push(id);
+        }
+        // Per added word: pairs where it makes a kind of the shorter name, and not.
+        let mut pairs: HashMap<&str, (usize, usize)> = HashMap::new();
+        for (bag, ids) in &by_bag {
+            let above: Vec<BTreeSet<String>> =
+                ids.iter().map(|id| self.ancestors_or_self(id)).collect();
+            for (i, word) in bag.iter().enumerate() {
+                let mut base = bag.clone();
+                base.remove(i);
+                let Some(bases) = by_bag.get(&base) else {
+                    continue;
+                };
+                let e = pairs.entry(word).or_default();
+                for a in &above {
+                    for b in bases {
+                        if a.contains(*b) {
+                            e.0 += 1;
+                        } else {
+                            e.1 += 1;
+                        }
+                    }
+                }
+            }
+        }
+        pairs
+            .into_iter()
+            .filter(|(_, (kind, other))| {
+                *kind >= min && *kind as f64 >= self.rules.part.min_share * (kind + other) as f64
+            })
+            .map(|(w, _)| w.to_string())
+            .collect()
     }
 
     #[cfg(test)]
@@ -324,6 +376,55 @@ impl ClTerms {
         unmapped.retain(|l| !completed.contains_key(l));
         mapped.extend(completed);
         (mapped, unmapped)
+    }
+
+    /// [`Self::map_labels`], then each label left by a run of its words
+    /// (see `PartRules`): under the term that run matches, or with that term
+    /// only as a hint of its lineage.
+    #[must_use]
+    pub fn place_labels<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> Placed {
+        let (on, unmapped) = self.map_labels(labels);
+        let mut placed = Placed {
+            on,
+            ..Placed::default()
+        };
+        for label in unmapped {
+            match self.by_part(&label) {
+                Some((id, true)) => {
+                    placed.under.insert(label, id);
+                }
+                Some((id, false)) => {
+                    placed.hint.insert(label, id);
+                }
+                None => placed.none.push(label),
+            }
+        }
+        placed
+    }
+
+    /// The term the longest run of `label`'s words matches, when one run of
+    /// that length matches one term, and whether every word left off is a
+    /// modifier.
+    fn by_part(&self, label: &str) -> Option<(String, bool)> {
+        self.rules.part.min_pairs?;
+        let single = self.rules.singular(&self.rules.normalise(label));
+        let w: Vec<&str> = words(&single).collect();
+        for len in (1..w.len()).rev() {
+            let mut found: BTreeMap<String, bool> = BTreeMap::new();
+            for start in 0..=w.len() - len {
+                if let Some(id) = self.match_label(&w[start..start + len].join(" ")) {
+                    let left = w[..start].iter().chain(&w[start + len..]);
+                    let kind = left.clone().all(|d| self.modifiers.contains(*d));
+                    *found.entry(id).or_default() |= kind;
+                }
+            }
+            match found.len() {
+                0 => {}
+                1 => return found.into_iter().next(),
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// One label's term, by every tier but the panel's context: on the
@@ -610,6 +711,40 @@ impl ClTerms {
     }
 }
 
+/// Where [`ClTerms::place_labels`] put a panel's labels.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Placed {
+    /// Label → the term it matched.
+    pub on: BTreeMap<String, String>,
+    /// Label → the term it is a kind of.
+    pub under: BTreeMap<String, String>,
+    /// Label → a term of its lineage.
+    pub hint: BTreeMap<String, String>,
+    /// Labels with nothing on the ontology.
+    pub none: Vec<String>,
+}
+
+impl Placed {
+    /// The term each label sits on or under.
+    #[must_use]
+    pub fn anchored(&self) -> BTreeMap<&str, &str> {
+        (self.on.iter())
+            .chain(&self.under)
+            .map(|(l, id)| (l.as_str(), id.as_str()))
+            .collect()
+    }
+
+    /// The labels on no term, hinted or not, hinted first by name.
+    #[must_use]
+    pub fn loose(&self) -> Vec<String> {
+        self.hint
+            .keys()
+            .cloned()
+            .chain(self.none.iter().cloned())
+            .collect()
+    }
+}
+
 /// Where a [`TypeTree`]'s groups came from.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -712,13 +847,15 @@ impl TypeTree {
     #[must_use]
     pub fn from_ontology(terms: &ClTerms, panel: &[(String, String)]) -> Option<Self> {
         let types = panel_types(panel);
-        let (mapped, unmapped) = terms.map_labels(types.iter().map(String::as_str));
-        if mapped.len() < 2 {
+        let placed = terms.place_labels(types.iter().map(String::as_str));
+        if placed.on.len() < 2 {
             return None;
         }
+        // A type under a term groups as that term would.
+        let mapped = placed.anchored();
         let ancestry: BTreeMap<&str, BTreeSet<String>> = mapped
             .iter()
-            .map(|(label, id)| (label.as_str(), terms.ancestors_or_self(id)))
+            .map(|(label, id)| (*label, terms.ancestors_or_self(id)))
             .collect();
         // Each type goes under its nearest ancestor (or itself) among the
         // ontology's analysis classes that it shares with another panel type.
@@ -742,7 +879,7 @@ impl TypeTree {
                         .then_with(|| y.cmp(x))
                 })
                 .cloned()
-                .unwrap_or_else(|| mapped[*label].clone());
+                .unwrap_or_else(|| mapped[*label].to_string());
             groups.entry(node).or_default().push((*label).to_string());
         }
         let mut groups: Vec<TypeGroup> = groups
@@ -751,22 +888,35 @@ impl TypeTree {
                 // A class every sharer left for a nearer one groups nothing:
                 // its lone type is named for itself, not for the broader class.
                 if members.len() == 1 {
-                    (mapped[&members[0]].clone(), members)
+                    (mapped[members[0].as_str()].to_string(), members)
                 } else {
                     (id, members)
                 }
             })
             .map(|(id, members)| TypeGroup {
-                name: label_key(terms.name(&id).unwrap_or(&id)),
+                // A lone type under a term is no more that term than it was.
+                name: match &members[..] {
+                    [m] if placed.under.contains_key(m) => label_key(m),
+                    _ => label_key(terms.name(&id).unwrap_or(&id)),
+                },
                 cl_id: Some(id),
                 members,
             })
             .collect();
-        attach_by_sharing(&mut groups, unmapped, panel);
+        // A hinted type joins no group of another lineage: one whose term
+        // neither is above its hint nor below it.
+        let fits = |g: &TypeGroup, t: &str| {
+            let (Some(hint), Some(class)) = (placed.hint.get(t), g.cl_id.as_deref()) else {
+                return true;
+            };
+            terms.ancestors_or_self(hint).contains(class)
+                || terms.ancestors_or_self(class).contains(hint)
+        };
+        attach_by_sharing(&mut groups, placed.loose(), panel, fits);
         Some(TypeTree {
             source: TreeSource::CellOntology,
             release: terms.release.clone(),
-            label_cl: mapped,
+            label_cl: placed.on.clone(),
             groups,
         })
     }
@@ -932,13 +1082,14 @@ fn group_name(members: &[String]) -> String {
     }
 }
 
-/// Put each unmapped type in the group with the member that holds most of
-/// its markers' IDF weight ([`marker_idf`]; the first such group on a tie),
-/// or in a group of its own.
+/// Put each unmapped type in the group, among those it `fits`, with the
+/// member that holds most of its markers' IDF weight ([`marker_idf`]; the
+/// first such group on a tie), or in a group of its own.
 fn attach_by_sharing(
     groups: &mut Vec<TypeGroup>,
     unmapped: Vec<String>,
     panel: &[(String, String)],
+    fits: impl Fn(&TypeGroup, &str) -> bool,
 ) {
     let sets = marker_sets(panel);
     let idf = marker_idf(&sets);
@@ -947,6 +1098,7 @@ fn attach_by_sharing(
         let best = groups
             .iter()
             .enumerate()
+            .filter(|(_, grp)| fits(grp, &t))
             .map(|(i, grp)| {
                 let held = grp
                     .members

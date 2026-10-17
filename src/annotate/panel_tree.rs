@@ -3,7 +3,8 @@
 //! On the Cell Ontology, each type hangs under the analysis classes (see
 //! [`ClTerms`]) it shares with another panel type, nearest first, so the
 //! tree offers every level worth calling a cluster at: a fine type, or a
-//! class over several. Without an ontology, the groups of types that share
+//! class over several. A type the ontology has only a kind of term for is a
+//! leaf below that term. Without an ontology, the groups of types that share
 //! markers ([`TypeTree::from_markers`]) stand over their types. Folding a
 //! node only hides its subtree; it changes no label.
 //!
@@ -59,12 +60,13 @@ impl PanelTree {
     #[must_use]
     pub fn from_ontology(terms: &ClTerms, panel: &[(String, String)]) -> Option<Self> {
         let types = panel_types(panel);
-        let (mapped, unmapped) = terms.map_labels(types.iter().map(String::as_str));
-        if mapped.len() < 2 {
+        let placed = terms.place_labels(types.iter().map(String::as_str));
+        if placed.on.len() < 2 {
             return None;
         }
-        let ancestry: BTreeMap<&str, BTreeSet<String>> = mapped
-            .values()
+        // The terms types sit on or under.
+        let ancestry: BTreeMap<&str, BTreeSet<String>> = (placed.on.values())
+            .chain(placed.under.values())
             .map(|id| (id.as_str(), terms.ancestors_or_self(id)))
             .collect();
         // The nodes: every matched term, and every analysis class above two
@@ -108,17 +110,22 @@ impl PanelTree {
                 })
                 .map(|(_, j)| j);
         }
-        for (label, id) in &mapped {
+        for (label, id) in &placed.on {
             let i = index[id.as_str()];
             let key = label_key(label);
             tree.nodes[i].labels.push(key.clone());
             tree.of_label.insert(key, i);
         }
+        // A type the ontology has a kind of term for, but not its own, is a
+        // leaf below that term.
+        for (label, id) in &placed.under {
+            tree.push_leaf(label, Some(index[id.as_str()]));
+        }
         // A type the ontology does not have goes where the first round's grouping puts it
         // ([`TypeTree::from_ontology`]): under the class whose types share most of its markers,
         // with the types it shares them with, or on its own when it shares none. Standing alone
         // is a family of its own at the top, which costs every test there.
-        let unmapped: BTreeSet<String> = unmapped.iter().map(|l| label_key(l)).collect();
+        let unmapped: BTreeSet<String> = placed.loose().iter().map(|l| label_key(l)).collect();
         let groups = TypeTree::from_ontology(terms, panel).map_or_else(Vec::new, |t| t.groups);
         for g in groups {
             let loose: Vec<&String> = g

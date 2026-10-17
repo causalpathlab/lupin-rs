@@ -170,7 +170,7 @@ fn an_unmatched_type_joins_the_group_holding_its_specific_markers() {
         group("b", &["B1", "B2"]),
         group("c", &["C1"]),
     ];
-    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs, |_, _| true);
     assert_eq!(groups[0].members, ["A1", "X"]);
 }
 
@@ -189,7 +189,7 @@ fn a_broad_group_does_not_outbid_a_near_copy() {
         ("x2", "X"),
     ]);
     let mut groups = vec![group("a", &["A1"]), group("b", &["B1", "B2"])];
-    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs, |_, _| true);
     assert_eq!(groups[0].members, ["A1", "X"]);
 }
 
@@ -286,7 +286,7 @@ fn a_dilute_broad_group_still_takes_a_near_copy_of_its_member() {
     let mut members = vec!["T1"];
     members.extend(others);
     let mut groups = vec![group("t", &members), group("n", &["N1"])];
-    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs, |_, _| true);
     assert!(groups[0].members.iter().any(|m| m == "X"), "{groups:?}");
 }
 
@@ -318,7 +318,7 @@ fn the_original_overlap_case_still_joins_its_specific_group() {
         group("b", &["B1", "B2"]),
         group("c", &["C1"]),
     ];
-    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs, |_, _| true);
     assert_eq!(groups[0].members, ["A1", "X"]);
 }
 #[test]
@@ -709,5 +709,93 @@ fn a_word_the_panel_leaves_off_its_labels_completes_them() {
     assert!(
         few.is_empty(),
         "two labels are too few to say what the panel leaves off"
+    );
+}
+
+/// Two lineages (analysis classes) of two types each, and kinds of three
+/// types the ontology names with a word before them: `early X` is a kind of
+/// `X`; `pre X` is not.
+const MODIFIED: &str = "[Term]\nid: CL:0\nname: root cell\n\n\
+    [Term]\nid: CL:100\nname: lin A cell\nsubset: cellxgene_subset\nis_a: CL:0\n\n\
+    [Term]\nid: CL:200\nname: lin B cell\nsubset: cellxgene_subset\nis_a: CL:0\n\n\
+    [Term]\nid: CL:1\nname: CT1 cell\nis_a: CL:100\n\n\
+    [Term]\nid: CL:2\nname: CT2 cell\nis_a: CL:100\n\n\
+    [Term]\nid: CL:3\nname: CT3 cell\nis_a: CL:0\n\n\
+    [Term]\nid: CL:4\nname: CT4 cell\nis_a: CL:0\n\n\
+    [Term]\nid: CL:5\nname: CT5 cell\nis_a: CL:200\n\n\
+    [Term]\nid: CL:6\nname: CT6 cell\nis_a: CL:200\n\n\
+    [Term]\nid: CL:11\nname: early CT1 cell\nis_a: CL:1\n\n\
+    [Term]\nid: CL:12\nname: early CT2 cell\nis_a: CL:2\n\n\
+    [Term]\nid: CL:13\nname: early CT3 cell\nis_a: CL:3\n\n\
+    [Term]\nid: CL:21\nname: pre CT1 cell\nis_a: CL:0\n\n\
+    [Term]\nid: CL:22\nname: pre CT2 cell\nis_a: CL:0\n\n\
+    [Term]\nid: CL:23\nname: pre CT3 cell\nis_a: CL:0\n";
+
+#[test]
+fn a_label_is_placed_under_a_term_by_words_the_ontology_uses_for_its_kinds() {
+    let t = ClTerms::parse(MODIFIED, &crate::annotate::cl_rules::shipped());
+    let placed = t.place_labels([
+        "Early CT5",
+        "Pre CT5",
+        "Late CT5",
+        "Early",
+        "CT5 x CT6",
+        "CT1",
+    ]);
+    assert_eq!(placed.on["CT1"], "CL:1");
+    assert_eq!(placed.under["Early CT5"], "CL:5", "an early CT5 is a CT5");
+    assert_eq!(
+        placed.hint["Pre CT5"], "CL:5",
+        "a pre CT5 is only of its lineage"
+    );
+    assert_eq!(
+        placed.hint["Late CT5"], "CL:5",
+        "a word the ontology never uses"
+    );
+    assert_eq!(
+        placed.none,
+        ["Early", "CT5 x CT6"],
+        "nothing left, or two terms"
+    );
+    let literal = ClTerms::parse(MODIFIED, &crate::annotate::cl_rules::MatchRules::default());
+    let placed = literal.place_labels(["Early CT5 cell"]);
+    assert!(placed.under.is_empty() && placed.hint.is_empty());
+}
+
+#[test]
+fn a_type_under_a_term_groups_by_it_and_a_hinted_one_keeps_to_its_lineage() {
+    let t = ClTerms::parse(MODIFIED, &crate::annotate::cl_rules::shipped());
+    // Pre CT5 shares two markers with CT1 and one with CT6: by markers alone
+    // it would join lineage A.
+    let p = panel(&[
+        ("G1", "CT1"),
+        ("G2", "CT2"),
+        ("G5", "CT5"),
+        ("G6", "CT6"),
+        ("G1", "Pre CT5"),
+        ("G2", "Pre CT5"),
+        ("G6", "Pre CT5"),
+        ("G7", "Early CT6"),
+        ("G8", "Early CT4"),
+    ]);
+    let tree = TypeTree::from_ontology(&t, &p).unwrap();
+    let alone = tree
+        .groups
+        .iter()
+        .find(|g| g.members == ["Early CT4"])
+        .unwrap();
+    assert_eq!(
+        (alone.name.as_str(), alone.cl_id.as_deref()),
+        ("Early_CT4", Some("CL:4")),
+        "alone, named for itself, not for the term it is a kind of"
+    );
+    assert_eq!(members(&tree, "lin_A_cell"), ["CT1", "CT2"]);
+    assert_eq!(
+        members(&tree, "lin_B_cell"),
+        ["CT5", "CT6", "Early CT6", "Pre CT5"]
+    );
+    assert!(
+        !tree.label_cl.contains_key("Early CT6"),
+        "placed, not matched"
     );
 }

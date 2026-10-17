@@ -179,3 +179,29 @@ fn a_type_off_the_ontology_joins_the_class_it_shares_markers_with() {
     assert_ne!(parent, Some("Loner"));
     assert_eq!(t.nodes[t.node_of("Loner").unwrap()].parent, None);
 }
+
+#[test]
+fn a_type_under_a_term_is_a_leaf_below_its_node() {
+    let obo = format!(
+        "{OBO}\n[Term]\nid: CL:30\nname: early CT3\nis_a: CL:20\n\n\
+         [Term]\nid: CL:31\nname: early CT4\nis_a: CL:21\n\n\
+         [Term]\nid: CL:32\nname: early CT1 helper\nis_a: CL:11\n"
+    );
+    let panel: Vec<(String, String)> = [("G4", "CT3"), ("G5", "CT4"), ("G7", "early CT0 cells")]
+        .iter()
+        .map(|(g, t)| ((*g).to_string(), (*t).to_string()))
+        .collect();
+    let t = PanelTree::from_ontology(
+        &ClTerms::parse(&obo, &crate::annotate::cl_rules::shipped()),
+        &panel,
+    )
+    .unwrap();
+    let early = t.node_of("early CT0 cells").unwrap();
+    assert_eq!(
+        names(&t, &t.path(early))[1..],
+        ["CT0_cell", "early_CT0_cells"],
+        "under the term it is a kind of"
+    );
+    assert!(!t.is_type("CT0_cell"), "the term is no panel type");
+    assert_eq!(t.cl_of("early CT0 cells"), None);
+}

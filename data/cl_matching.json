@@ -36,5 +36,10 @@
   "context": {
     "_doc": "A word the panel leaves off its labels (a tissue): the one word that, with an implied one, completes a term's name or counted synonym for at least min_labels labels nothing else matched, and for more than any other word (Alpha, Beta, Ductal -> pancreatic ...). null turns it off.",
     "min_labels": 3
+  },
+  "part": {
+    "_doc": "A label nothing matches is placed by the longest run of its words that matches one term (Early GMP by GMP): under that term when every word left off is a modifier, one the ontology uses for kinds of a term (it names X and 'word X' with the second a kind of the first in at least min_pairs pairs and min_share of all such pairs: early, mature, cycling; not pre, progenitor); else the term only keeps the type to its lineage when it joins a group by its markers. null min_pairs turns it off.",
+    "min_pairs": 3,
+    "min_share": 0.75
   }
 }

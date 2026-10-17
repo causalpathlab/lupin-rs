@@ -68,6 +68,7 @@ pub struct MatchRules {
     pub compact: bool,
     pub contained: ContainedRules,
     pub context: ContextRules,
+    pub part: PartRules,
 }
 
 /// The trailing qualifiers a term is also known without: a taxon
@@ -92,6 +93,31 @@ pub struct ContainedRules {
     /// The fewest words, not counting an implied one, a label needs for this;
     /// `None` turns it off.
     pub min_words: Option<usize>,
+}
+
+/// A label nothing matches, placed by the longest run of its words that
+/// matches one term (`Early GMP` by `GMP`): under that term when every word
+/// left off is a modifier, one the ontology uses for kinds of a term (it
+/// names `X` and `word X` with the second a kind of the first in at least
+/// `min_pairs` pairs, and in at least `min_share` of all such pairs:
+/// `early`, `mature`, `cycling`; not `pre`, `progenitor`); else the term is
+/// only a hint of its lineage, which a type joining a group by its markers
+/// keeps to (`Pre-cDC` joins no group of another lineage).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct PartRules {
+    /// `None` turns placing by part of a label off.
+    pub min_pairs: Option<usize>,
+    pub min_share: f64,
+}
+
+impl Default for PartRules {
+    fn default() -> Self {
+        Self {
+            min_pairs: None,
+            min_share: 1.0,
+        }
+    }
 }
 
 /// A word the whole panel leaves off its labels (a tissue: `pancreatic`
@@ -131,6 +157,7 @@ impl Default for MatchRules {
             compact: false,
             contained: ContainedRules::default(),
             context: ContextRules::default(),
+            part: PartRules::default(),
         }
     }
 }
