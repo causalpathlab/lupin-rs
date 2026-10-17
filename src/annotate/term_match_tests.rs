@@ -44,7 +44,7 @@ fn fake() -> Fake {
 
 fn index() -> (ClTerms, TermIndex) {
     let terms = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
-    let idx = TermIndex::build(&terms, &fake()).unwrap();
+    let idx = TermIndex::build(&terms, &fake(), |_, _| {}).unwrap();
     (terms, idx)
 }
 
@@ -65,28 +65,28 @@ fn an_obsolete_term_is_never_a_candidate() {
 }
 
 #[test]
-fn only_a_clear_winner_is_accepted() {
+fn a_label_gets_its_nearest_terms_by_name_and_score_and_none_is_taken() {
     let (terms, idx) = index();
-    let accept = Acceptance {
-        min_score: 0.9,
-        min_gap: 0.05,
-    };
-    let found = match_labels(
+    let found = suggest(
         &terms,
         &idx,
         &fake(),
-        &["Alpha", "BFUE", "Erythroid unit", "Unknown"],
-        accept,
+        &["Alpha", "BFUE", "Erythroid unit"],
+        2,
     )
     .unwrap();
-    assert_eq!(found["Alpha"].id, "CL:3");
-    assert_eq!(found["BFUE"].id, "CL:1");
-    assert!(found["BFUE"].score > found["BFUE"].runner_up);
-    assert!(
-        !found.contains_key("Erythroid unit"),
-        "two terms are about as close"
-    );
-    assert!(!found.contains_key("Unknown"), "nothing is close");
+    let alpha = &found["Alpha"];
+    assert_eq!(alpha[0].id, "CL:3");
+    assert_eq!(alpha[0].name, "pancreatic A cell");
+    assert_eq!(found["BFUE"][0].id, "CL:1");
+    assert!(found["BFUE"][0].score > found["BFUE"][1].score);
+    // Two terms about as close are both offered: the user decides.
+    let ids: Vec<&str> = found["Erythroid unit"]
+        .iter()
+        .map(|s| s.id.as_str())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&"CL:1") && ids.contains(&"CL:2"));
 }
 
 /// An encoder that may not be called with nothing to encode.
@@ -102,11 +102,43 @@ impl TextEncoder for NoEmpty {
 #[test]
 fn no_labels_need_no_encoding() {
     let (terms, idx) = index();
-    let accept = Acceptance {
-        min_score: 0.9,
-        min_gap: 0.05,
-    };
-    assert!(match_labels(&terms, &idx, &NoEmpty, &[], accept)
-        .unwrap()
-        .is_empty());
+    assert!(suggest(&terms, &idx, &NoEmpty, &[], 3).unwrap().is_empty());
+}
+
+#[test]
+fn building_reports_each_batch_up_to_every_name() {
+    let terms = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
+    let mut seen = Vec::new();
+    TermIndex::build(&terms, &fake(), |done, total| seen.push((done, total))).unwrap();
+    let (done, total) = *seen.last().unwrap();
+    assert_eq!(done, total, "the last report is the whole");
+    assert!(total >= 5, "every counted name is encoded");
+}
+
+#[test]
+fn the_index_reads_back_from_its_cache_file() {
+    let (_, idx) = index();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("sub").join("index.parquet");
+    idx.save(&file).unwrap();
+    let back = TermIndex::load(&file).unwrap();
+    let v = &fake().encode(&["alpha"]).unwrap()[0];
+    let (a, b) = (idx.rank(v, 3), back.rank(v, 3));
+    assert_eq!(
+        a.iter().map(|r| &r.0).collect::<Vec<_>>(),
+        b.iter().map(|r| &r.0).collect::<Vec<_>>()
+    );
+    assert!((a[0].1 - b[0].1).abs() < 1e-6);
+}
+
+#[test]
+fn the_cache_is_keyed_by_the_ontology_release_and_the_model_revision() {
+    let rules = crate::annotate::cl_rules::shipped();
+    let v1 = ClTerms::parse(&format!("data-version: r1\n\n{OBO}"), &rules);
+    let v2 = ClTerms::parse(&format!("data-version: r2\n\n{OBO}"), &rules);
+    let key = |t: &ClTerms, rev: &str| TermIndex::cache_name(t, "org/model", rev);
+    assert_eq!(key(&v1, "abc"), key(&v1, "abc"));
+    assert!(key(&v1, "abc").starts_with("r1-"));
+    assert_ne!(key(&v1, "abc"), key(&v2, "abc"), "another release");
+    assert_ne!(key(&v1, "abc"), key(&v1, "abd"), "another revision");
 }
