@@ -1,26 +1,42 @@
-//! Positive-effect SuSiE on one cluster's pseudobulk counts.
+//! Positive-effect SuSiE on one cluster's marker log-folds.
 //!
 //! ```text
-//! y_g ~ NB(μ_g, φ_g)          the cluster's summed count of marker gene g
-//! log μ_g = log μ⁰_g + Σ_c A_gc θ_c
-//! θ = Σ_l e_l · 1[γ_l]        e_l = exp(b_l) > 0
-//! γ_l ∈ {1..C, null}          one cell type per single effect, or none
+//! x_g = ln((y_g + ½) / (μ⁰_g + ½))     marker gene g's count against its background
+//! η_g = Σ_c A_gc θ_c                    its predicted log-fold
+//! x_g ~ t_ν(η_g, v_g)                   v_g = s²_g + 1/(y_g + ½)
+//! θ = Σ_l e_l · 1[γ_l]                  e_l = exp(b_l) > 0
+//! γ_l ∈ {1..C, null}                    one cell type per single effect, or none
 //! ```
 //!
 //! `μ⁰_g` is the gene's background in this cluster (library size × background
-//! rate). Each sweep draws every effect's type γ_l exactly from its full
-//! conditional (C + 1 choices, each a change to the likelihood over that
-//! type's markers only), then its size by elliptical slice sampling on the
-//! standard-normal raw `b_l = m_b + s_b·z`: a log-normal size, the inverse
-//! of the log link. Effects can only add expression, so a type cannot be
-//! credited for its markers being low, and an effect that finds nothing rests
-//! on the null choice. The draws keep each sweep's conditional choice
-//! probabilities, so a type's PIP is Rao-Blackwellised.
+//! rate). `s²_g` is how far the gene strays from any fit across clusters, and
+//! `1/(y + ½)` the sampling variance of the observed log count. (The variance
+//! at the predicted count, which would weigh a silent marker fully against a
+//! type predicting it high, was measured and lost accuracy on real data, so a
+//! type whose own markers are mostly near zero can still be credited for a
+//! few shared genes; a test records that gap.) The Student-t (ν =
+//! [`NU`]) bounds what one gene can contribute (Lange, Little & Taylor 1989,
+//! "Robust statistical modeling using the t distribution", JASA 84:881–896,
+//! doi:10.1080/01621459.1989.10478852): a type's effect is then the typical
+//! fold of its markers, so a handful of genes it shares with what the cluster
+//! really is cannot carry it while the rest of its markers stay flat.
+//!
+//! Each sweep draws every effect's type γ_l exactly from its full conditional
+//! (C + 1 choices, each a change to the likelihood over that type's markers
+//! only), then its size by elliptical slice sampling on the standard-normal
+//! raw `b_l = m_b + s_b·z`: a log-normal size, a positive fold. Effects can
+//! only add expression, so a type cannot be credited for its markers being
+//! low, and an effect that finds nothing rests on the null choice. The draws
+//! keep each sweep's conditional choice probabilities, so a type's PIP is
+//! Rao-Blackwellised.
 
 use legume_numeric::mcmc::engine::{elliptical_slice_step, McmcModel};
 use rand::rngs::SmallRng;
 use rand::{Rng, RngExt};
 use rand_distr::{Distribution, StandardNormal};
+
+/// Degrees of freedom of the Student-t on the log-folds.
+pub(super) const NU: f64 = 4.0;
 
 /// The prior of the single effects.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -46,104 +62,105 @@ impl Default for SusiePrior {
     }
 }
 
-/// What every cluster shares: which types each marker gene marks and the
-/// genes' NB sizes.
+/// What every cluster shares: which types each marker gene marks and how far
+/// each gene strays from a fit across clusters.
 pub(super) struct Panel {
     types_of: Vec<Vec<usize>>,
     genes_of: Vec<Vec<usize>>,
-    /// r_g = 1/φ_g (Var = μ + μ²/r); infinite is Poisson.
-    nb_size: Vec<f32>,
-    ln_r: Vec<f32>,
+    /// s²_g, the gene's misfit variance on the log scale.
+    scale2: Vec<f32>,
 }
 
 impl Panel {
-    /// The panel over `types_of` (marker gene → its types), with φ_g from
-    /// `dispersion` (φ = 0 is Poisson).
-    pub(super) fn new(types_of: Vec<Vec<usize>>, n_types: usize, dispersion: &[f32]) -> Self {
+    /// The panel over `types_of` (marker gene → its types), with s²_g from
+    /// `scale2`.
+    pub(super) fn new(types_of: Vec<Vec<usize>>, n_types: usize, scale2: &[f32]) -> Self {
         let mut genes_of = vec![Vec::new(); n_types];
         for (g, types) in types_of.iter().enumerate() {
             for &c in types {
                 genes_of[c].push(g);
             }
         }
-        let mut panel = Self {
+        Self {
             types_of,
             genes_of,
-            nb_size: Vec::new(),
-            ln_r: Vec::new(),
-        };
-        panel.set_dispersion(dispersion);
-        panel
+            scale2: scale2.to_vec(),
+        }
     }
 
-    /// Set φ_g of every marker gene (φ = 0 is Poisson).
-    pub(super) fn set_dispersion(&mut self, dispersion: &[f32]) {
-        self.nb_size = dispersion
-            .iter()
-            .map(|&d| if d > 0.0 { 1.0 / d } else { f32::INFINITY })
-            .collect();
-        self.ln_r = self.nb_size.iter().map(|r| r.ln()).collect();
+    /// Set s²_g of every marker gene.
+    pub(super) fn set_scale2(&mut self, scale2: &[f32]) {
+        self.scale2 = scale2.to_vec();
     }
 
     pub(super) fn n_types(&self) -> usize {
         self.genes_of.len()
     }
+
+    /// Every marker gene's predicted log-fold at θ.
+    pub(super) fn etas(&self, theta: &[f32]) -> Vec<f32> {
+        self.types_of
+            .iter()
+            .map(|types| types.iter().map(|&c| theta[c]).sum::<f32>())
+            .collect()
+    }
 }
 
-/// One cluster's counts over the panel's marker genes.
+/// A count `y` against its background expectation `mu0`: the log-fold
+/// ln((y + ½)/(μ⁰ + ½)) and the sampling variance of the log count, 1/(y + ½).
+pub(super) fn log_fold(y: f64, mu0: f64) -> (f32, f32) {
+    (
+        ((y + 0.5) / (mu0 + 0.5)).ln() as f32,
+        (1.0 / (y + 0.5)) as f32,
+    )
+}
+
+/// One cluster's marker genes against their background.
 pub(super) struct Cluster {
-    /// Summed count per marker gene.
-    pub(super) y: Vec<f32>,
-    /// log μ⁰ per marker gene.
-    pub(super) log_mu0: Vec<f32>,
+    /// ln((y + ½) / (μ⁰ + ½)) per marker gene.
+    pub(super) x: Vec<f32>,
+    /// 1/(y + ½): the sampling variance of each observed log count.
+    pub(super) sampling: Vec<f32>,
+}
+
+impl Cluster {
+    /// From counts `y` and background expectations `mu0`.
+    pub(super) fn new(y: impl Iterator<Item = f64>, mu0: impl Iterator<Item = f64>) -> Self {
+        let (x, sampling) = y.zip(mu0).map(|(y, m)| log_fold(y, m)).unzip();
+        Self { x, sampling }
+    }
 }
 
 /// One cluster on the panel: the likelihood the sampler targets.
 #[derive(Clone, Copy)]
-pub(super) struct ClusterCounts<'a> {
+pub(super) struct ClusterLogFold<'a> {
     pub(super) panel: &'a Panel,
     pub(super) cluster: &'a Cluster,
 }
 
-impl ClusterCounts<'_> {
-    /// Gene g's log-likelihood at linear predictor η, up to constants. In
-    /// f64: on large pseudobulks y·η and (y + r)·log(r + μ) are ~10⁷ and
-    /// nearly cancel, past f32's precision.
+impl ClusterLogFold<'_> {
+    /// Gene g's Student-t log-likelihood at predictor η, up to constants.
     fn term(&self, g: usize, eta: f32) -> f64 {
-        let (y, eta) = (f64::from(self.cluster.y[g]), f64::from(eta));
-        let r = f64::from(self.panel.nb_size[g]);
-        if r.is_infinite() {
-            // Poisson: y log μ − μ
-            return y * eta - eta.exp();
-        }
-        // y log μ − (y + r) log(r + μ)
-        y * eta - (y + r) * log_add_exp(f64::from(self.panel.ln_r[g]), eta)
-    }
-
-    /// Every marker gene's η at θ.
-    pub(super) fn etas(&self, theta: &[f32]) -> Vec<f32> {
-        self.cluster
-            .log_mu0
-            .iter()
-            .zip(&self.panel.types_of)
-            .map(|(&m0, types)| m0 + types.iter().map(|&c| theta[c]).sum::<f32>())
-            .collect()
+        let v = f64::from(self.panel.scale2[g]) + f64::from(self.cluster.sampling[g]);
+        let r = f64::from(self.cluster.x[g]) - f64::from(eta);
+        -0.5 * (NU + 1.0) * (r * r / (NU * v)).ln_1p()
     }
 
     fn log_lik(&self, theta: &[f32]) -> f64 {
-        self.etas(theta)
+        self.panel
+            .etas(theta)
             .iter()
             .enumerate()
             .map(|(g, &eta)| self.term(g, eta))
             .sum()
     }
 
-    /// Each type's share of the deviance θ explains over the background:
+    /// Each type's share of the log-likelihood θ gains over the background:
     /// the log-likelihood lost when its effect alone is removed, over the
     /// log-likelihood θ gains on θ = 0 (0 for types without an effect).
     pub(super) fn explained(&self, theta: &[f32]) -> Vec<f32> {
         let total = self.log_lik(theta) - self.log_lik(&vec![0.0; theta.len()]);
-        let etas = self.etas(theta);
+        let etas = self.panel.etas(theta);
         (0..theta.len())
             .map(|c| {
                 if theta[c] <= 0.0 || total <= 0.0 {
@@ -168,11 +185,6 @@ impl ClusterCounts<'_> {
     }
 }
 
-/// log(eᵃ + eᵇ).
-fn log_add_exp(a: f64, b: f64) -> f64 {
-    a.max(b) + (-(a - b).abs()).exp().ln_1p()
-}
-
 fn std_normal(rng: &mut impl Rng) -> f32 {
     let v: f64 = StandardNormal.sample(rng);
     v as f32
@@ -180,7 +192,7 @@ fn std_normal(rng: &mut impl Rng) -> f32 {
 
 /// The sampler over one cluster.
 pub(super) struct SusieModel<'a> {
-    pub(super) data: ClusterCounts<'a>,
+    pub(super) data: ClusterLogFold<'a>,
     pub(super) prior: SusiePrior,
 }
 
@@ -241,7 +253,7 @@ impl McmcModel for SusieModel<'_> {
         let z_eff: Vec<f32> = (0..l).map(|_| std_normal(rng)).collect();
         let effect = z_eff.iter().map(|&z| self.effect(z)).collect();
         let theta = vec![0.0; c];
-        let etas = self.data.etas(&theta);
+        let etas = self.data.panel.etas(&theta);
         let base = etas
             .iter()
             .enumerate()
@@ -264,7 +276,7 @@ impl McmcModel for SusieModel<'_> {
         let (log_type, log_null) = self.log_prior();
         // η and the terms from θ afresh: the shifts below add and take away
         // effects in f32, and their rounding would otherwise accumulate.
-        s.etas = self.data.etas(&s.theta);
+        s.etas = self.data.panel.etas(&s.theta);
         s.base = s
             .etas
             .iter()
@@ -311,9 +323,8 @@ impl McmcModel for SusieModel<'_> {
             // Its size: ESS on the likelihood of its type's markers (starting
             // from the gain just computed), or a prior draw when it picked none.
             if j < c {
-                // ESS takes an f32 log-likelihood. A gain can run to ~10⁷ on
-                // large pseudobulks, past f32's precision; relative to the
-                // current one it stays near 0.
+                // ESS takes an f32 log-likelihood: the gain relative to the
+                // current one keeps it near 0.
                 let cur = gains[j];
                 let ll =
                     |z: &f32| (self.data.gain(&s.etas, &s.base, j, self.effect(*z)) - cur) as f32;

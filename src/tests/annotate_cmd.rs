@@ -58,8 +58,6 @@ fn the_susie_stage_parses_back_to_the_same_arguments() {
         "c.parquet",
         "--susie-effects",
         "3",
-        "--susie-dispersion",
-        "0",
         "--mcmc-chains",
         "2",
         "--mcmc-samples",
@@ -115,11 +113,17 @@ fn susie_settings_that_leave_no_posterior_fail_the_command() {
         &["--mcmc-chains", "0"],
         &["--mcmc-samples", "0"],
         &["--mcmc-thin", "0"],
-        &["--susie-dispersion=-1"],
     ] {
         let mut argv = vec!["-o", "x", "-m", "m.tsv"];
         argv.extend_from_slice(bad);
         let err = run_annotate(&parse(&argv)).unwrap_err().to_string();
         assert!(err.contains("SuSiE"), "{bad:?}: {err}");
     }
+}
+
+#[test]
+fn the_retired_susie_dispersion_flag_is_still_accepted() {
+    // 0.5.0 shipped it; saved commands that pass it must keep working.
+    let a = parse(&["-o", "x", "-m", "m.tsv", "--susie-dispersion", "0"]);
+    assert!(!a.to_argv().iter().any(|s| s.contains("susie-dispersion")));
 }
