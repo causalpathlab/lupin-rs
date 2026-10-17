@@ -281,6 +281,7 @@ fn draw_progress(f: &mut Frame, app: &App) {
 }
 
 /// The bottom line: where the key guide is, and the pane's keys, whole.
+#[cfg(test)]
 pub(super) fn help(app: &App) -> String {
     help_in(app, usize::MAX)
 }
