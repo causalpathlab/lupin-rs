@@ -30,7 +30,13 @@ fn the_score_pass_calls_each_cell_and_records_its_round() {
 
     let round = run::load(&annotated_path(&loaded.file, &out).to_string_lossy()).unwrap();
     let a = &round.manifest.annotate;
-    assert!(a.argmax.is_some());
+    assert!(
+        a.argmax
+            .as_deref()
+            .is_some_and(|p| p.ends_with(".argmax.parquet")),
+        "a pass records its labels as the parquet: {:?}",
+        a.argmax
+    );
     assert!(
         a.marker_score
             .as_deref()

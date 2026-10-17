@@ -140,6 +140,29 @@ fn relabel_writes_a_new_round_and_leaves_the_old_one() {
 }
 
 #[test]
+fn a_new_round_records_the_parquet_and_an_older_tsv_round_still_reads() {
+    let root = tempfile::tempdir().unwrap();
+    // `first_round` records the TSV, as rounds before the parquet did; with
+    // the parquet gone it is the only labels file.
+    let src = first_round(root.path());
+    fs::remove_file(root.path().join("r0/run.argmax.parquet")).unwrap();
+    let old = run::load(&src.to_string_lossy()).unwrap();
+    assert_eq!(
+        old.manifest.annotate.argmax.as_deref(),
+        Some("run.argmax.tsv")
+    );
+    assert_eq!(read_cells(&old).unwrap().labels[2].as_deref(), Some("CT2"));
+
+    let next = run::load(&next_from(&src, &keep0(None)).unwrap().to_string_lossy()).unwrap();
+    let rel = next.manifest.annotate.argmax.as_deref().unwrap();
+    assert!(rel.ends_with(".argmax.parquet"), "{rel}");
+    assert!(Path::new(&resolve(&next.dir, rel)).is_file());
+    let cells = read_cells(&next).unwrap();
+    assert_eq!(cells.labels[2].as_deref(), Some("CT2"));
+    assert!((cells.probs[0] - 0.9).abs() < 1e-6);
+}
+
+#[test]
 fn an_explicit_output_never_overwrites_a_round() {
     let root = tempfile::tempdir().unwrap();
     let src = first_round(root.path());

@@ -15,8 +15,8 @@
 //! genuine co-embedded gene space (bge / fne / resolve-embedding-space);
 //! topic/svd runs have no such embedding and use `annotate --method enrichment`.
 //!
-//! Shares the per-cell contract (`{out}.{annot.parquet,membership.tsv,
-//! argmax.tsv}`) and the TreeBH ontology core with the other passes, so their
+//! Shares the per-cell contract (`{out}.{annot.parquet,argmax.parquet,
+//! argmax.tsv,membership.tsv}`) and the TreeBH ontology core with the other passes, so their
 //! outputs are directly comparable.
 
 use super::args::AnnotateProjectionArgs;
