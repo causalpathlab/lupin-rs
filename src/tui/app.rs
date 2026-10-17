@@ -760,12 +760,12 @@ impl App {
                 let called = match by_before.filter(saved_other) {
                     Some(before) => {
                         let note = format!(
-                            ", called by {}: a save does not redo {}'s call (r re-runs the pass)",
+                            "called by {}: a save does not redo {}'s call (r re-runs the pass)",
                             by_after.unwrap_or_default().name(),
                             before.name()
                         );
-                        self.push_log(format!("the new round is{note}"));
-                        note
+                        self.push_log(format!("the new round is {note}"));
+                        format!(", {note}")
                     }
                     None => String::new(),
                 };
