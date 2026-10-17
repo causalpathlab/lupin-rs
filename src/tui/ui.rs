@@ -273,7 +273,7 @@ pub(super) fn help(app: &App) -> String {
 fn pane_keys(app: &App) -> &'static str {
     match app.focus {
         Focus::Clusters if app.in_order() => {
-            " ? keys · ↑↓ cluster · 1-9 take · ⏎ choices · S sort · a all · k keep · ] next flagged · A annotate · g runs · r run · tab pane · q quit"
+            " ? keys · ↑↓ cluster · 1-9 take · ⏎ choices · S sort · a all · k keep · ] next flagged · A annotate · g runs · r run · tab pane · s save · q quit"
         }
         Focus::Clusters => {
             " ? keys · ↑↓ cluster · 1-9 take · ⏎ choices · S sort · a all · k keep · ] next flagged · A annotate · g runs · tab pane · s save · q quit"

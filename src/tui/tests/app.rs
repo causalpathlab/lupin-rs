@@ -1787,3 +1787,12 @@ fn the_forms_keys_fit_its_popup_with_or_without_shift_enter() {
         assert!(screen.contains("esc close"), "shift+enter {shift_enter}");
     }
 }
+
+#[test]
+fn the_order_views_cluster_keys_name_s_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+    app.focus = Focus::Clusters;
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("s save"), "{bar}");
+}
