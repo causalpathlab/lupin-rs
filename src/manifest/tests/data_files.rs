@@ -302,3 +302,14 @@ fn the_shared_table_is_published_at_the_release_tag_and_not_packaged() {
         "excluded from the crate: it is downloaded"
     );
 }
+
+#[test]
+fn data_where_lists_the_precedence_files_of_the_user_and_project_layers() {
+    let root = tempfile::tempdir().unwrap();
+    let s = search(root.path());
+    let project = root.path().join("run").join("lupin").join(PRECEDENCE);
+    write(project.clone(), "A\tB\tprecedes\tknown\n");
+    let report = where_report(&s).join("\n");
+    assert!(report.contains(PRECEDENCE), "{report}");
+    assert!(report.contains(&project.display().to_string()), "{report}");
+}
