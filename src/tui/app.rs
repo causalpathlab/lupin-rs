@@ -1369,6 +1369,19 @@ impl App {
         }
     }
 
+    /// Record a cluster's label or keep, in place of its earlier one (unless
+    /// a running save is writing that).
+    fn decide(&mut self, edit: Edit) {
+        let saving = self.saving();
+        let id = edit.cluster();
+        let mut k = 0;
+        self.edits.retain(|e| {
+            k += 1;
+            k <= saving || e.cluster() != id
+        });
+        self.edits.push(edit);
+    }
+
     /// Whether a pass is running, which is about to replace the clusters.
     fn pass_running(&self) -> bool {
         self.child.as_ref().is_some_and(|r| r.job == Job::Pass)
@@ -1861,7 +1874,7 @@ impl App {
                         remember,
                     } => {
                         // As the panel writes its types, so every pane matches it.
-                        self.edits.push(Edit::Label {
+                        self.decide(Edit::Label {
                             cluster,
                             label: label_key(&label),
                             reason,
@@ -1885,7 +1898,7 @@ impl App {
                         }
                     }
                     Pending::Keep { cluster } => {
-                        self.edits.push(Edit::Keep { cluster, reason });
+                        self.decide(Edit::Keep { cluster, reason });
                     }
                     Pending::Hide => self.hide(&reason),
                     Pending::LabelName { cluster } => {

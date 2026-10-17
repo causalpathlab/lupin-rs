@@ -1223,6 +1223,27 @@ fn u_and_k_ask_why_then_backspace_undoes_and_e_waits_for_a_save() {
 }
 
 #[test]
+fn a_clusters_new_label_replaces_its_earlier_one() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    app.edits.push(Edit::Markers {
+        label: "CT1".into(),
+        genes: vec!["GENE1".into()],
+        add: false,
+        reason: "why".into(),
+    });
+    for label in ["CT1", "CT1+CT2"] {
+        app.ask_label(label.into(), "why".into(), None);
+        press(&mut app, KeyCode::Enter);
+    }
+    assert_eq!(app.edits.len(), 2, "the marker edit and one label");
+    assert!(matches!(&app.edits[1], Edit::Label { label, .. } if label == "CT1+CT2"));
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(app.edits.len(), 1, "the marker edit stays");
+}
+
+#[test]
 fn close_bracket_visits_the_flagged_clusters_left_to_decide() {
     use super::super::round::{Candidate, ClusterView};
     let mut app = app_with_terms(false);
