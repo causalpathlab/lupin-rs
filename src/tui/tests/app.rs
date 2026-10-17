@@ -1491,6 +1491,26 @@ fn a_typed_name_off_the_panel_is_not_said_to_have_failed_fdr() {
 }
 
 #[test]
+fn a_round_with_no_cluster_expression_says_so_and_calls_no_marker_weak() {
+    let mut app = app_with_terms(false);
+    if let Some(r) = app.round.as_mut() {
+        r.markers.insert("CT1".into(), ["GENE1".into()].into());
+        r.clusters[0].genes.clear();
+    }
+    app.gene_view = GeneView::Markers;
+    let screen = drawn(&app);
+    assert!(screen.contains("1 markers of CT1"), "{screen}");
+    assert!(
+        !screen.contains("1 weak"),
+        "unmeasured is not weak: {screen}"
+    );
+    assert!(!screen.contains("weak "), "{screen}");
+    assert!(screen.contains("no cluster expression"), "{screen}");
+    app.gene_view = GeneView::Specific;
+    assert!(drawn(&app).contains("no cluster expression"));
+}
+
+#[test]
 fn a_relabelled_cluster_shows_the_evidence_of_its_new_label() {
     use super::super::round::{Candidate, Edit};
     let cand = |label: &str, fold| {

@@ -987,13 +987,15 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 "H: show hidden"
             };
-            (
-                rows,
+            let title = if r.expression.is_none() {
+                " no specific genes: the round has no cluster expression ".to_string()
+            } else {
                 format!(
                     " {} specific genes · log2 FC · new = in no panel · {shown} ",
                     listed.len()
-                ),
-            )
+                )
+            };
+            (rows, title)
         }
         GeneView::Markers => {
             let Some(label) = now.as_deref() else {
@@ -1009,7 +1011,8 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
                 .iter()
                 .map(|(g, fc, added)| {
                     // A marker not enriched in this cluster: missed here.
-                    let weak = fc.is_none_or(|v| v <= 0.0);
+                    // One not measured is not weak.
+                    let weak = fc.is_some_and(|v| v <= 0.0);
                     let tag = match (added, weak) {
                         (true, _) => "added",
                         (false, true) => "weak",
@@ -1023,22 +1026,29 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
                     ]);
                     match (added, weak) {
                         (true, _) => row.yellow(),
-                        (false, false) => row.green(),
-                        (false, true) => row.dim(),
+                        (false, false) if fc.is_some() => row.green(),
+                        (false, _) => row.dim(),
                     }
                 })
                 .collect();
             let weak = listed
                 .iter()
-                .filter(|(_, fc, _)| fc.is_none_or(|v| v <= 0.0))
+                .filter(|(_, fc, _)| fc.is_some_and(|v| v <= 0.0))
                 .count();
+            let unmeasured = listed.iter().filter(|(_, fc, _)| fc.is_none()).count();
+            let fc = if r.expression.is_none() {
+                "FC not measured: no cluster expression".to_string()
+            } else if unmeasured > 0 {
+                format!(
+                    "{weak} weak (FC ≤ 0 in K{}) · {unmeasured} not measured",
+                    c.id
+                )
+            } else {
+                format!("{weak} weak (FC ≤ 0 in K{})", c.id)
+            };
             (
                 rows,
-                format!(
-                    " {} markers of {label} · {weak} weak (FC ≤ 0 in K{}) ",
-                    listed.len(),
-                    c.id
-                ),
+                format!(" {} markers of {label} · {fc} ", listed.len()),
             )
         }
     };
