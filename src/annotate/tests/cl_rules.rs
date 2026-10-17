@@ -22,6 +22,10 @@ fn the_shipped_rules_reproduce_the_matching_lupin_had() {
     let r = MatchRules::from_layers(&[shipped]).unwrap();
     assert!(r.counts("RELATED", &["OMO:0003000"]));
     assert!(
+        r.counts("RELATED", &["OMO:0003004"]),
+        "a plural form (OMO:0003004) counts"
+    );
+    assert!(
         !r.counts("RELATED", &[]),
         "a plain RELATED synonym does not count"
     );
@@ -64,6 +68,7 @@ fn aliases_layer_and_compare_as_labels() {
     a.add_tsv("pro_b\tCL:9\tmine\n", "project");
     assert_eq!(a.get("PRO B"), Some("CL:9"), "the later file wins");
     assert_eq!(a.get("nk"), Some("CL:2"));
+    assert_eq!(a.get("Pro-B"), Some("CL:9"), "a hyphen parts words too");
     assert_eq!(a.len(), 2);
     // As `--label-cl` maps have been written: commas, a header, an NA row.
     let n = a.add_tsv(

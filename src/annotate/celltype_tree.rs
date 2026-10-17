@@ -3,7 +3,8 @@
 //! first call is the group its evidence adds up to.
 //!
 //! The groups come from the Cell Ontology when there is one: the panel's
-//! types are matched to CL terms under the matching rules, and each goes
+//! types are matched to CL terms under the matching rules
+//! ([`ClTerms::map_labels`]), and each goes
 //! under its nearest ancestor among the ontology's analysis classes (its
 //! curated `*_upper_slim` subsets and `cellxgene_subset`) that it shares with
 //! another panel type; a type that matches no term joins the group sharing
@@ -28,14 +29,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub struct ClTerms {
     rules: MatchRules,
     aliases: Aliases,
-    /// Normalised name or counted synonym → term ids.
-    by_name: HashMap<String, BTreeSet<String>>,
-    /// The same names by [`word_bag`], for labels whose words come in
-    /// another order (`CT1 cells memory` for `memory CT1 cell`).
-    by_words: HashMap<String, BTreeSet<String>>,
-    /// Each term's own name (no synonyms) by [`ClTerms::name_key`]: what an
-    /// implied trailing word may complete.
-    by_term_name: HashMap<String, BTreeSet<String>>,
+    /// The names and counted synonyms, as written.
+    names: NameIndex,
+    /// The same without a trailing qualifier (see `QualifierRules`), looked
+    /// at only when the names as written say nothing about a label.
+    unqualified: NameIndex,
     name_of: HashMap<String, String>,
     parents: HashMap<String, Vec<String>>,
     /// `is_a` children, the reverse of `parents`.
@@ -46,6 +44,55 @@ pub struct ClTerms {
     classes: BTreeSet<String>,
     /// The file's `data-version`, when it states one.
     pub release: Option<String>,
+}
+
+/// Term names keyed every way a label is compared with them.
+#[derive(Default)]
+struct NameIndex {
+    /// Normalised name or counted synonym → term ids.
+    by_name: HashMap<String, BTreeSet<String>>,
+    /// The same names by [`word_bag`], for labels whose words come in
+    /// another order (`CT1 cells memory` for `memory CT1 cell`).
+    by_words: HashMap<String, BTreeSet<String>>,
+    /// Each term's own name (no synonyms) by [`ClTerms::name_key`]: what an
+    /// implied trailing word may complete.
+    by_term_name: HashMap<String, BTreeSet<String>>,
+    /// Names and counted synonyms without spaces or hyphens, when the rules
+    /// compare so ([`MatchRules::compact`]); and the own names alone.
+    by_compact: HashMap<String, BTreeSet<String>>,
+    by_compact_name: HashMap<String, BTreeSet<String>>,
+    /// Each own name's [`marker_words`], for labels a name spells out among
+    /// other words ([`crate::annotate::cl_rules::ContainedRules`]).
+    phrases: Vec<(BTreeSet<String>, String)>,
+}
+
+impl NameIndex {
+    /// Index `name` of term `id`; `own` when it is the term's own name.
+    fn add(&mut self, rules: &MatchRules, id: &str, name: &str, own: bool) {
+        let add = |map: &mut HashMap<String, BTreeSet<String>>, key: String| {
+            map.entry(key).or_default().insert(id.to_string());
+        };
+        let n = rules.normalise(name);
+        let single = rules.singular(&n);
+        if rules.any_word_order {
+            add(&mut self.by_words, word_bag(&single));
+        }
+        if rules.compact {
+            add(&mut self.by_compact, compact(&single));
+            if own {
+                add(&mut self.by_compact_name, compact(&single));
+            }
+        }
+        // Own names only: a synonym is already a looser link (see
+        // `ImpliedRules`).
+        if own {
+            add(&mut self.by_term_name, name_key(rules, &n));
+            if rules.contained.min_words.is_some() {
+                self.phrases.push((marker_words(&single), id.to_string()));
+            }
+        }
+        add(&mut self.by_name, n);
+    }
 }
 
 /// One `[Term]` stanza while it is read.
@@ -65,24 +112,13 @@ impl Stanza {
         if self.id.is_empty() || self.obsolete {
             return;
         }
-        for n in &self.names {
-            let n = terms.rules.normalise(n);
-            if terms.rules.any_word_order {
-                terms
-                    .by_words
-                    .entry(word_bag(&terms.rules.singular(&n)))
-                    .or_default()
-                    .insert(self.id.clone());
+        for (i, name) in self.names.iter().enumerate() {
+            terms.names.add(&terms.rules, &self.id, name, i == 0);
+            if let Some(stem) = unqualified(&terms.rules, name) {
+                terms.unqualified.add(&terms.rules, &self.id, stem, i == 0);
             }
-            terms.by_name.entry(n).or_default().insert(self.id.clone());
         }
         if let Some(first) = self.names.first() {
-            let key = terms.name_key(first);
-            terms
-                .by_term_name
-                .entry(key)
-                .or_default()
-                .insert(self.id.clone());
             terms.name_of.insert(self.id.clone(), first.clone());
         }
         if terms.rules.classes.is_class(&self.subsets) {
@@ -97,16 +133,74 @@ impl Stanza {
     }
 }
 
-/// A normalised name's words, hyphenated ones split, in sorted order.
 /// A normalised name's words: spaces and hyphens part them.
 fn words(normalised: &str) -> impl Iterator<Item = &str> {
     normalised.split([' ', '-']).filter(|w| !w.is_empty())
 }
 
+/// A normalised name's [`words`] in sorted order.
 fn word_bag(normalised: &str) -> String {
     let mut words: Vec<&str> = words(normalised).collect();
     words.sort_unstable();
     words.join(" ")
+}
+
+/// A name as [`NameIndex::by_term_name`] keys it: normalised, made
+/// singular, and its words sorted when the rules allow any word order.
+fn name_key(rules: &MatchRules, name: &str) -> String {
+    let single = rules.singular(&rules.normalise(name));
+    if rules.any_word_order {
+        word_bag(&single)
+    } else {
+        single
+    }
+}
+
+/// The one id of `ids`, when there is exactly one.
+fn only(ids: &BTreeSet<String>) -> Option<String> {
+    (ids.len() == 1).then(|| ids.iter().next().cloned())?
+}
+
+/// A normalised name with no spaces or hyphens.
+fn compact(normalised: &str) -> String {
+    normalised
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-'))
+        .collect()
+}
+
+/// A normalised name's words as a label may give them: parted by spaces
+/// only, so `CD4-negative` stays itself, and a marker's `-positive` or `+`
+/// dropped, so `CD4-positive`, `CD4+` and `CD4` are one word.
+fn marker_words(normalised: &str) -> BTreeSet<String> {
+    normalised
+        .split(' ')
+        .map(|w| {
+            w.strip_suffix("-positive")
+                .or_else(|| w.strip_suffix('+'))
+                .unwrap_or(w)
+        })
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// `name` without the trailing qualifier the rules drop
+/// ([`crate::annotate::cl_rules::QualifierRules`]): a parenthesis, or one
+/// word of letters after a comma.
+fn unqualified<'a>(rules: &MatchRules, name: &'a str) -> Option<&'a str> {
+    let name = name.trim_end();
+    let stem = if rules.qualifiers.parenthetical && name.ends_with(')') {
+        name.rfind(" (").map(|i| &name[..i])
+    } else {
+        None
+    };
+    stem.or_else(|| {
+        let (stem, word) = name.rsplit_once(", ")?;
+        (rules.qualifiers.comma_word && word.chars().all(char::is_alphabetic)).then_some(stem)
+    })
+    .map(str::trim_end)
+    .filter(|s| !s.is_empty())
 }
 
 impl ClTerms {
@@ -205,9 +299,12 @@ impl ClTerms {
     /// Match panel labels to terms by name or exact synonym, as written or
     /// with plural words made singular, else by the same words in any order
     /// (hyphens as spaces), else with an implied trailing word completing a
-    /// term's name. Where a text names several terms, a term's own name wins
-    /// over another's synonym; a label still matching several, or none,
-    /// stays unmapped rather than guessed.
+    /// term's name, else as the rules allow beyond: without spaces and
+    /// hyphens, by words a term's name spells out among others, and with a
+    /// word the panel leaves off its labels. Where a text names several
+    /// terms, a term's own name wins over another's synonym, and a term
+    /// every other is a kind of wins over its specialisations; a label still
+    /// matching several, or none, stays unmapped rather than guessed.
     #[must_use]
     pub fn map_labels<'a>(
         &self,
@@ -216,61 +313,188 @@ impl ClTerms {
         let mut mapped = BTreeMap::new();
         let mut unmapped = Vec::new();
         for label in labels {
-            // A curated alias first, when its term is in this ontology.
-            if let Some(id) = self.aliases.get(label).filter(|id| self.has(id)) {
-                mapped.insert(label.to_string(), id.to_string());
-                continue;
-            }
-            // As written, else made singular, else in any word order, else
-            // with an implied trailing word completing a term's name (see
-            // `ImpliedRules`). Where a text names several terms, the one it
-            // is the own name of wins over those it is a synonym of.
-            let exact = self.rules.normalise(label);
-            let single = self.rules.singular(&exact);
-            let only = |ids: &BTreeSet<String>| -> Option<String> {
-                (ids.len() == 1).then(|| ids.iter().next().cloned())?
-            };
-            let one = |ids: &BTreeSet<String>, text: &str| -> Option<String> {
-                only(ids).or_else(|| {
-                    let named = self.by_term_name.get(&self.name_key(text))?;
-                    only(&ids.intersection(named).cloned().collect())
-                })
-            };
-            let found = if let Some(ids) = self.by_name.get(&exact) {
-                one(ids, &exact)
-            } else if let Some(ids) = self.by_name.get(&single) {
-                one(ids, &single)
-            } else if let Some(ids) = self.by_words.get(&word_bag(&single)) {
-                one(ids, &single)
-            } else if words(&single).next().is_some() {
-                self.rules.implied.suffixes.iter().find_map(|w| {
-                    only(
-                        self.by_term_name
-                            .get(&self.name_key(&format!("{single} {w}")))?,
-                    )
-                })
-            } else {
-                None
-            };
-            match found {
+            match self.match_label(label) {
                 Some(id) => {
                     mapped.insert(label.to_string(), id);
                 }
                 None => unmapped.push(label.to_string()),
             }
         }
+        let completed = self.by_context(&unmapped);
+        unmapped.retain(|l| !completed.contains_key(l));
+        mapped.extend(completed);
         (mapped, unmapped)
     }
 
-    /// A name as [`Self::by_term_name`] keys it: normalised, made singular,
-    /// and its words sorted when the rules allow any word order.
-    fn name_key(&self, name: &str) -> String {
-        let single = self.rules.singular(&self.rules.normalise(name));
-        if self.rules.any_word_order {
-            word_bag(&single)
-        } else {
-            single
+    /// One label's term, by every tier but the panel's context: on the
+    /// names as written, then, when those say nothing about it, on the names
+    /// without their qualifiers.
+    fn match_label(&self, label: &str) -> Option<String> {
+        // A curated alias first, when its term is in this ontology.
+        if let Some(id) = self.aliases.get(label).filter(|id| self.has(id)) {
+            return Some(id.to_string());
         }
+        let exact = self.rules.normalise(label);
+        let single = self.rules.singular(&exact);
+        // A label with no word names nothing.
+        words(&single).next()?;
+        self.match_in(&self.names, &exact, &single)
+            .or_else(|| self.match_in(&self.unqualified, &exact, &single))
+            .flatten()
+    }
+
+    /// A label (`exact`, normalised; `single`, made singular) on `ix`, tier
+    /// by tier: the first tier whose text `ix` has decides, matched or not
+    /// (`Some(None)` for a text naming several terms); `None` when none has.
+    fn match_in(&self, ix: &NameIndex, exact: &str, single: &str) -> Option<Option<String>> {
+        // As written, else made singular, else in any word order. Where a
+        // text names several terms, the one it is the own name of wins over
+        // those it is a synonym of.
+        let one = |ids: &BTreeSet<String>, text: &str| -> Option<String> {
+            only(ids)
+                .or_else(|| {
+                    let named = ix.by_term_name.get(&self.name_key(text))?;
+                    only(&ids.intersection(named).cloned().collect())
+                })
+                .or_else(|| self.most_general(ids))
+        };
+        if let Some(ids) = ix.by_name.get(exact) {
+            return Some(one(ids, exact));
+        }
+        if let Some(ids) = ix.by_name.get(single) {
+            return Some(one(ids, single));
+        }
+        if let Some(ids) = ix.by_words.get(&word_bag(single)) {
+            return Some(one(ids, single));
+        }
+        // An implied trailing word completing a term's own name (see
+        // `ImpliedRules`), the first that names one; then the same compared
+        // without separators.
+        let implied = |index: &HashMap<String, BTreeSet<String>>, key: &dyn Fn(&str) -> String| {
+            let named: Vec<&BTreeSet<String>> = (self.rules.implied.suffixes.iter())
+                .filter_map(|w| index.get(&key(&format!("{single} {w}"))))
+                .collect();
+            (!named.is_empty()).then(|| named.into_iter().find_map(|ids| self.most_general(ids)))
+        };
+        if let Some(found) = implied(&ix.by_term_name, &|t| self.name_key(t)) {
+            return Some(found);
+        }
+        if let Some(ids) = ix.by_compact.get(&compact(single)) {
+            return Some(self.most_general(ids));
+        }
+        if let Some(found) = implied(&ix.by_compact_name, &compact) {
+            return Some(found);
+        }
+        self.contained(ix, single)
+    }
+
+    /// The most general term whose own name spells out `single`'s words
+    /// among others (see `ContainedRules`), else the one whose name adds the
+    /// fewest words; `None` when no name spells them out.
+    fn contained(&self, ix: &NameIndex, single: &str) -> Option<Option<String>> {
+        let min = self.rules.contained.min_words?;
+        let want = marker_words(single);
+        let counted = want
+            .iter()
+            .filter(|w| !self.rules.implied.suffixes.contains(w))
+            .count();
+        if counted < min {
+            return None;
+        }
+        let found: Vec<(usize, &String)> = (ix.phrases.iter())
+            .filter(|(ws, _)| want.is_subset(ws))
+            .map(|(ws, id)| (ws.len(), id))
+            .collect();
+        let ids: BTreeSet<String> = found.iter().map(|(_, id)| (*id).clone()).collect();
+        // Else the name that adds the fewest words, when only one does.
+        let tightest = || {
+            let fewest = found.iter().map(|(n, _)| *n).min()?;
+            only(
+                &(found.iter())
+                    .filter(|(n, _)| *n == fewest)
+                    .map(|(_, id)| (*id).clone())
+                    .collect(),
+            )
+        };
+        (!ids.is_empty()).then(|| self.most_general(&ids).or_else(tightest))
+    }
+
+    /// The labels the panel's context word completes (see `ContextRules`),
+    /// with their terms: the one word that, with at most an implied one,
+    /// turns most of `labels` into a term's name or counted synonym, when
+    /// it does so for enough of them and more than any other word.
+    fn by_context(&self, labels: &[String]) -> BTreeMap<String, String> {
+        let Some(min) = self.rules.context.min_labels else {
+            return BTreeMap::new();
+        };
+        if labels.len() < min.max(1) {
+            return BTreeMap::new();
+        }
+        let implied = &self.rules.implied.suffixes;
+        let mut by_word: BTreeMap<&str, BTreeMap<String, String>> = BTreeMap::new();
+        for label in labels {
+            let single = self.rules.singular(&self.rules.normalise(label));
+            let own: Vec<&str> = words(&single).collect();
+            if own.is_empty() {
+                continue;
+            }
+            let mut found: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+            for (bag, ids) in &self.names.by_words {
+                let mut rest: Vec<&str> = bag.split(' ').collect();
+                let all_there = own.iter().all(|w| {
+                    rest.iter()
+                        .position(|r| r == w)
+                        .map(|i| rest.remove(i))
+                        .is_some()
+                });
+                if !all_there || rest.len() > 2 {
+                    continue;
+                }
+                if rest.len() == 2 {
+                    let Some(i) = rest.iter().position(|r| implied.iter().any(|w| w == r)) else {
+                        continue;
+                    };
+                    rest.remove(i);
+                }
+                if let [w] = rest[..] {
+                    if !implied.iter().any(|s| s == w) {
+                        found.entry(w).or_default().extend(ids.iter().cloned());
+                    }
+                }
+            }
+            for (w, ids) in found {
+                if let Some(id) = self.most_general(&ids) {
+                    by_word.entry(w).or_default().insert(label.clone(), id);
+                }
+            }
+        }
+        let mut ranked: Vec<BTreeMap<String, String>> = by_word.into_values().collect();
+        ranked.sort_by_key(|m| std::cmp::Reverse(m.len()));
+        match &ranked[..] {
+            [best, rest @ ..]
+                if best.len() >= min && rest.first().is_none_or(|r| r.len() < best.len()) =>
+            {
+                ranked.swap_remove(0)
+            }
+            _ => BTreeMap::new(),
+        }
+    }
+
+    /// The one of `ids` every other is a kind of (`is_a`), if there is one.
+    fn most_general(&self, ids: &BTreeSet<String>) -> Option<String> {
+        if let Some(id) = only(ids) {
+            return Some(id);
+        }
+        let above: Vec<BTreeSet<String>> =
+            ids.iter().map(|id| self.ancestors_or_self(id)).collect();
+        ids.iter()
+            .find(|id| above.iter().all(|a| a.contains(*id)))
+            .cloned()
+    }
+
+    /// A name as [`NameIndex::by_term_name`] keys it ([`name_key`]).
+    fn name_key(&self, name: &str) -> String {
+        name_key(&self.rules, name)
     }
 
     /// Check `aliases` before any name when matching labels.
@@ -344,7 +568,7 @@ impl ClTerms {
         // name has the query (at its start, inside, not at all: a synonym's
         // hit), then shorter names.
         let mut hits: BTreeMap<String, (bool, u8, usize)> = BTreeMap::new();
-        for (name, ids) in &self.by_name {
+        for (name, ids) in &self.names.by_name {
             if !name.contains(&q) {
                 continue;
             }

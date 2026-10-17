@@ -8,7 +8,7 @@
 # label in any of those; with LUPIN_OFFLINE set and nothing cached, this
 # layer is skipped.
 # Columns: label, CL id, note. Labels compare as lupin labels do (case,
-# spaces, commas and underscores do not matter).
+# spaces, hyphens, commas and underscores do not matter).
 # label	cl_id	note
 HSPC	CL:0008001	hematopoietic precursor cell (umbrella)
 Prog Mk	CL:0000553	megakaryocyte progenitor cell

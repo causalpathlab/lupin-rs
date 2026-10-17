@@ -588,3 +588,126 @@ fn a_label_is_placed_on_its_own_term_else_its_groups() {
     );
     assert_eq!(at("CT9"), None);
 }
+
+#[test]
+fn a_text_naming_a_term_and_its_specialisations_takes_the_most_general() {
+    let obo = "[Term]\nid: CL:1\nname: CT1 progenitor cell\nsynonym: \"CTP\" RELATED OMO:0003000 []\n\n\
+               [Term]\nid: CL:2\nname: CT1 progenitor cell, mammalian\nsynonym: \"CTP\" RELATED OMO:0003000 []\nis_a: CL:1\n\n\
+               [Term]\nid: CL:3\nname: CT2 cell\nsynonym: \"C2\" EXACT []\n\n\
+               [Term]\nid: CL:4\nname: CT4 cell\nsynonym: \"C2\" EXACT []\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels(["CTP", "C2"]);
+    assert_eq!(
+        mapped["CTP"], "CL:1",
+        "the general term, never a guess below it"
+    );
+    assert_eq!(unmapped, ["C2"], "two unrelated terms stay a tie");
+}
+
+#[test]
+fn a_name_is_also_known_without_its_trailing_qualifier() {
+    let obo = "[Term]\nid: CL:1\nname: CT5 neuron (sensu Vertebrata)\n\n\
+               [Term]\nid: CL:2\nname: CT6 cell, human\n\n\
+               [Term]\nid: CL:3\nname: CT7 cell (Mmus)\n\n\
+               [Term]\nid: CL:4\nname: CT7 cell (Primate)\n\n\
+               [Term]\nid: CL:5\nname: CT8 cell, CD9-positive\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels(["CT5 neurons", "CT6", "CT7", "CT8"]);
+    assert_eq!(mapped["CT5 neurons"], "CL:1");
+    assert_eq!(mapped["CT6"], "CL:2", "an implied word completes it too");
+    assert_eq!(
+        unmapped,
+        ["CT7", "CT8"],
+        "two species' terms are a tie; a marker is no qualifier"
+    );
+    let literal = ClTerms::parse(obo, &crate::annotate::cl_rules::MatchRules::default());
+    assert_eq!(literal.map_labels(["CT5 neuron"]).1, ["CT5 neuron"]);
+}
+
+#[test]
+fn plural_forms_match_as_the_rules_count_them() {
+    let obo = "[Term]\nid: CL:1\nname: CT8ial cell\nsynonym: \"CT8ia\" RELATED OMO:0003004 []\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    assert_eq!(t.map_labels(["CT8ia"]).0["CT8ia"], "CL:1");
+}
+
+#[test]
+fn separators_may_be_ignored_as_a_last_resort() {
+    let obo = "[Term]\nid: CL:1\nname: proCT9blast\n\n\
+               [Term]\nid: CL:2\nname: preCT3 cell\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels(["Pro-CT9blasts", "Pre-CT3"]);
+    assert_eq!(mapped["Pro-CT9blasts"], "CL:1");
+    assert_eq!(mapped["Pre-CT3"], "CL:2", "with an implied word");
+    assert!(unmapped.is_empty());
+    let spaced = format!("{obo}\n[Term]\nid: CL:3\nname: pre CT3 cell\n");
+    let t = ClTerms::parse(&spaced, &crate::annotate::cl_rules::shipped());
+    assert_eq!(
+        t.map_labels(["Pre-CT3"]).0["Pre-CT3"],
+        "CL:3",
+        "the words as written first"
+    );
+    let literal = ClTerms::parse(obo, &crate::annotate::cl_rules::MatchRules::default());
+    assert_eq!(literal.map_labels(["Pro-CT9blast"]).1, ["Pro-CT9blast"]);
+}
+
+/// A lineage written out in a term's name, with its specialisations under it.
+const LINEAGE: &str = "[Term]\nid: CL:1\nname: CT4-positive, alpha-beta T cell\n\n\
+    [Term]\nid: CL:2\nname: central memory CT4-positive, alpha-beta T cell\nis_a: CL:1\n\n\
+    [Term]\nid: CL:3\nname: central memory CT4-positive, alpha-beta T cell, human\nis_a: CL:2\n\n\
+    [Term]\nid: CL:4\nname: central memory CT4-negative, alpha-beta T cell\n\n\
+    [Term]\nid: CL:5\nname: effector memory CT4-positive, alpha-beta T cell\nis_a: CL:1\n\n\
+    [Term]\nid: CL:6\nname: central nervous system cell\n\n\
+    [Term]\nid: CL:7\nname: effector memory CT4-positive, alpha-beta T cell, terminally differentiated\nis_a: CL:1\n";
+
+#[test]
+fn a_label_whose_words_a_term_spells_out_takes_the_most_general_such_term() {
+    let t = ClTerms::parse(LINEAGE, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels([
+        "CT4 Central Memory",
+        "CT4+ central memory",
+        "CT4 Effector Memory",
+        "CT4 Memory",
+        "Central",
+    ]);
+    assert_eq!(mapped["CT4 Central Memory"], "CL:2", "not CT4-negative's");
+    assert_eq!(mapped["CT4+ central memory"], "CL:2");
+    assert_eq!(
+        mapped["CT4 Effector Memory"], "CL:5",
+        "with no term above both, the name adding the fewest words"
+    );
+    assert_eq!(
+        unmapped,
+        ["CT4 Memory", "Central"],
+        "names adding as many words, with nothing named above them; one word is too little"
+    );
+    let literal = ClTerms::parse(LINEAGE, &crate::annotate::cl_rules::MatchRules::default());
+    assert_eq!(literal.map_labels(["CT4 Central Memory"]).0.len(), 0);
+}
+
+#[test]
+fn a_word_the_panel_leaves_off_its_labels_completes_them() {
+    let obo = "[Term]\nid: CL:1\nname: organx A cell\nsynonym: \"organx alpha cell\" EXACT []\n\n\
+               [Term]\nid: CL:2\nname: organx beta cell\n\n\
+               [Term]\nid: CL:3\nname: organx gamma cell\n\n\
+               [Term]\nid: CL:4\nname: eyey ganglion cell\nsynonym: \"alpha cell\" EXACT []\n\n\
+               [Term]\nid: CL:5\nname: brainz delta cell\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels(["Alpha", "Beta", "Gamma", "Delta", "Duct"]);
+    assert_eq!(
+        mapped["Alpha"], "CL:1",
+        "the panel's word, not another tissue's synonym"
+    );
+    assert_eq!(mapped["Beta"], "CL:2");
+    assert_eq!(mapped["Gamma"], "CL:3");
+    assert_eq!(
+        unmapped,
+        ["Delta", "Duct"],
+        "another word, for one label only"
+    );
+    let (few, _) = t.map_labels(["Alpha", "Beta", "Delta"]);
+    assert!(
+        few.is_empty(),
+        "two labels are too few to say what the panel leaves off"
+    );
+}

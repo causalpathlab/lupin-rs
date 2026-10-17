@@ -62,6 +62,47 @@ pub struct MatchRules {
     pub implied: ImpliedRules,
     /// Match a label whose words are a term's in another order.
     pub any_word_order: bool,
+    pub qualifiers: QualifierRules,
+    /// As a last resort, compare without spaces and hyphens
+    /// (`Pro-X blast` for `proXblast`).
+    pub compact: bool,
+    pub contained: ContainedRules,
+    pub context: ContextRules,
+}
+
+/// The trailing qualifiers a term is also known without: a taxon
+/// (`neuron (sensu Vertebrata)`, `cell (Mmus)`) or one plain word after a
+/// comma (`cell, human`). A text that then names a term and its own
+/// specialisations takes the most general of them.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct QualifierRules {
+    pub parenthetical: bool,
+    pub comma_word: bool,
+}
+
+/// A label whose words a term's own name (not a synonym) spells out, in any order and among
+/// others (`CD4 Central Memory` in `central memory CD4-positive, alpha-beta
+/// T cell`; `X-positive` and `X+` are both `X`), takes the most general
+/// such term: one every other such term is a kind of, else the one whose
+/// name adds the fewest words, else none.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct ContainedRules {
+    /// The fewest words, not counting an implied one, a label needs for this;
+    /// `None` turns it off.
+    pub min_words: Option<usize>,
+}
+
+/// A word the whole panel leaves off its labels (a tissue: `pancreatic`
+/// for `Alpha`, `Beta`, `Ductal`), found as the one word that, with an
+/// implied one, completes a term's name or counted synonym for the most
+/// labels nothing else matched.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct ContextRules {
+    /// How many labels the word must complete; `None` turns it off.
+    pub min_labels: Option<usize>,
 }
 
 /// Words a label may leave off its end.
@@ -86,6 +127,10 @@ impl Default for MatchRules {
             plural: PluralRules::default(),
             implied: ImpliedRules::default(),
             any_word_order: false,
+            qualifiers: QualifierRules::default(),
+            compact: false,
+            contained: ContainedRules::default(),
+            context: ContextRules::default(),
         }
     }
 }
@@ -226,9 +271,10 @@ impl Aliases {
     }
 }
 
-/// How aliases compare labels: as lupin labels, ignoring case.
+/// How aliases compare labels: as lupin labels, ignoring case, a hyphen
+/// parting words as a space does (`Pro-B` is `pro B`).
 fn key(label: &str) -> String {
-    label_key(&label.to_lowercase())
+    label_key(&label.to_lowercase().replace('-', " "))
 }
 
 /// The rules the repository ships (`data/cl_matching.json`), for tests.

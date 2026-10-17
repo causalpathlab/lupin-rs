@@ -2,9 +2,9 @@
   "_doc": "How lupin matches marker-panel cell-type labels to Cell Ontology terms. Layered: this file, then ~/.config/lupin/cl_matching.json, then <run dir>/lupin/cl_matching.json; later files override the keys they set. See `lupin data where`.",
   "ontology_url": "https://purl.obolibrary.org/obo/cl/cl-basic.obo",
   "synonyms": {
-    "_doc": "synonym scope -> synonym types that count; [] = every synonym of that scope. OMO:0003000 marks abbreviations (HSC, CMP, GMP).",
+    "_doc": "synonym scope -> synonym types that count; [] = every synonym of that scope. OMO:0003000 marks abbreviations (HSC, CMP, GMP), OMO:0003004 plural forms (microglia).",
     "EXACT": [],
-    "RELATED": ["OMO:0003000"]
+    "RELATED": ["OMO:0003000", "OMO:0003004"]
   },
   "classes": {
     "_doc": "Terms in these OBO subsets are the analysis classes panel types are grouped under.",
@@ -21,5 +21,20 @@
     "_doc": "Words a label may leave off its end: a label that matches no term is tried again with each appended (Immature_B -> immature B cell), taking the first that completes exactly one term's name (not a synonym).",
     "suffixes": ["cell"]
   },
-  "any_word_order": true
+  "any_word_order": true,
+  "qualifiers": {
+    "_doc": "A term is also known without a trailing taxon in parentheses ('(Mmus)', '(sensu Vertebrata)') or one plain word after a comma (', human'); a text that then names a term and its specialisations takes the most general.",
+    "parenthetical": true,
+    "comma_word": true
+  },
+  "_compact": "As a last resort, compare without spaces and hyphens (Pro-Erythroblast -> proerythroblast).",
+  "compact": true,
+  "contained": {
+    "_doc": "A label of at least min_words words (an implied one not counted) that a term's own name (not a synonym) spells out among other words takes the most general such term, else the one whose name adds the fewest words (CD4 Central Memory -> central memory CD4-positive, alpha-beta T cell; X+ and X-positive are X). null turns it off.",
+    "min_words": 2
+  },
+  "context": {
+    "_doc": "A word the panel leaves off its labels (a tissue): the one word that, with an implied one, completes a term's name or counted synonym for at least min_labels labels nothing else matched, and for more than any other word (Alpha, Beta, Ductal -> pancreatic ...). null turns it off.",
+    "min_labels": 3
+  }
 }
