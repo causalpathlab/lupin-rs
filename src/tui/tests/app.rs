@@ -3169,6 +3169,113 @@ fn the_candidates_value_column_follows_the_method_they_are_sorted_by() {
     );
 }
 
+/// The candidates pane's rows on a `width` × `height` screen, inside its
+/// borders: the title row first.
+fn candidates_pane(app: &App, width: u16, height: u16) -> Vec<String> {
+    let screen = drawn_in(app, width, height);
+    let top = screen
+        .iter()
+        .rposition(|r| r.contains("┌ K0 "))
+        .expect("the candidates pane");
+    let at = screen[top].find("┌ K0 ").unwrap();
+    let left = screen[top][..at].chars().count();
+    screen[top..]
+        .iter()
+        .take_while(|r| !r.chars().nth(left).is_some_and(|c| c == '└'))
+        .map(|r| {
+            r.chars()
+                .skip(left + 1)
+                .take_while(|&c| c != '│' && c != '┐')
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn the_candidates_show_their_numbers_whole_or_leave_them_out_at_any_size() {
+    use super::super::round::Candidate;
+    let mut app = app_with_candidates(14);
+    let c = &mut app.round.as_mut().unwrap().clusters[0];
+    for t in &mut c.candidates {
+        let e = &mut t.evidence;
+        (e.enrichment, e.pip, e.fold, e.nes, e.p, e.q, e.score) = (
+            Some(0.5),
+            Some(1.0),
+            Some(12.5),
+            Some(-1.25),
+            Some(0.00001),
+            Some(0.0005),
+            Some(0.75),
+        );
+    }
+    c.candidates[0] = Candidate {
+        evidence: crate::annotate::rounds::TypeEvidence {
+            label: "CT_of_a_rather_long_name".into(),
+            ..c.candidates[0].evidence.clone()
+        },
+        ..c.candidates[0].clone()
+    };
+    c.label = Some("CT_of_a_rather_long_name".into());
+    let whole = [
+        "type", "enrich", "PIP", "fold", "NES", "p", "q", "score", "0.50", "1.00", "×12.5",
+        "-1.25", "1e-5", "5e-4", "0.75",
+    ];
+    let title_parts = [
+        "K0",
+        "10 cells",
+        "CT_of_a_rather_long_name",
+        "by enrichment",
+        "4 more",
+    ];
+    for (w, h) in [(200, 55), (160, 45), (100, 30), (80, 24)] {
+        let pane = candidates_pane(&app, w, h);
+        let title = pane[0].trim_matches(|c| c == '─' || c == ' ');
+        for part in title.split(" · ") {
+            assert!(title_parts.contains(&part), "{w}: {part:?} in {title:?}");
+        }
+        assert!(title.starts_with("K0 · "), "{w}: {title}");
+        for row in &pane[1..] {
+            for token in row.split_whitespace() {
+                let fine = whole.contains(&token)
+                    || token.chars().all(|c| c == '█')
+                    || token.starts_with("CT")
+                    || token.parse::<usize>().is_ok()
+                    // A long type may be cut, keeping its first columns.
+                    || ("CT_of_a_rather_long_name".starts_with(token) && token.len() >= 14);
+                assert!(fine, "{w}x{h}: {token:?} cut in {row:?}");
+            }
+        }
+        let header = pane.iter().find(|r| r.contains("type")).unwrap();
+        assert!(header.contains("enrich"), "{w}: {header}");
+        if w >= 160 {
+            assert!(
+                header.contains("score") && header.contains("PIP"),
+                "{header}"
+            );
+        }
+        assert!(
+            pane.iter().any(|r| r.contains("CT_of_a_rather")),
+            "{w}: the type stays readable"
+        );
+    }
+}
+
+#[test]
+fn a_candidates_column_no_listed_type_has_is_left_out() {
+    let mut app = app_with_candidates(3);
+    let c = &mut app.round.as_mut().unwrap().clusters[0];
+    for t in &mut c.candidates {
+        (t.evidence.enrichment, t.evidence.nes, t.evidence.q) = (Some(0.3), Some(1.2), Some(0.01));
+    }
+    let pane = candidates_pane(&app, 160, 45);
+    let header = pane.iter().find(|r| r.contains("type")).unwrap();
+    assert!(header.contains("NES") && header.contains(" q"), "{header}");
+    for absent in ["PIP", "fold", "score", " p "] {
+        assert!(!header.contains(absent), "{absent}: {header}");
+    }
+    assert!(!pane.concat().contains('—'), "{pane:?}");
+}
+
 #[test]
 fn a_rescored_susie_round_keeps_its_call_and_says_what_is_from_before_the_edit() {
     use crate::annotate::rounds::{Method, TypeEvidence};

@@ -1108,6 +1108,86 @@ fn candidates_height(app: &App, room: u16) -> u16 {
     u16::try_from(rows + 3).unwrap_or(u16::MAX).min(room).max(4)
 }
 
+/// A column of the candidates pane after the key and the type.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CandColumn {
+    Value,
+    Bar,
+    Pip,
+    Fold,
+    Nes,
+    P,
+    Q,
+    Score,
+}
+
+impl CandColumn {
+    /// The columns the pane keeps when it has room, most wanted first (it
+    /// shows them in [`CandColumn`]'s order): the sorting method's reading,
+    /// FDR's q, the NES, SuSiE's PIP and fold, the score, the p-value and
+    /// the reading's bar.
+    const WANTED: [Self; 8] = [
+        Self::Value,
+        Self::Q,
+        Self::Nes,
+        Self::Pip,
+        Self::Fold,
+        Self::Score,
+        Self::P,
+        Self::Bar,
+    ];
+
+    fn header(self, by: crate::annotate::rounds::Method) -> &'static str {
+        match self {
+            Self::Value => value_header(by),
+            Self::Bar => "",
+            Self::Pip => "PIP",
+            Self::Fold => "fold",
+            Self::Nes => "NES",
+            Self::P => "p",
+            Self::Q => "q",
+            Self::Score => "score",
+        }
+    }
+
+    /// Its reading of `cand`, which the sorting method `by` reads for the value.
+    fn reading(
+        self,
+        cand: &super::round::Candidate,
+        by: crate::annotate::rounds::Method,
+    ) -> Option<f32> {
+        match self {
+            Self::Value | Self::Bar => by.reading(cand),
+            Self::Pip => cand.pip,
+            Self::Fold => cand.fold,
+            Self::Nes => cand.nes,
+            Self::P => cand.p,
+            Self::Q => cand.q,
+            Self::Score => cand.score,
+        }
+    }
+
+    /// `v` as the column writes it.
+    fn text(self, v: Option<f32>) -> String {
+        match self {
+            Self::Bar => v.map(bar).unwrap_or_default(),
+            Self::Fold => v.map_or_else(|| "—".into(), |f| format!("×{f:.1}")),
+            Self::P | Self::Q => pval(v),
+            _ => num(v, 2),
+        }
+    }
+
+    /// Read from the panel before the marker edits, while a rescoring is
+    /// shown: SuSiE's and the score's (the value too, when it is theirs).
+    fn before_the_edit(self, by: crate::annotate::rounds::Method) -> bool {
+        match self {
+            Self::Value | Self::Bar => by != crate::annotate::rounds::Method::Enrichment,
+            Self::Pip | Self::Fold | Self::Score => true,
+            Self::Nes | Self::P | Self::Q => false,
+        }
+    }
+}
+
 fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     let focused = app.focus == Focus::Candidates;
     let Some(c) = app.selected() else {
@@ -1122,8 +1202,6 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     // While a rescoring is shown, only the enrichment's readings are of the
     // edited panel: SuSiE's and the score's are dimmed, from before the edit.
     let stale = app.recorded.is_some();
-    let dim_if = |cell: Cell<'static>, old: bool| if stale && old { cell.dim() } else { cell };
-    let value_old = by != crate::annotate::rounds::Method::Enrichment;
     // Only the rows that fit are built, from the one that keeps the
     // selection in sight; the pinned label stays on top.
     let height = usize::from(area.height.saturating_sub(3))
@@ -1131,7 +1209,66 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         .max(1);
     let start = app.cand_sel.saturating_sub(height - 1);
     let window = start.min(listed.len())..(start + height).min(listed.len());
-    let mut rows: Vec<Row> = listed[window.clone()]
+    let shown = &listed[window.clone()];
+    // A label picked off the candidates (a new type, or one that did not
+    // pass FDR) is shown too: it is scored once the edits are saved. Its
+    // note goes by the round's share, its value by the sorting method's.
+    let pinned_value = pinned.as_deref().and_then(|l| {
+        let share = c
+            .shares
+            .iter()
+            .find(|(t, _)| label_key(t) == label_key(l))
+            .map(|(_, s)| *s);
+        match c
+            .candidates
+            .iter()
+            .find(|t| label_key(&t.label) == label_key(l))
+        {
+            Some(t) => by.reading(t),
+            None => share.filter(|_| Some(by) == app.round.as_ref().and_then(|r| r.by)),
+        }
+    });
+    // Numbers are shown whole or not at all: each column as wide as its
+    // widest entry, the ones most wanted while the type keeps `LABEL`
+    // columns (or its longest name); a column no row shown has a reading
+    // for is left out. The sorting method's value always shows.
+    const LABEL: usize = 20;
+    let width = |t: &str| Span::from(t).width();
+    let col_width = |col: CandColumn| {
+        shown
+            .iter()
+            .map(|t| width(&col.text(col.reading(t, by))))
+            .chain(std::iter::once(width(col.header(by))))
+            .chain(
+                (col == CandColumn::Value || col == CandColumn::Bar)
+                    .then(|| width(&col.text(pinned_value))),
+            )
+            .max()
+            .unwrap_or(0)
+    };
+    let has = |col: CandColumn| {
+        col == CandColumn::Value || shown.iter().any(|t| col.reading(t, by).is_some())
+    };
+    let longest = shown
+        .iter()
+        .map(|t| width(&t.label))
+        .chain(pinned.as_deref().map(width))
+        .max()
+        .unwrap_or(0);
+    let label_least = LABEL.min(longest.max(width("type")));
+    // The key and the type, each with the column after it.
+    let inner = usize::from(area.width.saturating_sub(2));
+    let mut used = 1 + 1 + label_least;
+    let mut columns: Vec<(CandColumn, usize)> = Vec::new();
+    for col in CandColumn::WANTED.into_iter().filter(|&c| has(c)) {
+        let w = col_width(col);
+        if used + 1 + w <= inner {
+            used += 1 + w;
+            columns.push((col, w));
+        }
+    }
+    columns.sort();
+    let mut rows: Vec<Row> = shown
         .iter()
         .zip(window.clone())
         .map(|(cand, k)| {
@@ -1142,31 +1279,26 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 String::new()
             };
-            let value = by.reading(cand);
-            let row = Row::new(vec![
-                Cell::from(key).cyan(),
-                Cell::from(cand.label.clone()),
-                dim_if(Cell::from(num(value, 2)), value_old),
-                dim_if(
-                    Cell::from(value.map(bar).unwrap_or_default()).fg(
-                        if value.is_some_and(|v| v >= CONTESTED) {
-                            Color::Green
-                        } else {
-                            Color::Yellow
-                        },
-                    ),
-                    value_old,
-                ),
-                dim_if(Cell::from(num(cand.pip, 2)), true),
-                dim_if(
-                    Cell::from(cand.fold.map_or_else(|| "—".into(), |f| format!("×{f:.1}"))),
-                    true,
-                ),
-                Cell::from(num(cand.nes, 2)),
-                Cell::from(pval(cand.p)),
-                Cell::from(pval(cand.q)),
-                dim_if(Cell::from(num(cand.score, 2)), true),
-            ]);
+            let mut cells = vec![Cell::from(key).cyan(), Cell::from(cand.label.clone())];
+            cells.extend(columns.iter().map(|&(col, _)| {
+                let v = col.reading(cand, by);
+                let cell = Cell::from(col.text(v));
+                let cell = if col == CandColumn::Bar {
+                    cell.fg(if v.is_some_and(|v| v >= CONTESTED) {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    })
+                } else {
+                    cell
+                };
+                if stale && col.before_the_edit(by) {
+                    cell.dim()
+                } else {
+                    cell
+                }
+            }));
+            let row = Row::new(cells);
             if now.as_deref() == Some(cand.label.as_str()) {
                 row.bold()
             } else {
@@ -1174,37 +1306,25 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             }
         })
         .collect();
-    // A label picked off the candidates (a new type, or one that did not
-    // pass FDR) is shown too: it is scored once the edits are saved. Its
-    // note goes by the round's share, its value by the sorting method's.
     if let Some(l) = pinned.as_deref() {
         let share = c
             .shares
             .iter()
             .find(|(t, _)| label_key(t) == label_key(l))
             .map(|(_, s)| *s);
-        let value = match c
-            .candidates
-            .iter()
-            .find(|t| label_key(&t.label) == label_key(l))
-        {
-            Some(t) => by.reading(t),
-            None => share.filter(|_| Some(by) == app.round.as_ref().and_then(|r| r.by)),
-        };
         // The note on a line of its own: a long ontology name would cut it.
-        rows.insert(
-            0,
-            Row::new(vec![
-                Cell::from("→"),
-                Cell::from(Text::from(vec![
-                    Line::from(l.to_string()).bold(),
-                    Line::from(pinned_note(app, l, share)).dim(),
-                ])),
-                Cell::from(num(value, 2)),
-                Cell::from(value.map(bar).unwrap_or_default()),
-            ])
-            .height(2),
-        );
+        let mut cells = vec![
+            Cell::from("→"),
+            Cell::from(Text::from(vec![
+                Line::from(l.to_string()).bold(),
+                Line::from(pinned_note(app, l, share)).dim(),
+            ])),
+        ];
+        cells.extend(columns.iter().map(|&(col, _)| match col {
+            CandColumn::Value | CandColumn::Bar => Cell::from(col.text(pinned_value)),
+            _ => Cell::from(""),
+        }));
+        rows.insert(0, Row::new(cells).height(2));
     }
     if rows.is_empty() {
         rows.push(Row::new(["", "no candidate passed FDR"]).dim());
@@ -1218,74 +1338,96 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             .join(" › ")
     });
     let scored = if app.rescoring.is_some() {
-        " · rescoring…"
+        Some("rescoring…")
     } else if app.recorded.is_some() {
-        " · rescored with your marker edits"
+        Some("rescored with your marker edits")
     } else {
-        ""
+        None
     };
     // The candidates out of sight: scrolled past, or past the first ten.
     let more = match c.candidates.len() - window.len() {
-        0 => String::new(),
-        n => format!(" · {n} more"),
+        0 => None,
+        n => Some(format!("{n} more")),
     };
-    let title = format!(
-        " K{} · {} cells · {}{scored} · by {}{}{more} ",
-        c.id,
-        c.cells,
-        now.as_deref().unwrap_or(UNASSIGNED_LABEL),
-        by.name(),
-        if app.cand_all { " · all" } else { "" },
+    // The title's parts, whole; those least needed go first when the pane
+    // is narrow, and the label is cut last.
+    let label = now.as_deref().unwrap_or(UNASSIGNED_LABEL).to_string();
+    let parts: Vec<(u8, String)> = [
+        (0, Some(format!("K{}", c.id))),
+        (6, Some(format!("{} cells", c.cells))),
+        (1, Some(label)),
+        (2, scored.map(str::to_string)),
+        (3, Some(format!("by {}", by.name()))),
+        (5, app.cand_all.then(|| "all".to_string())),
+        (4, more),
+    ]
+    .into_iter()
+    .filter_map(|(rank, p)| Some((rank, p?)))
+    .collect();
+    let title = fitted_title(&parts, usize::from(area.width.saturating_sub(2)));
+    let mut widths = vec![
+        Constraint::Length(1),
+        Constraint::Min(u16::try_from(label_least).unwrap_or(u16::MAX)),
+    ];
+    widths.extend(
+        columns
+            .iter()
+            .map(|&(_, w)| Constraint::Length(u16::try_from(w).unwrap_or(u16::MAX))),
     );
-    let t = Table::new(
-        rows,
-        [
-            Constraint::Length(1),
-            Constraint::Min(14),
-            Constraint::Length(6),
-            Constraint::Length(BAR as u16),
-            Constraint::Length(5),
-            Constraint::Length(6),
-            Constraint::Length(6),
-            // p and q: at most five, as `pval` writes them.
-            Constraint::Length(5),
-            Constraint::Length(5),
-            Constraint::Length(5),
-        ],
-    )
-    .header(
-        Row::new([
-            "",
-            "type",
-            value_header(by),
-            "",
-            "PIP",
-            "fold",
-            "NES",
-            "p",
-            "q",
-            "score",
-        ])
-        .bold(),
-    )
-    .block(
-        pane(title, focused).title_bottom(
-            Line::from(format!(
-                " {}{} ",
-                if stale {
-                    "dim: before the edit · "
-                } else {
-                    ""
-                },
-                path.unwrap_or_default()
-            ))
-            .cyan(),
-        ),
-    )
-    .row_highlight_style(highlight(focused));
+    let mut header = vec!["", "type"];
+    header.extend(columns.iter().map(|&(col, _)| col.header(by)));
+    let t = Table::new(rows, widths)
+        .header(Row::new(header).bold())
+        .block(
+            pane(title, focused).title_bottom(
+                Line::from(format!(
+                    " {}{} ",
+                    if stale {
+                        "dim: before the edit · "
+                    } else {
+                        ""
+                    },
+                    path.unwrap_or_default()
+                ))
+                .cyan(),
+            ),
+        )
+        .row_highlight_style(highlight(focused));
     let at = app.cand_sel.saturating_sub(start) + usize::from(pinned.is_some());
     let mut state = TableState::default().with_selected(focused.then_some(at));
     f.render_stateful_widget(t, area, &mut state);
+}
+
+/// A pane's title of `parts` joined by ` · ` in `width` columns: the parts
+/// ranked highest (by their number) leave first, then the first part left
+/// standing beside the key (the label) is cut between words.
+fn fitted_title(parts: &[(u8, String)], width: usize) -> String {
+    let join = |kept: &[&(u8, String)]| {
+        format!(
+            " {} ",
+            kept.iter()
+                .map(|(_, p)| p.as_str())
+                .collect::<Vec<_>>()
+                .join(" · ")
+        )
+    };
+    let mut kept: Vec<&(u8, String)> = parts.iter().collect();
+    while Span::from(join(&kept)).width() > width && kept.len() > 2 {
+        let worst = kept
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, (rank, _))| *rank)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        kept.remove(worst);
+    }
+    let title = join(&kept);
+    if Span::from(title.as_str()).width() <= width || kept.len() < 2 {
+        return title;
+    }
+    // The key and the label: the label cut to the room the key leaves.
+    let room = width.saturating_sub(Span::from(join(&kept[..1])).width() + 3);
+    format!(" {} · {} ", kept[0].1, cut_words(&kept[1].1, room))
 }
 
 /// The candidates' value column's header: the method whose reading it is
