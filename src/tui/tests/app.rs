@@ -262,6 +262,32 @@ fn the_status_follows_the_latest_key_and_a_dropped_question_goes_with_it() {
 }
 
 #[test]
+fn a_last_stage_running_long_gives_no_eta() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    if let Some(r) = app.child.as_mut() {
+        r.started = Instant::now() - Duration::from_secs(660);
+        r.progress = JobProgress {
+            report: Some(crate::progress::Report {
+                done: 19.0,
+                end: 20.0,
+                total: 20.0,
+                stage: "GO terms".into(),
+            }),
+            reported_at: Duration::from_secs(20),
+        };
+    }
+    let screen = drawn(&app);
+    assert!(screen.contains("elapsed 11m00s"), "{screen}");
+    assert!(
+        !screen.contains("ETA 0s"),
+        "no time left to count on: {screen}"
+    );
+    assert!(screen.contains("no ETA: this stage runs past"), "{screen}");
+    app.stop();
+}
+
+#[test]
 fn h_hides_a_gene_and_x_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with_terms(false);
