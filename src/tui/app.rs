@@ -1589,13 +1589,28 @@ impl App {
     /// Label the selected cluster by tree node `i`.
     fn pick_node(&mut self, i: usize) {
         let label = self.tree.label(i).to_string();
+        let key = label_key(&label);
         let under = self.tree.labels_under(i);
-        let pooled = self.pooled(|t| under.contains(&label_key(t).as_str()));
-        let reason = if pooled.is_empty() {
+        // A panel type is the label's own evidence; the types under it pool.
+        let own = self
+            .selected()
+            .and_then(|c| c.candidates.iter().find(|t| label_key(&t.label) == key))
+            .map(evidence);
+        let pooled = self.pooled(|t| {
+            let t = label_key(t);
+            t != key && under.contains(&t.as_str())
+        });
+        let mut reason = if self.tree.nodes[i].labels.is_empty() {
             format!("{label} from the ontology")
         } else {
-            format!("{label} from the ontology, over {}", pooled.join(" + "))
+            format!("{label} on the panel tree")
         };
+        if let Some(own) = own {
+            reason += &format!(" ({own})");
+        }
+        if !pooled.is_empty() {
+            reason += &format!(", over {}", pooled.join(" + "));
+        }
         self.ask_label(label, reason, None);
     }
 

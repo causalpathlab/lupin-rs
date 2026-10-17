@@ -1537,6 +1537,21 @@ fn a_round_with_no_cluster_expression_says_so_and_calls_no_marker_weak() {
 }
 
 #[test]
+fn a_panel_leaf_picked_on_the_tree_gives_its_own_evidence_as_the_reason() {
+    use super::super::round::Candidate;
+    let mut app = app_with_terms(false);
+    if let Some(r) = app.round.as_mut() {
+        r.clusters[0].candidates = vec![Candidate::new("CT1", 0.18)];
+    }
+    let leaf = app.tree.node_of("CT1").unwrap();
+    app.pick_node(leaf);
+    let why = app.prompt.as_ref().unwrap().text.clone();
+    assert!(!why.contains("ontology"), "a panel type: {why}");
+    assert!(!why.contains("over CT1"), "not pooled with itself: {why}");
+    assert!(why.contains("0.18"), "{why}");
+}
+
+#[test]
 fn a_relabelled_cluster_shows_the_evidence_of_its_new_label() {
     use super::super::round::{Candidate, Edit};
     let cand = |label: &str, fold| {
