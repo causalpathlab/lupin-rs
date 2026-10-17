@@ -172,6 +172,11 @@ impl TrajectoryArgs {
 /// stands at.
 const PSEUDOTIME_TOP: f64 = 0.99;
 
+/// What a run's outputs add to its `--out` prefix: the prior it ran on and
+/// the per-cell pseudotime.
+pub const PRIOR_SUFFIX: &str = ".trajectory_prior.tsv";
+pub const PSEUDOTIME_SUFFIX: &str = ".cell_pseudotime.parquet";
+
 /// What the manifest at `dir` records about the run; input files
 /// manifest-relative, as every path in a manifest is.
 fn settings(args: &TrajectoryArgs, dir: &std::path::Path) -> serde_json::Value {
@@ -832,7 +837,7 @@ fn report_order(inputs: &Inputs, t: &Trajectory) {
 /// The outputs, keyed by their manifest slot.
 fn write(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<BTreeMap<&'static str, String>> {
     let mut written = BTreeMap::new();
-    let prior_path = format!("{out}.trajectory_prior.tsv");
+    let prior_path = format!("{out}{PRIOR_SUFFIX}");
     prior::write_tsv(&prior_path, &inputs.names, &t.prior)?;
     written.insert("prior", prior_path);
     written.insert("edges", write_edges(inputs, t, out)?);
@@ -842,7 +847,7 @@ fn write(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<BTreeMap<&'static
         // goes with the prior written above.
         None => {
             for stale in [
-                format!("{out}.cell_pseudotime.parquet"),
+                format!("{out}{PSEUDOTIME_SUFFIX}"),
                 format!("{out}.diffusion.parquet"),
                 format!("{out}.trajectory_lineages.tsv"),
             ] {
@@ -917,7 +922,7 @@ fn write_ordering(
     for (k, c) in lineage_cols.iter().enumerate() {
         cols.push((format!("L{k}").into(), Column::F32(c)));
     }
-    let pt_path = format!("{out}.cell_pseudotime.parquet");
+    let pt_path = format!("{out}{PSEUDOTIME_SUFFIX}");
     write_named_table(&pt_path, "cell", &inputs.cells, &cols)?;
     written.insert("pseudotime", pt_path);
 

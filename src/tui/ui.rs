@@ -1720,8 +1720,23 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
         v.panels.len()
     );
     let block = pane(title, focused);
-    let inner = block.inner(figure);
+    let mut inner = block.inner(figure);
     f.render_widget(block, figure);
+    // Figures the round carries from the run it was made on, plainly so.
+    if let Some(of) = &v.data.trajectory_of {
+        let text =
+            format!("figures from {of}'s trajectory, on its labels: r runs one for this round");
+        let note = wrap(&text, usize::from(inner.width.max(1)), 3);
+        let [top, rest] =
+            Layout::vertical([Constraint::Length(note.len() as u16), Constraint::Min(1)])
+                .areas(inner);
+        let lines: Vec<Line> = note.into_iter().map(Line::from).collect();
+        f.render_widget(
+            Paragraph::new(lines).style(Style::new().fg(Color::Yellow)),
+            top,
+        );
+        inner = rest;
+    }
     match &*v.protocol(inner) {
         Ok(p) => f.render_widget(ratatui_image::Image::new(p), inner),
         Err(e) => f.render_widget(

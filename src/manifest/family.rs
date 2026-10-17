@@ -134,6 +134,9 @@ pub struct Pick {
 
 pub struct Member {
     pub pick: Pick,
+    /// The trajectory under another prefix whose section it carries (see
+    /// [`borrowed_trajectory`]).
+    pub borrowed: Option<String>,
     /// What it holds, in a few words.
     pub holds: String,
     /// Seconds since the epoch of its last change.
@@ -289,6 +292,7 @@ fn member(dir: &Path, path: PathBuf, m: &RunManifest, source: Option<&RunManifes
         }
     };
     let modified = std::fs::metadata(&path).map_or(0, |md| mtime_of(&md));
+    let borrowed = borrowed_trajectory(m, &path);
     Member {
         pick: Pick {
             labelled: m.annotate.argmax.is_some(),
@@ -297,7 +301,24 @@ fn member(dir: &Path, path: PathBuf, m: &RunManifest, source: Option<&RunManifes
         },
         holds,
         modified,
+        borrowed,
     }
+}
+
+/// The prefix of the trajectory whose outputs `m` (read from `path`)
+/// records, when they were written under another prefix: a pass on a
+/// trajectory run copies that run's section, made on its labels, into the
+/// new round. `None` for a manifest's own trajectory, or none.
+pub fn borrowed_trajectory(m: &RunManifest, path: &Path) -> Option<String> {
+    use crate::trajectory::run::{PRIOR_SUFFIX, PSEUDOTIME_SUFFIX};
+    let t = &m.trajectory;
+    let (rel, suffix) = match (&t.pseudotime, &t.prior) {
+        (Some(pt), _) => (pt, PSEUDOTIME_SUFFIX),
+        (None, Some(prior)) => (prior, PRIOR_SUFFIX),
+        (None, None) => return None,
+    };
+    let of = file_name(Path::new(rel)).strip_suffix(suffix)?.to_string();
+    (of != derive_out_prefix(&file_name(path))).then_some(of)
 }
 
 /// A file's last change, in seconds since the epoch (0 when unknown).

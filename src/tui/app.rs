@@ -2953,7 +2953,12 @@ impl App {
                     m.holds,
                     super::gallery::ago(m.modified, now)
                 );
-                let detail = m.pick.kind.detail(self.trajectory_tui).to_string();
+                let mut detail = m.pick.kind.detail(self.trajectory_tui).to_string();
+                if let Some(of) = m.borrowed.as_ref().filter(|_| self.trajectory_tui) {
+                    detail += &format!(
+                        "; it carries {of}'s trajectory, on its labels: r runs one for this round"
+                    );
+                }
                 let action = Action::OpenRun {
                     pick: m.pick,
                     drop_edits: false,

@@ -2604,3 +2604,40 @@ fn clusters_from_the_manifest_leave_the_leiden_rows_fixed_and_passed_over() {
     let screen = drawn(&app);
     assert_eq!(screen.matches("from the manifest").count(), 4, "{screen}");
 }
+
+#[test]
+fn another_runs_trajectory_is_named_over_its_figures_and_in_g() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    // A pass on X.T1 copies its trajectory section into the new round.
+    std::fs::write(
+        tmp.path().join("X.T1.L1.senna.json"),
+        r#"{"version":2,"kind":"topic","prefix":"X.T1.L1",
+            "cluster":{"clusters":"X.clusters.parquet"},
+            "annotate":{"argmax":"X.L0.argmax.tsv","source":"X.T1.senna.json"},
+            "trajectory":{"prior":"t.tsv","pseudotime":"X.T1.cell_pseudotime.parquet"}}"#,
+    )
+    .unwrap();
+    app.trajectory_tui = true;
+    press(&mut app, KeyCode::Char('g'));
+    let m = menu(&app).expect("the runs");
+    let detail = |name: &str| {
+        m.choices
+            .iter()
+            .find(|c| c.label.contains(&format!("{name} ·")))
+            .map(|c| c.detail.clone())
+            .unwrap()
+    };
+    let note = "X.T1's trajectory, on its labels: r runs one for this round";
+    assert!(detail("X.T1.L1").contains(note), "{}", detail("X.T1.L1"));
+    assert!(!detail("X.T1").contains(note), "{}", detail("X.T1"));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = figures_app(tmp.path());
+    app.figures.as_mut().unwrap().data.trajectory_of = Some("X.T1".into());
+    let screen = drawn(&app);
+    assert!(
+        screen.contains("figures from X.T1's trajectory"),
+        "{screen}"
+    );
+}

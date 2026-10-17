@@ -150,3 +150,27 @@ fn a_pass_still_staged_is_no_member_of_the_family() {
     let got = family(&tmp.path().join("X.senna.json"));
     assert!(got.iter().all(|m| !m.name().contains("staging")));
 }
+
+#[test]
+fn a_round_names_the_trajectory_its_section_was_copied_from() {
+    let m = |pt: Option<&str>| {
+        let mut m: RunManifest =
+            serde_json::from_str(r#"{"version":2,"kind":"topic","prefix":"X"}"#).unwrap();
+        m.trajectory.pseudotime = pt.map(Into::into);
+        m
+    };
+    let section = m(Some("X.T1.cell_pseudotime.parquet"));
+    assert_eq!(
+        borrowed_trajectory(&section, Path::new("/d/X.T1.L1.r1.senna.json")).as_deref(),
+        Some("X.T1")
+    );
+    assert_eq!(
+        borrowed_trajectory(&section, Path::new("/d/X.T1.senna.json")),
+        None,
+        "its own"
+    );
+    assert_eq!(
+        borrowed_trajectory(&m(None), Path::new("/d/X.L1.senna.json")),
+        None
+    );
+}

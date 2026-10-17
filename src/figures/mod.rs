@@ -287,6 +287,9 @@ pub(crate) struct CellFigures {
     pub(crate) source: Source,
     /// The manifest the outputs were read from; export names derive from it.
     pub(crate) manifest: PathBuf,
+    /// The prefix of the trajectory the outputs are of, when another
+    /// manifest's (a round keeps the section of the run it was made on).
+    pub(crate) trajectory_of: Option<String>,
     /// Per cell; NaN for cells no root reaches.
     pub(crate) pseudotime: Vec<f32>,
     pub(crate) types: Vec<Box<str>>,
@@ -389,6 +392,7 @@ impl CellFigures {
         };
         Ok(Some(Self {
             manifest: file.to_path_buf(),
+            trajectory_of: crate::manifest::family::borrowed_trajectory(manifest, file),
             pseudotime,
             types,
             component,
