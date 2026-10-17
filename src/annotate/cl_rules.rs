@@ -58,8 +58,21 @@ pub struct MatchRules {
     pub synonyms: BTreeMap<String, Vec<String>>,
     pub classes: ClassRules,
     pub plural: PluralRules,
+    pub implied: ImpliedRules,
     /// Match a label whose words are a term's in another order.
     pub any_word_order: bool,
+}
+
+/// Words a label may leave off its end.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct ImpliedRules {
+    /// A label that matches no term is tried again with each of these
+    /// appended (`Immature_B` → `immature B cell`), taking the first that
+    /// completes exactly one term's name: not a synonym, already a looser
+    /// link (`alpha cell` is a retinal ganglion cell's synonym; a pancreas
+    /// panel's Alpha is not one). A label with no word completes nothing.
+    pub suffixes: Vec<String>,
 }
 
 /// Literal matching: names and exact synonyms as written, no classes.
@@ -70,6 +83,7 @@ impl Default for MatchRules {
             synonyms: BTreeMap::from([("EXACT".to_string(), Vec::new())]),
             classes: ClassRules::default(),
             plural: PluralRules::default(),
+            implied: ImpliedRules::default(),
             any_word_order: false,
         }
     }

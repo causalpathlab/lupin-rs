@@ -25,7 +25,7 @@ const CANDIDATES: usize = 6;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
     pub label: String,
-    /// Its share of the cluster's evidence: in a SuSiE round, of the deviance
+    /// Its share of the cluster's evidence: in a SuSiE round, of the log-likelihood
     /// the types explain; in a projection score round, of the cluster's cells
     /// the score called the type; otherwise the enrichment's Q, a softmax of
     /// z = Φ⁻¹(1 − p) over the types that pass FDR.

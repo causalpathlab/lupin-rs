@@ -41,7 +41,7 @@ pub const CLUSTER_TERM_Q_VALUES: &str = ".cluster_term_q_values.parquet";
 pub const CLUSTER_CELLTYPE_PIP: &str = ".cluster_celltype_pip.parquet";
 /// SuSiE stage: cluster × cell type posterior mean effect (log fold of the markers).
 pub const CLUSTER_CELLTYPE_EFFECT: &str = ".cluster_celltype_effect.parquet";
-/// SuSiE stage: cluster × cell type share of the deviance its effect explains.
+/// SuSiE stage: cluster × cell type share of the log-likelihood its effect gains.
 pub const CLUSTER_CELLTYPE_EXPLAINED: &str = ".cluster_celltype_explained.parquet";
 /// SuSiE stage: one row per credible set.
 pub const CLUSTER_CREDIBLE_SETS: &str = ".cluster_credible_sets.tsv";

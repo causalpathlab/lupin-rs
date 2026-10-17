@@ -272,7 +272,7 @@ pub struct RunAnnotate {
     /// nClusters × C SuSiE posterior mean effect (log fold of the markers).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_celltype_effect: Option<String>,
-    /// nClusters × C share of each cluster's explained deviance per type.
+    /// nClusters × C share of the log-likelihood each type's effect gains.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_celltype_explained: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

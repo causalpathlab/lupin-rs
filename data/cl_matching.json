@@ -17,5 +17,9 @@
     "suffixes": [["cells", "cell"]],
     "singular_min_len": 4
   },
+  "implied": {
+    "_doc": "Words a label may leave off its end: a label that matches no term is tried again with each appended (Immature_B -> immature B cell), taking the first that completes exactly one term's name (not a synonym).",
+    "suffixes": ["cell"]
+  },
   "any_word_order": true
 }

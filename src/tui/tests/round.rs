@@ -311,7 +311,7 @@ fn a_susie_rounds_candidates_follow_its_call() {
         ["B", "A"],
         "PIPs tie: the larger share leads; C is out"
     );
-    assert_eq!(c[0].share, 0.5, "the share is the deviance explained");
+    assert_eq!(c[0].share, 0.5, "the share is the log-likelihood explained");
     let s = c[0].susie.as_ref().unwrap();
     assert_eq!(s.pip, 1.0);
     assert!((s.fold - 2.6f32.exp()).abs() < 1e-4);
