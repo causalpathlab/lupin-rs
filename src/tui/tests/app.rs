@@ -2734,3 +2734,33 @@ fn each_candidate_a_number_takes_shows_it_and_the_rest_show_none() {
     press(&mut app, KeyCode::Enter);
     assert!(drawn(&app).contains(" 1  CT1 "), "{}", drawn(&app));
 }
+
+#[test]
+fn the_candidates_value_column_follows_the_method_they_are_sorted_by() {
+    use super::super::round::Candidate;
+    let mut app = app_with_terms(false);
+    let c = &mut app.round.as_mut().unwrap().clusters[0];
+    let mut cand = Candidate {
+        ranks: [Some(0), Some(0), None],
+        ..Candidate::new("CT1", 0.61)
+    };
+    (
+        cand.evidence.enrichment,
+        cand.evidence.pip,
+        cand.evidence.explained,
+    ) = (Some(0.61), Some(1.0), Some(0.33));
+    c.candidates = vec![cand];
+    app.focus = Focus::Clusters;
+    let screen = drawn(&app);
+    assert!(
+        screen.contains("enrich") && !screen.contains("0.33"),
+        "{screen}"
+    );
+    press(&mut app, KeyCode::Char('S'));
+    assert!(app.status.contains("susie"), "{}", app.status);
+    let screen = drawn(&app);
+    assert!(
+        screen.contains("susie") && screen.contains("0.33"),
+        "{screen}"
+    );
+}

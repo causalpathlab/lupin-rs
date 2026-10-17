@@ -870,6 +870,8 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     let now = app.current_label();
     let listed = app.listed_candidates();
     let pinned = pinned_label(app);
+    // The value column is the reading of the method the list is sorted by.
+    let by = app.cand_method();
     // Only the rows that fit are built, from the one that keeps the
     // selection in sight; the pinned label stays on top.
     let height = usize::from(area.height.saturating_sub(3))
@@ -888,15 +890,18 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 String::new()
             };
+            let value = by.reading(cand);
             let row = Row::new(vec![
                 Cell::from(key).cyan(),
                 Cell::from(cand.label.clone()),
-                Cell::from(format!("{:.2}", cand.share)),
-                Cell::from(bar(cand.share)).fg(if cand.share >= CONTESTED {
-                    Color::Green
-                } else {
-                    Color::Yellow
-                }),
+                Cell::from(num(value, 2)),
+                Cell::from(value.map(bar).unwrap_or_default()).fg(
+                    if value.is_some_and(|v| v >= CONTESTED) {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    },
+                ),
                 Cell::from(num(cand.pip, 2)),
                 Cell::from(cand.fold.map_or_else(|| "—".into(), |f| format!("×{f:.1}"))),
                 Cell::from(num(cand.nes, 2)),
@@ -912,13 +917,22 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     // A label picked off the candidates (a new type, or one that did not
-    // pass FDR) is shown too: it is scored once the edits are saved.
+    // pass FDR) is shown too: it is scored once the edits are saved. Its
+    // note goes by the round's share, its value by the sorting method's.
     if let Some(l) = pinned.as_deref() {
         let share = c
             .shares
             .iter()
             .find(|(t, _)| label_key(t) == label_key(l))
             .map(|(_, s)| *s);
+        let value = match c
+            .candidates
+            .iter()
+            .find(|t| label_key(&t.label) == label_key(l))
+        {
+            Some(t) => by.reading(t),
+            None => share.filter(|_| Some(by) == app.round.as_ref().and_then(|r| r.by)),
+        };
         // The note on a line of its own: a long ontology name would cut it.
         rows.insert(
             0,
@@ -928,8 +942,8 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
                     Line::from(l.to_string()).bold(),
                     Line::from(pinned_note(app, l, share)).dim(),
                 ])),
-                Cell::from(share.map_or_else(|| "—".into(), |s| format!("{s:.2}"))),
-                Cell::from(share.map(bar).unwrap_or_default()),
+                Cell::from(num(value, 2)),
+                Cell::from(value.map(bar).unwrap_or_default()),
             ])
             .height(2),
         );
@@ -962,7 +976,7 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         c.id,
         c.cells,
         now.as_deref().unwrap_or(UNASSIGNED_LABEL),
-        app.cand_method().name(),
+        by.name(),
         if app.cand_all { " · all" } else { "" },
     );
     let t = Table::new(
@@ -970,19 +984,29 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         [
             Constraint::Length(1),
             Constraint::Min(14),
-            Constraint::Length(5),
+            Constraint::Length(6),
             Constraint::Length(BAR as u16),
             Constraint::Length(5),
             Constraint::Length(6),
             Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Length(6),
+            // p and q: at most five, as `pval` writes them.
+            Constraint::Length(5),
+            Constraint::Length(5),
             Constraint::Length(5),
         ],
     )
     .header(
         Row::new([
-            "", "type", "share", "", "PIP", "fold", "NES", "p", "q", "score",
+            "",
+            "type",
+            value_header(by),
+            "",
+            "PIP",
+            "fold",
+            "NES",
+            "p",
+            "q",
+            "score",
         ])
         .bold(),
     )
@@ -994,6 +1018,18 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     let at = app.cand_sel.saturating_sub(start) + usize::from(pinned.is_some());
     let mut state = TableState::default().with_selected(focused.then_some(at));
     f.render_stateful_widget(t, area, &mut state);
+}
+
+/// The candidates' value column's header: the method whose reading it is
+/// (the enrichment's share, SuSiE's explained share, the score's share of
+/// cells), in its six columns.
+fn value_header(by: crate::annotate::rounds::Method) -> &'static str {
+    use crate::annotate::rounds::Method;
+    match by {
+        Method::Enrichment => "enrich",
+        Method::Susie => "susie",
+        Method::Score => "score",
+    }
 }
 
 /// Why a cluster's label is not among its candidates.
