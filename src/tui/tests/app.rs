@@ -2277,3 +2277,18 @@ fn the_trajectory_guide_agrees_with_itself_and_the_keys() {
     }
     assert!(entry("figures", "+ - 0").contains("[ ]"));
 }
+
+#[test]
+fn the_log_pane_leaves_out_the_svg_fonts_fallback_notes() {
+    use log::{Level, LevelFilter, Log, Metadata};
+    fn at(target: &str, level: Level) -> Metadata<'_> {
+        Metadata::builder().target(target).level(level).build()
+    }
+    let pane = crate::tui::PaneLogger(LevelFilter::Info);
+    assert!(!pane.enabled(&at("usvg::text", Level::Warn)), "font noise");
+    assert!(pane.enabled(&at("lupin::figures", Level::Warn)));
+    assert!(pane.enabled(&at("lupin::tui", Level::Info)));
+    // With -v, everything.
+    let verbose = crate::tui::PaneLogger(LevelFilter::Debug);
+    assert!(verbose.enabled(&at("usvg::text", Level::Warn)));
+}

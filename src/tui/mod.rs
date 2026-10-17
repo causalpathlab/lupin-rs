@@ -38,7 +38,10 @@ struct PaneLogger(log::LevelFilter);
 
 impl log::Log for PaneLogger {
     fn enabled(&self, m: &log::Metadata) -> bool {
-        m.level() <= self.0
+        // The SVG renderer's notes (a font it falls back from) are noise
+        // in the pane, unless asked for with -v.
+        let svg_note = m.target().starts_with("usvg") && self.0 < log::LevelFilter::Debug;
+        m.level() <= self.0 && !svg_note
     }
     fn log(&self, r: &log::Record) {
         if self.enabled(r.metadata()) {
