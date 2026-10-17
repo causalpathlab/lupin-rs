@@ -2576,3 +2576,31 @@ fn after_a_trajectory_run_g_marks_the_new_trajectory() {
     assert_eq!(marked.len(), 1, "{marked:?}");
     assert!(marked[0].starts_with("● X.T1 ·"), "{marked:?}");
 }
+
+#[test]
+fn clusters_from_the_manifest_leave_the_leiden_rows_fixed_and_passed_over() {
+    use super::super::app::{setting_row, Setting};
+    let mut app = app_with_terms(false);
+    app.fixed_clusters = true;
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('r'));
+    // The three sit together: down from the row above them lands on the
+    // row below, and up comes back.
+    let above = setting_row(&app.args, Setting::Knn) - 1;
+    let after = setting_row(&app.args, Setting::NumClusters) + 1;
+    assert_eq!(after - above, 4);
+    app.form.as_mut().unwrap().row = above;
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.form.as_ref().unwrap().row, after);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.form.as_ref().unwrap().row, above);
+    // On one of them, left and right change nothing.
+    let before = format!("{:?}", app.args);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Resolution);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Left);
+    assert_eq!(format!("{:?}", app.args), before);
+    assert!(!app.stale(), "no settings changed");
+    let screen = drawn(&app);
+    assert_eq!(screen.matches("from the manifest").count(), 4, "{screen}");
+}

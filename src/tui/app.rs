@@ -134,6 +134,13 @@ pub fn setting_row(a: &AnnotateCliArgs, s: Setting) -> usize {
 }
 
 impl Setting {
+    /// The Leiden knobs, which a source naming its own clusters leaves
+    /// fixed.
+    #[must_use]
+    pub fn leiden(self) -> bool {
+        matches!(self, Self::Knn | Self::Resolution | Self::NumClusters)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Markers => "marker panel",
@@ -2269,8 +2276,19 @@ impl App {
             | KeyCode::End
             | KeyCode::PageUp
             | KeyCode::PageDown => {
+                let from = form.row;
                 step(&mut form.row, rows.len(), code);
+                // Clusters from the manifest: the cursor passes over the
+                // Leiden rows, which sit between others.
+                while self.fixed_clusters && rows[form.row].leiden() {
+                    if form.row > from {
+                        form.row += 1;
+                    } else {
+                        form.row -= 1;
+                    }
+                }
             }
+            KeyCode::Left | KeyCode::Right if self.fixed_clusters && at.leiden() => {}
             KeyCode::Left | KeyCode::Right => {
                 let before = pass_settings(&self.args);
                 at.adjust(&mut self.args, code == KeyCode::Right);

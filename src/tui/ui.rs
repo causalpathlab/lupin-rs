@@ -789,6 +789,10 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
                 }
                 Setting::Run => Row::new([Cell::from(s.name())])
                     .style(Style::new().fg(Color::LightGreen).bold()),
+                // Fixed: the cursor passes over them.
+                _ if app.fixed_clusters && s.leiden() => {
+                    Row::new([Cell::from(s.name()), Cell::from("from the manifest")]).dim()
+                }
                 _ => Row::new([Cell::from(s.name()), value]),
             }
         })
