@@ -2824,3 +2824,23 @@ fn a_saved_round_called_by_another_method_says_so() {
         app.status
     );
 }
+
+#[test]
+fn a_tree_group_picked_as_a_label_is_not_said_to_have_failed_fdr() {
+    use super::super::round::Edit;
+    let mut app = app_with_terms(false);
+    let panel =
+        [("G1", "CT1"), ("G1", "CT2"), ("G2", "CT3")].map(|(g, t)| (g.to_string(), t.to_string()));
+    app.tree = crate::manifest::ontology::panel_tree_on(None, &panel);
+    let group = (0..app.tree.nodes.len())
+        .find(|&i| !app.tree.nodes[i].children.is_empty())
+        .expect("CT1 and CT2 share a marker");
+    app.edits = vec![Edit::Label {
+        cluster: 0,
+        label: app.tree.label(group).to_string(),
+        reason: "why".into(),
+    }];
+    let screen = drawn(&app);
+    assert!(screen.contains("a tree group"), "{screen}");
+    assert!(!screen.contains("did not pass FDR"), "{screen}");
+}
