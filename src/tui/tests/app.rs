@@ -299,6 +299,18 @@ fn h_hides_a_gene_and_x_does_not() {
 }
 
 #[test]
+fn with_no_round_the_cluster_keys_say_there_are_no_clusters() {
+    let mut app = app_with_terms(false);
+    app.round = None;
+    app.focus = Focus::Clusters;
+    for key in ['1', 'S', 'a'] {
+        press(&mut app, KeyCode::Char(key));
+        assert_eq!(app.status, "no clusters yet", "{key}");
+    }
+    assert!(!app.cand_all, "nothing toggled for the next round");
+}
+
+#[test]
 fn a_candidate_number_past_the_list_says_so() {
     let mut app = app_with_terms(false);
     app.focus = Focus::Clusters;

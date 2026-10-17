@@ -2227,6 +2227,18 @@ impl App {
                 if sel != before {
                     self.select_cluster(sel);
                 }
+                // The keys that act on a cluster wait for a round.
+                let on_cluster = matches!(
+                    code,
+                    KeyCode::Char('1'..='9' | 'S' | 'a' | 'u' | 'k' | ']')
+                        | KeyCode::Backspace
+                        | KeyCode::Delete
+                        | KeyCode::Enter
+                );
+                if on_cluster && self.selected().is_none() {
+                    self.status = "no clusters yet".into();
+                    return true;
+                }
                 match code {
                     KeyCode::Char(c @ '1'..='9') => {
                         let k = c as usize - '1' as usize;
