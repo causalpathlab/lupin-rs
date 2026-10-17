@@ -255,9 +255,15 @@ fn draw_progress(f: &mut Frame, app: &App) {
 /// The bottom line: where the key guide is, and the pane's main keys.
 pub(super) fn help(app: &App) -> String {
     let keys = pane_keys(app);
-    // Only `lupin trajectory`'s TUI has the order view.
+    // Only `lupin trajectory`'s TUI has the order view; on the cell map `t`
+    // restyles the labels and `T` leaves for the order.
     if app.trajectory_tui && app.focus == Focus::Tree && !app.in_order() {
-        format!("{keys} · t order")
+        let t = if matches!(app.tree_mode, TreeMode::Cells) {
+            'T'
+        } else {
+            't'
+        };
+        format!("{keys} · {t} order")
     } else {
         keys.to_string()
     }

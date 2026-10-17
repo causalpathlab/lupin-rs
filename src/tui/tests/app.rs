@@ -1741,3 +1741,19 @@ fn esc_closes_the_choices_and_arrows_move_in_them() {
     press(&mut app, KeyCode::Esc);
     assert!(app.menu.is_none());
 }
+
+#[test]
+fn on_the_map_the_trajectory_tuis_bar_names_capital_t_for_the_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.trajectory_tui = true;
+    app.focus = Focus::Tree;
+    let bar = super::super::ui::help(&app);
+    assert!(
+        !bar.contains("t order"),
+        "t restyles the labels here: {bar}"
+    );
+    assert!(bar.contains("T order"), "{bar}");
+    press(&mut app, KeyCode::Char('T'));
+    assert!(app.in_order(), "T opens the order view");
+}
