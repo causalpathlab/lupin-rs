@@ -779,22 +779,23 @@ fn bar(share: f32) -> String {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    // The status first, where it is seen; the run's file last.
-    let mut spans = vec![
-        Span::from(if app.trajectory_tui {
-            " lupin trajectory "
-        } else {
-            " lupin annotate "
-        })
-        .bold()
-        .reversed(),
-        Span::from(format!(" {} ", app.status)).bold(),
-    ];
+    // The status first, where it is seen; the notes and the run's file
+    // after it, whole: the status gets the room they leave, cut between
+    // words, and the file goes when that leaves too little to read.
+    const STATUS_LEAST: usize = 24;
+    let title = Span::from(if app.trajectory_tui {
+        " lupin trajectory "
+    } else {
+        " lupin annotate "
+    })
+    .bold()
+    .reversed();
+    let mut notes = Vec::new();
     if !app.edits.is_empty() {
-        spans.push(Span::from(format!("· {} unsaved ", app.edits.len())).yellow());
+        notes.push(Span::from(format!("· {} unsaved ", app.edits.len())).yellow());
     }
     if app.stale() {
-        spans.push(
+        notes.push(
             // Neither key runs while a job does.
             Span::from(if app.child.is_some() {
                 "· settings changed, not yet run "
@@ -806,8 +807,52 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             .yellow(),
         );
     }
-    spans.push(Span::from(format!("· {}", app.shown_manifest().display())).dim());
+    let manifest = Span::from(format!("· {}", shown_path(&app.shown_manifest()))).dim();
+    // The status's two spaces around it, or one in its place.
+    let fixed = title.width() + notes.iter().map(Span::width).sum::<usize>() + 2;
+    let total = usize::from(area.width);
+    let mut room = total.saturating_sub(fixed + manifest.width());
+    let keep_manifest = app.status.chars().count() <= room || room >= STATUS_LEAST;
+    if !keep_manifest {
+        room = total.saturating_sub(fixed);
+    }
+    let status = match app.status.as_str() {
+        "" => " ".to_string(),
+        s if s.chars().count() <= room => format!(" {s} "),
+        s => format!(" {} ", cut_words(s, room)),
+    };
+    let mut spans = vec![title, Span::from(status).bold()];
+    spans.extend(notes);
+    if keep_manifest {
+        spans.push(manifest);
+    }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// `text` in `width` columns: the words that fit before a `…`, or its
+/// first word cut when even that one does not.
+fn cut_words(text: &str, width: usize) -> String {
+    let mut kept = String::new();
+    for word in text.split_whitespace() {
+        let with = if kept.is_empty() {
+            word.to_string()
+        } else {
+            format!("{kept} {word}")
+        };
+        if with.chars().count() + 1 > width {
+            break;
+        }
+        kept = with;
+    }
+    if kept.is_empty() {
+        kept = text.chars().take(width.saturating_sub(1)).collect();
+    }
+    format!("{kept}…")
+}
+
+/// A manifest's path as the header names it: without a leading `./`.
+pub(super) fn shown_path(path: &std::path::Path) -> String {
+    path.strip_prefix(".").unwrap_or(path).display().to_string()
 }
 
 /// The cluster list's header: a SuSiE round's calls show the share of the

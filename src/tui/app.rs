@@ -717,7 +717,7 @@ impl App {
                     || self.replied.is_some_and(|t| t.elapsed() < KEY_REPLY_HOLD) => {}
             Ok(None) => {
                 let elapsed = r.started.elapsed();
-                let stop = if job.stoppable() { "  (x: stop)" } else { "" };
+                let stop = if job.stoppable() { " (x: stop)" } else { "" };
                 self.status = match r.progress.estimate(elapsed) {
                     Some(e) if self.progress_hidden => format!(
                         "{} {:.0}% · {} · b shows{stop}",

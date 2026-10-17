@@ -2868,6 +2868,75 @@ fn the_settings_note_stays_when_g_shows_another_round() {
 }
 
 #[test]
+fn a_long_status_gives_way_to_the_headers_notes_and_manifest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    app.form = Some(Form::default());
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Knn);
+    press(&mut app, KeyCode::Right);
+    app.form = None;
+    app.status = "a status of many words ".repeat(12);
+    let name = app.shown_manifest().display().to_string();
+    for width in [200, 140] {
+        let header = &drawn_in(&app, width, 40)[0];
+        assert!(header.contains("settings changed, r to re-run"), "{header}");
+        assert!(header.trim_end().ends_with(&name), "{width}: {header}");
+        let cut = header.split('…').next().unwrap();
+        let last = cut.rsplit(' ').next().unwrap();
+        assert!(
+            header.contains('…') && ["a", "status", "of", "many", "words"].contains(&last),
+            "cut between words: {header}"
+        );
+    }
+    // Too narrow for the manifest beside a readable status: the status.
+    for width in [100, 80] {
+        let header = &drawn_in(&app, width, 24)[0];
+        assert!(header.contains("a status of many"), "{header}");
+        assert!(header.contains("settings changed"), "{header}");
+        assert!(!header.contains("X.L0"), "{header}");
+    }
+    // With no status, no gap where it would be.
+    app.status.clear();
+    let header = &drawn_in(&app, 200, 40)[0];
+    assert!(
+        header.starts_with(" lupin annotate  · settings changed"),
+        "{header}"
+    );
+}
+
+#[test]
+fn a_jobs_progress_reads_with_single_spaces() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    app.tick();
+    assert_eq!(app.status, "pass… 0s (x: stop)");
+    if let Some(r) = app.child.as_mut() {
+        r.progress.report = Some(crate::progress::Report {
+            done: 1.0,
+            end: 2.0,
+            total: 4.0,
+            stage: "enrichment".into(),
+        });
+    }
+    app.progress_hidden = true;
+    app.tick();
+    assert!(app.status.ends_with("b shows (x: stop)"), "{}", app.status);
+    app.stop();
+}
+
+#[test]
+fn the_header_names_a_manifest_without_a_leading_dot() {
+    use super::super::ui::shown_path;
+    assert_eq!(
+        shown_path(Path::new("./X.r3.senna.json")),
+        "X.r3.senna.json"
+    );
+    assert_eq!(shown_path(Path::new("X.r3.senna.json")), "X.r3.senna.json");
+    assert_eq!(shown_path(Path::new("/d/X.senna.json")), "/d/X.senna.json");
+}
+
+#[test]
 fn annotate_opened_on_a_round_shows_that_round() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = family_app(tmp.path());
