@@ -319,6 +319,9 @@ fn pane_keys(app: &App) -> &'static str {
         Focus::Tree if matches!(app.tree_mode, TreeMode::Cells) => {
             " ? keys · the selected cluster lit · c colour · t labels · m layout · +-0 zoom · ←↑→↓ pan · w all · p export · f exports · V tree"
         }
+        Focus::Tree if matches!(app.tree_mode, TreeMode::Ontology(_)) && app.ontology_from_map => {
+            " ? keys · ↑↓ term · enter label · space mark · + mixed label · → children · ← parents · h hide / show unmatched below · d in the data / all · / search · o back to the cells"
+        }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Ontology(_)) => {
             " ? keys · ↑↓ term · enter label · space mark · + mixed label · → children · ← parents · h hide / show unmatched below · d in the data / all · / search · o panel"
         }
@@ -388,8 +391,8 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("enter", "label the cluster with it"),
             ("← →", "fold / unfold; → on a panel leaf or an open branch goes on into the Cell Ontology at its term (ontology: up / into a term; in the data: → opens a folded chain, then the term in place on all its Cell Ontology children, ▸ more to show, ← closes)"),
             ("h", "in the data's tree: hide / show the terms not in the data below the selected term (◈ hiding)"),
-            ("o", "panel tree ↔ the Cell Ontology"),
-            ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, w all figures, p export, f the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, R re-check) / the tree again"),
+            ("o", "panel tree ↔ the Cell Ontology; from the cell map, the Cell Ontology and o back to the map"),
+            ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, o the Cell Ontology, w all figures, p export, f the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, R re-check) / the tree again"),
             ("d", "Cell Ontology: the terms in the data (the labels, under their common ancestor) ↔ all"),
             (
                 "/",

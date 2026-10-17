@@ -562,6 +562,9 @@ pub struct App {
     map_hint: Option<String>,
     /// The user put the tree in the cell map's place (`V`).
     map_off: bool,
+    /// The Cell Ontology on screen was opened from the cell map, which `o`
+    /// goes back to.
+    pub ontology_from_map: bool,
     /// The method the candidates are listed by (`S`); the round's own when
     /// none was chosen.
     cand_by: Option<crate::annotate::rounds::Method>,
@@ -637,6 +640,7 @@ impl App {
             cell_map: None,
             map_hint: None,
             map_off: false,
+            ontology_from_map: false,
             cand_by: None,
             cand_all: false,
             out_chosen: true,
@@ -2654,6 +2658,7 @@ impl App {
             format!("{label} has no Cell Ontology term: at {name}, the nearest above it (o back to the panel)")
         };
         self.tree_mode = TreeMode::Ontology(Box::new(v));
+        self.ontology_from_map = false;
     }
 
     /// Panel node `i`'s Cell Ontology term: the one it was placed on, else
@@ -3698,9 +3703,15 @@ impl App {
     /// the ontology opening on the selected node's term, else the cluster's.
     fn toggle_ontology(&mut self) {
         if matches!(self.tree_mode, TreeMode::Ontology(_)) {
-            self.tree_mode = TreeMode::Panel;
+            let map = std::mem::take(&mut self.ontology_from_map) && self.cell_map.is_some();
+            self.tree_mode = if map {
+                TreeMode::Cells
+            } else {
+                TreeMode::Panel
+            };
             return;
         }
+        let from_map = matches!(self.tree_mode, TreeMode::Cells);
         let from_node = self
             .tree
             .visible()
@@ -3712,6 +3723,7 @@ impl App {
             .and_then(|cl| super::ontology::term_of(cl, &self.tree, &self.label_or_top()?));
         if let Some(v) = self.ontology_on(from_node.or(from_cluster)) {
             self.tree_mode = TreeMode::Ontology(Box::new(v));
+            self.ontology_from_map = from_map;
         }
     }
 

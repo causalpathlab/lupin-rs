@@ -2123,6 +2123,44 @@ fn the_maps_keys_act_from_the_tree_pane_and_capital_v_shows_the_tree() {
 }
 
 #[test]
+fn o_from_the_maps_ontology_goes_back_to_the_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.cl = Some(crate::annotate::celltype_tree::ClTerms::parse(
+        TYPES_OBO,
+        &crate::annotate::cl_rules::shipped(),
+    ));
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('o'));
+    assert!(
+        matches!(app.tree_mode, TreeMode::Ontology(_)),
+        "{}",
+        app.status
+    );
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("o back to the cells"), "{bar}");
+    press(&mut app, KeyCode::Char('o'));
+    assert!(
+        matches!(app.tree_mode, TreeMode::Cells),
+        "the map, not the tree"
+    );
+    // From the panel tree, o still goes back to it.
+    press(&mut app, KeyCode::Char('V'));
+    press(&mut app, KeyCode::Char('o'));
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("o panel"), "{bar}");
+    press(&mut app, KeyCode::Char('o'));
+    assert!(matches!(app.tree_mode, TreeMode::Panel));
+    let map = super::super::ui::guide(false)
+        .filter(|(s, _)| *s == "tree")
+        .flat_map(|(_, keys)| keys)
+        .find(|(key, _)| *key == "v / V")
+        .map(|(_, what)| what)
+        .unwrap();
+    assert!(map.contains("o the Cell Ontology"), "{map}");
+}
+
+#[test]
 fn a_round_without_a_layout_keeps_the_tree_and_v_names_the_senna_command() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = map_app(dir.path(), false);
