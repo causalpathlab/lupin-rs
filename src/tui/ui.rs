@@ -2070,12 +2070,23 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
         );
         inner = rest;
     }
-    match &*v.protocol(inner) {
-        Ok(p) => f.render_widget(ratatui_image::Image::new(p), inner),
-        Err(e) => f.render_widget(
+    // A quick frame shows the figure as last drawn; the next draws it.
+    let drawn = if app.quick_frame.get() {
+        let (drawn, behind) = v.drawn_so_far(inner);
+        if behind {
+            app.frame_behind.set(true);
+        }
+        drawn
+    } else {
+        Some(v.protocol(inner))
+    };
+    match drawn.as_deref() {
+        Some(Ok(p)) => f.render_widget(ratatui_image::Image::new(p), inner),
+        Some(Err(e)) => f.render_widget(
             Paragraph::new(e.as_str()).wrap(Wrap { trim: true }).dim(),
             inner,
         ),
+        None => f.render_widget(Paragraph::new("drawing…").dim(), inner),
     }
     if let Some(strip) = strip {
         draw_exports(f, strip, &v.exports, focused);

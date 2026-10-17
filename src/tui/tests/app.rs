@@ -814,10 +814,7 @@ fn after_a_pass_from_the_order_view_the_trajectory_is_offered() {
     // As a run from the form leaves things: flags set, the form closed.
     press(&mut app, KeyCode::Char('A'));
     app.form = None;
-    let mut child = std::process::Command::new("true").spawn().unwrap();
-    child.wait().unwrap();
-    app.child = Some(Running::new(child, Job::Pass));
-    app.tick();
+    finished(&mut app, Job::Pass);
     let m = menu(&app).expect("the offer");
     assert_eq!(m.choices[0].label, "Run the trajectory on the new labels");
     press(&mut app, KeyCode::Char('2'));
@@ -1113,10 +1110,7 @@ fn a_save_opens_the_round_after_the_one_saved_whatever_the_pass_output() {
     // As `lupin relabel --next` leaves it: the next round beside it.
     let text = std::fs::read_to_string(tmp.path().join("X.L0.senna.json")).unwrap();
     std::fs::write(tmp.path().join("X.L0.r1.senna.json"), text).unwrap();
-    let mut child = std::process::Command::new("true").spawn().unwrap();
-    child.wait().unwrap();
-    app.child = Some(Running::new(child, Job::Save(0)));
-    app.tick();
+    finished(&mut app, Job::Save(0));
     assert!(
         app.shown_manifest().ends_with("X.L0.r1.senna.json"),
         "{}: {}",
@@ -2240,6 +2234,33 @@ fn a_round_with_a_layout_shows_its_cells_lit_on_the_selected_cluster() {
 }
 
 #[test]
+fn a_quick_frame_shows_a_keys_status_at_once_and_leaves_the_map_for_the_next() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Clusters;
+    drawn(&app);
+    running(&mut app);
+    press(&mut app, KeyCode::Char('x'));
+    app.tick();
+    press(&mut app, KeyCode::Down);
+    app.tick();
+    app.quick_frame.set(true);
+    let screen = drawn(&app);
+    assert!(screen.starts_with(" lupin annotate  pass…"), "{screen}");
+    assert!(
+        app.frame_behind.take(),
+        "the map lit on K1 is still to draw"
+    );
+    app.quick_frame.set(false);
+    drawn(&app);
+    assert!(!app.frame_behind.get());
+    app.quick_frame.set(true);
+    drawn(&app);
+    assert!(!app.frame_behind.get(), "drawn: nothing is behind");
+    app.stop();
+}
+
+#[test]
 fn the_maps_keys_act_from_the_tree_pane_and_capital_v_shows_the_tree() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = map_app(dir.path(), true);
@@ -2627,6 +2648,40 @@ fn running_job(app: &mut App, job: Job) {
     app.child = Some(Running::new(child, job));
 }
 
+/// `job`, ended well, taken in as the main loop does: one tick says it is
+/// done (the screen shows that before the reading), the next reads its output.
+fn finished(app: &mut App, job: Job) {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    child.wait().unwrap();
+    app.child = Some(Running::new(child, job));
+    app.tick();
+    assert!(app.job_ended(), "{}", app.status);
+    assert!(app.status.contains(" done in "), "{}", app.status);
+    app.tick();
+    assert!(app.child.is_none());
+}
+
+#[test]
+fn a_job_that_ends_says_so_before_its_output_is_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.target = tmp.path().join("X.L0.senna.json");
+    running(&mut app);
+    app.tick();
+    assert!(app.status.starts_with("pass…"), "{}", app.status);
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    child.wait().unwrap();
+    let mut sleeping = std::mem::replace(&mut app.child.as_mut().unwrap().child, child);
+    let _ = (sleeping.kill(), sleeping.wait());
+    app.tick();
+    assert!(app.status.starts_with("pass done in"), "{}", app.status);
+    assert!(app.status.contains("reading"), "{}", app.status);
+    assert!(app.job_ended() && app.round.is_none(), "not read yet");
+    app.tick();
+    assert!(app.child.is_none() && app.round.is_some());
+    assert!(app.status.starts_with("pass done in"), "{}", app.status);
+}
+
 #[test]
 fn a_keys_reply_holds_the_status_against_the_progress_for_a_while() {
     let mut app = app_with_terms(false);
@@ -2777,17 +2832,11 @@ fn the_settings_note_goes_once_a_pass_runs_with_them_or_they_are_set_back() {
     // A save's round was made with the settings of the round before it.
     let text = std::fs::read_to_string(tmp.path().join("X.L0.senna.json")).unwrap();
     std::fs::write(tmp.path().join("X.L0.r1.senna.json"), text).unwrap();
-    let done = |app: &mut App, job: Job| {
-        let mut child = std::process::Command::new("true").spawn().unwrap();
-        child.wait().unwrap();
-        app.child = Some(Running::new(child, job));
-        app.tick();
-    };
-    done(&mut app, Job::Save(0));
+    finished(&mut app, Job::Save(0));
     assert!(app.shown_manifest().ends_with("X.L0.r1.senna.json"));
     assert!(app.stale(), "a save keeps the note");
     app.target = tmp.path().join("X.L9.senna.json");
-    done(&mut app, Job::Pass);
+    finished(&mut app, Job::Pass);
     assert!(!app.stale(), "a pass done ran with them");
 }
 
@@ -3055,10 +3104,7 @@ fn a_saved_round_called_by_another_method_says_so() {
     app.round.as_mut().unwrap().by = Some(crate::annotate::rounds::Method::Susie);
     let text = std::fs::read_to_string(tmp.path().join("X.L0.senna.json")).unwrap();
     std::fs::write(tmp.path().join("X.L0.r1.senna.json"), text).unwrap();
-    let mut child = std::process::Command::new("true").spawn().unwrap();
-    child.wait().unwrap();
-    app.child = Some(Running::new(child, Job::Save(0)));
-    app.tick();
+    finished(&mut app, Job::Save(0));
     assert!(app.shown_manifest().ends_with("X.L0.r1.senna.json"));
     assert!(
         app.status.contains("a save does not redo susie"),

@@ -222,7 +222,10 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     let result = (|| -> Result<()> {
         // Drawn when something changed: a key, a resize, the log, the status
         // or a rescoring starting or ending; and each second a job runs.
+        // A change goes out at once with the figures as last drawn, and a
+        // figure left to draw follows once no key waits (`behind`).
         let mut dirty = true;
+        let mut behind = false;
         let mut drawn = std::time::Instant::now();
         while !app.quit {
             let (logged, status) = (app.log.len(), app.status.clone());
@@ -235,8 +238,11 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                 || app.rescoring.is_some() != rescoring
                 || app.child.as_ref().map(|r| r.progress.reported_at) != progress
                 || app.redraw_due(drawn.elapsed());
-            if dirty {
+            if dirty || behind {
+                app.quick_frame.set(dirty);
+                app.frame_behind.set(false);
                 terminal.draw(|f| ui::draw(f, &app))?;
+                behind = app.frame_behind.get();
                 dirty = false;
                 drawn = std::time::Instant::now();
             }
@@ -267,7 +273,15 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
             }
             // Every event already waiting is handled before the next draw, so
             // a held key draws only where it ends.
-            let mut wait = Duration::from_millis(150);
+            // A job that has ended is read before the next key.
+            if app.job_ended() {
+                continue;
+            }
+            let mut wait = if behind {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(150)
+            };
             while !app.quit && app.want_file.is_none() && event::poll(wait)? {
                 wait = Duration::ZERO;
                 match event::read()? {

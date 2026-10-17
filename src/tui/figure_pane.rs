@@ -711,6 +711,20 @@ impl FigurePane {
         })
     }
 
+    /// The figure as last drawn, without drawing: for a frame that goes out
+    /// at once, whatever is drawn so far, and whether the current figure
+    /// for `area` is still to draw (none is shown when nothing was drawn).
+    pub fn drawn_so_far(&self, area: Rect) -> (Option<Ref<'_, Drawn>>, bool) {
+        let key = (
+            self.look(self.current(), self.view),
+            (area.width, area.height),
+        );
+        let rendered = self.rendered.borrow();
+        let behind = rendered.as_ref().is_none_or(|(k, _)| *k != key);
+        let drawn = Ref::filter_map(rendered, |s| s.as_ref().map(|(_, d)| d)).ok();
+        (drawn, behind)
+    }
+
     /// `look` rasterised, from the cache when it is the one last drawn.
     fn image(&self, look: Look, area: Rect) -> Result<DynamicImage, String> {
         if let Some((l, img)) = self.image.borrow().as_ref() {

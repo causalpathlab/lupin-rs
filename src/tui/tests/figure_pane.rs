@@ -317,3 +317,20 @@ fn the_strips_keys_say_why_when_it_has_no_room() {
     }
     assert!(p.exports.not_listed.len() == 1, "nothing listed or removed");
 }
+
+#[test]
+fn a_quick_frame_shows_the_figure_last_drawn_and_says_one_is_due() {
+    let mut p = pane();
+    let area = Rect::new(0, 0, 30, 10);
+    assert!(
+        matches!(p.drawn_so_far(area), (None, true)),
+        "nothing drawn yet"
+    );
+    assert!(p.protocol(area).is_ok());
+    assert!(matches!(p.drawn_so_far(area), (Some(_), false)));
+    // A new look: the old drawing stands in until the next frame.
+    p.style.cycle_labels();
+    assert!(matches!(p.drawn_so_far(area), (Some(_), true)));
+    assert!(p.protocol(area).is_ok());
+    assert!(matches!(p.drawn_so_far(area), (Some(_), false)));
+}

@@ -463,6 +463,9 @@ pub struct Running {
     pub job: Job,
     /// As its `@progress` lines report it.
     pub progress: JobProgress,
+    /// It ended well and the status says so; the next tick reads what it
+    /// wrote, once the screen has shown that.
+    ended: bool,
 }
 
 impl Running {
@@ -472,6 +475,7 @@ impl Running {
             started: Instant::now(),
             job,
             progress: JobProgress::default(),
+            ended: false,
         }
     }
 }
@@ -592,6 +596,11 @@ pub struct App {
     after_pass: AfterPass,
     /// The terminal's picture protocol, asked for once.
     picker: Option<ratatui_image::picker::Picker>,
+    /// The frame being drawn goes out at once: the figures show as last
+    /// drawn, so a key's reply is not held up by drawing one anew.
+    pub quick_frame: std::cell::Cell<bool>,
+    /// A quick frame left a figure to draw in the next.
+    pub frame_behind: std::cell::Cell<bool>,
 }
 
 impl App {
@@ -657,6 +666,8 @@ impl App {
             browser: None,
             after_pass: AfterPass::Nothing,
             picker: None,
+            quick_frame: Default::default(),
+            frame_behind: Default::default(),
             progress_hidden: false,
             failed: None,
         }
@@ -716,6 +727,11 @@ impl App {
                     ),
                     _ => format!("{}… {secs}s{stop}", job.name()),
                 };
+            }
+            // Said first: reading the output can take a moment.
+            Ok(Some(st)) if st.success() && !r.ended => {
+                r.ended = true;
+                self.status = format!("{} done in {secs}s: reading what it wrote…", job.name());
             }
             Ok(Some(st)) if st.success() => {
                 self.child = None;
@@ -808,6 +824,13 @@ impl App {
                 self.failed = Some(self.status.clone());
             }
         }
+    }
+
+    /// The job has ended and the next tick reads what it wrote: keys wait
+    /// for that.
+    #[must_use]
+    pub fn job_ended(&self) -> bool {
+        self.child.as_ref().is_some_and(|r| r.ended)
     }
 
     /// Whether the screen is due a redraw `since` the last one with nothing
