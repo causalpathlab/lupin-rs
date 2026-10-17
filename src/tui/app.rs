@@ -2690,7 +2690,7 @@ impl App {
             }
         }
         self.reload_order();
-        self.status = "order view: space marks a type, then > states the first precedes the second, - that they are unrelated".into();
+        self.status = "order view: space marks a type, then > states the first precedes the second, u that they are unrelated".into();
     }
 
     /// The manifests whose trajectory outputs the order view shows: the
@@ -2910,7 +2910,7 @@ impl App {
                 ),
                 (
                     "State the order myself".into(),
-                    "in the order table: space marks two types, > says the first precedes the second, - that they are unrelated; then r".into(),
+                    "in the order table: space marks two types, > says the first precedes the second, u that they are unrelated; then r".into(),
                     Action::StateOrder,
                 ),
                 (
@@ -2967,7 +2967,7 @@ impl App {
                 if let Some(f) = &mut self.figures {
                     f.shown = false;
                 }
-                self.status = "space marks two types, > says the first precedes the second, - that they are unrelated; then r runs".into();
+                self.status = "space marks two types, > says the first precedes the second, u that they are unrelated; then r runs".into();
             }
             Action::PriorFile => self.want_file = Some(FileWant::Prior),
             Action::LabelCl => self.want_file = Some(FileWant::LabelCl),
@@ -3574,7 +3574,7 @@ impl App {
         }
     }
 
-    /// Keys of the order view: move, `>` / `-` on two marked types (the
+    /// Keys of the order view: move, `>` / `u` on two marked types (the
     /// figure pane's keys come first, in `pane_key`).
     fn order_key(&mut self, code: KeyCode) -> bool {
         let shown = self.figures_shown();
@@ -3591,7 +3591,13 @@ impl App {
                 return true;
             }
             KeyCode::Char('>') => Relation::Precedes,
-            KeyCode::Char('-') => Relation::Unrelated,
+            KeyCode::Char('u') => Relation::Unrelated,
+            // `+` and `-` zoom the figures (taken above when shown), as on
+            // the cell map.
+            KeyCode::Char('+' | '=' | '-' | '_') => {
+                self.status = "+ - zoom the figures (v shows them) · u unrelated".into();
+                return true;
+            }
             KeyCode::Esc => {
                 self.focus = Focus::Clusters;
                 return true;
@@ -3603,7 +3609,7 @@ impl App {
             return true;
         }
         if self.tree_marked.len() != 2 {
-            self.status = "mark exactly two types with space, in order, then > or -".into();
+            self.status = "mark exactly two types with space, in order, then > or u".into();
             return true;
         }
         let (from, to) = (self.tree_marked[0].clone(), self.tree_marked[1].clone());

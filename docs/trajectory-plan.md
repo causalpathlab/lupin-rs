@@ -291,7 +291,7 @@ ancestor, each marked with its types and cells; a chain of terms that only
 leads on to one term is folded into that term's line (→ opens it, ← folds
 it). `d` switches to the whole ontology around the same term and back. A
 search (`/`) lists the matches in the data's tree, or in the whole ontology
-when none are there, and says so. Mark type A, mark type B, then `>` for "A precedes B" or `-` for
+when none are there, and says so. Mark type A, mark type B, then `>` for "A precedes B" or `u` for
 "unrelated" (`x` stops a running job from any pane); a short
 reason is asked for, as for other edits. Enter on the reason writes the
 statement to the project layer's `precedence.tsv` at once (no save step);
@@ -307,7 +307,7 @@ The figure panels take the order table's place in the middle column while
 they are shown (`v` shows them and steps through them, `V` brings the table
 back). Their keys act while the ordering column has the focus; the ontology
 column keeps its own. With the figures shown, space and `>` only say that
-types are marked in the table, `-` zooms out, and `t` restyles the labels
+types are marked in the table, `+` and `-` zoom as on the cell map, and `t` restyles the labels
 (with the table shown, `t` says so and `T` leaves the order view). `f` and
 `R` belong to the figures too. The
 panels are drawn from the run's trajectory outputs, the same set the bench summary shows:

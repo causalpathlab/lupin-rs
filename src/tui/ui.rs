@@ -314,7 +314,7 @@ fn pane_keys(app: &App) -> &'static str {
             " ? keys · v next · w all · V table · t c m labels colour layout · , . [ ] axes · +-0 zoom · ←↑→↓ pan · p export · f exports · r run · esc clusters"
         }
         Focus::Order => {
-            " ? keys · ↑↓ type · space mark · > precedes · - unrelated · r run · v figures · tab ontology · T tree"
+            " ? keys · ↑↓ type · space mark · > precedes · u unrelated · r run · v figures · tab ontology · T tree"
         }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Cells) => {
             " ? keys · the selected cluster lit · c colour · t labels · m layout · +-0 zoom · ←↑→↓ pan · w all · p export · f exports · V tree"
@@ -431,7 +431,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("↑↓", "a cell type on screen, with its cells"),
             ("space", "mark a type; mark two, first the earlier one (in the table, not the figures)"),
             (">", "the first marked type precedes the second (asks why)"),
-            ("-", "the two marked types are unrelated (asks why)"),
+            ("u", "the two marked types are unrelated (asks why); + - zoom the figures, as on the cell map"),
             ("r", "from any pane: run lupin trajectory on the labels on screen (asks for the output prefix; when nothing orders the types, asks how)"),
             ("A", "in the clusters: the annotation form, then a choice to run the trajectory"),
             ("tab", "panes: clusters → genes → candidates → ordering → ontology; the Cell Ontology beside the table: ↑↓ selects a type in both, space marks it, o the full ontology, there d in the data ↔ all"),

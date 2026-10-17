@@ -1574,7 +1574,7 @@ fn in_the_order_table_two_marks_then_precedes_or_unrelated_ask_why() {
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char(' '));
     assert_eq!(app.tree_marked, ["CT1", "CT2"]);
-    for (key, relation) in [('>', Relation::Precedes), ('-', Relation::Unrelated)] {
+    for (key, relation) in [('>', Relation::Precedes), ('u', Relation::Unrelated)] {
         press(&mut app, KeyCode::Char(key));
         assert!(matches!(
             app.prompt.as_ref().map(|p| &p.pending),
@@ -1583,6 +1583,27 @@ fn in_the_order_table_two_marks_then_precedes_or_unrelated_ask_why() {
         ));
         app.prompt = None;
     }
+    // - and + zoom the figures, as on the cell map: in the table they say so.
+    for key in ['-', '+'] {
+        press(&mut app, KeyCode::Char(key));
+        assert!(app.prompt.is_none(), "{key} states nothing");
+        assert!(app.status.contains("zoom"), "{key}: {}", app.status);
+        assert!(app.status.contains("u unrelated"), "{key}: {}", app.status);
+    }
+    let bar = super::super::ui::help(&app);
+    assert!(
+        bar.contains("u unrelated") && !bar.contains("- unrelated"),
+        "{bar}"
+    );
+    let order: String = super::super::ui::guide(true)
+        .filter(|(s, _)| s.starts_with("order view"))
+        .flat_map(|(_, keys)| keys)
+        .map(|(key, what)| format!("{key} {what}\n"))
+        .collect();
+    assert!(
+        order.contains("u the two marked types are unrelated"),
+        "{order}"
+    );
 }
 
 #[test]
