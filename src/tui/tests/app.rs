@@ -2532,3 +2532,47 @@ fn the_settings_note_goes_once_a_pass_runs_with_them_or_they_are_set_back() {
     done(&mut app, Job::Pass);
     assert!(!app.stale(), "a pass done ran with them");
 }
+
+#[test]
+fn annotate_opened_on_a_round_shows_that_round() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.trajectory_tui = false;
+    app.source = tmp.path().join("X.L0.senna.json");
+    app.target = tmp.path().join("X.L0.L2.senna.json");
+    app.open_start(true);
+    assert!(
+        app.shown_manifest().ends_with("X.L0.senna.json"),
+        "{}",
+        app.status
+    );
+    assert_eq!(app.round.as_ref().map(|r| r.clusters.len()), Some(2));
+    // The run itself, with a round left under the output: that round.
+    let mut app = family_app(tmp.path());
+    app.trajectory_tui = false;
+    app.target = tmp.path().join("X.L0.senna.json");
+    app.open_start(false);
+    assert!(app.shown_manifest().ends_with("X.L0.senna.json"));
+}
+
+#[test]
+fn after_a_trajectory_run_g_marks_the_new_trajectory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    app.trajectory_tui = true;
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    // As a trajectory run leaves its figures, read from X.T1.
+    let mut pane = super::super::figure_pane::tests::pane();
+    pane.data.manifest = tmp.path().join("X.T1.senna.json");
+    app.figures = Some(pane);
+    press(&mut app, KeyCode::Char('g'));
+    let m = menu(&app).expect("the runs");
+    let marked: Vec<&str> = m
+        .choices
+        .iter()
+        .filter(|c| c.label.starts_with('●'))
+        .map(|c| c.label.as_str())
+        .collect();
+    assert_eq!(marked.len(), 1, "{marked:?}");
+    assert!(marked[0].starts_with("● X.T1 ·"), "{marked:?}");
+}

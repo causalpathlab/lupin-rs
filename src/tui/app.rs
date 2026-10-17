@@ -805,6 +805,20 @@ impl App {
         }
     }
 
+    /// Show the round the TUI opens on: the manifest opened when it is
+    /// `annotated`; else, in annotate, the latest round an earlier session
+    /// left under the output. The trajectory TUI starts from the manifest
+    /// named, as the batch run would.
+    pub fn open_start(&mut self, annotated: bool) {
+        if annotated {
+            let opened = self.source.clone();
+            self.open(&opened);
+        } else if self.target.is_file() && !self.trajectory_tui {
+            let (latest, _) = chain_rounds(&self.target);
+            self.open(&latest);
+        }
+    }
+
     /// Put `r` on screen (or none), dropping what belonged to the round
     /// shown before: edits, marks, scores and the stale note.
     fn set_round(&mut self, r: Option<RoundView>) {
@@ -2881,9 +2895,13 @@ impl App {
         }
     }
 
-    /// The manifest on screen: the round shown, else the run passes start
-    /// from.
+    /// The manifest on screen: the trajectory whose figures the trajectory
+    /// TUI shows (a run made here, until another run is opened), else the
+    /// round shown, else the run passes start from.
     pub(super) fn shown_manifest(&self) -> PathBuf {
+        if let Some(f) = self.figures.as_ref().filter(|_| self.trajectory_tui) {
+            return f.data.manifest.clone();
+        }
         self.round
             .as_ref()
             .map_or_else(|| self.source.clone(), |r| r.manifest.clone())

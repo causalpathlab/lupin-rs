@@ -201,20 +201,12 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     app.hidden = genes::GeneFilter::load(&search)?;
     app.mixed = ontology::Mixed::load(&search)?;
     app.data_search = search;
-    // Pick up where an earlier session left this prefix: its latest round.
-    // The trajectory TUI starts from the manifest named instead, as the
-    // batch run would.
-    if target.is_file() && !start_in_order {
-        let (latest, _) = crate::manifest::rounds::chain_rounds(&target);
-        app.open(&latest);
-    }
+    // A run that is already annotated shows its round in the cluster panes
+    // (the trajectory then reads the same labels); annotate on a run picks
+    // up where an earlier session left this prefix.
     app.trajectory_tui = start_in_order;
+    app.open_start(loaded.manifest.annotate.argmax.is_some());
     if start_in_order {
-        // A run that is already annotated shows its round in the cluster
-        // panes; the trajectory then reads the same labels.
-        if loaded.manifest.annotate.argmax.is_some() {
-            app.open(&loaded.file);
-        }
         app.focus = app::Focus::Tree;
         app.toggle_order(true);
         // The ordering is this view's main job: start there.
