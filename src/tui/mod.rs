@@ -226,8 +226,9 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     app.shift_enter = push_keys();
     let result = (|| -> Result<()> {
         // Drawn when something changed: a key, a resize, the log, the status
-        // or a rescoring starting or ending.
+        // or a rescoring starting or ending; and each second a job runs.
         let mut dirty = true;
+        let mut drawn = std::time::Instant::now();
         while !app.quit {
             let (logged, status) = (app.log.len(), app.status.clone());
             let rescoring = app.rescoring.is_some();
@@ -237,10 +238,12 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
             dirty |= app.log.len() != logged
                 || app.status != status
                 || app.rescoring.is_some() != rescoring
-                || app.child.as_ref().map(|r| r.progress.reported_at) != progress;
+                || app.child.as_ref().map(|r| r.progress.reported_at) != progress
+                || app.redraw_due(drawn.elapsed());
             if dirty {
                 terminal.draw(|f| ui::draw(f, &app))?;
                 dirty = false;
+                drawn = std::time::Instant::now();
             }
             if let Some(want) = app.want_file.take() {
                 // The file browser opens in a popup over what asked for it.

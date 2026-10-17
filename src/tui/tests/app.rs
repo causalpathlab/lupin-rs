@@ -288,6 +288,25 @@ fn a_last_stage_running_long_gives_no_eta() {
 }
 
 #[test]
+fn a_running_job_redraws_on_the_clock_even_while_a_key_is_asked_again() {
+    let mut app = app_with_terms(false);
+    assert!(!app.redraw_due(Duration::from_secs(5)), "nothing runs");
+    running(&mut app);
+    press(&mut app, KeyCode::Char('x'));
+    app.tick();
+    assert_eq!(
+        app.status, "x again stops it",
+        "the question holds the status"
+    );
+    assert!(!app.redraw_due(Duration::from_millis(200)));
+    assert!(
+        app.redraw_due(Duration::from_secs(1)),
+        "the popup's clock moves"
+    );
+    app.stop();
+}
+
+#[test]
 fn h_hides_a_gene_and_x_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with_terms(false);

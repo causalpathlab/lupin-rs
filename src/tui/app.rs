@@ -736,6 +736,13 @@ impl App {
         }
     }
 
+    /// Whether the screen is due a redraw `since` the last one with nothing
+    /// else changed: a running job's elapsed time and ETA move on the clock.
+    #[must_use]
+    pub fn redraw_due(&self, since: Duration) -> bool {
+        self.child.is_some() && since >= Duration::from_secs(1)
+    }
+
     /// The running job for its popup: what it is and how long it has run.
     pub fn running_job(&self) -> Option<(String, std::time::Duration)> {
         let Running { started, job, .. } = self.child.as_ref()?;
