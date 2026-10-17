@@ -191,7 +191,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     let target = annotated_path(&loaded.file, &args.out);
     let mut app = App::new(args, loaded.file.clone(), target.clone(), tree);
     app.fixed_clusters = loaded.manifest.cluster.clusters.is_some();
-    app.out_chosen = out_chosen;
+    (app.out_chosen, app.out_typed) = (out_chosen, out_chosen);
     app.trajectory = trajectory.unwrap_or_default();
     if !app.args.markers.is_empty() {
         app.original = round::panel_sets(&app.args.markers)?;

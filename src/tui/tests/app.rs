@@ -520,7 +520,7 @@ fn b_hides_the_running_job_and_brings_it_back() {
 fn form_app(dir: &std::path::Path) -> App {
     let mut app = order_app(dir, &["CT1", "CT2"]);
     app.source = dir.join("run.senna.json");
-    app.out_chosen = false;
+    (app.out_chosen, app.out_typed) = (false, false);
     app.args.markers = Default::default();
     app
 }
@@ -806,7 +806,7 @@ fn g_lists_the_family_and_a_round_opens_with_its_clusters() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = family_app(tmp.path());
     // No output chosen: switching offers the next free round.
-    app.out_chosen = false;
+    (app.out_chosen, app.out_typed) = (false, false);
     press(&mut app, KeyCode::Char('g'));
     let m = menu(&app).expect("the runs");
     assert_eq!(m.choices.len(), 5);
@@ -834,6 +834,23 @@ fn g_lists_the_family_and_a_round_opens_with_its_clusters() {
     assert_eq!(menu(&app).unwrap().sel, 1, "the round is on screen now");
     press(&mut app, KeyCode::Char('1'));
     assert!(app.round.is_none());
+}
+
+#[test]
+fn a_pass_run_on_one_run_leaves_the_next_run_its_own_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    // As a pass from the form leaves things, with no output typed.
+    (app.out_chosen, app.out_typed) = (true, false);
+    app.args.out = "X.L1".into();
+    app.open_run(pick(tmp.path(), "X.L0"), false);
+    let (_, out) = crate::manifest::family::pass_origin(&tmp.path().join("X.L0.senna.json"));
+    assert_eq!(app.args.out.as_ref(), out, "derived for the run shown");
+    // A typed output stays.
+    app.out_typed = true;
+    app.args.out = "mine".into();
+    app.open_run(pick(tmp.path(), "X"), false);
+    assert_eq!(app.args.out.as_ref(), "mine");
 }
 
 #[test]

@@ -549,6 +549,9 @@ pub struct App {
     /// The output prefix was given or confirmed; until then the first pass
     /// asks for it.
     pub out_chosen: bool,
+    /// The output prefix was given (`-o`) or typed, not only run with: it
+    /// stays when another run is opened.
+    pub out_typed: bool,
     /// How the order view runs `lupin trajectory`.
     pub trajectory: super::order::TrajectoryRun,
     /// Started as `lupin trajectory`'s TUI: only it has the order view.
@@ -616,6 +619,7 @@ impl App {
             cand_by: None,
             cand_all: false,
             out_chosen: true,
+            out_typed: true,
             trajectory: super::order::TrajectoryRun::default(),
             trajectory_tui: false,
             want_file: None,
@@ -2509,7 +2513,7 @@ impl App {
             return;
         }
         if out == self.args.out.as_ref() {
-            self.out_chosen = true;
+            (self.out_chosen, self.out_typed) = (true, true);
             return;
         }
         if !self.edits.is_empty() {
@@ -2521,7 +2525,7 @@ impl App {
         }
         self.args.out = out.into();
         self.target = annotated_path(&self.source, out);
-        self.out_chosen = true;
+        (self.out_chosen, self.out_typed) = (true, true);
         if self.target.is_file() {
             let (latest, _) = chain_rounds(&self.target);
             self.open(&latest);
@@ -2873,8 +2877,10 @@ impl App {
         if !crate::manifest::run::same_file(path, &self.source) {
             let (source, out) = pass_origin(path);
             self.source = source;
-            if !self.out_chosen {
+            // A pass run on the old run chose its output for that run only.
+            if !self.out_typed {
                 self.args.out = out.into_boxed_str();
+                self.out_chosen = false;
             }
             self.args.from = Some(self.source.to_string_lossy().into());
             self.target = annotated_path(&self.source, &self.args.out);
