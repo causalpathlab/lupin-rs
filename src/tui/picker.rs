@@ -472,7 +472,8 @@ impl Picker {
                         self.note =
                             Some("one cell type: annotation needs types to choose between".into());
                     }
-                    None if pending && !self.all => {
+                    // Listing every file (`a`) only widens what is shown.
+                    None if matches!(self.want, Want::Markers(..)) => {
                         self.note = Some("not a marker panel".into());
                     }
                     _ => return Step::Chosen(path),

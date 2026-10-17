@@ -143,3 +143,24 @@ fn a_round_export_with_its_type_column_first_reads_as_type_then_gene() {
     let p = read_panel(&file, None).expect("a panel");
     assert_eq!((p.types, p.genes), (2, 3), "the header names its columns");
 }
+
+#[test]
+fn listing_every_file_still_refuses_one_that_is_not_a_panel() {
+    let root = dir();
+    let mut p = Picker::new("t", root.path(), Want::Markers(None, 0));
+    wait(&mut p);
+    p.key(KeyCode::Char('a'));
+    for name in ["counts.tsv", "run.log"] {
+        let at = p.shown().iter().position(|e| e.name == name).unwrap();
+        p.state.select(Some(at));
+        assert!(matches!(p.key(KeyCode::Enter), Step::Stay), "{name}");
+        assert_eq!(p.note.as_deref(), Some("not a marker panel"), "{name}");
+    }
+    let at = p
+        .shown()
+        .iter()
+        .position(|e| e.name == "a_markers.tsv")
+        .unwrap();
+    p.state.select(Some(at));
+    assert!(matches!(p.key(KeyCode::Enter), Step::Chosen(_)));
+}
