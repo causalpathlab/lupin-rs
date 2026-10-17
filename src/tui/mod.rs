@@ -18,6 +18,7 @@ mod order;
 mod picker;
 mod round;
 mod runner;
+mod suggest;
 mod ui;
 
 use crate::annotate::gene_rows::GeneRows;
