@@ -90,7 +90,7 @@ anywhere.
 An annotated manifest is a round. `lupin review` prints each cluster's evidence
 (candidate labels with q and support, top GO/GMT terms, Cell Ontology placement)
 and every decision made on it so far; `--json` gives the same to a program or an
-agent. Decisions go in a JSONL file, each with its evidence, the alternatives
+agent, with `cl` the term the round's type tree puts the cluster's label on. Decisions go in a JSONL file, each with its evidence, the alternatives
 weighed and a rationale; `lupin relabel` applies them and writes the next round:
 
 ```sh
@@ -142,7 +142,9 @@ on the same data, so the round records
 `annotate.stats = {kind: post_selection, rounds_of_curation}`; a fresh
 `lupin annotate` pass is the confirmatory one. Each cluster's summary
 entry carries `evidence` (the top call, its q, and whether the
-cluster's label agrees). `--preview` uses the same rescoring when it can.
+cluster's label agrees: it is one of the calls tied at that q, which go by
+the method's own reading, then the NES). `--preview` uses the same
+rescoring when it can.
 
 A round is never overwritten, whichever way it is written.
 

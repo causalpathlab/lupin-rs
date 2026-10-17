@@ -246,3 +246,56 @@ fn decided_labels_take_the_canonical_spelling() {
     apply(&mut ds, &mut clusters, &mut labs, 2, "r1", "T").unwrap();
     assert_eq!(labs[0].as_deref(), Some("CT_4_a"));
 }
+
+/// What orders cluster 0's calls: the enrichment's share, which favours
+/// the second by name.
+fn share() -> TieBreak {
+    let share = Table {
+        rows: vec![0],
+        cols: vec!["CT1".into(), "CT2".into(), "CT3".into()],
+        values: vec![0.2, 0.5, 0.3],
+    };
+    TieBreak {
+        tables: TypeTables {
+            tables: vec![(Stat::Share, share)],
+        },
+        method: Method::Enrichment,
+    }
+}
+
+/// Cluster 0 with three calls, the first two tied on q, ordered by `ties`.
+fn tied(ties: Option<&TieBreak>) -> Evidence<'_> {
+    Evidence {
+        q: Some(Table {
+            rows: vec![0],
+            cols: vec!["CT1".into(), "CT2".into(), "CT3".into()],
+            values: vec![0.01, 0.01, 0.2],
+        }),
+        ties,
+        ..Evidence::default()
+    }
+}
+
+#[test]
+fn calls_tied_on_q_follow_the_methods_reading_and_any_of_them_agrees() {
+    let ties = share();
+    let d = digest(&some(&[0, 0]), &labels(&["CT1", "CT1"]), &tied(Some(&ties)));
+    let order: Vec<&str> = d[&0].calls.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(order, ["CT2", "CT1", "CT3"]);
+    let e = d[&0].evidence.as_ref().unwrap();
+    assert_eq!((e.top.as_str(), e.q), ("CT2", Some(0.01)));
+    assert!(e.agrees, "CT1 is one of the tied top calls");
+    let tops: Vec<&str> = d[&0].top_calls().iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(tops, ["CT2", "CT1"]);
+    let d = digest(&some(&[0]), &labels(&["CT3"]), &tied(Some(&ties)));
+    assert!(!d[&0].evidence.as_ref().unwrap().agrees, "CT3 trails");
+
+    // A digest written before is settled the same way on review.
+    let mut old = digest(&some(&[0, 0]), &labels(&["CT1", "CT1"]), &tied(None));
+    assert_eq!(old[&0].calls[0].label, "CT1", "by name, as before");
+    let d0 = old.get_mut(&0).unwrap();
+    d0.evidence.as_mut().unwrap().agrees = false;
+    d0.settle(0, &ties);
+    assert_eq!(d0.evidence.as_ref().unwrap().top, "CT2");
+    assert!(d0.evidence.as_ref().unwrap().agrees);
+}

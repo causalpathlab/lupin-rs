@@ -322,3 +322,60 @@ fn the_score_pass_writes_its_labels_as_parquet_too() {
     let labels = read_argmax(&format!("{out}.argmax.parquet")).unwrap();
     assert_eq!(labels["c00"].0, "A");
 }
+
+#[test]
+fn review_settles_tied_calls_names_clusters_k_and_places_them_on_the_tree() {
+    use legume_numeric::matrix::dense_mat_io::Mat;
+    use legume_numeric::matrix::traits::IoOps;
+    let dir = tempfile::tempdir().unwrap();
+    let mut round = round_with_both(dir.path());
+    // Both types tied on q in cluster 1, whose share is all B's.
+    let q = Mat::from_row_slice(2, 2, &[0.01, 0.5, 0.01, 0.01]);
+    q.to_parquet_with_names(
+        &dir.path()
+            .join("run.L1.cluster_celltype_q_values.parquet")
+            .to_string_lossy(),
+        (Some(&["K0".into(), "K1".into()][..]), Some("cluster")),
+        Some(&["A".into(), "B".into()]),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("run.L1.celltype_tree.json"),
+        r#"{"source":"cell_ontology","label_cl":{"A":"CL:9000001"},
+            "groups":[{"name":"group_ab","cl_id":"CL:9000009","members":["A","B"]}]}"#,
+    )
+    .unwrap();
+    let a = &mut round.manifest.annotate;
+    a.cluster_celltype_q_values = Some("run.L1.cluster_celltype_q_values.parquet".into());
+    a.celltype_tree = Some("run.L1.celltype_tree.json".into());
+    // The summary as a pass with these tables writes it.
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::rounds::write_summary(&mut round, &out).unwrap();
+    round.manifest.save(&round.file).unwrap();
+    let round = run::load(&round.file.to_string_lossy()).unwrap();
+
+    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    let e = &v[&1]["digest"]["evidence"];
+    assert_eq!(e["top"], "B", "{e}");
+    assert_eq!(e["agrees"], true, "{e}");
+    assert_eq!(v[&0]["cl"]["id"], "CL:9000001");
+    assert_eq!(v[&0]["cl"]["via"], "label");
+    assert_eq!(v[&1]["cl"]["id"], "CL:9000009");
+    assert_eq!(v[&1]["cl"]["name"], "group_ab");
+
+    let text = crate::manifest::rounds::review_text(&round, &[]).unwrap();
+    assert!(text.starts_with("K0  "), "{text}");
+    assert!(text.contains("\nK1  "), "{text}");
+    assert!(text.contains("CL    CL:9000001 A\n"), "{text}");
+    assert!(
+        text.contains("CL    CL:9000009 group_ab (the group of B)\n"),
+        "{text}"
+    );
+    let calls: Vec<&str> = text
+        .lines()
+        .skip_while(|l| !l.starts_with("K1"))
+        .filter_map(|l| l.trim().strip_prefix("call"))
+        .map(|l| l.split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(calls, ["B", "A"], "{text}");
+}
