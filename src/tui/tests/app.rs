@@ -892,6 +892,32 @@ fn a_pass_run_on_one_run_leaves_the_next_run_its_own_output() {
 }
 
 #[test]
+fn a_round_made_on_a_trajectory_run_lists_as_a_round() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = family_app(tmp.path());
+    // A pass on X.T1 copies its trajectory section into the new round.
+    std::fs::write(
+        tmp.path().join("X.T1.L1.senna.json"),
+        r#"{"version":2,"kind":"topic","prefix":"X.T1.L1",
+            "cluster":{"clusters":"X.clusters.parquet"},
+            "annotate":{"argmax":"X.L0.argmax.tsv","source":"X.T1.senna.json"},
+            "trajectory":{"prior":"t.tsv"}}"#,
+    )
+    .unwrap();
+    press(&mut app, KeyCode::Char('g'));
+    let m = menu(&app).expect("the runs");
+    let row = |name: &str| {
+        m.choices
+            .iter()
+            .find(|c| c.label.contains(&format!("{name} ·")))
+            .map(|c| c.label.clone())
+            .unwrap()
+    };
+    assert!(row("X.T1.L1").contains("· round ·"), "{}", row("X.T1.L1"));
+    assert!(row("X.T1").contains("· trajectory ·"), "{}", row("X.T1"));
+}
+
+#[test]
 fn a_round_from_the_list_gives_the_order_view_its_labels() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = order_app(tmp.path(), &["CT9"]);
