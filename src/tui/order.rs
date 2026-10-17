@@ -23,6 +23,18 @@ pub struct TrajectoryRun {
 }
 
 impl TrajectoryRun {
+    /// The `--min-cells` the run is given: types with fewer cells are not
+    /// nodes of its prior. 0 without one.
+    #[must_use]
+    pub fn min_cells(&self) -> usize {
+        self.argv
+            .windows(2)
+            .rev()
+            .find(|w| w[0] == "--min-cells")
+            .and_then(|w| w[1].parse().ok())
+            .unwrap_or(0)
+    }
+
     /// How the TUI runs `lupin trajectory` with `t`'s options: `--labels`
     /// is kept apart, so the order view lists its types and a round on
     /// screen stands in for it.
@@ -60,6 +72,14 @@ pub struct OrderView {
     pub types: Vec<(String, usize)>,
     /// The combined statements about them.
     pub statements: Vec<Statement>,
+    /// Which types are nodes of the prior: at least the run's
+    /// `--min-cells`, as `lupin trajectory` counts them.
+    pub is_node: Vec<bool>,
+    /// The run's `--min-cells`.
+    pub min_cells: usize,
+    /// The `precedes` statements naming a type below `min_cells`, which
+    /// order no pair of nodes by themselves.
+    pub set_aside: Vec<Statement>,
     /// The prior they make; `None` when they do not form a DAG (see `error`).
     pub prior: Option<Prior>,
     /// Why the statements do not form a DAG.
@@ -87,19 +107,37 @@ pub struct OrderView {
 impl OrderView {
     /// The view for `types`: the Cell Ontology's statements about them and the
     /// user's and project's `precedence.tsv`, combined and reduced, with the
-    /// `edges` of a trajectory run.
+    /// `edges` of a trajectory run. As `lupin trajectory` builds its prior,
+    /// a type with fewer than `min_cells` cells is no node (a count of 0 is
+    /// unknown, and counts as one): the Cell Ontology speaks of the nodes
+    /// only, and edges join nodes.
     pub fn load(
         types: Vec<(String, usize)>,
         cl: Option<&ClTerms>,
         search: &SearchPath,
         edges: Vec<EdgeRow>,
+        min_cells: usize,
     ) -> Self {
         let names: Vec<Box<str>> = types.iter().map(|(t, _)| t.as_str().into()).collect();
         let refs: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
-        let (layers, problems) = prior::standing_layers(cl, &refs, search);
+        let is_node: Vec<bool> = types
+            .iter()
+            .map(|&(_, n)| n == 0 || n >= min_cells)
+            .collect();
+        let nodes: Vec<&str> = refs
+            .iter()
+            .zip(&is_node)
+            .filter_map(|(t, &node)| node.then_some(*t))
+            .collect();
+        let (layers, problems) = prior::standing_layers(cl, &nodes, search);
         let problems: Vec<String> = problems.iter().map(|e| format!("{e:#}")).collect();
         let statements = prior::combine(&layers);
-        let is_node = vec![true; names.len()];
+        let small = |t: &str| refs.iter().zip(&is_node).any(|(r, &node)| *r == t && !node);
+        let set_aside = statements
+            .iter()
+            .filter(|s| s.relation == Relation::Precedes && (small(&s.from) || small(&s.to)))
+            .cloned()
+            .collect();
         let (prior, error) = match prior::build(&names, &is_node, statements.clone()) {
             Ok(p) => (Some(p), None),
             Err(e) => (None, Some(e.to_string())),
@@ -124,6 +162,9 @@ impl OrderView {
             links,
             types,
             statements,
+            is_node,
+            min_cells,
+            set_aside,
             prior,
             error,
             problems,
@@ -236,8 +277,7 @@ impl OrderView {
         };
         let statements = prior::combine(&[self.statements.clone(), vec![new]]);
         let names: Vec<Box<str>> = self.types.iter().map(|(t, _)| t.as_str().into()).collect();
-        let is_node = vec![true; names.len()];
-        prior::build(&names, &is_node, statements)
+        prior::build(&names, &self.is_node, statements)
             .err()
             .map(|e| format!("not recorded: {e}"))
     }

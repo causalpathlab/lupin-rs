@@ -2884,8 +2884,20 @@ impl App {
             }
             None => "no Cell Ontology is at hand".into(),
         };
+        // Statements on types too small to be nodes order none of them.
+        let aside = match &v.set_aside[..] {
+            [] => String::new(),
+            st => format!(
+                " Set aside, naming a type below --min-cells {}: {}.",
+                v.min_cells,
+                st.iter()
+                    .map(|s| format!("{} precedes {}", s.from, s.to))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
         let question = format!(
-            "{}Nothing orders these types yet ({why}). How should the trajectory get its order?",
+            "{}Nothing orders these types yet ({why}).{aside} How should the trajectory get its order?",
             note.map_or(String::new(), |n| format!("{n}. "))
         );
         self.show(Menu::new(
@@ -3455,6 +3467,7 @@ impl App {
             self.cl.as_ref(),
             &self.data_search,
             edges,
+            self.trajectory.min_cells(),
         );
         v.sel = sel.min(v.types.len().saturating_sub(1));
         if let Some(e) = &v.error {

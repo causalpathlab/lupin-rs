@@ -1721,14 +1721,21 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
             .map_or("  ".to_string(), |i| format!("{} ", i + 1))
     };
     let dim = Style::default().add_modifier(Modifier::DIM);
+    // A type below `--min-cells` is dimmed: no node of the prior.
     let mut rows: Vec<Row> = v
         .types
         .iter()
-        .map(|(t, n)| {
-            Row::new(vec![
+        .zip(&v.is_node)
+        .map(|((t, n), &node)| {
+            let row = Row::new(vec![
                 Cell::from(format!("{}{}", mark(t), t)),
                 Cell::from(format!("{n}")),
-            ])
+            ]);
+            if node {
+                row
+            } else {
+                row.style(dim)
+            }
         })
         .collect();
     rows.push(Row::new(vec![Cell::from("")]));
@@ -1771,6 +1778,19 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
             &s.to,
             format!("{} · unrelated", s.source.as_str()),
         ));
+    }
+    if !v.set_aside.is_empty() {
+        rows.push(
+            Row::new(vec![Cell::from(format!(
+                "{} statement(s) on a type below --min-cells {}, no node",
+                v.set_aside.len(),
+                v.min_cells
+            ))])
+            .style(dim),
+        );
+        for s in &v.set_aside {
+            rows.push(pair(&s.from, "→", &s.to, s.source.as_str().to_string()));
+        }
     }
     let inferred = v.inferred();
     if !inferred.is_empty() {

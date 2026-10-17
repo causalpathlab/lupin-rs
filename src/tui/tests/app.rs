@@ -2844,3 +2844,24 @@ fn a_tree_group_picked_as_a_label_is_not_said_to_have_failed_fdr() {
     assert!(screen.contains("a tree group"), "{screen}");
     assert!(!screen.contains("did not pass FDR"), "{screen}");
 }
+
+#[test]
+fn a_statement_on_a_type_below_min_cells_leaves_the_order_menu_to_ask_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("lupin")).unwrap();
+    std::fs::write(
+        dir.path().join("lupin").join("precedence.tsv"),
+        "CT1\tCT2\tprecedes\n",
+    )
+    .unwrap();
+    let mut app = order_app(dir.path(), &[]);
+    let labels = dir.path().join("labels.tsv");
+    std::fs::write(&labels, "c1\tCT1\nc2\tCT1\nc3\tCT2\n").unwrap();
+    app.trajectory.labels = Some(labels.to_string_lossy().into());
+    app.trajectory.argv = vec!["--min-cells".into(), "2".into()];
+    app.reload_order();
+    press(&mut app, KeyCode::Char('r'));
+    let m = menu(&app).expect("CT2 has 1 cell: nothing orders the nodes");
+    assert!(m.question.contains("--min-cells 2"), "{}", m.question);
+    assert!(m.question.contains("CT1 precedes CT2"), "{}", m.question);
+}
