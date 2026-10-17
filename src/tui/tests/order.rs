@@ -197,3 +197,39 @@ fn a_statement_on_a_type_below_min_cells_makes_no_edge_and_is_set_aside() {
     assert_eq!(v.edges().len(), 1);
     assert!(v.set_aside.is_empty());
 }
+
+#[test]
+fn statements_through_a_type_below_min_cells_that_order_nodes_are_not_set_aside() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::create_dir_all(dir.join("lupin")).unwrap();
+    std::fs::write(
+        dir.join("lupin").join(PRECEDENCE),
+        "A\tC\tprecedes\tknown\nC\tB\tprecedes\tknown\n",
+    )
+    .unwrap();
+    let search = SearchPath::new(Some(dir));
+    // C is no node, but A → C → B still orders A before B, as in the run.
+    let v = OrderView::load(types(), None, &search, Vec::new(), 4);
+    let edges: Vec<(String, String)> = v
+        .edges()
+        .iter()
+        .map(|e| (e.from.clone(), e.to.clone()))
+        .collect();
+    assert_eq!(edges, [("A".to_string(), "B".to_string())]);
+    assert!(v.set_aside.is_empty(), "{:?}", v.set_aside);
+}
+
+#[test]
+fn a_run_given_no_min_cells_counts_types_as_the_run_does() {
+    use super::TrajectoryRun;
+    assert_eq!(
+        TrajectoryRun::default().min_cells(),
+        crate::trajectory::run::DEFAULT_MIN_CELLS
+    );
+    let given = TrajectoryRun {
+        argv: vec!["--min-cells".into(), "5".into()],
+        ..TrajectoryRun::default()
+    };
+    assert_eq!(given.min_cells(), 5);
+}

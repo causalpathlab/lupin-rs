@@ -558,9 +558,9 @@ pub struct App {
     /// The pass settings before the first change made since the round on
     /// screen (see [`App::stale`]); none while unchanged.
     settings_base: Option<Vec<String>>,
-    /// A key that asked to be pressed again, and when: the question lapses
-    /// after [`KEY_REPLY_HOLD`].
-    armed: Option<(Armed, Instant)>,
+    /// A key that asked to be pressed again, when, and the status that
+    /// asks: the question lapses after [`KEY_REPLY_HOLD`].
+    armed: Option<(Armed, Instant, String)>,
     pub quit: bool,
     /// The trajectory figures of the manifests on screen, when they have any.
     pub figures: Option<super::figure_pane::FigurePane>,
@@ -698,13 +698,15 @@ impl App {
             self.push_log(line);
         }
         self.keep_scores_current();
-        // A question asked again lapses, and the status with it.
-        if self
+        // A question asked again lapses, and the status with it unless
+        // something has said more since.
+        if let Some((_, _, asked)) = self
             .armed
-            .is_some_and(|(_, at)| at.elapsed() >= KEY_REPLY_HOLD)
+            .take_if(|(_, at, _)| at.elapsed() >= KEY_REPLY_HOLD)
         {
-            self.armed = None;
-            self.status.clear();
+            if self.status == asked {
+                self.status.clear();
+            }
         }
         let Some(r) = &mut self.child else {
             return;
@@ -880,17 +882,17 @@ impl App {
         }
     }
 
-    /// Show the round the TUI opens on: the manifest opened when it is
-    /// `annotated`; else, in annotate, the latest round an earlier session
-    /// left under the output. The trajectory TUI starts from the manifest
+    /// Show the round the TUI opens on: in annotate, the latest round an
+    /// earlier session left under the output; else the manifest opened,
+    /// when it is `annotated`. The trajectory TUI starts from the manifest
     /// named, as the batch run would.
     pub fn open_start(&mut self, annotated: bool) {
-        if annotated {
-            let opened = self.source.clone();
-            self.open(&opened);
-        } else if self.target.is_file() && !self.trajectory_tui {
+        if self.target.is_file() && !self.trajectory_tui {
             let (latest, _) = chain_rounds(&self.target);
             self.open(&latest);
+        } else if annotated {
+            let opened = self.source.clone();
+            self.open(&opened);
         }
     }
 
@@ -2206,8 +2208,8 @@ impl App {
         let armed = self
             .armed
             .take()
-            .filter(|(_, at)| at.elapsed() < KEY_REPLY_HOLD)
-            .map(|(a, _)| a);
+            .filter(|(_, at, _)| at.elapsed() < KEY_REPLY_HOLD)
+            .map(|(a, ..)| a);
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             return self.request_quit(armed, "ctrl-c");
         }
@@ -2289,10 +2291,7 @@ impl App {
             match self.child.as_ref().map(|r| r.job.stoppable()) {
                 Some(false) => self.stop(),
                 Some(true) if armed == Some(Armed::Stop) => self.stop(),
-                Some(true) => {
-                    self.arm(Armed::Stop);
-                    self.status = "x again stops it".into();
-                }
+                Some(true) => self.ask_again(Armed::Stop, "x again stops it".into()),
                 None => {}
             }
             return;
@@ -2324,9 +2323,10 @@ impl App {
         }
     }
 
-    /// Ask for `a`'s key again, for [`KEY_REPLY_HOLD`].
-    fn arm(&mut self, a: Armed) {
-        self.armed = Some((a, Instant::now()));
+    /// Ask for `a`'s key again with `status`, for [`KEY_REPLY_HOLD`].
+    fn ask_again(&mut self, a: Armed, status: String) {
+        self.status.clone_from(&status);
+        self.armed = Some((a, Instant::now(), status));
     }
 
     /// Quit on `key` (`q` or `ctrl-c`), asking again first while a pass runs
@@ -2340,21 +2340,21 @@ impl App {
         if matches!(busy, Some(Job::Save(_))) {
             self.status = format!("saving… {key} once it is done");
         } else if let (true, Some(job)) = (armed != Some(Armed::Quit), &busy) {
-            self.arm(Armed::Quit);
-            self.status = format!(
+            let asked = format!(
                 "a {} is running{unsaved}: {key} again stops it and quits",
                 job.name()
             );
+            self.ask_again(Armed::Quit, asked);
         } else if armed == Some(Armed::Quit) || self.edits.is_empty() {
             self.stop();
             self.stop_rescoring();
             self.quit = true;
         } else {
-            self.arm(Armed::Quit);
-            self.status = format!(
+            let asked = format!(
                 "{} unsaved edit(s): {key} again to quit, s to save",
                 self.edits.len()
             );
+            self.ask_again(Armed::Quit, asked);
         }
     }
 
@@ -2572,6 +2572,8 @@ impl App {
             }
             Focus::Candidates => {
                 let n = self.listed_candidates().len();
+                // A save or rescoring may have left the list shorter.
+                self.cand_sel = self.cand_sel.min(n.saturating_sub(1));
                 move_in(&mut self.cand_sel, n);
                 match code {
                     KeyCode::Enter if self.selected().is_some() => {

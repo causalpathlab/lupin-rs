@@ -2789,7 +2789,7 @@ fn a_question_asked_again_lapses_and_any_other_key_drops_it() {
 
     // Asked long ago, the question has lapsed: q asks again.
     let age = |app: &mut App| {
-        if let Some((_, at)) = &mut app.armed {
+        if let Some((_, at, _)) = &mut app.armed {
             *at -= KEY_REPLY_HOLD;
         }
         if let Some(t) = &mut app.replied {
@@ -2821,6 +2821,25 @@ fn a_question_asked_again_lapses_and_any_other_key_drops_it() {
     age(&mut app);
     app.tick();
     assert!(!app.status.contains("q again"), "{}", app.status);
+}
+
+#[test]
+fn a_lapsed_question_leaves_a_status_that_replaced_it() {
+    let mut app = app_with_terms(false);
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.status.contains("q again"), "{}", app.status);
+    // A job's end says so before the question lapses.
+    app.status = "pass done in 30s".into();
+    if let Some((_, at, _)) = &mut app.armed {
+        *at -= KEY_REPLY_HOLD;
+    }
+    app.tick();
+    assert!(app.armed.is_none());
+    assert_eq!(app.status, "pass done in 30s");
 }
 
 #[test]
@@ -3022,6 +3041,18 @@ fn annotate_opened_on_a_round_shows_that_round() {
     app.target = tmp.path().join("X.L0.senna.json");
     app.open_start(false);
     assert!(app.shown_manifest().ends_with("X.L0.senna.json"));
+    // A round with work an earlier session saved under the output: that
+    // work, not the round it started from.
+    let mut app = family_app(tmp.path());
+    app.trajectory_tui = false;
+    app.source = tmp.path().join("X.L0.senna.json");
+    app.target = tmp.path().join("X.L0.L1.senna.json");
+    app.open_start(true);
+    assert!(
+        app.shown_manifest().ends_with("X.L0.L1.senna.json"),
+        "{}",
+        app.status
+    );
 }
 
 #[test]
@@ -3189,6 +3220,47 @@ fn tab_reaches_the_candidates_which_scroll_with_their_selection_and_enter_takes_
     app.cand_sel = 5;
     app.select_cluster(0);
     assert_eq!(app.cand_sel, 0);
+}
+
+#[test]
+fn a_selection_past_a_shorter_list_holds_at_its_last_candidate() {
+    let mut app = app_with_candidates(30);
+    press(&mut app, KeyCode::Char('a'));
+    app.focus = Focus::Candidates;
+    press(&mut app, KeyCode::End);
+    // As a save or rescoring leaves the cluster fewer candidates.
+    app.round.as_mut().unwrap().clusters[0]
+        .candidates
+        .truncate(8);
+    let screen = drawn(&app);
+    assert!(screen.contains("CT8"), "{screen}");
+    assert!(!screen.contains("no candidate passed FDR"), "{screen}");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        app.prompt.as_ref().map(|p| &p.pending),
+        Some(Pending::Label { label, .. }) if label == "CT8"
+    ));
+}
+
+#[test]
+fn candidates_sorted_by_the_score_show_its_reading_once() {
+    use crate::annotate::rounds::Method;
+    let mut app = app_with_candidates(3);
+    for (k, c) in app.round.as_mut().unwrap().clusters[0]
+        .candidates
+        .iter_mut()
+        .enumerate()
+    {
+        c.ranks[Method::Score.index()] = Some(k);
+        c.evidence.score = Some(0.4 - 0.1 * k as f32);
+    }
+    app.cand_by = Some(Method::Score);
+    let screen = drawn_in(&app, 160, 60);
+    let header = screen
+        .iter()
+        .find(|l| l.contains(" type "))
+        .expect("the candidates' header");
+    assert_eq!(header.matches("score").count(), 1, "{header}");
 }
 
 #[test]

@@ -97,7 +97,7 @@ pub struct TrajectoryArgs {
 
     #[arg(
         long,
-        default_value_t = 20,
+        default_value_t = DEFAULT_MIN_CELLS,
         help = "Types with fewer cells are not nodes of the prior; their cells follow the nearest root"
     )]
     pub min_cells: usize,
@@ -171,6 +171,9 @@ impl TrajectoryArgs {
 /// The quantile of a component's distances to its root that pseudotime 1
 /// stands at.
 const PSEUDOTIME_TOP: f64 = 0.99;
+
+/// `--min-cells` when it is not given.
+pub const DEFAULT_MIN_CELLS: usize = 20;
 
 /// What a run's outputs add to its `--out` prefix: the prior it ran on and
 /// the per-cell pseudotime.

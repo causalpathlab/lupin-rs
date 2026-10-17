@@ -1244,7 +1244,9 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     let height = usize::from(area.height.saturating_sub(3))
         .saturating_sub(if pinned.is_some() { 2 } else { 0 })
         .max(1);
-    let start = app.cand_sel.saturating_sub(height - 1);
+    // A save or rescoring may have left the list shorter than the selection.
+    let sel = app.cand_sel.min(listed.len().saturating_sub(1));
+    let start = sel.saturating_sub(height - 1);
     let window = start.min(listed.len())..(start + height).min(listed.len());
     let shown = &listed[window.clone()];
     // A label picked off the candidates (a new type, or one that did not
@@ -1284,8 +1286,11 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             .max()
             .unwrap_or(0)
     };
-    let has = |col: CandColumn| {
-        col == CandColumn::Value || shown.iter().any(|t| col.reading(t, by).is_some())
+    // Sorted by the score, the value column is its reading already.
+    let has = |col: CandColumn| match col {
+        CandColumn::Value => true,
+        CandColumn::Score if by == crate::annotate::rounds::Method::Score => false,
+        _ => shown.iter().any(|t| col.reading(t, by).is_some()),
     };
     let longest = shown
         .iter()
@@ -1426,7 +1431,7 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             ),
         )
         .row_highlight_style(highlight(focused));
-    let at = app.cand_sel.saturating_sub(start) + usize::from(pinned.is_some());
+    let at = sel.saturating_sub(start) + usize::from(pinned.is_some());
     let mut state = TableState::default().with_selected(focused.then_some(at));
     f.render_stateful_widget(t, area, &mut state);
 }
@@ -1687,6 +1692,10 @@ fn draw_go(f: &mut Frame, area: Rect, app: &App) {
 /// `text` in lines of at most `width` characters, broken between words, at
 /// most `max` lines (the last ends in `…` when cut).
 fn wrap(text: &str, width: usize, max: usize) -> Vec<String> {
+    // No rows (a popup squeezed to its border): nothing to write on.
+    if max == 0 {
+        return Vec::new();
+    }
     let mut lines: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
         match lines.last_mut() {
@@ -2460,5 +2469,10 @@ mod wrap_tests {
         assert_eq!(wrap("aa bb cc dd ee", 5, 2), ["aa bb", "cc d…"]);
         assert_eq!(wrap("abcdefgh", 4, 3), ["abcd"]);
         assert_eq!(wrap("", 4, 3), [""]);
+    }
+
+    #[test]
+    fn no_rows_to_wrap_over_gives_no_lines() {
+        assert!(wrap("aa bb", 5, 0).is_empty());
     }
 }

@@ -201,9 +201,9 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     app.hidden = genes::GeneFilter::load(&search)?;
     app.mixed = ontology::Mixed::load(&search)?;
     app.data_search = search;
-    // A run that is already annotated shows its round in the cluster panes
-    // (the trajectory then reads the same labels); annotate on a run picks
-    // up where an earlier session left this prefix.
+    // Annotate picks up where an earlier session left this prefix; else a
+    // run that is already annotated shows its round in the cluster panes
+    // (the trajectory then reads the same labels).
     app.trajectory_tui = start_in_order;
     app.open_start(loaded.manifest.annotate.argmax.is_some());
     if start_in_order {
@@ -225,6 +225,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         // Every frame goes out at once, the figures as last drawn while a
         // new one is rasterised off this thread; the screen is drawn again
         // shortly until it is in (`behind`).
+        app.quick_frame.set(true);
         let mut dirty = true;
         let mut behind = false;
         let mut drawn = std::time::Instant::now();
@@ -240,7 +241,6 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                 || app.child.as_ref().map(|r| r.progress.reported_at) != progress
                 || app.redraw_due(drawn.elapsed());
             if dirty || behind {
-                app.quick_frame.set(true);
                 app.frame_behind.set(false);
                 terminal.draw(|f| ui::draw(f, &app))?;
                 behind = app.frame_behind.get();

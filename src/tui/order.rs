@@ -24,7 +24,7 @@ pub struct TrajectoryRun {
 
 impl TrajectoryRun {
     /// The `--min-cells` the run is given: types with fewer cells are not
-    /// nodes of its prior. 0 without one.
+    /// nodes of its prior. Without one, the run's default.
     #[must_use]
     pub fn min_cells(&self) -> usize {
         self.argv
@@ -32,7 +32,7 @@ impl TrajectoryRun {
             .rev()
             .find(|w| w[0] == "--min-cells")
             .and_then(|w| w[1].parse().ok())
-            .unwrap_or(0)
+            .unwrap_or(crate::trajectory::run::DEFAULT_MIN_CELLS)
     }
 
     /// How the TUI runs `lupin trajectory` with `t`'s options: `--labels`
@@ -130,16 +130,30 @@ impl OrderView {
         let (layers, problems) = prior::standing_layers(cl, &nodes, search);
         let problems: Vec<String> = problems.iter().map(|e| format!("{e:#}")).collect();
         let statements = prior::combine(&layers);
-        let small = |t: &str| small.contains(t);
-        let set_aside = statements
-            .iter()
-            .filter(|s| s.relation == Relation::Precedes && (small(&s.from) || small(&s.to)))
-            .cloned()
-            .collect();
         let (prior, error) = match prior::build(&names, &is_node, statements.clone()) {
             Ok(p) => (Some(p), None),
             Err(e) => (None, Some(e.to_string())),
         };
+        // A statement naming a small type is set aside when the nodes'
+        // edges are the same without it: a chain through the type (A → s →
+        // B) still orders A before B, as in the run.
+        let pairs = |p: &Prior| p.edges.iter().map(|e| (e.from, e.to)).collect::<Vec<_>>();
+        let set_aside = statements
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                s.relation == Relation::Precedes
+                    && (small.contains(s.from.as_str()) || small.contains(s.to.as_str()))
+            })
+            .filter(|&(i, _)| {
+                prior.as_ref().is_none_or(|p| {
+                    let mut without = statements.clone();
+                    without.remove(i);
+                    prior::build(&names, &is_node, without).is_ok_and(|q| pairs(&q) == pairs(p))
+                })
+            })
+            .map(|(_, s)| s.clone())
+            .collect();
         let panel: Vec<(String, String)> = types
             .iter()
             .map(|(t, _)| (String::new(), t.clone()))
