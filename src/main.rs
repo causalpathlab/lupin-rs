@@ -77,10 +77,15 @@ enum Commands {
         about = "Cell-type annotation by enrichment, embedding projection, or auto-dispatch",
         long_about = "Unified annotation entry point.\n\
                       \n\
-                      `--method enrichment` scores the marker panel on per-cluster expression (topic/svd runs).\n\
-                      `--method projection` projects cells onto the run's co-embedded gene space.\n\
-                      `--feature-embedding` + `--cell-embedding` run projection on those files directly.\n\
-                      `--method auto` (default) picks projection when a co-embedding exists, else enrichment.\n\
+                      `--method enrichment` scores the marker panel on per-cluster expression.\n\
+                      `--method projection` calls cells on the run's embeddings: `--projection score`\n\
+                      (the embedding marker score on the decoder gene table, per cell with its margin)\n\
+                      where the run decodes cells, else `--projection ora` (over-representation on the\n\
+                      co-embedding).\n\
+                      `--feature-embedding` + `--cell-embedding` run projection on those files directly\n\
+                      (the ORA unless `--projection score`).\n\
+                      `--method auto` (default) picks projection when the run has the gene table it\n\
+                      reads and no GO terms are asked for, else enrichment; the TUI opens on enrichment.\n\
                       Ontology-only follow-up: `--from` + `--obo` + `--label-cl` without markers."
     )]
     Annotate(AnnotateCliArgs),

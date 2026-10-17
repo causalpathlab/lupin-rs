@@ -1,6 +1,6 @@
 //! Drawing the screen from an [`App`].
 
-use super::app::{App, Focus, GeneView, Setting, TreeMode, CONTESTED, SETTINGS};
+use super::app::{settings, App, Focus, GeneView, Setting, TreeMode, CONTESTED};
 use super::ontology::{OntologyView, Role, Scope};
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::celltype_tree::TreeSource;
@@ -576,6 +576,36 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// The cluster list's header: a SuSiE round's calls show the share of the
+/// deviance they explain and their fold, not their PIP (a type's inclusion
+/// in the cluster's model, near 1 for every type a mixed cluster holds,
+/// which beside the call reads as certainty); otherwise the enrichment's
+/// share, named apart so a rescore's switch shows.
+pub(super) fn cluster_list_header(susie: bool) -> Vec<&'static str> {
+    if susie {
+        vec!["", "cells", "label", "explains", "fold", ""]
+    } else {
+        vec!["", "cells", "label", "share", ""]
+    }
+}
+
+/// The evidence the cluster list shows for the label's candidate.
+pub(super) fn cluster_list_evidence(
+    susie: bool,
+    candidate: Option<&super::round::Candidate>,
+) -> Vec<String> {
+    match (susie, candidate) {
+        (true, Some(t)) => vec![
+            format!("{:.2}", t.share),
+            t.susie
+                .map_or_else(|| "—".into(), |e| format!("×{:.1}", e.fold)),
+        ],
+        (true, None) => vec!["—".into(), "—".into()],
+        (false, Some(t)) => vec![format!("{:.2}", t.share)],
+        (false, None) => vec!["—".into()],
+    }
+}
+
 fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
     let focused = app.focus == Focus::Clusters;
     let Some(r) = &app.round else {
@@ -585,7 +615,6 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
         );
         return;
     };
-    // A SuSiE round shows its calls' PIP and fold; otherwise the share.
     let susie = r.clusters.iter().any(|c| c.call_evidence().is_some());
     let rows: Vec<Row> = r
         .clusters
@@ -606,14 +635,7 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
                 .candidates
                 .iter()
                 .find(|t| key.as_deref() == Some(label_key(&t.label).as_str()));
-            let evidence = match (susie, of_label) {
-                (true, Some(super::round::Candidate { susie: Some(e), .. })) => {
-                    vec![format!("{:.2}", e.pip), format!("×{:.1}", e.fold)]
-                }
-                (true, _) => vec!["—".into(), "—".into()],
-                (false, Some(t)) => vec![format!("{:.2}", t.share)],
-                (false, None) => vec!["—".into()],
-            };
+            let evidence = cluster_list_evidence(susie, of_label);
             let mut cells = vec![
                 crate::figures::cluster_name(c.id),
                 c.cells.to_string(),
@@ -631,31 +653,25 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
             }
         })
         .collect();
-    let (header, widths) = if susie {
-        (
-            Row::new(["", "cells", "label", "PIP", "fold", ""]),
-            vec![
-                Constraint::Length(5),
-                Constraint::Length(6),
-                Constraint::Min(20),
-                Constraint::Length(5),
-                Constraint::Length(6),
-                Constraint::Length(1),
-            ],
-        )
+    let header = Row::new(cluster_list_header(susie)).bold();
+    let widths = if susie {
+        vec![
+            Constraint::Length(5),
+            Constraint::Length(6),
+            Constraint::Min(20),
+            Constraint::Length(8),
+            Constraint::Length(6),
+            Constraint::Length(1),
+        ]
     } else {
-        (
-            Row::new(["", "cells", "label", "share", ""]),
-            vec![
-                Constraint::Length(5),
-                Constraint::Length(6),
-                Constraint::Min(20),
-                Constraint::Length(5),
-                Constraint::Length(1),
-            ],
-        )
+        vec![
+            Constraint::Length(5),
+            Constraint::Length(6),
+            Constraint::Min(20),
+            Constraint::Length(5),
+            Constraint::Length(1),
+        ]
     };
-    let header = header.bold();
     let done = r.clusters.iter().filter(|c| app.edited(c.id)).count();
     let mut state = TableState::default().with_selected(Some(app.cluster_sel));
     let t = Table::new(rows, widths)
@@ -680,14 +696,15 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
     let (summary, warns) = app.form_summary();
     let summary = lines(&summary);
     let note = form.note.as_deref().map(lines).unwrap_or_default();
-    let explain = lines(SETTINGS[form.row].explain());
+    let rows_shown = settings(&app.args);
+    let explain = lines(form.setting(&app.args).explain());
     let (sum_h, note_h, explain_h) = (
         summary.len() as u16,
         note.len() as u16,
         explain.len() as u16,
     );
     let height =
-        (2 + sum_h + 1 + SETTINGS.len() as u16 + 1 + note_h + explain_h).min(f.area().height);
+        (2 + sum_h + 1 + rows_shown.len() as u16 + 1 + note_h + explain_h).min(f.area().height);
     let area = centered(f.area(), width, height);
     let source = if app.fixed_clusters {
         "clusters from the manifest"
@@ -705,7 +722,7 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
     let [sum_a, _, table_a, _, note_a, explain_a] = Layout::vertical([
         Constraint::Length(sum_h),
         Constraint::Length(1),
-        Constraint::Length(SETTINGS.len() as u16),
+        Constraint::Length(rows_shown.len() as u16),
         Constraint::Length(1),
         Constraint::Length(note_h),
         Constraint::Min(1),
@@ -715,7 +732,7 @@ fn draw_settings(f: &mut Frame, app: &App, form: &super::app::Form) {
     let bad = Style::new().fg(Color::LightRed);
     let summary_style = if warns { POPUP.patch(warn) } else { POPUP };
     f.render_widget(Paragraph::new(summary).style(summary_style), sum_a);
-    let rows: Vec<Row> = SETTINGS
+    let rows: Vec<Row> = rows_shown
         .iter()
         .map(|&s| {
             let value = Cell::from(s.value(&app.args));

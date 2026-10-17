@@ -1,10 +1,13 @@
 //! Unified `lupin annotate` — enrichment, or projection from a run manifest or embedding files.
 
-use crate::annotate::args::{AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs};
+use crate::annotate::args::{
+    AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, MarkerScoreArgs, ProjectionMethod,
+};
 use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::susie::SusieConfig;
 use crate::manifest::annotate::{
-    annotate_by_enrichment, annotate_by_projection, annotate_ontology,
+    annotate_by_enrichment, annotate_by_marker_score, annotate_by_projection, annotate_ontology,
+    LeidenArgs,
 };
 use crate::manifest::run::RunManifest;
 use anyhow::{Context, Result};
@@ -26,7 +29,7 @@ pub struct AnnotateCliArgs {
         long,
         value_enum,
         default_value_t = AnnotateMethod::Auto,
-        help = "Annotation backend: enrichment (topic/svd), projection (co-embed), or auto"
+        help = "Annotation backend: enrichment (raw counts), projection (the run's embeddings; see --projection), or auto"
     )]
     pub method: AnnotateMethod,
 
@@ -140,11 +143,9 @@ pub struct AnnotateCliArgs {
         help = "SuSiE: single effects per cluster (cell types one cluster can be)"
     )]
     pub susie_effects: usize,
-    #[arg(
-        long = "susie-dispersion",
-        help = "SuSiE: one NB dispersion for every gene (0: Poisson); default: gene-specific, \
-                estimated across the clusters"
-    )]
+    /// Retired with the NB likelihood (0.5.0 shipped it); accepted so saved
+    /// commands keep working, and ignored with a warning.
+    #[arg(long = "susie-dispersion", hide = true)]
     pub susie_dispersion: Option<f32>,
     #[arg(
         long = "mcmc-chains",
@@ -164,6 +165,14 @@ pub struct AnnotateCliArgs {
     pub mcmc_thin: usize,
 
     // ── projection / ORA ──
+    #[arg(
+        long,
+        value_enum,
+        help = "Projection: score (the embedding marker score on the run's decoder gene table, \
+                per cell with its margin) or ora (term over-representation on the co-embedding); \
+                default: the score where the run decodes cells, else the ORA"
+    )]
+    pub projection: Option<ProjectionMethod>,
     #[arg(long = "no-idf")]
     pub no_idf: bool,
     #[arg(long = "no-assign-qc")]
@@ -221,6 +230,9 @@ impl AnnotateCliArgs {
             AnnotateMethod::Projection => "projection",
         };
         val("method", method.into());
+        if let Some(p) = self.projection {
+            val("projection", p.as_str().into());
+        }
         val("markers", self.markers.to_string());
         val("out", self.out.to_string());
         val("resolution", self.resolution.to_string());
@@ -237,7 +249,7 @@ impl AnnotateCliArgs {
         val("mcmc-samples", self.mcmc_samples.to_string());
         val("mcmc-warmup", self.mcmc_warmup.to_string());
         val("mcmc-thin", self.mcmc_thin.to_string());
-        let opts: [(&str, Option<String>); 16] = [
+        let opts: [(&str, Option<String>); 15] = [
             ("from", self.from.as_deref().map(String::from)),
             (
                 "feature-embedding",
@@ -266,10 +278,6 @@ impl AnnotateCliArgs {
             ("go-min-overlap", Some(self.go_min_overlap.to_string())),
             ("go-max-overlap", Some(self.go_max_overlap.to_string())),
             ("label-cl", self.label_cl.as_deref().map(String::from)),
-            (
-                "susie-dispersion",
-                self.susie_dispersion.map(|x| x.to_string()),
-            ),
         ];
         for (flag, x) in opts {
             if let Some(x) = x {
@@ -302,6 +310,10 @@ pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
     }
     if let Some(cfg) = build_enrichment_args(args).susie {
         cfg.validate()?;
+    }
+    // Refused before any prompt or download, as SuSiE's settings are.
+    if args.projection == Some(ProjectionMethod::Score) {
+        build_score_args(args)?;
     }
     // One manifest load per invocation; every route below reuses it.
     let loaded = args
@@ -400,7 +412,14 @@ fn run_pass(
                 "GO terms are scored by the enrichment pass; add --method enrichment"
             );
             let loaded = loaded.context("--from is required for projection annotation")?;
-            annotate_by_projection(&build_projection_args(args), loaded)?;
+            match resolve_projection(args, Some(&loaded.manifest)) {
+                ProjectionMethod::Score => {
+                    annotate_by_marker_score(&build_score_args(args)?, loaded)?
+                }
+                ProjectionMethod::Ora => {
+                    annotate_by_projection(&build_projection_args(args), loaded)?
+                }
+            }
         }
     }
     if let (Some(p), Some(l)) = (&prepared, loaded) {
@@ -514,29 +533,69 @@ fn route<'a>(
         args.feature_embedding.as_deref(),
         args.cell_embedding.as_deref(),
     ) {
-        if args.method != AnnotateMethod::Enrichment {
+        // Auto with GO terms or no panel is the enrichment's, files or not.
+        let auto_enrichment = args.method == AnnotateMethod::Auto && enrichment_only(args);
+        if args.method != AnnotateMethod::Enrichment && !auto_enrichment {
             return Route::EmbeddingFiles { feat, cell };
         }
     }
-    let projection = match args.method {
-        AnnotateMethod::Enrichment => false,
-        AnnotateMethod::Projection => true,
-        AnnotateMethod::Auto => loaded.is_some_and(|l| manifest_prefers_projection(&l.manifest)),
-    };
-    if projection {
+    if resolve_method(args, loaded.map(|l| &l.manifest)) == AnnotateMethod::Projection {
         Route::Projection
     } else {
         Route::Enrichment
     }
 }
 
-/// A run with a co-embedded gene space annotates by projection. A kind that
-/// co-embeds needs that space itself: its raw gene embedding is not on the
-/// cell manifold, so a run written before the co-embedding existed falls back
-/// to enrichment.
-fn manifest_prefers_projection(manifest: &RunManifest) -> bool {
-    manifest.outputs.feature_coembedding.is_some()
-        || (!manifest.kind.coembeds() && manifest.outputs.feature_embedding.is_some())
+/// The method a pass runs: the one chosen; for `auto`, enrichment when GO
+/// terms are asked for or no panel is given (both the enrichment's), else
+/// projection when the run has the gene table its projection method reads,
+/// else enrichment (and without a run).
+#[must_use]
+pub fn resolve_method(args: &AnnotateCliArgs, manifest: Option<&RunManifest>) -> AnnotateMethod {
+    match args.method {
+        AnnotateMethod::Auto
+            if !enrichment_only(args)
+                && manifest.is_some_and(|m| {
+                    manifest_prefers_projection(m, resolve_projection(args, Some(m)))
+                }) =>
+        {
+            AnnotateMethod::Projection
+        }
+        AnnotateMethod::Auto => AnnotateMethod::Enrichment,
+        chosen => chosen,
+    }
+}
+
+/// GO terms asked for, or no panel: what only the enrichment does.
+fn enrichment_only(args: &AnnotateCliArgs) -> bool {
+    args.go || args.gaf.is_some() || args.gmt.is_some() || args.markers.is_empty()
+}
+
+/// How a projection pass calls: the `--projection` given, else the score
+/// where the run decodes cells through its gene table and the ORA otherwise
+/// (also without a run: embedding files do not say which table they are;
+/// and when `--no-idf` or another `--min-markers` asks for what only the
+/// ORA honours).
+#[must_use]
+pub fn resolve_projection(
+    args: &AnnotateCliArgs,
+    manifest: Option<&RunManifest>,
+) -> ProjectionMethod {
+    use graph_embedding_util::type_annotation::embedding_score::MIN_MARKERS;
+    // Settings only the ORA honours steer an unset choice to it.
+    let ora_only = args.no_idf || args.min_markers != MIN_MARKERS;
+    args.projection.unwrap_or_else(|| match manifest {
+        Some(m) if !ora_only && manifest_prefers_projection(m, ProjectionMethod::Score) => {
+            ProjectionMethod::Score
+        }
+        _ => ProjectionMethod::Ora,
+    })
+}
+
+/// A run annotates by projection when it has the gene table its projection
+/// method reads ([`crate::marker_embedding::projection_gene_table`]).
+fn manifest_prefers_projection(manifest: &RunManifest, projection: ProjectionMethod) -> bool {
+    crate::marker_embedding::projection_gene_table(manifest, projection).is_ok()
 }
 
 /// Explicit embedding pair: the same projection pass as the manifest route
@@ -552,13 +611,26 @@ fn run_projection_from_files(
         .with_context(|| format!("reading feature embedding {feat_path}"))?;
     let cell = DMatrix::<f32>::from_parquet(cell_path)
         .with_context(|| format!("reading cell embedding {cell_path}"))?;
-    by_projection::run(
-        &build_projection_args(args),
-        &ProjectionInputs {
-            feature_embedding: &feat,
-            cell_embedding: &cell,
-        },
-    )?;
+    match resolve_projection(args, None) {
+        // Without a run there are no clusters but `--clusters`: else the
+        // score is centred at the mean cell, one group.
+        ProjectionMethod::Score => {
+            let groups = match args.clusters.as_deref() {
+                Some(p) => crate::annotate::inputs::load_cluster_labels(p, &cell.rows)?.0,
+                None => vec![0; cell.rows.len()],
+            };
+            crate::annotate::marker_score::run(&build_score_args(args)?, &feat, &cell, &groups)?;
+        }
+        ProjectionMethod::Ora => {
+            by_projection::run(
+                &build_projection_args(args),
+                &ProjectionInputs {
+                    feature_embedding: &feat,
+                    cell_embedding: &cell,
+                },
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -620,6 +692,12 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
 }
 
 fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieConfig {
+    if args.susie_dispersion.is_some() {
+        log::warn!(
+            "--susie-dispersion is retired: the SuSiE stage no longer uses an NB dispersion \
+             (it now estimates each marker's log-fold misfit); ignoring it"
+        );
+    }
     let mut cfg = crate::annotate::susie::SusieConfig {
         chains: args.mcmc_chains,
         min_markers: args.min_markers,
@@ -627,11 +705,38 @@ fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieCo
         warmup: args.mcmc_warmup,
         thin: args.mcmc_thin,
         seed: args.seed,
-        dispersion: args.susie_dispersion,
         ..Default::default()
     };
     cfg.prior.num_effects = args.susie_effects;
     cfg
+}
+
+/// The score's arguments; `--no-idf` and a `--min-markers` other than the
+/// score's own are refused, as the score cannot honour them.
+fn build_score_args(args: &AnnotateCliArgs) -> Result<MarkerScoreArgs> {
+    use graph_embedding_util::type_annotation::embedding_score::MIN_MARKERS;
+    anyhow::ensure!(
+        !args.no_idf,
+        "the marker score always weighs markers by IDF; drop --no-idf (or use --projection ora)"
+    );
+    anyhow::ensure!(
+        args.min_markers == MIN_MARKERS,
+        "the marker score keeps types with at least {MIN_MARKERS} live markers; drop --min-markers \
+         (or use --projection ora)"
+    );
+    Ok(MarkerScoreArgs {
+        markers: args.markers.clone(),
+        out: args.out.clone(),
+        clusters: args.clusters.clone(),
+        leiden: LeidenArgs {
+            knn: args.knn.unwrap_or(PROJECTION_KNN),
+            resolution: args.resolution,
+            num_clusters: args.num_clusters,
+            min_cluster_size: args.min_cluster_size,
+            seed: args.cluster_seed,
+        },
+        no_clean: args.no_clean,
+    })
 }
 
 fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
@@ -661,13 +766,126 @@ mod route_tests {
     use super::*;
     use crate::manifest::run::RunKind;
 
+    fn cli(more: &[&str]) -> AnnotateCliArgs {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            annotate: AnnotateCliArgs,
+        }
+        let argv = ["lupin", "-o", "x", "-m", "m.tsv"].iter().chain(more);
+        <Cli as clap::Parser>::parse_from(argv).annotate
+    }
+
+    fn run_with(kind: RunKind, rho: bool, coembedding: bool) -> RunManifest {
+        let mut m = RunManifest::new(kind, "run");
+        m.outputs.feature_embedding = rho.then(|| "run.feature_embedding.parquet".into());
+        m.outputs.feature_coembedding =
+            coembedding.then(|| "run.feature_coembedding.parquet".into());
+        m
+    }
+
     #[test]
-    fn a_co_embedding_kind_without_its_co_embedding_falls_back_to_enrichment() {
-        let mut m = RunManifest::new(RunKind::Bge, "run");
-        m.outputs.feature_embedding = Some("run.feature_embedding.parquet".into());
-        assert!(!manifest_prefers_projection(&m));
-        m.outputs.feature_coembedding = Some("run.feature_coembedding.parquet".into());
-        assert!(manifest_prefers_projection(&m));
+    fn auto_resolves_to_the_method_the_run_and_the_request_allow() {
+        let bge = run_with(RunKind::Bge, true, false);
+        let svd = run_with(RunKind::Svd, false, false);
+        assert_eq!(
+            resolve_method(&cli(&[]), Some(&bge)),
+            AnnotateMethod::Projection
+        );
+        assert_eq!(
+            resolve_method(&cli(&[]), Some(&svd)),
+            AnnotateMethod::Enrichment
+        );
+        assert_eq!(
+            resolve_method(&cli(&[]), None),
+            AnnotateMethod::Enrichment,
+            "no run"
+        );
+        assert_eq!(
+            resolve_method(&cli(&["--go"]), Some(&bge)),
+            AnnotateMethod::Enrichment,
+            "GO terms are the enrichment's"
+        );
+        let mut no_panel = cli(&[]);
+        no_panel.markers = "".into();
+        assert_eq!(
+            resolve_method(&no_panel, Some(&bge)),
+            AnnotateMethod::Enrichment
+        );
+        assert_eq!(
+            resolve_method(&cli(&["--projection", "ora"]), Some(&bge)),
+            AnnotateMethod::Enrichment,
+            "the ORA asked for needs the co-embedding"
+        );
+        assert_eq!(
+            resolve_method(&cli(&["--method", "enrichment"]), Some(&bge)),
+            AnnotateMethod::Enrichment,
+            "a choice stands"
+        );
+    }
+
+    #[test]
+    fn an_unset_projection_takes_the_ora_for_settings_the_score_cannot_honour() {
+        let bge = run_with(RunKind::Bge, true, true);
+        let p = |more: &[&str]| resolve_projection(&cli(more), Some(&bge));
+        assert_eq!(p(&["--no-idf"]), ProjectionMethod::Ora);
+        assert_eq!(p(&["--min-markers", "5"]), ProjectionMethod::Ora);
+        assert_eq!(
+            p(&["--projection", "score", "--no-idf"]),
+            ProjectionMethod::Score,
+            "asked"
+        );
+    }
+
+    #[test]
+    fn the_command_lines_marker_floor_is_the_scores() {
+        use graph_embedding_util::type_annotation::embedding_score::MIN_MARKERS;
+        assert_eq!(
+            cli(&[]).min_markers,
+            MIN_MARKERS,
+            "a default pass must not be refused"
+        );
+    }
+
+    #[test]
+    fn auto_with_go_terms_does_not_take_the_embedding_files_route() {
+        let a = cli(&[
+            "--go",
+            "--feature-embedding",
+            "f.parquet",
+            "--cell-embedding",
+            "c.parquet",
+        ]);
+        assert!(matches!(route(&a, None), Route::Enrichment));
+    }
+
+    #[test]
+    fn projection_scores_where_the_run_decodes_and_falls_back_to_the_ora() {
+        let bge = run_with(RunKind::Bge, true, true);
+        let fne = run_with(RunKind::Fne, true, false);
+        let pinto = run_with(RunKind::Other("pinto-cage".into()), false, true);
+        let p = |more: &[&str], m: Option<&RunManifest>| resolve_projection(&cli(more), m);
+        assert_eq!(p(&[], Some(&bge)), ProjectionMethod::Score);
+        assert_eq!(
+            p(&[], Some(&fne)),
+            ProjectionMethod::Ora,
+            "no decoder table"
+        );
+        assert_eq!(p(&[], Some(&pinto)), ProjectionMethod::Ora);
+        assert_eq!(
+            p(&[], None),
+            ProjectionMethod::Ora,
+            "files: the table is unknown"
+        );
+        assert_eq!(
+            p(&["--projection", "score"], None),
+            ProjectionMethod::Score,
+            "asked"
+        );
+        assert_eq!(
+            resolve_method(&cli(&[]), Some(&pinto)),
+            AnnotateMethod::Projection
+        );
     }
 }
 

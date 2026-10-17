@@ -96,6 +96,43 @@ impl Table {
     }
 }
 
+/// Each cluster's share of its cells called each label (`calls` per cell,
+/// aligned to `clusters`): rows the clusters in order, columns the labels
+/// called in order, `unassigned` left out; an uncalled cell counts toward
+/// its cluster's size. A round tables per-cell calls this way over its
+/// current clusters, so merges and splits keep their evidence.
+#[must_use]
+pub fn call_shares(clusters: &[Option<ClusterId>], calls: &[Option<&str>]) -> Table {
+    let mut counts: BTreeMap<ClusterId, (usize, BTreeMap<&str, usize>)> = BTreeMap::new();
+    for (k, call) in clusters.iter().zip(calls) {
+        let Some(k) = *k else { continue };
+        let (size, by) = counts.entry(k).or_default();
+        *size += 1;
+        if let Some(c) = call.filter(|c| !NOT_A_CALL.contains(c)) {
+            *by.entry(c).or_default() += 1;
+        }
+    }
+    let cols: Vec<String> = counts
+        .values()
+        .flat_map(|(_, by)| by.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|c| (*c).to_string())
+        .collect();
+    let values = counts
+        .values()
+        .flat_map(|(size, by)| {
+            cols.iter()
+                .map(move |c| by.get(c.as_str()).map_or(0.0, |&n| n as f32 / *size as f32))
+        })
+        .collect();
+    Table {
+        rows: counts.keys().copied().collect(),
+        cols,
+        values,
+    }
+}
+
 /// Everything a digest is built from; each part is optional.
 #[derive(Default)]
 pub struct Evidence {

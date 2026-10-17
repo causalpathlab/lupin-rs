@@ -66,6 +66,7 @@ fn round() -> RoundView {
         loose_cells: 0,
         decided: BTreeSet::new(),
         rescorable: false,
+        score_calls: false,
         figures: Default::default(),
     }
 }

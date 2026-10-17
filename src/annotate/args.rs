@@ -121,10 +121,66 @@ pub struct AnnotateArgs {
     pub susie: Option<crate::annotate::susie::SusieConfig>,
 }
 
-/// `lupin annotate --method projection` — firm marker-set annotation by projection
-/// onto a co-embedded feature space (bge / fne / resolve-embedding-space).
-/// Embedding-grounded (no raw-count re-read), complementary to
-/// `annotate --method enrichment`. Drives the shared firm term-ORA core.
+impl AnnotateArgs {
+    /// The internal Leiden settings, for a run whose clusters are not given.
+    #[must_use]
+    pub fn leiden(&self) -> crate::manifest::annotate::LeidenArgs {
+        crate::manifest::annotate::LeidenArgs {
+            knn: self.knn,
+            resolution: self.resolution,
+            num_clusters: self.num_clusters,
+            min_cluster_size: self.min_cluster_size,
+            seed: self.cluster_seed,
+        }
+    }
+}
+
+/// How `--method projection` calls cell types.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectionMethod {
+    /// The embedding marker score on the run's decoder gene table: each
+    /// cell's best type and its margin over the runner-up.
+    Score,
+    /// Term over-representation on the co-embedding (kept one release, for
+    /// comparison).
+    Ora,
+}
+
+impl ProjectionMethod {
+    /// As the command line spells it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Score => "score",
+            Self::Ora => "ora",
+        }
+    }
+}
+
+/// `lupin annotate --method projection --projection score`: the embedding
+/// marker score ([`crate::annotate::marker_score`]) on the run's decoder gene
+/// table and cell embedding.
+#[derive(Debug, serde::Serialize)]
+pub struct MarkerScoreArgs {
+    /// Marker-gene TSV: `gene<TAB>celltype` per line
+    pub markers: Box<str>,
+    /// Output prefix
+    pub out: Box<str>,
+    /// Cluster parquet the score is centred on and the round tabled by; else
+    /// the run's `cluster.clusters`, else internal Leiden
+    pub clusters: Option<Box<str>>,
+    /// Internal Leiden, when no clusters are given
+    pub leiden: crate::manifest::annotate::LeidenArgs,
+    /// Keep existing {out}.* outputs (default: erase the pass's set first)
+    pub no_clean: bool,
+}
+
+/// `lupin annotate --method projection --projection ora` — firm marker-set
+/// annotation by projection onto a co-embedded feature space (bge / fne /
+/// resolve-embedding-space). Embedding-grounded (no raw-count re-read),
+/// complementary to `annotate --method enrichment`. Drives the shared firm
+/// term-ORA core.
 #[derive(Debug, serde::Serialize)]
 pub struct AnnotateProjectionArgs {
     /// Marker-gene TSV: `gene<TAB>celltype` per line (tab/comma/space delimited)

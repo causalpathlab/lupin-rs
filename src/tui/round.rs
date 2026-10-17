@@ -25,8 +25,9 @@ const CANDIDATES: usize = 6;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
     pub label: String,
-    /// Its share of the cluster's evidence: in a SuSiE round, of the deviance
-    /// the types explain; otherwise the enrichment's Q, a softmax of
+    /// Its share of the cluster's evidence: in a SuSiE round, of the log-likelihood
+    /// the types explain; in a projection score round, of the cluster's cells
+    /// the score called the type; otherwise the enrichment's Q, a softmax of
     /// z = Φ⁻¹(1 − p) over the types that pass FDR.
     pub share: f32,
     /// SuSiE's reading, when it made the round's call.
@@ -263,9 +264,37 @@ pub struct RoundView {
     pub decided: BTreeSet<ClusterId>,
     /// The pass cached its statistics, so marker edits can be rescored.
     pub rescorable: bool,
+    /// The candidates are the projection score's per-cell calls: a marker
+    /// edit needs a new pass to be scored.
+    pub score_calls: bool,
     /// The round's cells on its run's layouts, for the cell map; taken by
     /// the app when it shows the round.
     pub figures: crate::figures::CellFigures,
+}
+
+/// A score round's shares: each current cluster's share of its cells called
+/// each type, from the per-cell `call` column of the score's table at
+/// `path`; none when the table is gone.
+fn cell_call_shares(path: &str, cells: &crate::manifest::rounds::Cells) -> Result<Option<Table>> {
+    use legume_numeric::matrix::parquet::read_table_columns;
+    if !Path::new(path).is_file() {
+        return Ok(None);
+    }
+    let (strings, _) = read_table_columns(path, &["cell", "call"], &[])?;
+    let call: std::collections::HashMap<&str, &str> = strings[0]
+        .iter()
+        .zip(&strings[1])
+        .map(|(c, l)| (c.as_ref(), l.as_ref()))
+        .collect();
+    let calls: Vec<Option<&str>> = cells
+        .names
+        .iter()
+        .map(|c| call.get(c.as_ref()).copied())
+        .collect();
+    Ok(Some(crate::annotate::rounds::call_shares(
+        &cells.clusters,
+        &calls,
+    )))
 }
 
 impl RoundView {
@@ -276,9 +305,19 @@ impl RoundView {
         let at = |rel: &Option<String>| rel.as_deref().map(|r| resolve(&loaded.dir, r));
 
         let table = |rel: &Option<String>| at(rel).map(|p| read_table(&p)).transpose();
-        // Q: how the cluster's evidence splits over the types; and the
-        // statistics it came from.
-        let share = table(&a.cluster_celltype_q)?;
+        // How the cluster's evidence splits over the types: the enrichment's
+        // Q, else (a score round) its cells' calls over the current clusters.
+        let (share, score_calls) = match table(&a.cluster_celltype_q)? {
+            Some(q) => (Some(q), false),
+            None => {
+                let calls = match at(&a.marker_score) {
+                    Some(p) => cell_call_shares(&p, &cells)?,
+                    None => None,
+                };
+                let found = calls.is_some();
+                (calls, found)
+            }
+        };
         // SuSiE's tables, when it made the call: its ranking replaces Q's.
         let susie = match (
             table(&a.cluster_celltype_pip)?,
@@ -378,6 +417,7 @@ impl RoundView {
             loose_cells,
             decided,
             rescorable: a.stats_cache.is_some() && a.expression_clusters.is_some(),
+            score_calls,
         })
     }
 

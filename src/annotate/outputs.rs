@@ -11,6 +11,8 @@ use std::path::Path;
 pub const ARGMAX_TSV: &str = ".argmax.tsv";
 /// `{out}.annot.parquet`: projection's per-cell table (`community`, `coarse_label`, …).
 pub const ANNOT_PARQUET: &str = ".annot.parquet";
+/// Projection score pass: each cell's cluster, call and margin.
+pub const MARKER_SCORE_PARQUET: &str = ".marker_score.parquet";
 /// `{out}.cluster_term_q.parquet`: projection's cluster × term FDR q.
 pub const CLUSTER_TERM_Q: &str = ".cluster_term_q.parquet";
 /// `{out}.cluster_celltype_q_values.parquet`: enrichment's cluster × cell-type FDR q.
@@ -39,7 +41,7 @@ pub const CLUSTER_TERM_Q_VALUES: &str = ".cluster_term_q_values.parquet";
 pub const CLUSTER_CELLTYPE_PIP: &str = ".cluster_celltype_pip.parquet";
 /// SuSiE stage: cluster × cell type posterior mean effect (log fold of the markers).
 pub const CLUSTER_CELLTYPE_EFFECT: &str = ".cluster_celltype_effect.parquet";
-/// SuSiE stage: cluster × cell type share of the deviance its effect explains.
+/// SuSiE stage: cluster × cell type share of the log-likelihood its effect gains.
 pub const CLUSTER_CELLTYPE_EXPLAINED: &str = ".cluster_celltype_explained.parquet";
 /// SuSiE stage: one row per credible set.
 pub const CLUSTER_CREDIBLE_SETS: &str = ".cluster_credible_sets.tsv";
@@ -109,6 +111,8 @@ pub fn clean_outputs(prefix: &str, suffixes: &[&str]) {
 pub struct AnnotationOutputs {
     pub argmax: Option<String>,
     pub annotation: Option<String>,
+    /// The projection score's per-cell cluster, call and margin.
+    pub marker_score: Option<String>,
     pub cluster_celltype_q: Option<String>,
     pub cluster_celltype_es: Option<String>,
     /// The SuSiE stage's PIP, effect and explained-share tables, when it made the call.

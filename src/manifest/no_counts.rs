@@ -284,7 +284,13 @@ fn from_decoder(args: &AnnotateArgs, loaded: &Loaded) -> Result<Expression> {
         dict.mat.ncols()
     );
     let cell_names = latent.rows;
-    let (cluster_labels, k) = resolve_clusters(args, m, &loaded.dir, &cell_names)?;
+    let (cluster_labels, k) = resolve_clusters(
+        args.clusters.as_deref(),
+        &args.leiden(),
+        m,
+        &loaded.dir,
+        &cell_names,
+    )?;
     let (batch_labels, n_batches) = batch_labels(loaded, &cell_names);
     let g = dict.rows.len();
 

@@ -44,6 +44,7 @@ fn round() -> RoundView {
         loose_cells: 1,
         decided: BTreeSet::new(),
         rescorable: false,
+        score_calls: false,
         figures: Default::default(),
     }
 }
@@ -311,7 +312,7 @@ fn a_susie_rounds_candidates_follow_its_call() {
         ["B", "A"],
         "PIPs tie: the larger share leads; C is out"
     );
-    assert_eq!(c[0].share, 0.5, "the share is the deviance explained");
+    assert_eq!(c[0].share, 0.5, "the share is the log-likelihood explained");
     let s = c[0].susie.as_ref().unwrap();
     assert_eq!(s.pip, 1.0);
     assert!((s.fold - 2.6f32.exp()).abs() < 1e-4);
@@ -351,4 +352,98 @@ fn a_susie_cluster_is_flagged_when_its_call_is_unsure_or_close() {
         ..with(vec![susie_candidate("A", 1.0, 0.8)])
     };
     assert!(none.flagged(), "no call");
+}
+
+#[test]
+fn a_score_round_lists_each_clusters_types_by_share() {
+    use crate::annotate::marker_score::toy;
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, panel) = toy::write_run(dir.path());
+    let loaded = run::load(&manifest).unwrap();
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::annotate::annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
+    let view = RoundView::load(&crate::manifest::run::annotated_path(&loaded.file, &out)).unwrap();
+    for (c, want) in view.clusters.iter().zip(["A", "B"]) {
+        let top = c.candidates.first().expect("a candidate");
+        assert_eq!(
+            (top.label.as_str(), top.share),
+            (want, 1.0),
+            "cluster {}",
+            c.id
+        );
+    }
+}
+
+#[test]
+fn a_merged_score_round_lists_its_types_from_the_cells_calls() {
+    use crate::annotate::marker_score::toy;
+    use crate::manifest::rounds::{run_relabel, RelabelArgs};
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, panel) = toy::write_run(dir.path());
+    let loaded = run::load(&manifest).unwrap();
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::annotate::annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
+    let round = crate::manifest::run::annotated_path(&loaded.file, &out);
+    let decisions = dir.path().join("d.jsonl");
+    std::fs::write(
+        &decisions,
+        r#"{"clusters": [0, 1], "action": "merge", "label": "AB", "rationale": "one", "decided_by": "user"}"#,
+    )
+    .unwrap();
+    let next = dir.path().join("run.L2");
+    run_relabel(&RelabelArgs {
+        from: round.to_string_lossy().into(),
+        decisions: decisions.to_string_lossy().into(),
+        out: Some(next.to_string_lossy().into()),
+        ..RelabelArgs::default()
+    })
+    .unwrap();
+    let view = RoundView::load(&dir.path().join("run.L2.senna.json")).unwrap();
+    let merged = &view.clusters[0];
+    let mut shares: Vec<(&str, f32)> = merged
+        .candidates
+        .iter()
+        .map(|c| (c.label.as_str(), c.share))
+        .collect();
+    shares.sort_by(|a, b| a.0.cmp(b.0));
+    assert_eq!(
+        shares,
+        [("A", 0.5), ("B", 0.5)],
+        "the merged cluster's cells, by their calls"
+    );
+}
+
+#[test]
+fn a_score_round_whose_table_is_gone_opens_without_shares() {
+    use crate::annotate::marker_score::toy;
+    let dir = tempfile::tempdir().unwrap();
+    let (manifest, panel) = toy::write_run(dir.path());
+    let loaded = run::load(&manifest).unwrap();
+    let out = dir.path().join("run.L1").to_string_lossy().into_owned();
+    crate::manifest::annotate::annotate_by_marker_score(&toy::args(&panel, &out), &loaded).unwrap();
+    std::fs::remove_file(format!(
+        "{out}{}",
+        crate::annotate::outputs::MARKER_SCORE_PARQUET
+    ))
+    .unwrap();
+    let view = RoundView::load(&crate::manifest::run::annotated_path(&loaded.file, &out)).unwrap();
+    assert!(view.clusters.iter().all(|c| c.candidates.is_empty()));
+}
+
+#[test]
+fn call_shares_table_each_clusters_calls_with_uncalled_cells_in_its_size() {
+    let clusters = [Some(3), Some(3), Some(3), Some(3), None, Some(5)];
+    let calls = [
+        Some("A"),
+        Some("A"),
+        Some("unassigned"),
+        None,
+        Some("A"),
+        Some("B"),
+    ];
+    let t = crate::annotate::rounds::call_shares(&clusters, &calls);
+    assert_eq!(t.rows, [3, 5]);
+    assert_eq!(t.cols, ["A", "B"], "unassigned is not a call");
+    assert_eq!(t.row(3).unwrap(), [0.5, 0.0]);
+    assert_eq!(t.row(5).unwrap(), [0.0, 1.0]);
 }

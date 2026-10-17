@@ -1,14 +1,71 @@
 # Marker-based cell-type annotation by projection: methods
 
 What `lupin annotate --method projection` does and why each part of it is there. Every default
-quoted here is the shipped default. Where a design choice is justified by a measurement, the
-measurement was made on a marker panel that includes types absent from the tissue (the negative
-control of §7); results are stated qualitatively.
+quoted here is the shipped default; results are stated qualitatively.
 
-Code: `type_annotation::{term_ora, panel_null}` in the `legume-graph-embedding`
-crate, driven by `lupin annotate`.
+Projection calls cell types on a run's embeddings rather than its raw counts, in one of two
+ways (`--projection`):
+
+- **`score`**: the embedding marker score, §0. The default for a run that decodes cells
+  through its gene table (bge, gem, simba, resolve-embedding-space).
+- **`ora`**: term over-representation on the co-embedding, §§1–9. The default for other runs
+  with a gene embedding, and for embedding files given directly (`--feature-embedding`), whose
+  table lupin cannot tell. It is kept for one release, for comparison.
 
 ---
+
+## 0. The embedding marker score (`--projection score`)
+
+Code: `type_annotation::embedding_score` in the `legume-graph-embedding` crate, driven by
+`lupin annotate` (`annotate::marker_score`).
+
+**The gene table is the decoder's.** For the runs that decode cells through it (bge, gem,
+simba, resolve-embedding-space), a gene's log rate in a cell is `ρ_g · z_i + a_g`, with ρ the
+run's `outputs.feature_embedding` and z its cell embedding. The co-embedding is never read: it
+places a gene where its direction points, among the cells it is most aligned with, which is not
+where its expressing cells are. For a `gem` run only the spliced rows are kept.
+
+**A type's score is a module score read in closed form.** Standardise each gene's logit over the
+cells and average a type's markers, weighted by IDF over the panel's types (a marker many types
+share counts little). Every step is linear, so the mean moves inside the dot product:
+`s_T(i) = (z_i − m) · u_T`, where `u_T` is the weighted mean of `ρ_g / σ_g` over the type's
+markers and `σ_g` is the spread of gene g's logit over the cells. The bias `a_g` cancels, and no
+gene × cell matrix is formed. This is the module score of Tirosh et al. (2016, *Science*
+352:189) as SCANPY's `score_genes` implements it (Wolf et al. 2018, *Genome Biology* 19:15),
+read here on the model's implied expression. The control sets are replaced by a reference point
+`m`, as described next.
+
+**Centred at the balanced centre.** `m` is the mean of the cluster means: `--clusters`, else the
+run's `cluster.clusters`, else internal Leiden. That way a large cluster does not define
+"average" for the others. These clusters are also the round's cluster table.
+
+**The call is per cell, with its margin.** Each cell takes its best type. The margin over the
+runner-up is kept as the call's confidence: across the bench datasets it is the signal that
+separates confident cells from doubtful ones. A per-cell gene-set null and a hierarchical
+walk were both tried, and neither raised the precision of what they kept.
+
+**Outputs:**
+- `argmax.tsv`: the call; the probability is NaN, since the score has none;
+- `marker_score.parquet`: each cell's cluster, call and margin, recorded as
+  `annotate.marker_score` (not `annotate.annotation`, which holds a cell × type posterior). The TUI tables a cluster's candidates from these calls over the
+  round's current clusters, so merges and splits keep their evidence. A marker edit needs a
+  new pass: the score caches no statistics to rescore with.
+
+**Guards:**
+- IDF weighting and the three-marker floor are part of the score: `--no-idf` and another
+  `--min-markers` are refused;
+- a type with fewer than three live markers is dropped;
+- fewer than two types left is an error naming the types lost;
+- a non-finite embedding is an error.
+
+---
+
+# The co-embedding ORA (`--projection ora`)
+
+Code: `type_annotation::{term_ora, panel_null}` in the `legume-graph-embedding`
+crate, driven by `lupin annotate`. Where a design choice below is justified by a measurement,
+the measurement was made on a marker panel that includes types absent from the tissue (the
+negative control of §7).
 
 ## 1. Inputs and the space the call is made in
 

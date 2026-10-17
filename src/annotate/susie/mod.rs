@@ -1,42 +1,49 @@
-//! Count-based SuSiE annotation: each cluster's pseudobulk counts regressed on
-//! the panel's marker sets at once, so cell types compete for the marker
-//! genes they share, and each type can only add expression. See [`model`].
+//! SuSiE annotation on counts: each cluster's marker genes, as log-folds
+//! against their background, regressed on the panel's marker sets at once, so
+//! cell types compete for the marker genes they share, and each type can only
+//! add expression. See [`model`]. SuSiE: Wang, Sarkar, Carbonetto & Stephens
+//! (2020), "A simple new approach to variable selection in regression, with
+//! application to genetic fine mapping", JRSS-B 82(5):1273–1300,
+//! doi:10.1111/rssb.12388.
 //!
 //! The clusters are fitted independently given two things they share:
 //!
-//! - a marker gene's background rate, its median rate across clusters (a
-//!   marker is high in few clusters, so the median sits at the level of the
-//!   rest), times the cluster's library size;
-//! - a marker gene's NB dispersion φ_g. The first pass uses one φ, the median
-//!   method-of-moments estimate over the genes no type claims (the model
-//!   leaves those at their mean in every cluster). The refit estimates φ_g
-//!   from every cluster's residuals around the first fit's means, so a type's
-//!   effect is not mistaken for noise, and shrinks it towards the genes'
-//!   median on the log scale.
+//! - a marker gene's background rate, its median rate across the clusters the
+//!   first pass called none of its types in (a marker is high in few
+//!   clusters, so the median sits at the level of the rest), times the
+//!   cluster's library size;
+//! - a marker gene's misfit scale s²_g on the log scale. The first pass uses
+//!   one s², the median robust (MAD) variance of the genes no type claims
+//!   around their pooled rate — how far genes stray between clusters for
+//!   reasons no type explains. The refit estimates s²_g from every cluster's
+//!   residual log-folds around the first fit, and shrinks it towards the
+//!   genes' median on the log scale.
 //!
-//! A cluster's pseudobulk sums many cells, so most types that enter at all
-//! have a PIP near 1; each type's effect (the log fold of its markers) and
-//! its share of the explained deviance rank them.
+//! The Student-t likelihood bounds any one gene's pull, so a type's effect is
+//! the typical fold of its markers; each type's effect and its share of the
+//! explained log-likelihood rank the types that enter.
 
 pub mod model;
 
 use legume_numeric::matrix::rand_util::mix_seed;
 use legume_numeric::matrix::utils::{median, quantiles};
 use legume_numeric::mcmc::engine::{run_mcmc_parallel, split_rhat_chains, McmcConfig};
-use model::{Cluster, ClusterCounts, Panel, SusieModel, SusiePrior, SusieSample};
+use model::{log_fold, Cluster, ClusterLogFold, Panel, SusieModel, SusiePrior, SusieSample};
 use rayon::prelude::*;
 
 /// Coverage of a credible set.
 const COVERAGE: f32 = 0.95;
 /// Smallest |correlation| between two marker sets in one credible set.
 const MIN_PURITY: f32 = 0.5;
-/// Draws (and warmup) of the single-chain first pass, whose means only
-/// feed the dispersion estimate.
+/// Draws (and warmup) of the single-chain first pass, whose fit only feeds
+/// the background and the misfit scales.
 const FIRST_PASS_DRAWS: usize = 200;
-/// Pseudo-clusters of weight pulling each gene's log φ_g to the median.
-const DISPERSION_SHRINKAGE: f64 = 10.0;
-/// The range an estimated φ is clamped to.
-const PHI_RANGE: (f64, f64) = (1e-3, 10.0);
+/// Pseudo-clusters of weight pulling each gene's log s²_g to the median.
+const SCALE_SHRINKAGE: f64 = 10.0;
+/// The range an estimated s² is clamped to (log-scale variance).
+const SCALE2_RANGE: (f64, f64) = (1e-3, 25.0);
+/// MAD → standard deviation under a normal.
+const MAD_TO_SD: f64 = 1.4826;
 
 /// Sampler settings for every cluster.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -53,9 +60,6 @@ pub struct SusieConfig {
     /// enter, as the enrichment's `--min-markers`.
     #[serde(default = "default_min_markers")]
     pub min_markers: usize,
-    /// One NB dispersion φ for every gene, fixed (0: Poisson); when `None`,
-    /// gene-specific and estimated, with one refit.
-    pub dispersion: Option<f32>,
 }
 
 impl Default for SusieConfig {
@@ -68,7 +72,6 @@ impl Default for SusieConfig {
             thin: 1,
             seed: 42,
             min_markers: default_min_markers(),
-            dispersion: None,
         }
     }
 }
@@ -84,10 +87,6 @@ impl SusieConfig {
             self.prior.num_effects >= 1 && self.samples >= 1 && self.chains >= 1 && self.thin >= 1,
             "SuSiE needs at least one single effect, chain and posterior sample, and thin ≥ 1"
         );
-        anyhow::ensure!(
-            self.dispersion.is_none_or(|d| d >= 0.0),
-            "SuSiE's NB dispersion is ≥ 0 (0: Poisson)"
-        );
         Ok(())
     }
 }
@@ -98,7 +97,7 @@ pub struct ClusterFit {
     pub pip: Vec<f32>,
     /// Posterior mean effect θ per cell type (log fold of its markers).
     pub theta: Vec<f32>,
-    /// Each type's share of the deviance θ explains.
+    /// Each type's share of the log-likelihood θ gains.
     pub explained: Vec<f32>,
     /// Credible sets: cell-type indices, most probable first.
     pub credible_sets: Vec<Vec<usize>>,
@@ -139,12 +138,12 @@ impl ClusterFit {
     }
 }
 
-/// All clusters' fits plus the dispersions they used.
+/// All clusters' fits plus the misfit scales they used.
 pub struct SusieFits {
     pub clusters: Vec<ClusterFit>,
-    /// φ_g of each marker gene with counts (the likelihood's rows) in the
-    /// last pass.
-    pub dispersion: Vec<f32>,
+    /// s²_g (log-scale misfit variance) of each marker gene with counts (the
+    /// likelihood's rows) in the last pass.
+    pub scale2: Vec<f32>,
 }
 
 /// Fit every cluster. `gene_sum_kg` is the G × K raw count sums, column-major
@@ -163,7 +162,7 @@ pub fn fit_all(
     );
     cfg.validate()?;
     // A cluster id with no cells (a gap in the ids) has no counts: it is left
-    // out of the shared background and dispersion, and gets no call.
+    // out of the shared background and scales, and gets no call.
     let column = |k: usize| &gene_sum_kg[k * n_genes..(k + 1) * n_genes];
     let present: Vec<usize> = (0..n_clusters)
         .filter(|&k| column(k).iter().any(|&v| v > 0.0))
@@ -203,20 +202,31 @@ pub fn fit_all(
         .collect();
     let total: f64 = lib.iter().sum();
 
-    // The genes no type claims, at their pooled rate in every cluster.
-    let global = cfg.dispersion.unwrap_or_else(|| {
+    // How far the genes no type claims stray from their pooled rate.
+    let global = {
         let est: Vec<f32> = free
             .iter()
             .filter_map(|&g| {
-                let y = || present.iter().map(move |&k| at(g, k));
-                let p = y().sum::<f64>() / total;
+                let y: Vec<f64> = present.iter().map(|&k| at(g, k)).collect();
+                let p = y.iter().sum::<f64>() / total;
                 // Genes too sparse to say anything are skipped.
-                (p * total >= 10.0 * present.len() as f64)
-                    .then(|| moment_phi(y(), lib.iter().map(|&n| n * p)) as f32)
+                (p * total >= 10.0 * present.len() as f64).then(|| {
+                    let (x, v): (Vec<f32>, Vec<f32>) = y
+                        .iter()
+                        .zip(&lib)
+                        .map(|(&y, &n)| log_fold(y, n * p))
+                        .unzip();
+                    misfit_scale2(&x, &v) as f32
+                })
             })
             .collect();
-        median(&est)
-    });
+        // Without a gene to measure it on: a unit log-scale variance.
+        if est.is_empty() {
+            1.0
+        } else {
+            median(&est)
+        }
+    };
 
     // Each marker gene's rate in each present cluster, floored so a gene
     // silent in a cluster keeps a finite log.
@@ -236,12 +246,11 @@ pub fn fit_all(
         present
             .iter()
             .zip(&lib)
-            .map(|(&k, &n)| Cluster {
-                y: marker_genes.iter().map(|&g| at(g, k) as f32).collect(),
-                log_mu0: background
-                    .iter()
-                    .map(|&b| (f64::from(b) * n).ln() as f32)
-                    .collect(),
+            .map(|(&k, &n)| {
+                Cluster::new(
+                    marker_genes.iter().map(|&g| at(g, k)),
+                    background.iter().map(|&b| f64::from(b) * n),
+                )
             })
             .collect()
     };
@@ -253,9 +262,9 @@ pub fn fit_all(
         data.par_iter()
             .zip(&present)
             .map(|(cluster, &k)| {
-                let counts = ClusterCounts { panel, cluster };
+                let lik = ClusterLogFold { panel, cluster };
                 let model = SusieModel {
-                    data: counts,
+                    data: lik,
                     prior: cfg.prior,
                 };
                 let config = McmcConfig {
@@ -264,11 +273,7 @@ pub fn fit_all(
                     thin: cfg.thin,
                     seed: mix_seed(cfg.seed, k as u64),
                 };
-                summarize(
-                    &run_mcmc_parallel(&model, &config, cfg.chains),
-                    counts,
-                    &corr,
-                )
+                summarize(&run_mcmc_parallel(&model, &config, cfg.chains), lik, &corr)
             })
             .collect()
     };
@@ -277,8 +282,7 @@ pub fn fit_all(
     // to three quarters of the clusters still shows above it.
     let quartile: Vec<f32> = rates.iter().map(|r| quantiles(r, &[0.25])[0]).collect();
     let first_data = on(&quartile);
-    let mut dispersion = vec![global; marker_genes.len()];
-    let mut panel = Panel::new(types_of.clone(), n_types, &dispersion);
+    let mut panel = Panel::new(types_of.clone(), n_types, &vec![global; marker_genes.len()]);
     let first = fit_pass(
         &panel,
         &first_data,
@@ -321,29 +325,24 @@ pub fn fit_all(
             }
         })
         .collect();
-    if cfg.dispersion.is_none() {
-        // φ_g from every cluster's residuals around the first pass's means.
-        let etas: Vec<Vec<f32>> = first_data
-            .iter()
-            .zip(&first)
-            .map(|(cluster, f)| {
-                ClusterCounts {
-                    panel: &panel,
-                    cluster,
-                }
-                .etas(&f.theta)
-            })
-            .collect();
-        let raw: Vec<f64> = (0..marker_genes.len())
-            .map(|i| {
-                let y = first_data.iter().map(|c| f64::from(c.y[i]));
-                let mu = etas.iter().map(|eta| f64::from(eta[i].exp()));
-                moment_phi(y, mu)
-            })
-            .collect();
-        dispersion = shrunk_dispersion(&raw, present.len());
-        panel.set_dispersion(&dispersion);
-    }
+    // s²_g from every cluster's residual log-folds around the first fit. The
+    // fit removes the types the first pass called; the MAD then keeps the
+    // clusters it missed a type in (one present in most clusters, say) from
+    // setting the spread.
+    let fitted_etas: Vec<Vec<f32>> = first.iter().map(|f| panel.etas(&f.theta)).collect();
+    let raw: Vec<f64> = (0..marker_genes.len())
+        .map(|i| {
+            let r: Vec<f32> = first_data
+                .iter()
+                .zip(&fitted_etas)
+                .map(|(c, eta)| c.x[i] - eta[i])
+                .collect();
+            let v: Vec<f32> = first_data.iter().map(|c| c.sampling[i]).collect();
+            misfit_scale2(&r, &v)
+        })
+        .collect();
+    let scale2 = shrunk_scale2(&raw, present.len());
+    panel.set_scale2(&scale2);
     let fitted = fit_pass(&panel, &on(&background), cfg);
     // Back to every id; one without counts gets no call.
     let mut fitted = fitted.into_iter();
@@ -356,36 +355,41 @@ pub fn fit_all(
             }
         })
         .collect();
-    Ok(SusieFits {
-        clusters,
-        dispersion,
-    })
+    Ok(SusieFits { clusters, scale2 })
 }
 
-/// φ in Var = μ + φμ² by moments: Σ((y − μ)² − μ) / Σμ², clamped to
-/// [`PHI_RANGE`] (its floor when nothing is expected).
-fn moment_phi(y: impl Iterator<Item = f64>, mu: impl Iterator<Item = f64>) -> f64 {
-    let (num, den) = y.zip(mu).fold((0.0, 0.0), |(n, d), (y, m)| {
-        (n + (y - m).powi(2) - m, d + m * m)
-    });
-    if den > 0.0 {
-        (num / den).clamp(PHI_RANGE.0, PHI_RANGE.1)
+/// A gene's misfit variance on the log scale: the squared MAD-based spread of
+/// its log-folds `x` across clusters, less the median of their sampling
+/// variances `v`, clamped to [`SCALE2_RANGE`]. Both sides robust: the MAD
+/// keeps the clusters the gene is truly up in from setting its spread, the
+/// median keeps a few clusters where it reads zero from cancelling it.
+fn misfit_scale2(x: &[f32], v: &[f32]) -> f64 {
+    let centre = median(x);
+    let dev: Vec<f32> = x.iter().map(|&a| (a - centre).abs()).collect();
+    let sd = MAD_TO_SD * f64::from(median(&dev));
+    (sd * sd - f64::from(median(v))).clamp(SCALE2_RANGE.0, SCALE2_RANGE.1)
+}
+
+/// Per-gene s² shrunk on the log scale towards the median of the genes
+/// measured above the floor (genes too sparse to measure sit at it and say
+/// nothing about the rest), with [`SCALE_SHRINKAGE`] pseudo-clusters of
+/// weight against `n_clusters`.
+fn shrunk_scale2(raw: &[f64], n_clusters: usize) -> Vec<f32> {
+    let measured: Vec<f32> = raw
+        .iter()
+        .filter(|&&d| d > SCALE2_RANGE.0)
+        .map(|&d| d as f32)
+        .collect();
+    let center = if measured.is_empty() {
+        SCALE2_RANGE.0.ln()
     } else {
-        PHI_RANGE.0
-    }
-}
-
-/// Per-gene φ shrunk on the log scale towards the genes' median, with
-/// [`DISPERSION_SHRINKAGE`] pseudo-clusters of weight against `n_clusters`.
-fn shrunk_dispersion(raw: &[f64], n_clusters: usize) -> Vec<f32> {
-    let as_f32: Vec<f32> = raw.iter().map(|&d| d as f32).collect();
-    let center = f64::from(median(&as_f32)).ln();
-    let (k, w) = (n_clusters as f64, DISPERSION_SHRINKAGE);
+        f64::from(median(&measured)).ln()
+    };
+    let (k, w) = (n_clusters as f64, SCALE_SHRINKAGE);
     raw.iter()
         .map(|&d| {
-            ((k * d.ln() + w * center) / (k + w))
-                .exp()
-                .clamp(PHI_RANGE.0, PHI_RANGE.1) as f32
+            // In range: a log-scale weighted mean of in-range values.
+            ((k * d.ln() + w * center) / (k + w)).exp() as f32
         })
         .collect()
 }
@@ -435,16 +439,21 @@ fn aligned_choice_means(chains: &[Vec<SusieSample>]) -> Vec<Vec<f32>> {
     };
     let (effects, choices) = (first.len(), first.first().map_or(0, Vec::len));
     let mut reference: Vec<Vec<f32>> = (*first).clone();
+    // Summed in f64 and divided once: thousands of f32 terms of x/n drift.
+    let n = draws.len() as f64;
     for _ in 0..2 {
-        let mut total = vec![vec![0.0f32; choices]; effects];
+        let mut total = vec![vec![0.0f64; choices]; effects];
         for probs in &draws {
             for (r, c) in match_effects(&reference, probs) {
                 for (v, &x) in total[r].iter_mut().zip(&probs[c]) {
-                    *v += x / draws.len() as f32;
+                    *v += f64::from(x);
                 }
             }
         }
-        reference = total;
+        reference = total
+            .iter()
+            .map(|row| row.iter().map(|&v| (v / n) as f32).collect())
+            .collect();
     }
     reference
 }
@@ -474,21 +483,24 @@ fn match_effects(reference: &[Vec<f32>], draw: &[Vec<f32>]) -> Vec<(usize, usize
 /// cluster's chains, pooled.
 fn summarize(
     chains: &[Vec<SusieSample>],
-    counts: ClusterCounts<'_>,
+    data: ClusterLogFold<'_>,
     corr: &[Vec<f32>],
 ) -> ClusterFit {
     let samples: Vec<&SusieSample> = chains.iter().flatten().collect();
     let n_types = corr.len();
-    let t = samples.len().max(1) as f32;
-    let mut pip = vec![0.0f32; n_types];
-    let mut theta = vec![0.0f32; n_types];
+    // Averaged in f64: thousands of f32 terms of 1/t drift past 1.
+    let t = samples.len().max(1) as f64;
+    let mut pip_sum = vec![0.0f64; n_types];
+    let mut theta_sum = vec![0.0f64; n_types];
     for s in &samples {
         for c in 0..n_types {
-            let excluded: f32 = s.probs.iter().map(|p| 1.0 - p[c]).product();
-            pip[c] += (1.0 - excluded) / t;
-            theta[c] += s.theta[c] / t;
+            let excluded: f64 = s.probs.iter().map(|p| 1.0 - f64::from(p[c])).product();
+            pip_sum[c] += 1.0 - excluded;
+            theta_sum[c] += f64::from(s.theta[c]);
         }
     }
+    let pip: Vec<f32> = pip_sum.iter().map(|&v| (v / t) as f32).collect();
+    let theta: Vec<f32> = theta_sum.iter().map(|&v| (v / t) as f32).collect();
     let alpha_bar = aligned_choice_means(chains);
     let mut credible_sets: Vec<Vec<usize>> = Vec::new();
     for bar in &alpha_bar {
@@ -518,7 +530,7 @@ fn summarize(
         })
         .fold(1.0f32, f32::max);
     ClusterFit {
-        explained: counts.explained(&theta),
+        explained: data.explained(&theta),
         pip,
         theta,
         credible_sets,
