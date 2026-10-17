@@ -2417,3 +2417,51 @@ fn the_settings_note_does_not_offer_r_while_a_job_refuses_it() {
         let _ = r.child.wait();
     }
 }
+
+#[test]
+fn a_question_asked_again_lapses_and_any_other_key_drops_it() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.status.contains("q again"), "{}", app.status);
+    press(&mut app, KeyCode::Char('b'));
+    press(&mut app, KeyCode::Char('q'));
+    assert!(!app.quit, "b dropped the question: q asks again");
+    assert!(app.child.is_some());
+    assert!(app.status.contains("q again"), "{}", app.status);
+
+    // Asked long ago, the question has lapsed: q asks again.
+    let age = |app: &mut App| {
+        if let Some((_, at)) = &mut app.armed {
+            *at -= KEY_REPLY_HOLD;
+        }
+        if let Some(t) = &mut app.replied {
+            *t -= KEY_REPLY_HOLD;
+        }
+    };
+    age(&mut app);
+    press(&mut app, KeyCode::Char('q'));
+    assert!(!app.quit, "the question had lapsed");
+    assert!(app.child.is_some());
+    // And with nothing pressed the progress takes the status back.
+    age(&mut app);
+    app.tick();
+    assert!(app.armed.is_none());
+    assert!(app.status.starts_with("pass…"), "{}", app.status);
+    press(&mut app, KeyCode::Char('x'));
+    age(&mut app);
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.child.is_some(), "x's question lapses as well");
+    app.stop();
+
+    // With no job, a lapsed question leaves the status.
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.status.contains("q again"), "{}", app.status);
+    age(&mut app);
+    app.tick();
+    assert!(!app.status.contains("q again"), "{}", app.status);
+}

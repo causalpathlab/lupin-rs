@@ -30,7 +30,8 @@ const LOG_KEEP: usize = 1000;
 /// A cluster whose top candidate has less of its evidence than this is flagged.
 pub const CONTESTED: f32 = 0.5;
 /// How long a key's reply holds the status line while a job runs, before
-/// the job's progress takes it back.
+/// the job's progress takes it back; and how long a key asked again (`x`,
+/// `q`) waits for its second press.
 pub const KEY_REPLY_HOLD: Duration = Duration::from_secs(4);
 
 /// The annotation form's state: the selected row, and why it did not run
@@ -537,7 +538,9 @@ pub struct App {
     replied: Option<Instant>,
     /// Settings changed since the round on screen was made.
     pub stale: bool,
-    armed: Option<Armed>,
+    /// A key that asked to be pressed again, and when: the question lapses
+    /// after [`KEY_REPLY_HOLD`].
+    armed: Option<(Armed, Instant)>,
     pub quit: bool,
     /// The trajectory figures of the manifests on screen, when they have any.
     pub figures: Option<super::figure_pane::FigurePane>,
@@ -660,6 +663,14 @@ impl App {
             self.push_log(line);
         }
         self.keep_scores_current();
+        // A question asked again lapses, and the status with it.
+        if self
+            .armed
+            .is_some_and(|(_, at)| at.elapsed() >= KEY_REPLY_HOLD)
+        {
+            self.armed = None;
+            self.status.clear();
+        }
         let Some(r) = &mut self.child else {
             return;
         };
@@ -2060,8 +2071,13 @@ impl App {
     }
 
     fn key_unsynced(&mut self, k: KeyEvent) {
+        // Any key but a timely second press drops a question asked again.
+        let armed = self
+            .armed
+            .take()
+            .filter(|(_, at)| at.elapsed() < KEY_REPLY_HOLD)
+            .map(|(a, _)| a);
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
-            let armed = self.armed.take();
             return self.request_quit(armed, "ctrl-c");
         }
         // The popups take keys from the top down, as `ui::draw_overlays`
@@ -2125,7 +2141,6 @@ impl App {
             self.help_open = true;
             return;
         }
-        let armed = self.armed.take();
         if self.form.is_some() {
             return self.settings_key(k);
         }
@@ -2140,7 +2155,7 @@ impl App {
                 Some(false) => self.stop(),
                 Some(true) if armed == Some(Armed::Stop) => self.stop(),
                 Some(true) => {
-                    self.armed = Some(Armed::Stop);
+                    self.arm(Armed::Stop);
                     self.status = "x again stops it".into();
                 }
                 None => {}
@@ -2174,6 +2189,11 @@ impl App {
         }
     }
 
+    /// Ask for `a`'s key again, for [`KEY_REPLY_HOLD`].
+    fn arm(&mut self, a: Armed) {
+        self.armed = Some((a, Instant::now()));
+    }
+
     /// Quit on `key` (`q` or `ctrl-c`), asking again first while a pass runs
     /// or edits are unsaved; never during a save.
     fn request_quit(&mut self, armed: Option<Armed>, key: &str) {
@@ -2185,7 +2205,7 @@ impl App {
         if matches!(busy, Some(Job::Save(_))) {
             self.status = format!("saving… {key} once it is done");
         } else if let (true, Some(job)) = (armed != Some(Armed::Quit), &busy) {
-            self.armed = Some(Armed::Quit);
+            self.arm(Armed::Quit);
             self.status = format!(
                 "a {} is running{unsaved}: {key} again stops it and quits",
                 job.name()
@@ -2195,7 +2215,7 @@ impl App {
             self.stop_rescoring();
             self.quit = true;
         } else {
-            self.armed = Some(Armed::Quit);
+            self.arm(Armed::Quit);
             self.status = format!(
                 "{} unsaved edit(s): {key} again to quit, s to save",
                 self.edits.len()
