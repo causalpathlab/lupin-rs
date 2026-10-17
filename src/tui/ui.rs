@@ -2043,12 +2043,21 @@ fn draw_prompt(f: &mut Frame, app: &App) {
 
 /// A choice popup within `over`: the question, the numbered options with
 /// the selected one highlighted, and what choosing it does.
+/// A menu's keys, along its bottom border.
+const MENU_HINT: &str = " ↑↓ choose · enter or its key takes it · esc or q cancels ";
+
 fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
     let key = |o: &super::menu::Choice| o.key.unwrap_or(' ');
     let option = |o: &super::menu::Choice| format!(" {}  {}", key(o), o.label).chars().count();
-    // Wide enough for its longest option: past `over`, or past the usual
-    // 100 columns of a wide menu, as far as the screen goes.
-    let longest = m.choices.iter().map(option).max().unwrap_or(0);
+    // Wide enough for its longest option and its keys: past `over`, or
+    // past the usual 100 columns of a wide menu, as far as the screen goes.
+    let longest = m
+        .choices
+        .iter()
+        .map(option)
+        .chain(std::iter::once(Span::from(MENU_HINT).width()))
+        .max()
+        .unwrap_or(0);
     let need = u16::try_from(longest).unwrap_or(u16::MAX).saturating_add(2);
     let mut width = over.width.saturating_sub(2).clamp(20.min(over.width), 100);
     let over = if need > width {
@@ -2094,10 +2103,9 @@ fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
     let area = centered(over, width, height);
     f.render_widget(Clear, area);
     f.render_widget(
-        Paragraph::new(lines).style(POPUP).block(popup(
-            String::new(),
-            " ↑↓ choose · enter or its key takes it · esc or q cancels ",
-        )),
+        Paragraph::new(lines)
+            .style(POPUP)
+            .block(popup(String::new(), MENU_HINT)),
         area,
     );
 }

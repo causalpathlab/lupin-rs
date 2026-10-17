@@ -3383,6 +3383,24 @@ fn a_tree_group_picked_as_a_label_is_not_said_to_have_failed_fdr() {
 }
 
 #[test]
+fn a_narrow_menu_is_wide_enough_for_its_keys_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = order_app(dir.path(), &["CT1", "CT2", "CT3"]);
+    press(&mut app, KeyCode::Char('r'));
+    assert!(menu(&app).is_some());
+    for (w, h) in [(200, 55), (100, 30), (80, 24)] {
+        let screen = drawn_in(&app, w, h).concat();
+        assert!(screen.contains("esc or q cancels ┛"), "{w}: {screen}");
+    }
+    press(&mut app, KeyCode::Char('1'));
+    let screen = drawn_in(&app, 200, 55).concat();
+    assert!(
+        screen.contains("esc or q cancels ┛"),
+        "the root menu: {screen}"
+    );
+}
+
+#[test]
 fn the_root_menu_leaves_out_the_types_below_min_cells_and_says_so() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = order_app(dir.path(), &[]);
