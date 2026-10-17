@@ -223,17 +223,13 @@ impl Gallery {
             .collect()
     }
 
-    /// Figures beside `manifest_prefix` named `{prefix}.trajectory.*.pdf`
-    /// that no entry lists.
-    pub fn not_listed(&self, manifest_prefix: &str) -> Vec<PathBuf> {
-        let Some(dir) = Path::new(manifest_prefix).parent() else {
+    /// Figures named `{figures}.*.pdf` (`figures` is the run's prefix and
+    /// the figures' kind, `run.trajectory`) that no entry lists.
+    pub fn not_listed(&self, figures: &str) -> Vec<PathBuf> {
+        let Some(dir) = Path::new(figures).parent() else {
             return Vec::new();
         };
-        let stem = Path::new(manifest_prefix)
-            .file_name()
-            .map_or(String::new(), |s| {
-                format!("{}.trajectory.", s.to_string_lossy())
-            });
+        let stem = figure_stem(figures);
         let listed: std::collections::BTreeSet<PathBuf> =
             self.entries.iter().map(|e| e.path.clone()).collect();
         let Ok(read) = std::fs::read_dir(if dir.as_os_str().is_empty() {
@@ -414,6 +410,14 @@ pub fn ago(when: u64, now: u64) -> String {
         3600..=86399 => format!("{} h ago", d / 3600),
         _ => format!("{} d ago", d / 86400),
     }
+}
+
+/// The start of a figure file's name for `figures` (the run's prefix and
+/// the figures' kind, `dir/run.trajectory`): `run.trajectory.`.
+pub fn figure_stem(figures: &str) -> String {
+    Path::new(figures)
+        .file_name()
+        .map_or(String::new(), |s| format!("{}.", s.to_string_lossy()))
 }
 
 #[cfg(test)]

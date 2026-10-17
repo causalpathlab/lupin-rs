@@ -71,6 +71,7 @@ fn app_with_terms(terms: bool) -> App {
         decided: std::collections::BTreeSet::new(),
         rescorable: false,
         score_calls: false,
+        figures: Default::default(),
     });
     app.focus = Focus::Genes;
     app
@@ -658,7 +659,7 @@ fn esc_closes_the_exports_strip_then_the_grid_before_leaving() {
 
 #[test]
 fn a_grid_tile_opens_with_its_number_or_space() {
-    use crate::trajectory::figures::Panel;
+    use crate::figures::Panel;
     let dir = tempfile::tempdir().unwrap();
     let mut app = figures_app(dir.path());
     press(&mut app, KeyCode::Char('w'));
@@ -1567,4 +1568,101 @@ fn the_cluster_list_shows_a_susie_calls_share_not_its_pip() {
         ["0.20", "—"],
         "a known share is shown; only the fold is missing"
     );
+}
+
+/// The app on a four-cell round of two clusters, with a UMAP when `layout`.
+fn map_app(dir: &std::path::Path, layout: bool) -> App {
+    let l = crate::figures::tests::round(dir, layout);
+    let panel = [("GENE1".to_string(), "A".to_string())];
+    let tree = crate::manifest::ontology::panel_tree_on(None, &panel);
+    let mut app = App::new(cli(&[]), PathBuf::new(), PathBuf::new(), tree);
+    app.open(&l.file);
+    app
+}
+
+/// The cluster the map lights.
+fn map_focus(app: &App) -> Option<i32> {
+    app.cell_map.as_ref().expect("a map").style.focus
+}
+
+#[test]
+fn a_round_with_a_layout_shows_its_cells_lit_on_the_selected_cluster() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    assert!(
+        matches!(app.tree_mode, TreeMode::Cells),
+        "the map in the tree pane"
+    );
+    assert_eq!(map_focus(&app), Some(0));
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Down);
+    assert_eq!(map_focus(&app), Some(1), "the light follows the selection");
+}
+
+#[test]
+fn the_maps_keys_act_from_the_tree_pane_and_capital_v_shows_the_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('c'));
+    let style = app.cell_map.as_ref().unwrap().style;
+    assert_eq!(
+        style.colouring,
+        crate::figures::Colouring::Cluster,
+        "{}",
+        app.status
+    );
+    press(&mut app, KeyCode::Char('V'));
+    assert!(matches!(app.tree_mode, TreeMode::Panel), "V shows the tree");
+    press(&mut app, KeyCode::Char('v'));
+    assert!(
+        matches!(app.tree_mode, TreeMode::Cells),
+        "v the cells again"
+    );
+}
+
+#[test]
+fn a_round_without_a_layout_keeps_the_tree_and_v_names_the_senna_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), false);
+    assert!(matches!(app.tree_mode, TreeMode::Panel));
+    assert!(app.cell_map.is_none());
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('v'));
+    assert!(app.status.contains("senna layout"), "{}", app.status);
+}
+
+#[test]
+fn on_the_map_t_restyles_even_in_the_trajectory_tui_and_esc_leaves() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.trajectory_tui = true;
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('t'));
+    assert!(
+        matches!(app.tree_mode, TreeMode::Cells),
+        "t stays on the map"
+    );
+    assert!(app.status.starts_with("labels"), "{}", app.status);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.focus, Focus::Clusters);
+}
+
+#[test]
+fn a_new_round_keeps_the_tree_chosen_over_the_map_and_the_maps_look() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('c'));
+    let file = app.round.as_ref().unwrap().manifest.clone();
+    app.open(&file);
+    let style = app.cell_map.as_ref().unwrap().style;
+    assert_eq!(
+        style.colouring,
+        crate::figures::Colouring::Cluster,
+        "the colouring kept"
+    );
+    press(&mut app, KeyCode::Char('V'));
+    app.open(&file);
+    assert!(matches!(app.tree_mode, TreeMode::Panel), "the tree kept");
 }

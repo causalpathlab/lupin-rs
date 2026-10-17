@@ -1,6 +1,6 @@
 use super::*;
 
-fn data() -> TrajectoryData {
+fn data() -> CellFigures {
     let n = 40;
     let types: Vec<Box<str>> = (0..n)
         .map(|i| if i < 20 { "A" } else { "B" }.into())
@@ -14,7 +14,7 @@ fn data() -> TrajectoryData {
         d[(i, 1)] = x[i];
         d[(i, 2)] = y[i];
     }
-    TrajectoryData {
+    CellFigures {
         manifest: "run.senna.json".into(),
         pseudotime,
         types,
@@ -30,12 +30,12 @@ fn data() -> TrajectoryData {
             verdict: Some(Verdict::Supported),
             order_agreement: 0.9,
         }],
-        ..TrajectoryData::default()
+        ..CellFigures::default()
     }
 }
 
 /// `t`'s figure of `panel` at 320 × 240 in `style`, whole.
-fn draw(t: &TrajectoryData, panel: Panel, style: &Style) -> Figure {
+fn draw(t: &CellFigures, panel: Panel, style: &Style) -> Figure {
     t.figure(panel, 320, 240, style, View::default()).unwrap()
 }
 
@@ -85,7 +85,7 @@ fn phate_is_drawn_when_senna_made_one() {
     let mut t = data();
     t.layouts[0].method = Some("phate".into());
     assert_eq!(
-        t.title(Panel::Layout { k: 0 }, Colouring::Pseudotime),
+        t.title(Panel::Layout { k: 0 }, &Style::default()),
         "PHATE · pseudotime"
     );
     assert_eq!(t.slug(Panel::Layout { k: 0 }), "layout_phate");
@@ -222,7 +222,7 @@ fn colourings_cycle_over_what_the_outputs_support() {
         "a legend"
     );
     assert_eq!(
-        t.title(Panel::Layout { k: 0 }, style.colouring),
+        t.title(Panel::Layout { k: 0 }, &style),
         "layout · cell type"
     );
     assert_eq!(
@@ -483,4 +483,185 @@ fn a_table_that_repeats_a_name_gives_each_cell_its_own_row() {
         out.column(0).iter().copied().collect::<Vec<_>>(),
         [1.0, 2.0, 9.0]
     );
+}
+
+/// The figures of the round `l`.
+fn of_round(l: &crate::manifest::run::Loaded) -> CellFigures {
+    CellFigures::of_round(l, &crate::manifest::rounds::read_cells(l).unwrap())
+}
+
+/// A round on four cells in two clusters, labelled A and B, with a UMAP.
+fn round_with_layout(dir: &Path) -> crate::manifest::run::Loaded {
+    round(dir, true)
+}
+
+/// A round on four cells in two clusters, labelled A and B; a UMAP when
+/// `layout`.
+pub(crate) fn round(dir: &Path, layout: bool) -> crate::manifest::run::Loaded {
+    use legume_numeric::matrix::traits::IoOps as _;
+    let at = |n: &str| dir.join(n).to_string_lossy().into_owned();
+    let names: Vec<Box<str>> = ["c0", "c1", "c2", "c3"]
+        .iter()
+        .map(|s| Box::from(*s))
+        .collect();
+    crate::manifest::rounds::write_clusters(
+        &at("r.clusters.parquet"),
+        &names,
+        &[Some(0), Some(0), Some(1), Some(1)],
+    )
+    .unwrap();
+    std::fs::write(
+        at("r.argmax.tsv"),
+        "cell\tcell_type\tprobability\nc0\tA\t0.9\nc1\tA\t0.8\nc2\tB\t0.7\nc3\tunassigned\t0.1\n",
+    )
+    .unwrap();
+    let cols: Vec<Box<str>> = ["x", "y"].iter().map(|s| Box::from(*s)).collect();
+    Mat::from_row_slice(4, 2, &[0.0, 0.0, 1.0, 0.0, 5.0, 5.0, 6.0, 5.0])
+        .to_parquet_with_names(
+            &at("r.umap.parquet"),
+            (Some(&names), Some("cell")),
+            Some(&cols),
+        )
+        .unwrap();
+    let layout = if layout {
+        r#", "layout": {"cell_coords": "r.umap.parquet", "current": "umap"}"#
+    } else {
+        ""
+    };
+    std::fs::write(
+        at("r.senna.json"),
+        format!(
+            r#"{{"version": 2, "kind": "bge", "prefix": "r",
+                "cluster": {{"clusters": "r.clusters.parquet"}},
+                "annotate": {{"argmax": "r.argmax.tsv"}}{layout}}}"#
+        ),
+    )
+    .unwrap();
+    crate::manifest::run::load(&at("r.senna.json")).unwrap()
+}
+
+#[test]
+fn a_rounds_cells_come_with_its_labels_clusters_and_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = of_round(&round_with_layout(dir.path()));
+    assert_eq!(
+        f.types.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+        ["A", "A", "B", UNASSIGNED_LABEL]
+    );
+    assert_eq!(f.cluster, vec![0, 0, 1, 1]);
+    assert_eq!((f.layouts.len(), f.layouts[0].x[2]), (1, 5.0));
+    assert_eq!(
+        f.colourings(),
+        vec![Colouring::Type, Colouring::Cluster],
+        "no pseudotime"
+    );
+    assert_eq!(
+        f.panels(),
+        vec![Panel::Layout { k: 0 }],
+        "no trajectory panels"
+    );
+    let fig = draw(&f, Panel::Layout { k: 0 }, &Style::opening(&f));
+    assert!(fig.svg.contains("<svg"));
+}
+
+#[test]
+fn a_round_without_a_layout_has_no_figures_but_names_the_senna_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = of_round(&round(dir.path(), false));
+    assert!(f.layouts.is_empty());
+    assert!(
+        f.layout_hint
+            .as_deref()
+            .is_some_and(|h| h.contains("senna layout")),
+        "{:?}",
+        f.layout_hint
+    );
+}
+
+#[test]
+fn a_focused_cluster_keeps_its_colours_and_draws_over_the_greyed_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = of_round(&round_with_layout(dir.path()));
+    let style = Style {
+        focus: Some(0),
+        ..Style::opening(&f)
+    };
+    let (colours, _) = f.shown_colours(&style);
+    assert!(
+        colours[0].is_some() && colours[1].is_some(),
+        "cluster 0 in colour"
+    );
+    assert!(
+        colours[2].is_none() && colours[3].is_none(),
+        "the rest grey"
+    );
+    let order = f.draw_order(&[0, 1, 2, 3], style.colouring, &colours);
+    assert_eq!(&order[..2], &[2, 3], "grey first, under the focus");
+    assert!(
+        f.title(Panel::Layout { k: 0 }, &style).contains("K0"),
+        "the title names the focus"
+    );
+}
+
+#[test]
+fn a_rounds_figures_export_as_cells_not_trajectory() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = of_round(&round_with_layout(dir.path()));
+    assert_eq!(f.kind(), "cells");
+    assert_eq!(data().kind(), "trajectory");
+    let e = f
+        .export(Panel::Layout { k: 0 }, &Style::opening(&f), View::default())
+        .unwrap();
+    assert!(
+        e.base.to_string_lossy().contains("r.cells.layout_umap"),
+        "{}",
+        e.base.display()
+    );
+}
+
+#[test]
+fn coloured_by_cluster_the_labels_name_the_clusters() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = of_round(&round_with_layout(dir.path()));
+    let by = |colouring| {
+        let style = Style {
+            colouring,
+            ..Style::opening(&f)
+        };
+        draw(&f, Panel::Layout { k: 0 }, &style).svg
+    };
+    let types = by(Colouring::Type);
+    assert!(types.contains(">A</text>") && !types.contains(">K0</text>"));
+    let clusters = by(Colouring::Cluster);
+    assert!(
+        !clusters.contains(">A</text>"),
+        "no type names over the clusters"
+    );
+    assert_eq!(
+        clusters.matches(">K0</text>").count(),
+        2,
+        "legend and label"
+    );
+}
+
+#[test]
+fn with_a_cluster_in_focus_the_legend_lists_only_its_colours() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = of_round(&round_with_layout(dir.path()));
+    let style = Style {
+        labels: None,
+        focus: Some(1),
+        ..Style::opening(&f)
+    };
+    let svg = draw(&f, Panel::Layout { k: 0 }, &style).svg;
+    assert!(svg.contains(">B</text>"), "cluster 1's label");
+    assert!(!svg.contains(">A</text>"), "not cluster 0's");
+}
+
+#[test]
+fn a_round_drawn_by_pseudotime_it_lacks_is_grey_not_a_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = of_round(&round_with_layout(dir.path()));
+    let fig = draw(&f, Panel::Layout { k: 0 }, &Style::default());
+    assert!(fig.svg.contains("<svg"));
 }

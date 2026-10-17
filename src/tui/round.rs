@@ -267,6 +267,9 @@ pub struct RoundView {
     /// The candidates are the projection score's per-cell calls: a marker
     /// edit needs a new pass to be scored.
     pub score_calls: bool,
+    /// The round's cells on its run's layouts, for the cell map; taken by
+    /// the app when it shows the round.
+    pub figures: crate::figures::CellFigures,
 }
 
 /// A score round's shares: each current cluster's share of its cells called
@@ -402,8 +405,10 @@ impl RoundView {
                 }
             })
             .collect();
+        let figures = crate::figures::CellFigures::of_round(&loaded, &cells);
         Ok(Self {
             manifest: manifest.to_path_buf(),
+            figures,
             clusters,
             cell_names: cells.names,
             cell_clusters: cells.clusters,

@@ -2,12 +2,14 @@
 //! terminal, exported as SVG + PDF, and logged in the gallery
 //! (`docs/trajectory-plan.md` §6).
 
+use super::app::step;
 use super::gallery::{Gallery, Status};
+use crate::figures::{self, CellFigures, Panel, Style, View};
 use crate::manifest::run::load;
-use crate::trajectory::figures::{self, Panel, Style, TrajectoryData, View};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use image::DynamicImage;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Rect, Size};
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::Protocol;
@@ -33,7 +35,8 @@ pub enum Graphics {
 /// The exports strip: the gallery, checked against the files, and the
 /// figure files beside the run that it does not list.
 pub struct Exports {
-    /// The run's output prefix, whose figures are looked for.
+    /// The run's output prefix and the figures' kind (`run.trajectory`),
+    /// whose figures are looked for.
     prefix: String,
     pub gallery: Gallery,
     pub open: bool,
@@ -99,7 +102,8 @@ impl Exports {
         let name = pdf
             .file_stem()
             .map_or(String::new(), |s| s.to_string_lossy().into_owned());
-        let panel = name.rsplit(".trajectory.").next().unwrap_or("");
+        let stem = super::gallery::figure_stem(&self.prefix);
+        let panel = name.strip_prefix(&stem).unwrap_or(&name);
         self.gallery.add(&files, &name, panel, manifest)?;
         self.refresh();
         Ok(format!("listed {}", pdf.display()))
@@ -193,8 +197,25 @@ pub fn grid_cols(n: usize) -> usize {
     (1..=n.max(1)).find(|c| c * c >= n).unwrap_or(1)
 }
 
+/// What a key did on the figure pane.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FigureKey {
+    /// Not one of its keys.
+    Ignored,
+    /// Taken, with nothing to say.
+    Took,
+    /// Taken; the status line says this.
+    Say(String),
+    /// Ask where to move the export of this PDF.
+    Relocate(PathBuf),
+}
+
+/// What the thumbnail grid's keys do.
+pub const GRID_KEYS: &str =
+    "arrows choose · Enter, space or 1-9 opens · p exports it · f exports · t c restyle · V leaves the figures · esc or w closes";
+
 pub struct FigurePane {
-    pub data: TrajectoryData,
+    pub data: CellFigures,
     pub panels: Vec<Panel>,
     pub sel: usize,
     /// Show the figure instead of the order table.
@@ -225,21 +246,22 @@ impl FigurePane {
             let Ok(loaded) = load(&m.to_string_lossy()) else {
                 continue;
             };
-            if let Some(data) = TrajectoryData::load(&loaded.manifest, &loaded.dir, &loaded.file)? {
+            if let Some(data) = CellFigures::load(&loaded.manifest, &loaded.dir, &loaded.file)? {
                 return Ok(Some(Self::new(data, picker)));
             }
         }
         Ok(None)
     }
 
-    fn new(data: TrajectoryData, picker: &Picker) -> Self {
-        let exports = Exports::new(data.prefix());
+    fn new(data: CellFigures, picker: &Picker) -> Self {
+        let exports = Exports::new(format!("{}.{}", data.prefix(), data.kind()));
+        let style = Style::opening(&data);
         Self {
             panels: data.panels(),
             data,
             sel: 0,
             shown: false,
-            style: Style::default(),
+            style,
             view: View::default(),
             pair: (1, 2),
             picker: picker.clone(),
@@ -248,6 +270,177 @@ impl FigurePane {
             tiles: RefCell::new(Vec::new()),
             grid: None,
             exports,
+        }
+    }
+
+    /// Draw as `before` did: its labels, colouring (when this data has it),
+    /// view and exports strip; a new round of the same run looks the same.
+    pub fn keep_look(&mut self, before: &FigurePane) {
+        let colouring = before.style.colouring;
+        self.style.labels = before.style.labels;
+        if self.data.colourings().contains(&colouring) {
+            self.style.colouring = colouring;
+        }
+        if before.data.layouts.len() == self.data.layouts.len() {
+            self.panels = before.panels.clone();
+            self.sel = before.sel.min(self.panels.len().saturating_sub(1));
+        }
+        self.view = before.view;
+        self.exports.open = before.exports.open;
+    }
+
+    /// `data`'s figures, shown at once.
+    pub fn showing(data: CellFigures, picker: &Picker) -> Self {
+        let mut p = Self::new(data, picker);
+        p.shown = true;
+        p
+    }
+
+    /// The pane's keys and its exports strip's.
+    pub fn key(&mut self, code: KeyCode) -> FigureKey {
+        use FigureKey::{Ignored, Relocate, Say, Took};
+        if code != KeyCode::Char('D') {
+            self.exports.disarm();
+        }
+        // The thumbnail grid is modal: arrows choose, Enter opens, p exports
+        // the tile chosen, and only the app's own keys (quit, run, stop,
+        // save, export the round, panes, the tree) go by.
+        if let Some(g) = &mut self.grid {
+            if g.step(code) {
+                return Took;
+            }
+            // As in senna view, space or a tile's number opens it too.
+            if let KeyCode::Char(c @ '1'..='9') = code {
+                let k = c as usize - '1' as usize;
+                if k >= g.tiles.len() {
+                    return Say(format!("{} tile(s)", g.tiles.len()));
+                }
+                g.sel = k;
+            }
+            return match code {
+                KeyCode::Enter | KeyCode::Char(' ' | '1'..='9') => {
+                    self.open_tile();
+                    Say(self.title(self.current()))
+                }
+                KeyCode::Esc | KeyCode::Char('w') => {
+                    self.grid = None;
+                    Say(self.title(self.current()))
+                }
+                KeyCode::Char('V') => {
+                    self.grid = None;
+                    self.shown = false;
+                    Took
+                }
+                KeyCode::Char('t') => Say(self.style.cycle_labels()),
+                KeyCode::Char('c') => Say(self.style.cycle_colouring(&self.data.colourings())),
+                KeyCode::Char('p') => Say(self
+                    .export()
+                    .unwrap_or_else(|e| format!("export failed: {e:#}"))),
+                KeyCode::Char('f') => {
+                    self.exports.open = !self.exports.open;
+                    Took
+                }
+                KeyCode::Char(c) if !"qrxseT".contains(c) => Say(GRID_KEYS.into()),
+                _ => Ignored,
+            };
+        }
+        // The strip's keys act only while it is on screen; the arrows it
+        // does not take pan.
+        let strip = self.shown && self.exports.open;
+        if strip {
+            let rows = self.exports.rows();
+            if step(&mut self.exports.sel, rows, code) {
+                return Took;
+            }
+        }
+        let shown = self.shown;
+        match code {
+            // Esc closes the exports strip before it leaves the pane.
+            KeyCode::Esc if strip => {
+                self.exports.open = false;
+                Took
+            }
+            // The strip and its check belong to the figures.
+            KeyCode::Char('f' | 'R') if !shown => {
+                Say("v shows the figures, then f lists their exports".into())
+            }
+            KeyCode::Char('v') => {
+                self.next_panel();
+                Took
+            }
+            KeyCode::Char('V') => {
+                self.shown = false;
+                self.grid = None;
+                Took
+            }
+            KeyCode::Char(',') if shown => Say(self.step_pair(false, false)),
+            KeyCode::Char('.') if shown => Say(self.step_pair(true, false)),
+            KeyCode::Char('[') if shown => Say(self.step_pair(false, true)),
+            KeyCode::Char(']') if shown => Say(self.step_pair(true, true)),
+            // senna view's keys: labels, colouring, layout.
+            KeyCode::Char('t') if shown => Say(self.style.cycle_labels()),
+            KeyCode::Char('c') if shown => Say(self.style.cycle_colouring(&self.data.colourings())),
+            KeyCode::Char('m') if shown => Say(self.next_layout()),
+            // senna view's navigation: the grid, zoom and pan.
+            KeyCode::Char('w') if shown => {
+                self.open_grid();
+                Say(GRID_KEYS.into())
+            }
+            KeyCode::Char('+' | '=') if shown => Say(self.zoom(true)),
+            KeyCode::Char('-' | '_') if shown => Say(self.zoom(false)),
+            KeyCode::Char('0') if shown => Say(self.reset_view()),
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down if shown => {
+                let (dx, dy) = match code {
+                    KeyCode::Left => (-1.0, 0.0),
+                    KeyCode::Right => (1.0, 0.0),
+                    KeyCode::Up => (0.0, 1.0),
+                    _ => (0.0, -1.0),
+                };
+                let note = self.pan(dx, dy);
+                if note.is_empty() {
+                    Took
+                } else {
+                    Say(note)
+                }
+            }
+            KeyCode::Char('p') if shown => Say(self
+                .export()
+                .unwrap_or_else(|e| format!("export failed: {e:#}"))),
+            KeyCode::Char('f') => {
+                self.exports.open = !self.exports.open;
+                Took
+            }
+            KeyCode::Char('R') => {
+                let x = &mut self.exports;
+                x.refresh();
+                Say(format!(
+                    "{} export(s) checked, {} not listed",
+                    x.gallery.entries.len(),
+                    x.not_listed.len()
+                ))
+            }
+            KeyCode::Enter if strip => Say(self
+                .exports
+                .adopt(&self.data.manifest)
+                .unwrap_or_else(|e| format!("{e:#}"))),
+            KeyCode::Char('d') if strip => Say(self
+                .exports
+                .remove(false)
+                .unwrap_or_else(|e| format!("{e:#}"))),
+            KeyCode::Char('D') if strip => {
+                let x = &mut self.exports;
+                Say(match x.arm_delete() {
+                    Some(name) => format!("D again deletes {name} (svg and pdf)"),
+                    None => x.remove(true).unwrap_or_else(|e| format!("{e:#}")),
+                })
+            }
+            KeyCode::Char('M') if strip => {
+                match self.exports.gallery.entries.get(self.exports.sel) {
+                    Some(e) => Relocate(e.path.clone()),
+                    None => Took,
+                }
+            }
+            _ => Ignored,
         }
     }
 
@@ -269,7 +462,7 @@ impl FigurePane {
 
     /// A panel's title, naming the layout and, on a scatter, the colouring.
     pub fn title(&self, panel: Panel) -> String {
-        self.data.title(panel, self.style.colouring)
+        self.data.title(panel, &self.style)
     }
 
     /// Show the figures, or move to the next panel when they are shown.

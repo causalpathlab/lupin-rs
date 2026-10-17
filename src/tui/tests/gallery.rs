@@ -36,7 +36,7 @@ fn an_export_is_logged_checked_moved_and_removed() {
 
     // A second set beside the manifest, not logged, is noticed.
     figure_set(dir, "run.trajectory.layout");
-    let prefix = dir.join("run").to_string_lossy().into_owned();
+    let prefix = dir.join("run.trajectory").to_string_lossy().into_owned();
     assert_eq!(g.not_listed(&prefix).len(), 1);
 
     // A changed file is neither moved nor deleted on the log's word.

@@ -1,6 +1,6 @@
 use super::*;
+use crate::figures::Layout;
 use crate::trajectory::edges::{EdgeRow, Verdict};
-use crate::trajectory::figures::Layout;
 use legume_numeric::matrix::dense_mat_io::Mat;
 use ratatui::crossterm::event::KeyCode;
 
@@ -14,7 +14,7 @@ pub(crate) fn pane() -> FigurePane {
         d[(i, 1)] = x[i];
         d[(i, 2)] = y[i];
     }
-    let data = TrajectoryData {
+    let data = CellFigures {
         manifest: "run.senna.json".into(),
         pseudotime: (0..n).map(|i| i as f32 / n as f32).collect(),
         types: (0..n)
@@ -43,7 +43,7 @@ pub(crate) fn pane() -> FigurePane {
             verdict: Some(Verdict::Supported),
             order_agreement: 0.9,
         }],
-        ..TrajectoryData::default()
+        ..CellFigures::default()
     };
     let mut p = FigurePane::new(data, &Picker::halfblocks());
     p.shown = true;
