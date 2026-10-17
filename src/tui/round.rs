@@ -72,10 +72,17 @@ impl Candidate {
 
 /// A cluster's candidates and every type's share from its `evidence`, by
 /// method `by`: `by`'s ranking first, then each other method's types it
-/// lacks, each knowing where every method ranks it.
+/// lacks, each knowing where every method ranks it. Types a share ranks
+/// alike go by their q, then their NES, as `review` orders tied calls.
 #[must_use]
 pub fn ranked_view(evidence: &[TypeEvidence], by: Method) -> (Vec<Candidate>, Vec<(String, f32)>) {
-    let ranked = Method::ALL.map(|m| m.ranked(evidence));
+    let ranked = Method::ALL.map(|m| {
+        let mut r = m.ranked(evidence);
+        if m != Method::Susie {
+            settle_ties(&mut r, m);
+        }
+        r
+    });
     let place: [HashMap<&str, usize>; 3] = ranked.each_ref().map(|r| {
         r.iter()
             .enumerate()
@@ -98,6 +105,20 @@ pub fn ranked_view(evidence: &[TypeEvidence], by: Method) -> (Vec<Candidate>, Ve
         .filter_map(|e| Some((e.label.clone(), by.reading(e)?)))
         .collect();
     (candidates, shares)
+}
+
+/// Order `ranked` (by `m`'s share, largest first) with types of one share
+/// by their q, smallest first, then their NES, largest first; unknowns
+/// last, and types tied on all three as they were.
+fn settle_ties(ranked: &mut [&TypeEvidence], m: Method) {
+    let low = |v: Option<f32>| v.unwrap_or(f32::INFINITY);
+    let high = |v: Option<f32>| v.unwrap_or(f32::NEG_INFINITY);
+    ranked.sort_by(|a, b| {
+        high(m.reading(b))
+            .total_cmp(&high(m.reading(a)))
+            .then(low(a.q).total_cmp(&low(b.q)))
+            .then(high(b.nes).total_cmp(&high(a.nes)))
+    });
 }
 
 /// How deep in each method's ranking a type is offered as a label choice.

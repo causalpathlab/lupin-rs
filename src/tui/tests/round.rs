@@ -518,6 +518,29 @@ fn a_rounds_candidates_know_where_each_method_ranks_them() {
 }
 
 #[test]
+fn types_tied_on_the_share_follow_q_then_nes_as_review_orders_calls() {
+    use crate::annotate::rounds::{Method, TypeEvidence};
+    let e = |label: &str, share: f32, q: f32, nes: f32| TypeEvidence {
+        label: label.into(),
+        enrichment: Some(share),
+        q: Some(q),
+        nes: Some(nes),
+        ..TypeEvidence::default()
+    };
+    let rows = [
+        e("CT1", 0.25, 0.01, 2.0),
+        e("CT2", 0.25, 0.01, 1.5),
+        e("CT3", 0.25, 0.01, 1.75),
+        e("CT0", 0.25, 0.05, 3.0),
+        e("CT4", 0.5, 0.2, 1.0),
+    ];
+    let (c, _) = ranked_view(&rows, Method::Enrichment);
+    let labels: Vec<&str> = c.iter().map(|t| t.label.as_str()).collect();
+    assert_eq!(labels, ["CT4", "CT1", "CT3", "CT2", "CT0"]);
+    assert_eq!(c[2].ranks[Method::Enrichment.index()], Some(2));
+}
+
+#[test]
 fn the_choices_are_every_methods_top_three_firsts_first() {
     let cands = vec![
         ranked("A", 0.5, [Some(0), None, Some(1)]),
