@@ -837,6 +837,21 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
     let susie = r.clusters.iter().any(|c| c.call_evidence().is_some());
     // SuSiE's readings stay from before the edit while a rescoring is shown.
     let stale = susie && app.recorded.is_some();
+    // The cell counts, whole, beside a label of at least `LABEL` columns;
+    // a narrower pane leaves them out rather than cut them.
+    const LABEL: u16 = 20;
+    let evidence_w: &[u16] = if susie { &[8, 6] } else { &[5] };
+    let counts_w = r
+        .clusters
+        .iter()
+        .map(|c| c.cells.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max("cells".len()) as u16;
+    // The name, the label, the evidence and the flag, a column between each.
+    let others = 5 + LABEL + evidence_w.iter().sum::<u16>() + 1;
+    let gaps = 3 + evidence_w.len() as u16;
+    let counts = others + gaps + counts_w <= area.width.saturating_sub(2);
     let rows: Vec<Row> = r
         .clusters
         .iter()
@@ -857,14 +872,11 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
                 .iter()
                 .find(|t| key.as_deref() == Some(label_key(&t.label).as_str()));
             let evidence = cluster_list_evidence(susie, of_label);
-            let mut cells: Vec<Cell> = [
-                crate::figures::cluster_name(c.id),
-                c.cells.to_string(),
-                shown,
-            ]
-            .into_iter()
-            .map(Cell::from)
-            .collect();
+            let mut cells = vec![Cell::from(crate::figures::cluster_name(c.id))];
+            if counts {
+                cells.push(Cell::from(c.cells.to_string()));
+            }
+            cells.push(Cell::from(shown));
             cells.extend(evidence.into_iter().map(|e| {
                 let cell = Cell::from(e);
                 if stale {
@@ -884,25 +896,16 @@ fn draw_clusters(f: &mut Frame, area: Rect, app: &App) {
             }
         })
         .collect();
-    let header = Row::new(cluster_list_header(susie)).bold();
-    let widths = if susie {
-        vec![
-            Constraint::Length(5),
-            Constraint::Length(6),
-            Constraint::Min(20),
-            Constraint::Length(8),
-            Constraint::Length(6),
-            Constraint::Length(1),
-        ]
-    } else {
-        vec![
-            Constraint::Length(5),
-            Constraint::Length(6),
-            Constraint::Min(20),
-            Constraint::Length(5),
-            Constraint::Length(1),
-        ]
-    };
+    let mut header = cluster_list_header(susie);
+    let mut widths = vec![Constraint::Length(5), Constraint::Length(counts_w)];
+    if !counts {
+        header.remove(1);
+        widths.pop();
+    }
+    widths.push(Constraint::Fill(1));
+    widths.extend(evidence_w.iter().map(|&w| Constraint::Length(w)));
+    widths.push(Constraint::Length(1));
+    let header = Row::new(header).bold();
     let done = r.clusters.iter().filter(|c| app.edited(c.id)).count();
     let mut state = TableState::default().with_selected(Some(app.cluster_sel));
     let t = Table::new(rows, widths)

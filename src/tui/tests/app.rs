@@ -1248,15 +1248,56 @@ fn esc_closes_the_browser_popup_and_leaves_the_form() {
 
 /// The screen `app` draws, as one string.
 fn drawn(app: &App) -> String {
-    let backend = ratatui::backend::TestBackend::new(160, 45);
+    drawn_in(app, 160, 45).concat()
+}
+
+/// The screen `app` draws on a `width` × `height` terminal, by row.
+fn drawn_in(app: &App, width: u16, height: u16) -> Vec<String> {
+    let backend = ratatui::backend::TestBackend::new(width, height);
     let mut term = ratatui::Terminal::new(backend).unwrap();
     term.draw(|f| super::super::ui::draw(f, app)).unwrap();
-    term.backend()
-        .buffer()
+    let buffer = term.backend().buffer();
+    buffer
         .content()
-        .iter()
-        .map(|c| c.symbol())
+        .chunks(usize::from(width))
+        .map(|row| row.iter().map(|c| c.symbol()).collect())
         .collect()
+}
+
+#[test]
+fn a_narrow_cluster_list_leaves_out_the_cell_counts_rather_than_cut_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let annotate = {
+        let mut app = app_with_terms(false);
+        app.focus = Focus::Clusters;
+        app
+    };
+    let order = {
+        let mut app = order_app(dir.path(), &["CT1", "CT2"]);
+        app.round = app_with_terms(false).round.take();
+        app.focus = Focus::Clusters;
+        app
+    };
+    for (what, mut app) in [("annotate", annotate), ("order", order)] {
+        app.round.as_mut().unwrap().clusters[0].cells = 1234567;
+        let row = |screen: &[String]| {
+            screen
+                .iter()
+                .find(|r| r.contains("K0 "))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let wide = drawn_in(&app, 200, 50);
+        assert!(row(&wide).contains("1234567"), "{what}: {}", row(&wide));
+        let narrow = drawn_in(&app, 80, 24);
+        let k0 = row(&narrow);
+        assert!(k0.contains("CT1"), "{what}: {k0}");
+        assert!(!k0.contains(" 1 ") && !k0.contains("123"), "{what}: {k0}");
+        assert!(
+            !narrow.concat().contains("cells   label"),
+            "{what}: no header either"
+        );
+    }
 }
 
 #[test]
