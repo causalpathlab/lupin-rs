@@ -39,6 +39,15 @@ pub enum Action {
     LabelOnTree,
     /// Label cluster `cluster` with a name typed by hand.
     LabelByName { cluster: ClusterId },
+    /// Confirm a term suggested for panel type `label`, with `note`, into
+    /// the user's alias table.
+    Suggested {
+        label: String,
+        id: String,
+        note: String,
+    },
+    /// None of the terms suggested for `label`.
+    NoneSuggested { label: String },
 }
 
 pub struct Choice {

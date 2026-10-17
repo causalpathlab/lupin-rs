@@ -222,6 +222,7 @@ the files and ontology release it used under
 ```sh
 lupin data where -f run.senna.json   # which file each layer contributes
 lupin data fetch                     # cache everything (GO files too), for offline machines
+lupin data suggest-cl CT1 CT2        # each label's nearest Cell Ontology terms, as JSON
 ```
 
 In the annotate TUI, `o` in the tree pane switches to the Cell Ontology
@@ -233,6 +234,16 @@ lists the run's family (the run, its annotated rounds and its trajectories)
 to switch between them without restarting. When the cluster's top
 candidate has no term, lupin offers to remember the pick in the panel's
 sidecar (else the project's `lupin/cl_aliases.tsv`). `?` lists every key.
+
+For a panel type with no term at all, `c` in the tree pane suggests the
+three terms nearest it by text embedding, with their scores
+(`lupin data suggest-cl`, PubMedBERT sentence embeddings at a pinned
+revision). A suggestion is never taken on its own: the one you confirm is
+written to your `~/.config/lupin/cl_aliases.tsv` and the tree is built again
+with it. The first ranking fetches the model and encodes the ontology, which
+takes a minute or two on a CPU; the index is cached under lupin's cache
+directory per ontology release and model revision. Offline without the
+model there are no suggestions, and the rest works as before.
 
 What you curate in the TUI is kept as plain files in `lupin/` beside the run
 manifest (read after `~/.config/lupin/`, which holds the same names for every

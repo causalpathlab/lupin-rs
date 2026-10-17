@@ -414,6 +414,8 @@ pub enum Job {
     Save(usize),
     /// `lupin trajectory`, writing this manifest.
     Trajectory(PathBuf),
+    /// `lupin data suggest-cl`, writing the suggestions to this file.
+    Suggest(PathBuf),
 }
 
 impl Job {
@@ -423,6 +425,7 @@ impl Job {
             Self::Pass => "pass",
             Self::Save(_) => "save",
             Self::Trajectory(_) => "trajectory",
+            Self::Suggest(_) => "term ranking",
         }
     }
 
@@ -527,6 +530,11 @@ pub struct App {
     pub tree_marked: Vec<String>,
     /// Mixed labels by name.
     pub mixed: super::ontology::Mixed,
+    /// Cell Ontology terms suggested for the panel types without one, once
+    /// ranked (`c` in the tree pane).
+    pub suggestions: Option<super::suggest::Suggestions>,
+    /// The type whose suggestions open when the ranking job is done.
+    pub suggest_for: Option<String>,
     pub tree_sel: usize,
     /// The order view's types on the Cell Ontology, drawn beside the
     /// precedence table as the tree pane draws the panel.
@@ -632,6 +640,8 @@ impl App {
             marked: Vec::new(),
             tree_marked: Vec::new(),
             mixed: super::ontology::Mixed::default(),
+            suggestions: None,
+            suggest_for: None,
             tree_sel: 0,
             form: None,
             help_open: false,
@@ -742,6 +752,10 @@ impl App {
                     self.trajectory_done(&m, secs);
                     return;
                 }
+                if let Job::Suggest(file) = job {
+                    self.suggestions_done(&file, secs);
+                    return;
+                }
                 let after = std::mem::take(&mut self.after_pass);
                 let after = if job == Job::Pass {
                     after
@@ -828,6 +842,19 @@ impl App {
                     _ => {}
                 }
             }
+            // Suggestions are extra: without them (offline, no model) the
+            // rest goes on, so no failure popup.
+            Ok(Some(_)) if matches!(job, Job::Suggest(_)) => {
+                self.child = None;
+                if let Job::Suggest(file) = &job {
+                    let _ = std::fs::remove_file(file);
+                }
+                self.suggest_for = None;
+                self.status =
+                    "no Cell Ontology suggestions (offline, or no text model): see the log; the rest works"
+                        .into();
+                self.push_log(format!("[WARN] {}", self.status));
+            }
             Ok(Some(st)) => {
                 self.child = None;
                 self.after_pass = AfterPass::Nothing;
@@ -864,6 +891,7 @@ impl App {
             Job::Pass => format!("pass → {}", file_name(&self.target)),
             Job::Save(n) => format!("saving {n} edit(s)"),
             Job::Trajectory(m) => format!("trajectory → {}", file_name(m)),
+            Job::Suggest(_) => "Cell Ontology terms for the types without one".into(),
         };
         Some((what, started.elapsed()))
     }
@@ -1469,13 +1497,17 @@ impl App {
     /// which could leave a round half-written: it finishes on its own.
     fn stop(&mut self) {
         match self.child.as_ref().map(|r| r.job.clone()) {
-            Some(job @ (Job::Pass | Job::Trajectory(_))) => {
+            Some(job @ (Job::Pass | Job::Trajectory(_) | Job::Suggest(_))) => {
                 self.after_pass = AfterPass::Nothing;
                 let Some(mut r) = self.child.take() else {
                     return;
                 };
                 let _ = r.child.kill();
                 let _ = r.child.wait();
+                if let Job::Suggest(file) = &job {
+                    let _ = std::fs::remove_file(file);
+                    self.suggest_for = None;
+                }
                 if job != Job::Pass {
                     self.status = "stopped".into();
                     return;
@@ -2148,7 +2180,10 @@ impl App {
                     }
                     Pending::Remember { label, id, file } => {
                         self.status = match remember_alias(&file, &label, &id, &reason) {
-                            Ok(()) => format!("remembered {label} → {id} in {}", file.display()),
+                            Ok(()) => {
+                                self.learn_alias(&label, &id, &file);
+                                format!("remembered {label} → {id} in {}", file.display())
+                            }
                             Err(e) => format!("could not remember the alias: {e:#}"),
                         };
                     }
@@ -2640,6 +2675,11 @@ impl App {
                 }
             }
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
+            Focus::Tree
+                if code == KeyCode::Char('c') && matches!(self.tree_mode, TreeMode::Panel) =>
+            {
+                self.suggest_terms();
+            }
             // A search is of the ontology: open it there.
             Focus::Tree
                 if code == KeyCode::Char('/') && matches!(self.tree_mode, TreeMode::Panel) =>
@@ -3069,6 +3109,24 @@ impl App {
                 }
             }
             Action::LabelOnTree => self.jump_to_tree(),
+            Action::Suggested { label, id, note } => {
+                let Some(file) = self.data_search.user_aliases() else {
+                    self.status = "no user or project folder to write the alias to".into();
+                    return;
+                };
+                let name = self.cl.as_ref().and_then(|cl| cl.name(&id)).unwrap_or(&id);
+                self.prompt = Some(Prompt {
+                    title: format!(
+                        " {label} → {name} ({id}): write it to {}? enter: yes (the text is the note) · esc: no ",
+                        file.display()
+                    ),
+                    text: note,
+                    pending: Pending::Remember { label, id, file },
+                });
+            }
+            Action::NoneSuggested { label } => {
+                self.status = format!("none taken: {label} stays without a Cell Ontology term");
+            }
             Action::LabelByName { cluster } => {
                 self.prompt = Some(Prompt {
                     title: format!(" label K{cluster} as (any name): "),
@@ -3913,6 +3971,108 @@ impl App {
             .filter(|t| term_of(&t.label).is_none())
             .map(|t| (t.label.clone(), id.to_string()));
         self.ask_label(label, reason, remember);
+    }
+
+    /// `c` on the panel tree: the selected type's suggested Cell Ontology
+    /// terms when it has no term of its own, ranked first by a job (for
+    /// every such type) when they are not yet.
+    fn suggest_terms(&mut self) {
+        let Some(i) = self.tree.visible().get(self.tree_sel).copied() else {
+            return;
+        };
+        let label = self.tree.label(i).to_string();
+        if self.cl.is_none() {
+            self.status = "no Cell Ontology at hand: nothing to suggest terms from".into();
+            return;
+        }
+        if !self.tree.is_type(&label) || self.tree.cl_of(&label).is_some() {
+            let what = if self.tree.is_type(&label) {
+                "has its own Cell Ontology term"
+            } else {
+                "is a group, not a panel type"
+            };
+            self.status = format!("{label} {what}: c suggests terms for a type without one");
+            return;
+        }
+        if self.offer_suggestions(&label) {
+            return;
+        }
+        if self.child.is_some() {
+            self.status = "wait for the running job (x stops it), then c ranks the terms".into();
+            return;
+        }
+        let labels = super::suggest::unmatched(&self.tree);
+        let file = std::env::temp_dir().join(format!("lupin-suggest-{}.json", std::process::id()));
+        let obo = self.args.obo.as_deref();
+        match runner::spawn_suggest(&self.source, obo, &labels, &file, self.log_tx.clone()) {
+            Ok(c) => {
+                self.push_log(format!(
+                    "── suggestions: lupin data suggest-cl for {} type(s) without a term",
+                    labels.len()
+                ));
+                self.child = Some(Running::new(c, Job::Suggest(file)));
+                self.suggest_for = Some(label);
+                self.status = "ranking Cell Ontology terms (the first time fetches the text model and encodes the ontology: a minute or two)".into();
+            }
+            Err(e) => self.status = format!("{e:#}"),
+        }
+    }
+
+    /// Offer `label`'s suggested terms, when they are ranked; `false` when
+    /// they are not.
+    fn offer_suggestions(&mut self, label: &str) -> bool {
+        let Some(s) = self.suggestions.as_ref().and_then(|s| s.of(label)) else {
+            return false;
+        };
+        match self.data_search.user_aliases() {
+            _ if s.is_empty() => self.status = format!("no term near {label}"),
+            Some(file) => self.menu = Some(super::suggest::menu(label, s, &file)),
+            None => self.status = "no user or project folder to write an alias to".into(),
+        }
+        true
+    }
+
+    /// A ranking job wrote `file`: keep its suggestions, and offer those of
+    /// the type it was started on.
+    fn suggestions_done(&mut self, file: &Path, secs: u64) {
+        let read = super::suggest::Suggestions::read(file);
+        let _ = std::fs::remove_file(file);
+        let asked = self.suggest_for.take();
+        match read {
+            Ok(s) => {
+                self.suggestions = Some(s);
+                self.status = format!(
+                    "Cell Ontology terms ranked in {secs}s: c on a type without a term offers them"
+                );
+                if let Some(label) = asked.filter(|_| !self.asking()) {
+                    self.offer_suggestions(&label);
+                }
+            }
+            Err(e) => self.status = format!("no suggestions: {e:#}"),
+        }
+    }
+
+    /// Take alias `label → id`, just written to `file`, in this session:
+    /// the ontology matches by it and the panel's tree is built again, the
+    /// cursor on `label`.
+    fn learn_alias(&mut self, label: &str, id: &str, file: &Path) {
+        let Some(cl) = &mut self.cl else { return };
+        cl.add_aliases(&format!("{label}\t{id}\n"), &file.display().to_string());
+        if self.args.markers.is_empty() {
+            return;
+        }
+        let panel = match crate::annotate::markers::read_panel(&self.args.markers) {
+            Ok(p) => p,
+            Err(e) => return self.push_log(format!("[WARN] the tree stays as it was: {e:#}")),
+        };
+        self.tree = crate::manifest::ontology::panel_tree_on(self.cl.as_ref(), &panel);
+        if let Some(cl) = &self.cl {
+            self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
+        }
+        if let Some(i) = self.tree.node_of(label) {
+            self.tree.reveal(i);
+            self.select_node(i);
+        }
     }
 
     /// Select the next flagged cluster without an edit, wrapping around.

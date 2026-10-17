@@ -511,6 +511,7 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "→ into the ontology",
             "o ontology",
             "/ search",
+            "c suggest a term",
             "v cells",
             "esc clusters",
         ],
@@ -590,6 +591,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("o", "panel tree ↔ the Cell Ontology; from the cell map, the Cell Ontology and o back to the map"),
             ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, o the Cell Ontology, w all figures, p export, f the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, R re-check) / the tree again"),
             ("d", "Cell Ontology: the terms in the data (the labels, under their common ancestor) ↔ all"),
+            ("c", "on a panel type with no Cell Ontology term: its three nearest terms by text embedding, with their scores; one you confirm goes to your cl_aliases.tsv and the tree is built again (the first ranking fetches the text model and encodes the ontology, a minute or two; offline without the model, there are none)"),
             (
                 "/",
                 "search the Cell Ontology (names, synonyms, abbreviations)",
