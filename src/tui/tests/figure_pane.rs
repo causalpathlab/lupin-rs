@@ -274,6 +274,7 @@ fn a_file_just_listed_stays_selected_when_the_strip_resorts() {
         statuses: Vec::new(),
         not_listed: Vec::new(),
         delete_armed: None,
+        fits: std::cell::Cell::new(true),
     };
     x.gallery
         .add(&[listed], "a", "a", &dir.join("run.senna.json"))
@@ -295,4 +296,24 @@ fn the_axes_keys_say_when_there_is_no_diffusion_map_to_step() {
     assert!(!said.contains("m reaches it"), "{said}");
     assert!(said.contains("no diffusion map"), "{said}");
     assert!(pane().step_pair(true, false).contains("m reaches it"));
+}
+
+#[test]
+fn the_strips_keys_say_why_when_it_has_no_room() {
+    let mut p = pane();
+    p.exports.not_listed = vec!["run.trajectory.extra.pdf".into()];
+    assert_eq!(p.key(KeyCode::Char('f')), FigureKey::Took);
+    p.exports.fits.set(false);
+    for key in [
+        KeyCode::Enter,
+        KeyCode::Char('d'),
+        KeyCode::Char('D'),
+        KeyCode::Char('M'),
+    ] {
+        match p.key(key) {
+            FigureKey::Say(s) => assert!(s.contains("no room"), "{key:?}: {s}"),
+            k => panic!("{key:?}: {k:?}"),
+        }
+    }
+    assert!(p.exports.not_listed.len() == 1, "nothing listed or removed");
 }

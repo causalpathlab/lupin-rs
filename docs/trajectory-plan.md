@@ -346,7 +346,8 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
   diffusion map at the pair last shown, the order and the connectivity as
   thumbnails, drawn whole with the labels and colouring on screen. The
   arrows choose one, Enter, space or its number (1-9) opens it in the pane, `p` exports it as its tile
-  shows it, `f` opens the exports strip, `V` goes back to the order table,
+  shows it, `f` says the exports strip is a figure's (it is drawn under a
+  figure, not over the grid), `V` goes back to the order table,
   and esc or `w` closes the grid on the figure it came from. `t` and `c`
   also work there.
 - The direct prior edges with their connectivity, order agreement and verdict
@@ -372,7 +373,9 @@ entry by path, not by row). The list is written to a temporary file and
 renamed into place, and a list that cannot be read is set aside as
 `saved.json.bad` and reported, never treated as empty. Each entry records the
 panel, the manifest it came from, and each file's absolute path, size,
-modification time and content hash. A strip in the TUI (`f`) shows the list;
+modification time and content hash. A strip in the TUI (`f`) shows the list, under the figure, which gives it
+rows down to the strip's selected one (a pane too short for even that keeps
+the figure, and the strip's keys say so);
 an entry can be moved (`M`; nothing is replaced, and a failed move is undone),
 removed from the list (`d`), or removed with its files (`D`, which deletes
 only on a second `D` on the same export). Exporting (`p`), deleting (`D`) and

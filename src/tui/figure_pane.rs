@@ -45,6 +45,8 @@ pub struct Exports {
     pub not_listed: Vec<PathBuf>,
     /// The export a first `D` asked to delete.
     delete_armed: Option<PathBuf>,
+    /// The pane, as last drawn, has room for the strip's selected row.
+    pub fits: std::cell::Cell<bool>,
 }
 
 impl Exports {
@@ -57,6 +59,7 @@ impl Exports {
             statuses: Vec::new(),
             not_listed: Vec::new(),
             delete_armed: None,
+            fits: std::cell::Cell::new(true),
         };
         e.refresh();
         e
@@ -218,7 +221,11 @@ pub enum FigureKey {
 
 /// What the thumbnail grid's keys do.
 pub const GRID_KEYS: &str =
-    "arrows choose · Enter, space or 1-9 opens · p exports it · f exports · t c restyle · V leaves the figures · esc or w closes";
+    "arrows choose · Enter, space or 1-9 opens · p exports it · t c restyle · V leaves the figures · esc or w closes";
+
+/// Why the exports strip's keys do nothing: the pane is too short for it.
+const STRIP_NO_ROOM: &str =
+    "the exports strip has no room in this pane: a taller terminal shows it (f closes it)";
 
 pub struct FigurePane {
     pub data: CellFigures,
@@ -342,17 +349,21 @@ impl FigurePane {
                 KeyCode::Char('p') => Say(self
                     .export()
                     .unwrap_or_else(|e| format!("export failed: {e:#}"))),
+                // The strip is drawn under a figure, never over the grid.
                 KeyCode::Char('f') => {
-                    self.exports.open = !self.exports.open;
-                    Took
+                    Say("f lists the exports under a figure: enter opens the tile".into())
                 }
                 KeyCode::Char(c) if !"qrxseT".contains(c) => Say(GRID_KEYS.into()),
                 _ => Ignored,
             };
         }
         // The strip's keys act only while it is on screen; the arrows it
-        // does not take pan.
-        let strip = self.shown && self.exports.open;
+        // does not take pan. Open in a pane too short for it, they say so.
+        let open = self.shown && self.exports.open;
+        let strip = open && self.exports.fits.get();
+        if open && !strip && matches!(code, KeyCode::Enter | KeyCode::Char('d' | 'D' | 'M')) {
+            return Say(STRIP_NO_ROOM.into());
+        }
         if strip {
             let rows = self.exports.rows();
             if step(&mut self.exports.sel, rows, code) {
@@ -418,7 +429,11 @@ impl FigurePane {
                 .unwrap_or_else(|e| format!("export failed: {e:#}"))),
             KeyCode::Char('f') => {
                 self.exports.open = !self.exports.open;
-                Took
+                if self.exports.open && !self.exports.fits.get() {
+                    Say(STRIP_NO_ROOM.into())
+                } else {
+                    Took
+                }
             }
             KeyCode::Char('R') => {
                 let x = &mut self.exports;

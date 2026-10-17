@@ -609,7 +609,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("m", "the scatter's layout: each layout the run has (PHATE first), then the diffusion map"),
             (", .", "the diffusion map's y axis: the previous or next component"),
             ("[ ]", "the diffusion map's x axis: the previous or next component"),
-            ("w", "all figures as thumbnails: arrows choose, enter, space or 1-9 opens, p exports the tile, f exports, V the table, esc or w closes"),
+            ("w", "all figures as thumbnails: arrows choose, enter, space or 1-9 opens, p exports the tile, V the table, esc or w closes"),
             ("+ - 0", "zoom the scatter in / out / show it whole (m, , . and [ ] also show it whole)"),
             ("arrows", "pan a zoomed scatter (with the exports strip open, ↑↓ move in the strip)"),
             ("p", "export the figure as on screen (zoomed too) as {run}.trajectory.{figure}.svg + .pdf and log it"),
@@ -2024,11 +2024,14 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
     if let Some(g) = &v.grid {
         return draw_grid(f, area, v, g, focused);
     }
-    let (figure, strip) = if v.exports.open {
-        let [a, b] = Layout::vertical([Constraint::Min(6), Constraint::Length(8)]).areas(area);
-        (a, Some(b))
-    } else {
-        (area, None)
+    let room = exports_height(area.height);
+    v.exports.fits.set(room.is_some());
+    let (figure, strip) = match room.filter(|_| v.exports.open) {
+        Some(h) => {
+            let [a, b] = Layout::vertical([Constraint::Fill(1), Constraint::Length(h)]).areas(area);
+            (a, Some(b))
+        }
+        None => (area, None),
     };
     let title = format!(
         " {} ({}/{}) ",
@@ -2064,6 +2067,18 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
     if let Some(strip) = strip {
         draw_exports(f, strip, &v.exports, focused);
     }
+}
+
+/// The exports strip's height in a figure pane `height` rows tall: its
+/// own, else what the figure's six rows leave, else rows taken from the
+/// figure for at least the strip's frame and its selected row, down to
+/// the figure's frame and a row; `None` when even that does not fit.
+pub(super) fn exports_height(height: u16) -> Option<u16> {
+    const STRIP: u16 = 8;
+    const FIGURE: u16 = 6;
+    const LEAST: u16 = 3;
+    let h = height.saturating_sub(FIGURE).clamp(LEAST, STRIP);
+    (height >= h + LEAST).then_some(h)
 }
 
 /// The thumbnail grid: each figure in a tile, the selected one highlighted.

@@ -882,6 +882,43 @@ fn esc_closes_the_exports_strip_then_the_grid_before_leaving() {
 }
 
 #[test]
+fn f_in_the_grid_says_the_strip_is_a_figures_and_opens_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = figures_app(dir.path());
+    press(&mut app, KeyCode::Char('w'));
+    press(&mut app, KeyCode::Char('f'));
+    let v = app.figures.as_ref().unwrap();
+    assert!(!v.exports.open, "no strip the grid would hide");
+    assert!(v.grid.is_some(), "the grid stays");
+    assert!(app.status.contains("opens the tile"), "{}", app.status);
+    assert!(!super::super::figure_pane::GRID_KEYS.contains("f exports"));
+}
+
+#[test]
+fn a_short_pane_gives_the_exports_strip_room_for_its_selected_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    let x = &mut app.cell_map.as_mut().unwrap().exports;
+    x.not_listed = vec!["run.cells.extra.pdf".into()];
+    x.sel = 0;
+    press(&mut app, KeyCode::Char('f'));
+    let screen = drawn_in(&app, 100, 30).concat();
+    assert!(screen.contains(" exports ("), "the strip");
+    assert!(
+        screen.contains("run.cells.extra.pdf"),
+        "and its selected row"
+    );
+    assert!(app.cell_map.as_ref().unwrap().exports.fits.get());
+    use super::super::ui::exports_height;
+    assert_eq!(exports_height(30), Some(8), "room: the strip's own height");
+    assert_eq!(exports_height(12), Some(6), "what the figure leaves");
+    assert_eq!(exports_height(8), Some(3), "a row, taken from the figure");
+    assert_eq!(exports_height(6), Some(3), "down to the figure's own row");
+    assert_eq!(exports_height(5), None, "else not shown");
+}
+
+#[test]
 fn a_grid_tile_opens_with_its_number_or_space() {
     use crate::figures::Panel;
     let dir = tempfile::tempdir().unwrap();
