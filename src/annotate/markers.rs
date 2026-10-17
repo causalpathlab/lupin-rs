@@ -2,7 +2,8 @@
 //! to the data's gene order.
 
 use crate::annotate::gene_rows::GeneRows;
-use legume_numeric::matrix::common_io::read_lines;
+use anyhow::Context;
+use data_beans::aux::gene_sets::read_membership_pairs;
 use legume_numeric::matrix::dense_mat_io::Mat;
 
 /// IDF-weighted gene × cell-type membership plus the sorted cell-type names
@@ -28,25 +29,27 @@ pub fn label_key(label: &str) -> String {
 }
 
 /// A marker panel as `(gene, cell type)` pairs, each label in its
-/// [`label_key`] form. Lines split on the tab; a line with none splits at its
-/// first comma, so the label keeps anything after it. Blank lines, `#`
-/// comments and a `gene`/`symbol` header are skipped. Reads through gzip.
+/// [`label_key`] form, read as senna reads it ([`read_membership_pairs`]): a
+/// line with a tab splits on its tabs, one without is CSV (a quoted label
+/// keeps its commas), and cells keep their columns, unquoted. Blank lines,
+/// `#`/`%` comments and a `gene`/`symbol` header are skipped, and skipped rows
+/// are counted in a warning. Reads through gzip.
 pub fn read_marker_pairs(path: &str) -> anyhow::Result<Vec<(Box<str>, Box<str>)>> {
-    let lines =
-        read_lines(path).map_err(|e| anyhow::anyhow!("reading marker panel {path}: {e}"))?;
-    Ok(lines
-        .iter()
-        .filter_map(|line| {
-            let line = line.trim();
-            let (gene, label) = line.split_once('\t').or_else(|| line.split_once(','))?;
-            let (gene, label) = (gene.trim(), label.split('\t').next().unwrap_or(label));
-            let skip = gene.is_empty()
-                || gene.starts_with('#')
-                || matches!(gene.to_lowercase().as_str(), "gene" | "symbol");
-            let label = label_key(label);
-            (!skip && !label.is_empty()).then(|| (Box::from(gene), label.into_boxed_str()))
+    Ok(key_labels(
+        read_membership_pairs(path).context("reading marker panel")?,
+    ))
+}
+
+/// Pairs with their labels in [`label_key`] form, dropping a label that keys
+/// to nothing (`_`, `,`).
+pub fn key_labels(pairs: Vec<(Box<str>, Box<str>)>) -> Vec<(Box<str>, Box<str>)> {
+    pairs
+        .into_iter()
+        .filter_map(|(gene, label)| {
+            let label = label_key(&label);
+            (!label.is_empty()).then(|| (gene, label.into_boxed_str()))
         })
-        .collect())
+        .collect()
 }
 
 /// [`read_marker_pairs`] as owned `(gene, cell type)` strings.
@@ -152,12 +155,13 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_splits_on_tabs_or_the_first_comma_and_keys_its_labels() {
+    fn a_panel_reads_as_senna_reads_it_and_keys_its_labels() {
         let dir = tempfile::tempdir().unwrap();
         let tsv = dir.path().join("p.tsv");
         std::fs::write(
             &tsv,
-            "gene\tcelltype\n# note\nGENE1\tCT1, sub a\nGENE2\tCT 2\tignored\n\nGENE3,CT3, sub b\n",
+            "gene\tcelltype\n# note\n% note\nGENE1\tCT1, sub a\nGENE2\tCT 2\tignored\n\n\
+             GENE3,CT3, sub b\n\"GENE4\",\"CT 4\"\n\tCT5, sub c\n",
         )
         .unwrap();
         let pairs = read_marker_pairs(&tsv.to_string_lossy()).unwrap();
@@ -167,8 +171,11 @@ mod tests {
             [
                 ("GENE1", "CT1_sub_a"),
                 ("GENE2", "CT_2"),
-                ("GENE3", "CT3_sub_b")
-            ]
+                ("GENE3", "CT3"),
+                ("GENE4", "CT_4")
+            ],
+            "a tab line splits on its tabs, a comma line on its commas; cells keep their \
+             columns, unquoted, and an empty gene skips its row"
         );
     }
 

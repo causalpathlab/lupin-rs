@@ -67,9 +67,20 @@ fn aliases_layer_and_compare_as_labels() {
     assert_eq!(a.len(), 2);
     // As `--label-cl` maps have been written: commas, a header, an NA row.
     let n = a.add_tsv(
-        "cell_type,cl_id\nCT1 x,CL:9000001\nCT9\tNA\nbroken line\n",
+        "cell_type,cl_id\nCT1 x,CL:9000001\nCT9\tNA\nbroken line\n\"CT2, y\",CL:9000002\n",
         "x",
     );
-    assert_eq!(n, 1, "only the CL pair is taken");
+    assert_eq!(n, 2, "only the CL pairs are taken");
     assert_eq!(a.get("ct1_x"), Some("CL:9000001"));
+    assert_eq!(
+        a.get("CT2 y"),
+        Some("CL:9000002"),
+        "a quoted label keeps its comma"
+    );
+    a.add_tsv("CT3\tCL:9000003, a note\n", "x");
+    assert_eq!(
+        a.get("CT3"),
+        Some("CL:9000003"),
+        "a note after the id is not part of it"
+    );
 }

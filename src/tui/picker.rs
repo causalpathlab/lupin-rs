@@ -7,9 +7,10 @@
 //! and remembered for as long as the browser is open.
 
 use crate::annotate::gene_rows::GeneRows;
-use crate::annotate::markers::read_marker_pairs;
+use crate::annotate::markers::key_labels;
 use crate::manifest::{pinto, run};
 use anyhow::Result;
+use data_beans::aux::gene_sets::membership_rows;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -108,7 +109,8 @@ fn read_panel(path: &Path, index: Option<&GeneRows>) -> Option<Panel> {
     if path.metadata().ok()?.len() > MAX_PANEL_BYTES {
         return None;
     }
-    let pairs = read_marker_pairs(path.to_str()?).ok()?;
+    // Quietly: most files sniffed here are not panels.
+    let pairs = key_labels(membership_rows(path.to_str()?).ok()?.rows);
     if pairs.iter().all(|(_, t)| t.parse::<f64>().is_ok()) {
         return None;
     }

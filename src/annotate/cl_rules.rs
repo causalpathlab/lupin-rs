@@ -6,6 +6,7 @@
 //! and layering the files is [`crate::manifest::data_files`]'s job.
 
 use crate::annotate::markers::label_key;
+use legume_numeric::matrix::common_io::TwoFieldRows;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -184,23 +185,17 @@ pub struct Aliases {
 impl Aliases {
     /// Add the rows of an alias table, overriding earlier ones:
     /// `label<TAB>CL:id[<TAB>note]`, or `label,CL:id` as `--label-cl` maps
-    /// have been written. `#` comments and blank lines are skipped, and so,
+    /// have been written, read as every two-column table is
+    /// ([`TwoFieldRows`]). `#`/`%` comments and blank lines are skipped, and so,
     /// with a warning naming `source`, is any row without a CL-style id (a
     /// header, `NA`). Returns how many rows were taken.
     pub fn add_tsv(&mut self, text: &str, source: &str) -> usize {
-        let (mut n, mut skipped) = (0, 0);
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let (label, rest) = line
-                .split_once('\t')
-                .or_else(|| line.split_once(','))
-                .unwrap_or((line, ""));
-            let id = rest.split(['\t', ',']).next().unwrap_or_default().trim();
-            let label = label.trim();
-            if label.is_empty() || !id.contains(':') {
+        let rows = TwoFieldRows::from_text(text);
+        let (mut n, mut skipped) = (0, rows.gapped);
+        for (label, id) in &rows.rows {
+            // The id's first word, as a note may follow it (`CL:x, note`).
+            let id = id.split([',', ' ']).next().unwrap_or_default();
+            if !id.contains(':') {
                 skipped += 1;
                 continue;
             }

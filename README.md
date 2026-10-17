@@ -47,8 +47,9 @@ lupin describe -f run.senna.json --text-prefix run -o out
 
 Spaces, commas and underscores in a cell-type label are interchangeable:
 `CT 1, a`, `CT_1_a` and `CT,1 a` name one type, written `CT_1_a` in every
-output. Marker panels split on the tab (or, with none, on a line's first
-comma), so labels may contain commas.
+output. A marker panel line with a tab splits on its tabs, so a label may
+contain commas; a line without one is CSV, where a label with a comma must be
+quoted (`CD4,"CD4-positive, alpha-beta T cell"`).
 
 ## First round: high-level calls
 
