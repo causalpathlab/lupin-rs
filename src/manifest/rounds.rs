@@ -16,6 +16,8 @@
 //!   previous round's panel with the edits applied) and
 //!   `{out}.marker_history.json` (`annotate.marker_history`, per cell type)
 
+use crate::annotate::celltype_tree::{TreePlacement, TypeTree, Via};
+use crate::annotate::markers::label_key;
 use crate::annotate::outputs::{
     write_cluster_tables, CLUSTER_CELLTYPE_ES_STD, CLUSTER_CELLTYPE_NES, CLUSTER_CELLTYPE_P,
     CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_CELLTYPE_Z,
@@ -336,8 +338,7 @@ pub(crate) fn read_score_cells(loaded: &Loaded, cells: &Cells) -> Result<Option<
         let call = strings[1][i].as_ref();
         out.call.push((call != UNASSIGNED_LABEL).then(|| {
             *code.entry(call).or_insert_with(|| {
-                out.types
-                    .push(crate::annotate::markers::label_key(call).into());
+                out.types.push(label_key(call).into());
                 out.types.len() - 1
             })
         }));
@@ -446,7 +447,7 @@ fn tie_break(loaded: &Loaded, cells: Option<&Cells>) -> Result<TieBreak> {
 }
 
 /// The round's type tree (`annotate.celltype_tree`), when it records one.
-fn read_tree(loaded: &Loaded) -> Result<Option<crate::annotate::celltype_tree::TypeTree>> {
+fn read_tree(loaded: &Loaded) -> Result<Option<TypeTree>> {
     let Some(rel) = loaded.manifest.annotate.celltype_tree.as_deref() else {
         return Ok(None);
     };
@@ -475,7 +476,7 @@ pub fn write_summary(loaded: &mut Loaded, out_prefix: &str) -> Result<BTreeMap<C
             let label = digest.label.clone();
             let group_agrees = label.is_some_and(|label| {
                 digest.top_calls().iter().any(|c| {
-                    let key = crate::annotate::markers::label_key(&c.label);
+                    let key = label_key(&c.label);
                     index.get(&key).is_some_and(|g| *g == label)
                 })
             });
@@ -1158,7 +1159,6 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
 /// whose markers it edits, and those sharing an edited gene (whose IDF
 /// weight moves).
 fn touched_types(before: &[(String, String)], after: &[(String, String)]) -> BTreeSet<String> {
-    use crate::annotate::markers::label_key;
     let pairs = |p: &[(String, String)]| -> BTreeSet<(String, String)> {
         p.iter().map(|(g, t)| (label_key(t), g.clone())).collect()
     };
@@ -1263,7 +1263,7 @@ fn rescored_calls(r: &super::recalibrate::Rescored) -> Calls {
 
 /// Per cell type, the features the edits add and drop.
 fn marker_diff(before: &[(String, String)], after: &[(String, String)]) -> Value {
-    let key = |(g, t): &(String, String)| (crate::annotate::markers::label_key(t), g.clone());
+    let key = |(g, t): &(String, String)| (label_key(t), g.clone());
     let b: BTreeSet<_> = before.iter().map(key).collect();
     let a: BTreeSet<_> = after.iter().map(key).collect();
     let mut out: BTreeMap<String, (Vec<String>, Vec<String>)> = BTreeMap::new();
@@ -1703,7 +1703,7 @@ fn read_digests(
 struct Reviewed {
     digests: BTreeMap<ClusterId, Digest>,
     history: History,
-    tree: Option<crate::annotate::celltype_tree::TypeTree>,
+    tree: Option<TypeTree>,
     tables: TypeTables,
 }
 
@@ -1725,7 +1725,7 @@ impl Reviewed {
     }
 
     /// The Cell Ontology term the tree puts cluster `d`'s label on.
-    fn placement(&self, d: &Digest) -> Option<crate::annotate::celltype_tree::TreePlacement> {
+    fn placement(&self, d: &Digest) -> Option<TreePlacement> {
         self.tree.as_ref()?.placement(d.label.as_deref()?)
     }
 }
@@ -1789,10 +1789,9 @@ pub fn run_review(args: &ReviewArgs) -> Result<()> {
 fn render(
     id: ClusterId,
     d: &Digest,
-    placed: Option<&crate::annotate::celltype_tree::TreePlacement>,
+    placed: Option<&TreePlacement>,
     history: &[rounds::HistoryEntry],
 ) -> String {
-    use crate::annotate::celltype_tree::Via;
     use std::fmt::Write;
     let num = |v: Option<f32>| v.map_or_else(|| "-".into(), |v| format!("{v:.3}"));
     let mut s = String::new();

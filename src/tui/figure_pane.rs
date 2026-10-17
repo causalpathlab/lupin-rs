@@ -175,6 +175,9 @@ type Sized = (Look, (u16, u16));
 /// A look being rasterised, and where its pixels will come.
 type Rasterising = (Look, Receiver<Result<DynamicImage, String>>);
 
+/// Why a figure rasterised off the screen's thread never came.
+const NOT_DRAWN: &str = "the figure was not drawn";
+
 /// Thumbnails kept across openings of the grid before they are dropped.
 const TILES_KEPT: usize = 32;
 
@@ -766,19 +769,24 @@ impl FigurePane {
         (u32::from(px.width), u32::from(px.height))
     }
 
+    /// `look` rasterised, when it is the one last drawn.
+    fn cached(&self, look: Look) -> Option<Result<DynamicImage, String>> {
+        let cache = self.image.borrow();
+        cache
+            .as_ref()
+            .filter(|(l, _)| *l == look)
+            .map(|(_, img)| img.clone())
+    }
+
     /// `look` rasterised, from the cache when it is the one last drawn;
     /// else waiting for the one being rasterised, or drawing it here.
     fn image(&self, look: Look, area: Rect) -> Result<DynamicImage, String> {
-        if let Some((l, img)) = self.image.borrow().as_ref() {
-            if *l == look {
-                return img.clone();
-            }
+        if let Some(img) = self.cached(look) {
+            return img;
         }
         let waiting = self.pending.borrow_mut().take();
         let img = match waiting {
-            Some((l, rx)) if l == look => rx
-                .recv()
-                .unwrap_or_else(|_| Err("the figure was not drawn".into())),
+            Some((l, rx)) if l == look => rx.recv().unwrap_or_else(|_| Err(NOT_DRAWN.into())),
             _ => Self::rasterised(&self.data, look, &self.style, self.cell_px(), area),
         };
         *self.image.borrow_mut() = Some((look, img.clone()));
@@ -789,10 +797,8 @@ impl FigurePane {
     /// from the one being rasterised; else that is started (off the
     /// screen's thread) and `None` said.
     fn image_ready(&self, look: Look, area: Rect) -> Option<Result<DynamicImage, String>> {
-        if let Some((l, img)) = self.image.borrow().as_ref() {
-            if *l == look {
-                return Some(img.clone());
-            }
+        if let Some(img) = self.cached(look) {
+            return Some(img);
         }
         // One figure is rasterised at a time: a look moved past is let
         // finish before the latest starts, so keys held down start few.
@@ -801,7 +807,7 @@ impl FigurePane {
             let img = match rx.try_recv() {
                 Ok(img) => img,
                 Err(TryRecvError::Empty) => return None,
-                Err(TryRecvError::Disconnected) => Err("the figure was not drawn".into()),
+                Err(TryRecvError::Disconnected) => Err(NOT_DRAWN.into()),
             };
             let l = *l;
             *pending = None;

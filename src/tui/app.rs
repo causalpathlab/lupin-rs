@@ -2988,9 +2988,8 @@ impl App {
         let TreeMode::Order(v) = &self.tree_mode else {
             return;
         };
-        let nodes: Vec<usize> = (0..v.types.len())
-            .filter(|&i| v.is_node.get(i).copied().unwrap_or(true))
-            .collect();
+        let (nodes, small): (Vec<usize>, Vec<usize>) =
+            (0..v.types.len()).partition(|&i| v.is_node[i]);
         let items = nodes
             .iter()
             .map(|&i| {
@@ -3003,10 +3002,7 @@ impl App {
             })
             .collect();
         const NAMED: usize = 8;
-        let small: Vec<&str> = (0..v.types.len())
-            .filter(|i| !nodes.contains(i))
-            .map(|i| v.types[i].0.as_str())
-            .collect();
+        let small: Vec<&str> = small.iter().map(|&i| v.types[i].0.as_str()).collect();
         let left_out = match small.len() {
             0 => String::new(),
             n => format!(

@@ -124,15 +124,13 @@ impl OrderView {
             .iter()
             .map(|&(_, n)| n == 0 || n >= min_cells)
             .collect();
-        let nodes: Vec<&str> = refs
-            .iter()
-            .zip(&is_node)
-            .filter_map(|(t, &node)| node.then_some(*t))
-            .collect();
+        let (nodes, small): (Vec<_>, Vec<_>) = refs.iter().zip(&is_node).partition(|(_, &n)| n);
+        let nodes: Vec<&str> = nodes.into_iter().map(|(t, _)| *t).collect();
+        let small: std::collections::HashSet<&str> = small.into_iter().map(|(t, _)| *t).collect();
         let (layers, problems) = prior::standing_layers(cl, &nodes, search);
         let problems: Vec<String> = problems.iter().map(|e| format!("{e:#}")).collect();
         let statements = prior::combine(&layers);
-        let small = |t: &str| refs.iter().zip(&is_node).any(|(r, &node)| *r == t && !node);
+        let small = |t: &str| small.contains(t);
         let set_aside = statements
             .iter()
             .filter(|s| s.relation == Relation::Precedes && (small(&s.from) || small(&s.to)))

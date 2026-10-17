@@ -1250,19 +1250,20 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     // A label picked off the candidates (a new type, or one that did not
     // pass FDR) is shown too: it is scored once the edits are saved. Its
     // note goes by the round's share, its value by the sorting method's.
-    let pinned_value = pinned.as_deref().and_then(|l| {
-        let share = c
-            .shares
+    let pinned_share = pinned.as_deref().and_then(|l| {
+        c.shares
             .iter()
             .find(|(t, _)| label_key(t) == label_key(l))
-            .map(|(_, s)| *s);
+            .map(|(_, s)| *s)
+    });
+    let pinned_value = pinned.as_deref().and_then(|l| {
         match c
             .candidates
             .iter()
             .find(|t| label_key(&t.label) == label_key(l))
         {
             Some(t) => by.reading(t),
-            None => share.filter(|_| Some(by) == app.round.as_ref().and_then(|r| r.by)),
+            None => pinned_share.filter(|_| Some(by) == app.round.as_ref().and_then(|r| r.by)),
         }
     });
     // Numbers are shown whole or not at all: each column as wide as its
@@ -1344,17 +1345,12 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     if let Some(l) = pinned.as_deref() {
-        let share = c
-            .shares
-            .iter()
-            .find(|(t, _)| label_key(t) == label_key(l))
-            .map(|(_, s)| *s);
         // The note on a line of its own: a long ontology name would cut it.
         let mut cells = vec![
             Cell::from("→"),
             Cell::from(Text::from(vec![
                 Line::from(l.to_string()).bold(),
-                Line::from(pinned_note(app, l, share)).dim(),
+                Line::from(pinned_note(app, l, pinned_share)).dim(),
             ])),
         ];
         cells.extend(columns.iter().map(|&(col, _)| match col {
