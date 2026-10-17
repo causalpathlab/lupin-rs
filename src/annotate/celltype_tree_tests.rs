@@ -799,3 +799,64 @@ fn a_type_under_a_term_groups_by_it_and_a_hinted_one_keeps_to_its_lineage() {
         "placed, not matched"
     );
 }
+
+#[test]
+fn a_group_is_not_one_of_its_members_types() {
+    // CT1low is a kind of CT1 in the ontology; as a group, CT1 would make it
+    // look like one.
+    let obo = "[Term]\nid: CL:0\nname: root cell\n\n\
+               [Term]\nid: CL:1\nname: lin M cell\nsubset: cellxgene_subset\nis_a: CL:0\n\n\
+               [Term]\nid: CL:2\nname: CT1 cell\nsynonym: \"C1X\" EXACT []\nsubset: cellxgene_subset\nis_a: CL:1\n\n\
+               [Term]\nid: CL:3\nname: CT1low cell\nis_a: CL:2\n\n\
+               [Term]\nid: CL:4\nname: CT5 cell\nsubset: cellxgene_subset\nis_a: CL:0\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let tree = TypeTree::from_ontology(
+        &t,
+        &panel(&[("G1", "CT1"), ("G2", "CT1low"), ("G5", "CT5")]),
+    )
+    .unwrap();
+    assert_eq!(members(&tree, "lin_M_cell"), ["CT1", "CT1low"]);
+    let same = TypeTree::from_ontology(&t, &panel(&[("G1", "CT1"), ("G2", "C1X"), ("G5", "CT5")]))
+        .unwrap();
+    assert_eq!(
+        members(&same, "CT1_cell"),
+        ["C1X", "CT1"],
+        "both types are that term"
+    );
+}
+
+#[test]
+fn a_group_inside_another_joins_it() {
+    // Naive and Reg are nearest CT4 T; CM and EM share a class below it.
+    let obo = "[Term]\nid: CL:0\nname: root cell\n\n\
+               [Term]\nid: CL:1\nname: lin T cell\nsubset: cellxgene_subset\nis_a: CL:0\n\n\
+               [Term]\nid: CL:2\nname: CT4 T cell\nsubset: cellxgene_subset\nis_a: CL:1\n\n\
+               [Term]\nid: CL:3\nname: CT4 memory T cell\nsubset: cellxgene_subset\nis_a: CL:2\n\n\
+               [Term]\nid: CL:11\nname: naive CT4 T cell\nis_a: CL:2\n\n\
+               [Term]\nid: CL:12\nname: reg CT4 T cell\nis_a: CL:2\n\n\
+               [Term]\nid: CL:13\nname: CM CT4 T cell\nis_a: CL:3\n\n\
+               [Term]\nid: CL:14\nname: EM CT4 T cell\nis_a: CL:3\n\n\
+               [Term]\nid: CL:20\nname: lin B cell\nsubset: cellxgene_subset\nis_a: CL:0\n\n\
+               [Term]\nid: CL:21\nname: CT8 cell\nis_a: CL:20\n\n\
+               [Term]\nid: CL:22\nname: CT9 cell\nis_a: CL:20\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let p = panel(&[
+        ("G1", "Naive CT4 T"),
+        ("G2", "Reg CT4 T"),
+        ("G3", "CM CT4 T"),
+        ("G4", "EM CT4 T"),
+        ("G8", "CT8"),
+        ("G9", "CT9"),
+    ]);
+    let tree = TypeTree::from_ontology(&t, &p).unwrap();
+    assert_eq!(
+        members(&tree, "CT4_T_cell"),
+        ["CM CT4 T", "EM CT4 T", "Naive CT4 T", "Reg CT4 T"]
+    );
+    assert_eq!(
+        members(&tree, "lin_B_cell"),
+        ["CT8", "CT9"],
+        "beside it, not in it"
+    );
+    assert_eq!(tree.groups.len(), 2);
+}

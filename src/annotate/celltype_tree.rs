@@ -6,7 +6,10 @@
 //! types are placed on CL terms under the matching rules
 //! ([`ClTerms::place_labels`]), and each goes under its nearest ancestor
 //! among the ontology's analysis classes (its curated `*_upper_slim` subsets
-//! and `cellxgene_subset`) that it shares with another panel type. A type
+//! and `cellxgene_subset`) that it shares with another panel type, short of
+//! one that is a panel type's own term over a kind of it; a group whose
+//! class is a kind of another group's then joins that one, so the groups
+//! are one level. A type
 //! the ontology has only a kind of term for (`Early X` for `X`) groups as
 //! that term; one that matches no term joins the group sharing its most
 //! specific markers, keeping to the lineage its words hint at. A fine panel
@@ -868,11 +871,21 @@ impl TypeTree {
             }
         }
         let depth: HashMap<&str, usize> = sharers.keys().map(|t| (*t, terms.depth(t))).collect();
+        // A class that is one panel type's own term groups only types on it:
+        // over a kind of it, it would make that kind look like the type.
+        let mut on: HashMap<&str, usize> = HashMap::new();
+        for id in placed.on.values() {
+            *on.entry(id.as_str()).or_default() += 1;
+        }
+        let groups_by = |t: &str| {
+            let n = sharers.get(t).copied().unwrap_or(0);
+            n >= 2 && on.get(t).is_none_or(|&k| k == n)
+        };
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (label, a) in &ancestry {
             let node = a
                 .iter()
-                .filter(|t| sharers.get(t.as_str()).is_some_and(|&n| n >= 2))
+                .filter(|t| groups_by(t))
                 .max_by(|x, y| {
                     depth[x.as_str()]
                         .cmp(&depth[y.as_str()])
@@ -881,6 +894,27 @@ impl TypeTree {
                 .cloned()
                 .unwrap_or_else(|| mapped[*label].to_string());
             groups.entry(node).or_default().push((*label).to_string());
+        }
+        // One coarse level: a group whose class is a kind of another's joins
+        // it, the deepest first, so nested groups end in the outermost.
+        // (Two types on one term outside every class group by that term.)
+        let mut shared: Vec<(usize, String)> = (groups.iter())
+            .filter(|(_, m)| m.len() >= 2)
+            .map(|(id, _)| (terms.depth(id), id.clone()))
+            .collect();
+        shared.sort_by_key(|(d, _)| std::cmp::Reverse(*d));
+        for (_, inner) in &shared {
+            let above = terms.ancestors_or_self(inner);
+            let outer = (shared.iter())
+                .filter(|(_, o)| o != inner && above.contains(o) && groups.contains_key(o))
+                .max_by_key(|(d, _)| *d)
+                .map(|(_, o)| o);
+            if let Some(outer) = outer {
+                let moved = groups.remove(inner).unwrap_or_default();
+                let into = groups.entry(outer.clone()).or_default();
+                into.extend(moved);
+                into.sort_unstable();
+            }
         }
         let mut groups: Vec<TypeGroup> = groups
             .into_iter()
