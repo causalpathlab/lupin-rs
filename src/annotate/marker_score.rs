@@ -8,7 +8,7 @@
 
 use crate::annotate::args::MarkerScoreArgs;
 use crate::annotate::outputs::{
-    clean_outputs, AnnotationOutputs, ARGMAX_TSV, MARKER_SCORE_PARQUET,
+    clean_outputs, labels_path, AnnotationOutputs, MARKER_SCORE_PARQUET,
 };
 use anyhow::Result;
 use enrichment::UNASSIGNED_LABEL;
@@ -52,12 +52,10 @@ pub fn score_cells(
     })
 }
 
-/// The output files [`run`] writes, cleared first unless kept.
-const OUTPUTS: [&str; 3] = [ARGMAX_TSV, ".membership.tsv", MARKER_SCORE_PARQUET];
-
 /// Score `cells` against `args.markers` on `feat`, centred on `groups`, and
 /// write the pass's files under `args.out`: the shared per-cell label
-/// contract (`argmax.tsv`, `membership.tsv`; the probability is NaN, as the
+/// contract (`argmax.parquet` beside `argmax.tsv` and `membership.tsv`; the
+/// probability is NaN, as the
 /// score has none) and each cell's cluster, call and margin
 /// (`marker_score.parquet`, not a posterior: never `annotation`). The
 /// round's cluster table is the caller's; the
@@ -71,14 +69,18 @@ pub fn run(
     let out = args.out.as_ref();
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
     if !args.no_clean {
-        clean_outputs(out, &OUTPUTS);
+        clean_outputs(
+            out,
+            graph_embedding_util::type_annotation::CELL_LABEL_FILE_SUFFIXES,
+        );
+        clean_outputs(out, &[MARKER_SCORE_PARQUET]);
     }
     let (table, call) = score_and_write(&args.markers, out, feat, cells, groups)?;
     let probs = vec![f32::NAN; cells.rows.len()];
-    graph_embedding_util::type_annotation::write_label_tsvs(out, &cells.rows, &call, &probs)?;
+    graph_embedding_util::type_annotation::write_cell_labels(out, &cells.rows, &call, &probs)?;
 
     Ok(AnnotationOutputs {
-        argmax: Some(format!("{out}{ARGMAX_TSV}")),
+        argmax: Some(labels_path(out)),
         marker_score: Some(table),
         ..AnnotationOutputs::default()
     })

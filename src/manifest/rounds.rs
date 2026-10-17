@@ -4,7 +4,8 @@
 //!
 //! A round writes, beside its manifest:
 //! - `{out}.clusters.parquet`: per-cell cluster id (`cluster.clusters`)
-//! - `{out}.argmax.tsv`: per-cell label (`annotate.argmax`)
+//! - `{out}.argmax.tsv`: per-cell label (`annotate.argmax`), with
+//!   `{out}.argmax.parquet` and `{out}.membership.tsv` beside it
 //! - `{out}.cluster_summary.json`: the digest (`annotate.cluster_summary`)
 //! - `{out}.cluster_evidence.parquet`: every cluster's types with every
 //!   method's statistic, one row each (`annotate.cluster_evidence`)
@@ -97,35 +98,30 @@ pub fn write_clusters(path: &str, cells: &[Box<str>], ids: &[Option<ClusterId>])
     Ok(())
 }
 
-/// `cell⇥cell_type⇥probability`, header first.
+/// A round's per-cell labels, `cell`, `cell_type` and (when present)
+/// `probability`, from its parquet or its header-first TSV.
 pub(crate) fn read_argmax(path: &str) -> Result<HashMap<String, (String, f32)>> {
-    let raw = fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
-    Ok(raw
-        .lines()
-        .skip(1)
-        .filter_map(|l| {
-            let mut f = l.split('\t');
-            let (cell, label) = (f.next()?, f.next()?);
-            let p = f.next().and_then(|p| p.parse().ok()).unwrap_or(f32::NAN);
-            Some((cell.to_string(), (label.to_string(), p)))
-        })
+    Ok(crate::cell_labels::read_label_rows(path)?
+        .into_iter()
+        .map(|(cell, label, p)| (cell.into(), (label.into(), p)))
         .collect())
 }
 
+/// Write a round's per-cell labels under `out` through the shared writer
+/// (`{out}.argmax.parquet` beside the TSVs the viewers read); the file to
+/// record, [`crate::annotate::outputs::labels_path`].
 pub(super) fn write_argmax(
-    path: &str,
+    out: &str,
     cells: &[Box<str>],
     labels: &[Option<String>],
     probs: &[f32],
-) -> Result<()> {
-    let mut lines: Vec<Box<str>> = vec!["cell\tcell_type\tprobability".into()];
-    for ((c, l), p) in cells.iter().zip(labels).zip(probs) {
-        let l = l.as_deref().unwrap_or(UNASSIGNED_LABEL);
-        lines.push(format!("{c}\t{l}\t{p:.4}").into_boxed_str());
-    }
-    write_lines(&lines, path)?;
-    info!("wrote {path}");
-    Ok(())
+) -> Result<String> {
+    let labels: Vec<Box<str>> = labels
+        .iter()
+        .map(|l| l.as_deref().unwrap_or(UNASSIGNED_LABEL).into())
+        .collect();
+    graph_embedding_util::type_annotation::write_cell_labels(out, cells, &labels, probs)?;
+    Ok(crate::annotate::outputs::labels_path(out))
 }
 
 /// One round's cells: ids from `cluster.clusters`, labels and their
@@ -881,13 +877,7 @@ fn relabel(
 
     let clusters_path = format!("{out}{CLUSTERS}");
     write_clusters(&clusters_path, &p.cells.names, &p.cells.clusters)?;
-    let argmax_path = format!("{out}.argmax.tsv");
-    write_argmax(
-        &argmax_path,
-        &p.cells.names,
-        &p.cells.labels,
-        &p.cells.probs,
-    )?;
+    let argmax_path = write_argmax(out, &p.cells.names, &p.cells.labels, &p.cells.probs)?;
     let log_path = format!("{out}{LOG}");
     let log: Vec<Box<str>> = p
         .decisions

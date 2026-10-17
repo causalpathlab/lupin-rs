@@ -9,6 +9,38 @@ use std::path::Path;
 
 /// `{out}.argmax.tsv`: per-cell `cell⇥cell_type⇥probability`, written by every pass.
 pub const ARGMAX_TSV: &str = ".argmax.tsv";
+
+/// `name` and, when it is a round's labels file (`{out}.argmax.tsv` or
+/// `.argmax.parquet`), every label file the shared writer puts beside it, so
+/// the files a manifest names cover the ones it does not.
+#[must_use]
+pub fn with_label_siblings(name: &str) -> Vec<String> {
+    use graph_embedding_util::type_annotation::CELL_LABEL_FILE_SUFFIXES;
+    match labels_prefix(name) {
+        Some(out) => CELL_LABEL_FILE_SUFFIXES
+            .iter()
+            .map(|s| format!("{out}{s}"))
+            .collect(),
+        None => vec![name.to_string()],
+    }
+}
+
+/// The prefix of a round's labels file (`{out}.argmax.tsv` or
+/// `.argmax.parquet`), as [`labels_path`] names it; `None` for another name.
+#[must_use]
+pub fn labels_prefix(path: &str) -> Option<&str> {
+    use graph_embedding_util::type_annotation::CELL_LABELS_SUFFIX;
+    path.strip_suffix(ARGMAX_TSV)
+        .or_else(|| path.strip_suffix(CELL_LABELS_SUFFIX))
+}
+
+/// The per-cell labels file a pass or round under `out` records as
+/// `annotate.argmax`: the TSV, which the viewers read, until they read the
+/// parquet written beside it.
+#[must_use]
+pub fn labels_path(out: &str) -> String {
+    format!("{out}{ARGMAX_TSV}")
+}
 /// `{out}.annot.parquet`: projection's per-cell table (`community`, `coarse_label`, …).
 pub const ANNOT_PARQUET: &str = ".annot.parquet";
 /// Projection score pass: each cell's cluster, call and margin.
@@ -47,13 +79,12 @@ pub const CLUSTER_CELLTYPE_EXPLAINED: &str = ".cluster_celltype_explained.parque
 pub const CLUSTER_CREDIBLE_SETS: &str = ".cluster_credible_sets.tsv";
 
 /// `{prefix}{suffix}` files written by `annotate --method enrichment` (relative to its
-/// bare `{out}` prefix). NOTE: this prefix is shared with the training run's
+/// bare `{out}` prefix), besides the per-cell label files, which the shared
+/// writer's `CELL_LABEL_FILE_SUFFIXES` lists. NOTE: this prefix is shared with the training run's
 /// artifacts (`{out}.cell_embedding.parquet`, `{out}.senna.json`, …), so the
 /// list is EXPLICIT — never a glob — to avoid deleting the embedding/manifest.
 pub const ENRICHMENT_OUTPUT_SUFFIXES: &[&str] = &[
     ".annotation.parquet",
-    ARGMAX_TSV,
-    ".membership.tsv",
     CLUSTER_CELLTYPE_Q,
     CLUSTER_CELLTYPE_ES,
     CLUSTER_CELLTYPE_ES_STD,

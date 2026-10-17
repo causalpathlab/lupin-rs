@@ -6,9 +6,9 @@ use super::args::{AnnotateArgs, KEEP_IEA, MIN_CONFIDENCE, NUM_DRAWS};
 use super::inputs::EnrichmentInputs;
 use super::outputs::{clean_outputs, AnnotationOutputs, ENRICHMENT_OUTPUT_SUFFIXES};
 use super::outputs::{
-    write_cluster_tables, ARGMAX_TSV, CLUSTER_CELLTYPE_ES, CLUSTER_CELLTYPE_ES_STD,
-    CLUSTER_CELLTYPE_NES, CLUSTER_CELLTYPE_P, CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES,
-    CLUSTER_CELLTYPE_Z, CLUSTER_TERM_NES, CLUSTER_TERM_P, CLUSTER_TERM_Q_VALUES,
+    write_cluster_tables, CLUSTER_CELLTYPE_ES, CLUSTER_CELLTYPE_ES_STD, CLUSTER_CELLTYPE_NES,
+    CLUSTER_CELLTYPE_P, CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_CELLTYPE_Z,
+    CLUSTER_TERM_NES, CLUSTER_TERM_P, CLUSTER_TERM_Q_VALUES,
 };
 use crate::progress::Stages;
 use enrichment::{
@@ -73,6 +73,10 @@ pub fn plan(args: &AnnotateArgs) -> anyhow::Result<EnrichmentPlan> {
     }
     if !args.no_clean {
         clean_outputs(&out, ENRICHMENT_OUTPUT_SUFFIXES);
+        clean_outputs(
+            &out,
+            graph_embedding_util::type_annotation::CELL_LABEL_FILE_SUFFIXES,
+        );
     }
     Ok(EnrichmentPlan {
         out,
@@ -335,7 +339,7 @@ pub fn run(
 
     // Per-cell label files via the SHARED writer (also emits `membership.tsv`),
     // so this pass and `annotate --method projection` produce an identical contract.
-    let argmax_path = format!("{out}{ARGMAX_TSV}");
+    let argmax_path = super::outputs::labels_path(out);
     {
         let cells: Vec<Box<str>> = argmax_labels
             .iter()
@@ -346,7 +350,7 @@ pub fn run(
             .map(|l| Box::from(l.label.as_ref()))
             .collect();
         let probs: Vec<f32> = argmax_labels.iter().map(|l| l.confidence).collect();
-        graph_embedding_util::type_annotation::write_label_tsvs(out, &cells, &labels, &probs)?;
+        graph_embedding_util::type_annotation::write_cell_labels(out, &cells, &labels, &probs)?;
     }
 
     let written = write_cluster_tables(

@@ -18,13 +18,7 @@ fn first_round(root: &Path) -> PathBuf {
         .iter()
         .map(|s| Some((*s).to_string()))
         .collect();
-    write_argmax(
-        &at("run.argmax.tsv"),
-        &cells,
-        &labels,
-        &[0.9, 0.8, 0.7, 0.6],
-    )
-    .unwrap();
+    write_argmax(&at("run"), &cells, &labels, &[0.9, 0.8, 0.7, 0.6]).unwrap();
     let mut m = RunManifest::new(crate::manifest::run::RunKind::Topic, "run");
     m.cluster.clusters = Some("run.clusters.parquet".into());
     m.annotate.argmax = Some("run.argmax.tsv".into());
@@ -543,7 +537,7 @@ fn enriched_round(root: &Path) -> PathBuf {
         .iter()
         .map(|id| Some(format!("CT{}", id.unwrap() + 1)))
         .collect();
-    write_argmax(&at("run.argmax.tsv"), &cells, &labels, &vec![0.9; k * per]).unwrap();
+    write_argmax(&at("run"), &cells, &labels, &vec![0.9; k * per]).unwrap();
 
     let mut sums = Mat::zeros(g, k);
     for i in 0..g {
@@ -993,4 +987,19 @@ fn a_marker_edit_drops_the_scores_old_calls_but_a_regroup_keeps_them() {
         merged.annotate.marker_score.is_some(),
         "the cells' calls hold over new clusters"
     );
+}
+
+#[test]
+fn a_rounds_labels_are_written_as_parquet_beside_the_tsv_and_read_from_either() {
+    let dir = tempfile::tempdir().unwrap();
+    let at = |n: &str| dir.path().join(n).to_string_lossy().into_owned();
+    let cells: Vec<Box<str>> = vec!["c0".into(), "c1".into()];
+    let labels = vec![Some("B".to_string()), None];
+    write_argmax(&at("r"), &cells, &labels, &[0.75, f32::NAN]).unwrap();
+    let from_tsv = read_argmax(&at("r.argmax.tsv")).unwrap();
+    let from_parquet = read_argmax(&at("r.argmax.parquet")).unwrap();
+    assert_eq!(from_parquet["c0"], ("B".to_string(), 0.75));
+    assert_eq!(from_parquet["c1"].0, UNASSIGNED_LABEL);
+    assert!(from_parquet["c1"].1.is_nan());
+    assert_eq!(from_tsv["c0"], from_parquet["c0"]);
 }

@@ -87,7 +87,10 @@ fn own_names(v: &Value, base: &str) -> BTreeSet<String> {
     }
     let mut out = BTreeSet::new();
     walk(v, &format!("{base}."), &mut out);
-    out
+    // A labels file brings the label files written beside it.
+    out.iter()
+        .flat_map(|n| crate::annotate::outputs::with_label_siblings(n))
+        .collect()
 }
 
 fn read_json(p: &Path) -> Result<Value> {

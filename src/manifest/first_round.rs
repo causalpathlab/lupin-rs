@@ -11,7 +11,7 @@ use crate::annotate::celltype_tree::{coarse_call, TypeTree};
 use crate::annotate::rounds::ClusterId;
 use crate::manifest::rounds::{read_cells, read_table, write_argmax, write_summary};
 use crate::manifest::run::{self, rel_to_manifest, resolve, Loaded};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use legume_numeric::matrix::common_io::{mkdir_parent, write_lines};
 use log::info;
 use std::collections::BTreeMap;
@@ -21,7 +21,9 @@ use std::path::Path;
 const TREE: &str = ".celltype_tree.json";
 
 const LABEL_CL: &str = ".label_cl.tsv";
-const FINE_ARGMAX: &str = ".fine_argmax.tsv";
+/// The fine labels a coarse first round keeps, with the recorded labels'
+/// extension after it.
+const FINE_ARGMAX: &str = ".fine_argmax";
 
 /// What [`prepare`] found for a marker pass.
 pub struct Prepared {
@@ -141,7 +143,13 @@ pub fn finish(manifest: &Path, tree: &TypeTree, coarse: bool) -> Result<()> {
             .as_deref()
             .unwrap_or_default(),
     );
-    let fine_path = format!("{out}{FINE_ARGMAX}");
+    // The fine labels, as the pass wrote them: the same file, the same form.
+    let form = if argmax_path.ends_with(".parquet") {
+        ".parquet"
+    } else {
+        ".tsv"
+    };
+    let fine_path = format!("{out}{FINE_ARGMAX}{form}");
     fs::copy(&argmax_path, &fine_path)?;
     // Enrichment calls whole clusters, so the cluster's group call is each
     // cell's; projection calls cells, so each keeps the group of its own fine
@@ -163,7 +171,10 @@ pub fn finish(manifest: &Path, tree: &TypeTree, coarse: bool) -> Result<()> {
             })
             .collect()
     };
-    write_argmax(&argmax_path, &cells.names, &labels, &cells.probs)?;
+    // The labels the pass recorded, rewritten in place with the coarse calls.
+    let recorded_out = crate::annotate::outputs::labels_prefix(&argmax_path)
+        .with_context(|| format!("{argmax_path}: not a round's labels (`{{out}}.argmax.*`)"))?;
+    write_argmax(recorded_out, &cells.names, &labels, &cells.probs)?;
     let named = calls.values().flatten().count();
     info!("first round: {named} cluster(s) called at the coarse level; fine labels in {fine_path}");
 

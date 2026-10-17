@@ -93,3 +93,43 @@ fn the_staging_prefix_sits_beside_its_round_as_written() {
 fn a_prefix_written_with_a_trailing_slash_stages_beside_its_round() {
     assert_eq!(staging_prefix("results/run/"), "results/.run.staging");
 }
+
+#[test]
+fn a_round_with_no_labels_replacing_one_takes_its_label_files_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let out = d.join("run.L1").to_string_lossy().into_owned();
+    let staging = staging_prefix(&out);
+    // The old round named only its TSV; the shared writer put the parquet
+    // and the membership beside it.
+    write(
+        &d.join("run.L1.senna.json"),
+        r#"{"annotate": {"argmax": "run.L1.argmax.tsv"}}"#,
+    );
+    for f in [
+        "run.L1.argmax.tsv",
+        "run.L1.argmax.parquet",
+        "run.L1.membership.tsv",
+    ] {
+        write(&d.join(f), "old");
+    }
+    // The new pass scored gene sets only: no per-cell labels.
+    write(
+        &d.join(".run.L1.staging.senna.json"),
+        r#"{"annotate": {"ontology_signature": ".run.L1.staging.go.tsv"}}"#,
+    );
+    write(&d.join(".run.L1.staging.go.tsv"), "new");
+
+    promote(Path::new("run.senna.json"), &staging, &out).unwrap();
+
+    for f in [
+        "run.L1.argmax.tsv",
+        "run.L1.argmax.parquet",
+        "run.L1.membership.tsv",
+    ] {
+        assert!(
+            !d.join(f).exists(),
+            "{f}: the old round's labels go with it"
+        );
+    }
+}
