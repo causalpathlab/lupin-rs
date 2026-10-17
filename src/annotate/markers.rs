@@ -46,7 +46,9 @@ pub fn read_marker_pairs(path: &str) -> anyhow::Result<Vec<(Box<str>, Box<str>)>
 /// dropping a label that keys to nothing (`_`, `,`). Rows under a
 /// type-then-gene header are turned round, the header dropped.
 pub fn key_labels(mut pairs: Vec<(Box<str>, Box<str>)>) -> Vec<(Box<str>, Box<str>)> {
-    let type_first = pairs.first().is_some_and(|(a, b)| names_type_then_gene(a, b));
+    let type_first = pairs
+        .first()
+        .is_some_and(|(a, b)| names_type_then_gene(a, b));
     if type_first {
         pairs.remove(0);
     }

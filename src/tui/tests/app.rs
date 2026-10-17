@@ -2328,6 +2328,24 @@ fn the_trajectory_guide_agrees_with_itself_and_the_keys() {
 }
 
 #[test]
+fn the_guide_says_a_save_is_not_stopped_and_t_on_the_map_restyles() {
+    let entry = |section: &str, key: &str| {
+        super::super::ui::guide(true)
+            .find(|(s, _)| s.starts_with(section))
+            .and_then(|(_, keys)| keys.into_iter().find(|(k, _)| *k == key))
+            .map(|(_, what)| what)
+            .unwrap()
+    };
+    let x = entry("anywhere", "x");
+    assert!(x.contains("a save"), "x does not stop a save: {x}");
+    let order = super::super::ui::guide(true)
+        .map(|(s, _)| s)
+        .find(|s| s.starts_with("order view"))
+        .unwrap();
+    assert!(order.contains("T on the cell map"), "{order}");
+}
+
+#[test]
 fn the_log_pane_leaves_out_the_svg_fonts_fallback_notes() {
     use log::{Level, LevelFilter, Log, Metadata};
     fn at(target: &str, level: Level) -> Metadata<'_> {

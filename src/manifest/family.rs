@@ -89,9 +89,9 @@ impl Kind {
     /// section, which does not make the new round a trajectory.
     pub fn of(m: &RunManifest, source: Option<&RunManifest>) -> Self {
         let t = &m.trajectory;
-        let files =
-            |t: &crate::manifest::run::RunTrajectory| (t.prior.clone(), t.pseudotime.clone());
-        let inherited = source.is_some_and(|s| files(&s.trajectory) == files(t));
+        let inherited = source.is_some_and(|s| {
+            (&s.trajectory.prior, &s.trajectory.pseudotime) == (&t.prior, &t.pseudotime)
+        });
         if (t.prior.is_some() || t.pseudotime.is_some()) && !inherited {
             Kind::Trajectory
         } else if m.annotate.argmax.is_some() {

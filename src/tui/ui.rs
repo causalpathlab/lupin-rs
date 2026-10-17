@@ -344,7 +344,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("pgup/dn home/end", "a page / to either end of the pane's list"),
             ("r", "the annotation form (marker panel, output, settings; ▶ run or shift+enter runs the pass)"),
             ("g", "the run's family: the run, its annotated rounds and its trajectories; pick one to show it"),
-            ("x", "while a job runs: stop it (asks again), from any pane"),
+            ("x", "while a job runs: stop it (asks again), from any pane; a save runs to its end"),
             ("b", "while a job runs: hide or show its progress popup"),
             ("esc", "back to the clusters from any other pane; closes a prompt, menu, form, the grid or the exports strip first"),
             ("s", "save the edits as the next round, and export"),
@@ -412,7 +412,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
-        "order view (t or T in the tree pane)",
+        "order view (t or T in the tree pane; T on the cell map)",
         &[
             ("↑↓", "a cell type on screen, with its cells"),
             ("space", "mark a type; mark two, first the earlier one (in the table, not the figures)"),
@@ -1528,7 +1528,8 @@ fn draw_menu(f: &mut Frame, m: &super::menu::Menu, over: Rect) {
     let option = |o: &super::menu::Choice| format!(" {}  {}", o.key, o.label).chars().count();
     // Wide enough for its longest option: past `over`, or past the usual
     // 100 columns of a wide menu, as far as the screen goes.
-    let need = m.choices.iter().map(option).max().unwrap_or(0) as u16 + 2;
+    let longest = m.choices.iter().map(option).max().unwrap_or(0);
+    let need = u16::try_from(longest).unwrap_or(u16::MAX).saturating_add(2);
     let mut width = over.width.saturating_sub(2).clamp(20.min(over.width), 100);
     let over = if need > width {
         let screen = f.area();
