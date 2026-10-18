@@ -258,6 +258,12 @@ fn a_sentence_names_only_the_types_and_terms_of_its_evidence() {
         Err(CitationError::Foreign("CT2".into())),
         "another cluster's name is foreign, digit and all, so a retry bans it"
     );
+    let mut with_m2 = run();
+    with_m2.insert("M2".into());
+    assert!(
+        check_lm("CT A, like M2 cells.", &with_m2, &c.named(), &c.own()).is_err(),
+        "a short name of another's, which the citation check lets by, is a number"
+    );
     assert_eq!(check("Its cells look odd."), Err(CitationError::NamesNone));
     assert_eq!(
         check("CT A with markers MS₄A₃."),

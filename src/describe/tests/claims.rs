@@ -150,6 +150,35 @@ fn a_role_is_held_by_a_type_the_clause_names_else_the_subject() {
     wrong("It is where the lineages branch.", Some("CT2_cell"));
 }
 
+#[test]
+fn a_verdict_or_role_whose_clause_names_no_type_is_the_subjects() {
+    // `Its edge` is CT3's, whose edge from the narrow progenitor is unsupported.
+    wrong(
+        "Its edge from the narrow progenitor cell is supported.",
+        Some("CT3_cell"),
+    );
+    let ct1 = Some("CT1_cell");
+    ok(
+        "CT1 cell has a supported edge from the narrow progenitor cell and ends its lineage.",
+        ct1,
+    );
+    wrong(
+        "CT1 cell has a supported edge from the narrow progenitor cell and branches.",
+        ct1,
+    );
+    ok(
+        "CT3 cell has an unsupported edge to the narrow progenitor cell and a supported one \
+         to the CT4 mature cell.",
+        Some("CT3_cell"),
+    );
+    // In a run paragraph a role no type holds in its clause is not the
+    // sentence's first type's.
+    ok(
+        "The stem cell comes first and the order branches later.",
+        None,
+    );
+}
+
 /// CT_A tops the enrichment and is SuSiE's second; CT_B is SuSiE's first.
 fn cluster() -> ClusterInput {
     let choice = |label: &str, ranks: [Option<usize>; 3]| ChoiceInput {
