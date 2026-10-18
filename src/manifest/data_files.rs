@@ -429,7 +429,8 @@ impl ClData {
     /// [`Self::into_terms`], reading the word marker panel `panel` leaves
     /// off its labels ([`ClTerms::set_panel`]): what the trajectory run and
     /// the order view read their types by, so a few of the panel's types
-    /// read as the whole panel's do in both.
+    /// read as the whole panel's do in both; a panel that leaves none lets
+    /// the types tell their own.
     pub fn panel_terms(self, panel: &[(String, String)]) -> Result<Option<ClTerms>> {
         let mut terms = self.into_terms()?;
         if let Some(t) = &mut terms {

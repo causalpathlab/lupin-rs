@@ -449,9 +449,17 @@ fn gather_statements(
             .map(|g| inputs.names[g].as_ref())
             .collect();
         let search = data.search.clone();
-        // The panel's word read from the panel, and the nodes read as every
-        // type is: as the order view reads them.
-        let pairs = crate::annotate::markers::read_panel(&panel).unwrap_or_default();
+        // The panel's word read from the panel (else told from the types
+        // ordered), and the nodes read as every type is: as the order view
+        // reads them.
+        let pairs = match crate::annotate::markers::read_panel(&panel) {
+            Ok(p) => p,
+            Err(e) if !panel.is_empty() => {
+                warn!("the run's marker panel: {e:#}; the word its labels leave off is told from the types ordered");
+                Vec::new()
+            }
+            Err(_) => Vec::new(),
+        };
         let terms = data.panel_terms(&pairs)?;
         if terms.is_none() {
             warn!("no Cell Ontology at hand; the prior comes from precedence files alone");

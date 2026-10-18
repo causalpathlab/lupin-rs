@@ -56,9 +56,9 @@ pub struct ClTerms {
     /// found on first use.
     modifiers: std::sync::OnceLock<BTreeSet<String>>,
     /// The word a panel leaves off its labels, once [`Self::set_panel`]
-    /// has read it from the panel (`Some(None)` for a panel that leaves
-    /// none): labels are then completed by it, however few are mapped.
-    panel_context: Option<Option<String>>,
+    /// has read one from the panel: labels are then completed by it, however
+    /// few are mapped. Without one, it is told from the labels mapped.
+    panel_context: Option<String>,
     /// The file's `data-version`, when it states one.
     pub release: Option<String>,
 }
@@ -440,24 +440,18 @@ impl ClTerms {
     /// The word the panel leaves off: the one [`Self::set_panel`] read,
     /// else the one told from the labels `read` saw.
     fn context_word(&self, read: &Read) -> Option<String> {
-        match &self.panel_context {
-            Some(word) => word.clone(),
-            None => self.context_of(&read.unnamed).map(|(w, _)| w),
-        }
+        (self.panel_context.clone()).or_else(|| self.context_of(&read.unnamed).map(|(w, _)| w))
     }
 
     /// Read the word marker panel `panel` leaves off its labels, for
-    /// [`Self::map_labels`] to complete any of them by; an empty panel
-    /// leaves the word to be told from the labels given.
+    /// [`Self::map_labels`] to complete any of them by; a panel that leaves
+    /// none (or an empty one) leaves the word to be told from the labels
+    /// given.
     pub fn set_panel(&mut self, panel: &[(String, String)]) {
-        self.panel_context = None;
         let types = panel_types(panel);
-        if types.is_empty() {
-            return;
-        }
         let types: Vec<&str> = types.iter().map(String::as_str).collect();
         let read = self.read(&types);
-        self.panel_context = Some(self.context_of(&read.unnamed).map(|(w, _)| w));
+        self.panel_context = self.context_of(&read.unnamed).map(|(w, _)| w);
     }
 
     /// [`Self::map_labels`], then each label left by a run of its words

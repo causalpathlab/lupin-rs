@@ -750,7 +750,7 @@ fn a_known_context_word_completes_by_lookup_as_the_scan_does() {
         "one label is too few to tell"
     );
     t.set_panel(&panel);
-    assert_eq!(t.panel_context, Some(Some("organx".into())));
+    assert_eq!(t.panel_context.as_deref(), Some("organx"));
     let (one, _) = t.map_labels(["Gamma"]);
     assert_eq!(one["Gamma"], "CL:3", "one label read with the panel's word");
     assert!(
@@ -1058,7 +1058,7 @@ fn a_negative_marker_s_word_is_no_panel_context() {
         ("G2", "CD3 za"),
         ("G3", "CD5 wa"),
     ]));
-    assert_eq!(t.panel_context, Some(None));
+    assert_eq!(t.panel_context, None);
 }
 
 #[test]
@@ -1073,7 +1073,7 @@ fn an_alias_for_one_label_leaves_the_panel_s_word_to_the_others() {
     assert!(unmapped.is_empty(), "{unmapped:?}");
     assert_eq!(mapped["Beta"], "CL:2");
     t.set_panel(&panel(&[("G1", "Alpha"), ("G2", "Beta"), ("G3", "Gamma")]));
-    assert_eq!(t.panel_context, Some(Some("organx".into())));
+    assert_eq!(t.panel_context.as_deref(), Some("organx"));
 }
 
 #[test]
@@ -1190,7 +1190,7 @@ fn an_alias_elsewhere_counts_for_no_panel_word() {
     );
     assert_eq!(mapped["Xa"], "CL:21", "the alias");
     t.set_panel(&panel(&labels.map(|l| ("G", l))));
-    assert_eq!(t.panel_context, Some(Some("organx".into())));
+    assert_eq!(t.panel_context.as_deref(), Some("organx"));
     // Aliased to the very terms the other word completes them to, they count.
     let mut t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
     t.add_aliases("Xa\tCL:11\nXb\tCL:12\nXc\tCL:13\n", "test");
@@ -1277,4 +1277,16 @@ fn a_kind_of_a_type_shares_no_class_with_it() {
         "{:?}",
         tree.groups
     );
+}
+
+#[test]
+fn a_panel_that_leaves_no_word_lets_the_labels_tell_theirs() {
+    let obo = "[Term]\nid: CL:1\nname: organx alpha cell\n\n\
+               [Term]\nid: CL:2\nname: organx beta cell\n\n\
+               [Term]\nid: CL:3\nname: organx gamma cell\n\n\
+               [Term]\nid: CL:4\nname: CT1 cell\n";
+    let mut t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    t.set_panel(&panel(&[("G1", "CT1"), ("G2", "XQ"), ("G3", "YQ")]));
+    let (mapped, _) = t.map_labels(["Alpha", "Beta", "Gamma"]);
+    assert_eq!(mapped["Alpha"], "CL:1", "{mapped:?}");
 }
