@@ -73,3 +73,14 @@ fn a_commits_snapshot_is_read_without_a_ref_to_it() {
     let m = Model::in_cache("org/model", "main", cache, Some(HF_OFFLINE_ENV));
     assert!(m.cached("config.json").is_none());
 }
+
+#[test]
+fn files_fetched_into_the_default_cache_before_are_found_when_hf_home_names_another() {
+    // The cache HF_HOME names lacks the model; the default one, where an
+    // earlier lupin fetched it whatever HF_HOME said, has it.
+    let (_now, empty) = cache_with(&[]);
+    let (_before, default) = cache_with(&["config.json"]);
+    let m = Model::in_cache("org/model", REV, empty, Some(HF_OFFLINE_ENV)).reading_too(default);
+    let [got] = m.files(["config.json"]).unwrap();
+    assert!(got.ends_with("config.json"));
+}

@@ -1,7 +1,9 @@
 //! The Hugging Face Hub, as every model lupin loads reaches it: each file is
 //! read from the cache `HF_HOME` names (else `~/.cache/huggingface`) when it
-//! is there, and downloaded only when neither `LUPIN_OFFLINE` nor
-//! `HF_HUB_OFFLINE` (read as the Hub's own clients read it) is set.
+//! is there, or from `~/.cache/huggingface`, where an earlier lupin fetched
+//! models whatever `HF_HOME` said; it is downloaded, into the first, only
+//! when neither `LUPIN_OFFLINE` nor `HF_HUB_OFFLINE` (read as the Hub's own
+//! clients read it) is set.
 
 use crate::manifest::data_files::OFFLINE_ENV;
 use anyhow::{Context, Result};
@@ -30,7 +32,10 @@ fn offline_switch(lupin: Option<OsString>, hf: Option<String>) -> Option<&'stati
 pub struct Model {
     id: String,
     revision: String,
+    /// Where files are read and fetched to.
     cache: Cache,
+    /// Read too, never written to.
+    older: Option<Cache>,
     /// The switch set against downloads, if any.
     offline: Option<&'static str>,
 }
@@ -42,7 +47,21 @@ impl Model {
             std::env::var_os(OFFLINE_ENV),
             std::env::var(HF_OFFLINE_ENV).ok(),
         );
-        Self::in_cache(id, revision, Cache::from_env(), offline)
+        let (now, default) = (Cache::from_env(), Cache::default());
+        let older = (default.path() != now.path()).then_some(default);
+        let m = Self::in_cache(id, revision, now, offline);
+        match older {
+            Some(c) => m.reading_too(c),
+            None => m,
+        }
+    }
+
+    /// The model, also read from `older` when its cache lacks a file.
+    fn reading_too(self, older: Cache) -> Self {
+        Self {
+            older: Some(older),
+            ..self
+        }
     }
 
     fn in_cache(id: &str, revision: &str, cache: Cache, offline: Option<&'static str>) -> Self {
@@ -50,6 +69,7 @@ impl Model {
             id: id.to_string(),
             revision: revision.to_string(),
             cache,
+            older: None,
             offline,
         }
     }
@@ -58,16 +78,21 @@ impl Model {
         Repo::with_revision(self.id.clone(), RepoType::Model, self.revision.clone())
     }
 
-    /// File `name`, when the cache has it: under the snapshot the revision's
-    /// ref names, or, for a commit, under its own snapshot, which the Hub's
-    /// Python tools write with no ref to it.
+    /// File `name`, when its cache or the older one has it.
     #[must_use]
     fn cached(&self, name: &str) -> Option<PathBuf> {
+        (std::iter::once(&self.cache).chain(&self.older)).find_map(|c| self.cached_in(c, name))
+    }
+
+    /// File `name`, when `cache` has it: under the snapshot the revision's
+    /// ref names, or, for a commit, under its own snapshot, which the Hub's
+    /// Python tools write with no ref to it.
+    fn cached_in(&self, cache: &Cache, name: &str) -> Option<PathBuf> {
         let repo = self.repo();
-        self.cache.repo(repo.clone()).get(name).or_else(|| {
+        cache.repo(repo.clone()).get(name).or_else(|| {
             let commit =
                 self.revision.len() == 40 && self.revision.bytes().all(|b| b.is_ascii_hexdigit());
-            let path = (self.cache.path().join(repo.folder_name()))
+            let path = (cache.path().join(repo.folder_name()))
                 .join("snapshots")
                 .join(&self.revision)
                 .join(name);
