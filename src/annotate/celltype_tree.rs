@@ -6,7 +6,7 @@
 //! types are placed on CL terms under the matching rules
 //! ([`ClTerms::place_labels`]), and each goes under its nearest ancestor
 //! among the ontology's analysis classes (its curated `*_upper_slim` subsets
-//! and `cellxgene_subset`) that it shares with another panel type, short of
+//! and `cellxgene_subset`) that it shares with another type's term, short of
 //! one that is a panel type's own term over a kind of it; a group whose
 //! class is a kind of another group's then joins that one, and groups below
 //! one curated lineage (a domain `*_upper_slim` term) are one when that adds
@@ -1062,8 +1062,12 @@ impl TypeTree {
         if placed.on.len() < 2 {
             return None;
         }
-        // A type under a term groups as that term would.
-        let mapped = placed.anchored();
+        // A type under a term groups as that term would: the groups are
+        // made of the terms types sit on or under, each with its types.
+        let mut labels_on: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        for (label, id) in placed.anchored() {
+            labels_on.entry(id).or_default().push(label.to_string());
+        }
         // Each term's terms above it, and so its depth, walked once.
         let walked: std::cell::RefCell<HashMap<String, std::rc::Rc<BTreeSet<String>>>> =
             Default::default();
@@ -1073,14 +1077,12 @@ impl TypeTree {
                 .clone()
         };
         let depth_of = |id: &str| above(id).len();
-        let ancestry: BTreeMap<&str, std::rc::Rc<BTreeSet<String>>> = mapped
-            .iter()
-            .map(|(label, id)| (*label, above(id)))
-            .collect();
-        // Each type goes under its nearest ancestor (or itself) among the
-        // ontology's analysis classes that it shares with another panel type.
-        // A type sharing none stands as its own group.
-        // Per analysis class: how many panel types sit under it, and its depth.
+        let ancestry: BTreeMap<&str, std::rc::Rc<BTreeSet<String>>> =
+            labels_on.keys().map(|id| (*id, above(id))).collect();
+        // Each term goes under its nearest ancestor (or itself) among the
+        // ontology's analysis classes that it shares with another type's
+        // term. A term sharing none stands as its own group.
+        // Per analysis class: how many of the terms sit under it.
         let mut sharers: HashMap<&str, usize> = HashMap::new();
         for a in ancestry.values() {
             for t in a.iter().filter(|t| terms.classes.contains(*t)) {
@@ -1088,18 +1090,14 @@ impl TypeTree {
             }
         }
         let depth: HashMap<&str, usize> = sharers.keys().map(|t| (*t, depth_of(t))).collect();
-        // A class that is one panel type's own term groups only types on it:
-        // over a kind of it, it would make that kind look like the type.
-        let mut on: HashMap<&str, usize> = HashMap::new();
-        for id in placed.on.values() {
-            *on.entry(id.as_str()).or_default() += 1;
-        }
-        let groups_by = |t: &str| {
-            let n = sharers.get(t).copied().unwrap_or(0);
-            n >= 2 && on.get(t).is_none_or(|&k| k == n)
-        };
-        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (label, a) in &ancestry {
+        // A class that is one panel type's own term groups no other term
+        // below it: over a kind of it, it would make that kind look like the
+        // type.
+        let on: BTreeSet<&str> = placed.on.values().map(String::as_str).collect();
+        let groups_by = |t: &str| sharers.get(t).copied().unwrap_or(0) >= 2 && !on.contains(t);
+        // Group class → the terms in it.
+        let mut groups: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+        for (id, a) in &ancestry {
             let node = a
                 .iter()
                 .filter(|t| groups_by(t))
@@ -1109,12 +1107,11 @@ impl TypeTree {
                         .then_with(|| y.cmp(x))
                 })
                 .cloned()
-                .unwrap_or_else(|| mapped[*label].to_string());
-            groups.entry(node).or_default().push((*label).to_string());
+                .unwrap_or_else(|| (*id).to_string());
+            groups.entry(node).or_default().push(id);
         }
         // One coarse level: a group whose class is a kind of another's joins
         // it, the deepest first, so nested groups end in the outermost.
-        // (Two types on one term outside every class group by that term.)
         let mut shared: Vec<(usize, String)> = (groups.iter())
             .filter(|(_, m)| m.len() >= 2)
             .map(|(id, _)| (depth_of(id), id.clone()))
@@ -1128,18 +1125,16 @@ impl TypeTree {
                 .map(|(_, o)| o);
             if let Some(outer) = outer {
                 let moved = groups.remove(inner).unwrap_or_default();
-                let into = groups.entry(outer.clone()).or_default();
-                into.extend(moved);
-                into.sort_unstable();
+                groups.entry(outer.clone()).or_default().extend(moved);
             }
         }
         // Groups below one lineage are one group: each group's lineage is the
-        // nearest above its class, or above its lone type's own term. The
-        // groups stay one level: a lineage over a group it does not take
-        // merges nothing, unless it is already one merging group's class (a
-        // panel type's own term), which adds no level.
-        let class_of = |id: &str, members: &[String]| match members {
-            [m] => mapped[m.as_str()].to_string(),
+        // nearest above its class, or above its lone term. The groups stay
+        // one level: a lineage over a group it does not take merges nothing,
+        // unless it is already one merging group's class (a panel type's own
+        // term), which adds no level.
+        let class_of = |id: &str, members: &[&str]| match members {
+            [m] => (*m).to_string(),
             _ => id.to_string(),
         };
         let classes: BTreeMap<String, String> = (groups.iter())
@@ -1157,7 +1152,7 @@ impl TypeTree {
         }
         // Every merging group is taken out before any lineage is put in, as
         // a lineage may be the class of a group merging elsewhere.
-        let merged: Vec<(String, Vec<String>)> = (by_lineage.into_iter())
+        let merged: Vec<(String, Vec<&str>)> = (by_lineage.into_iter())
             .filter(|(lineage, ids)| {
                 let is_a_class = ids.iter().any(|id| classes[id] == *lineage);
                 ids.len() >= 2
@@ -1174,25 +1169,28 @@ impl TypeTree {
             })
             .collect();
         for (lineage, members) in merged {
-            let into = groups.entry(lineage).or_default();
-            into.extend(members);
-            into.sort_unstable();
+            groups.entry(lineage).or_default().extend(members);
         }
         let mut groups: Vec<TypeGroup> = groups
             .into_iter()
-            .map(|(id, members)| {
+            .map(|(id, ids)| {
                 // A class every sharer left for a nearer one groups nothing:
-                // its lone type is named for itself, not for the broader class.
-                if members.len() == 1 {
-                    (mapped[members[0].as_str()].to_string(), members)
-                } else {
-                    (id, members)
+                // its lone term's types are named for it, not for the
+                // broader class.
+                let id = match &ids[..] {
+                    [one] => (*one).to_string(),
+                    _ => id,
+                };
+                let mut members: Vec<String> = ids
+                    .iter()
+                    .flat_map(|t| labels_on[t].iter().cloned())
+                    .collect();
+                members.sort_unstable();
+                TypeGroup {
+                    name: String::new(),
+                    cl_id: Some(id),
+                    members,
                 }
-            })
-            .map(|(id, members)| TypeGroup {
-                name: String::new(),
-                cl_id: Some(id),
-                members,
             })
             .collect();
         // A hinted type joins no group of another lineage: one whose term

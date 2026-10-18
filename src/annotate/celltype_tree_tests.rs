@@ -1241,3 +1241,40 @@ fn a_lineage_a_type_is_on_takes_its_kinds_whatever_lies_below() {
     assert_eq!(members(&tree, "ab_one_cell"), ["AB one"]);
     assert_eq!(tree.groups.len(), 2, "{:?}", tree.groups);
 }
+
+#[test]
+fn a_kind_of_a_type_shares_no_class_with_it() {
+    // CT1 is also under the deeper class kay; Early CT1 is only a kind of
+    // CT1 (early X is a kind of X: CT4..CT6).
+    let mut obo = String::from(
+        "[Term]\nid: CL:0\nname: root cell\n\n\
+         [Term]\nid: CL:10\nname: endo cell\nsubset: cellxgene_subset\nis_a: CL:0\n\n\
+         [Term]\nid: CL:11\nname: mid cell\nis_a: CL:0\n\n\
+         [Term]\nid: CL:12\nname: kay cell\nsubset: cellxgene_subset\nis_a: CL:11\n\n\
+         [Term]\nid: CL:1\nname: CT1 cell\nis_a: CL:10\nis_a: CL:12\n\n\
+         [Term]\nid: CL:2\nname: CT2 cell\nis_a: CL:10\n\n\
+         [Term]\nid: CL:3\nname: CT3 cell\nis_a: CL:10\n\n",
+    );
+    for n in 4..7 {
+        obo += &format!(
+            "[Term]\nid: CL:{n}\nname: CT{n} cell\nis_a: CL:0\n\n\
+             [Term]\nid: CL:{n}0{n}\nname: early CT{n} cell\nis_a: CL:{n}\n\n"
+        );
+    }
+    let t = ClTerms::parse(&obo, &crate::annotate::cl_rules::shipped());
+    let p = panel(&[
+        ("G1", "CT1"),
+        ("G2", "Early CT1"),
+        ("G3", "CT2"),
+        ("G4", "CT3"),
+    ]);
+    let placed = t.place_labels(["CT1", "Early CT1", "CT2", "CT3"]);
+    assert_eq!(placed.under["Early CT1"], "CL:1");
+    let tree = TypeTree::from_ontology(&t, &p).unwrap();
+    assert_eq!(
+        members(&tree, "endo_cell"),
+        ["CT1", "CT2", "CT3", "Early CT1"],
+        "{:?}",
+        tree.groups
+    );
+}
