@@ -9,7 +9,8 @@
 //!    of the repository, the ontology from the rules' `ontology_url`) unless
 //!    `LUPIN_OFFLINE` is set;
 //! 2. **user**: `~/.config/lupin/` (`$XDG_CONFIG_HOME/lupin/` when that is
-//!    set; `LUPIN_CONFIG_DIR` overrides both);
+//!    set and exists, or there is no `~/.config/lupin/` to keep reading;
+//!    `LUPIN_CONFIG_DIR` overrides both);
 //! 3. **project**: `lupin/` beside the run manifest;
 //! 4. **run**: a file named on the command line (`--label-cl`, `--obo`).
 //!
@@ -74,16 +75,47 @@ pub struct SearchPath {
 /// in `xdg` (`XDG_CONFIG_HOME`, when absolute, as the XDG spec reads it),
 /// else in `home`'s `.config/`. Not `dirs::config_dir`: on macOS that is
 /// `Library/Application Support`, and lupin keeps `.config/` everywhere.
-fn user_dir(
+///
+/// lupin read only `home`'s `.config/lupin/` before it followed XDG: while
+/// the XDG folder has no `lupin/` and that one exists, it is still the one
+/// read, and the XDG folder passed over comes back beside it.
+fn user_layer(
     lupin: Option<std::ffi::OsString>,
     xdg: Option<std::ffi::OsString>,
     home: Option<PathBuf>,
-) -> Option<PathBuf> {
-    let xdg = xdg.map(PathBuf::from).filter(|d| d.is_absolute());
-    lupin.map(PathBuf::from).or_else(|| {
-        xdg.or_else(|| home.map(|h| h.join(".config")))
-            .map(|d| d.join("lupin"))
-    })
+) -> Option<(PathBuf, Option<PathBuf>)> {
+    if let Some(d) = lupin {
+        return Some((PathBuf::from(d), None));
+    }
+    let older = home.map(|h| h.join(".config").join("lupin"));
+    match xdg.map(PathBuf::from).filter(|d| d.is_absolute()) {
+        Some(x) => {
+            let x = x.join("lupin");
+            match older {
+                Some(o) if o != x && !x.exists() && o.is_dir() => Some((o, Some(x))),
+                _ => Some((x, None)),
+            }
+        }
+        None => older.map(|o| (o, None)),
+    }
+}
+
+/// [`user_layer`] as the environment gives it.
+fn user_layer_of_env() -> Option<(PathBuf, Option<PathBuf>)> {
+    user_layer(
+        std::env::var_os(CONFIG_DIR_ENV),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        dirs::home_dir(),
+    )
+}
+
+/// What [`user_layer`] says of an XDG folder it passed over.
+fn passed_over_note(used: &Path, xdg: &Path) -> String {
+    format!(
+        "{} has no lupin folder yet: reading {}, where lupin kept its files before it followed XDG_CONFIG_HOME (move them there to use it)",
+        xdg.display(),
+        used.display()
+    )
 }
 
 /// The alias sidecar of marker panel `panel`: its table extensions
@@ -125,11 +157,13 @@ impl SearchPath {
         let source =
             Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("data")).filter(|d| d.is_dir());
         let cache = dirs::cache_dir().map(|d| d.join("lupin"));
-        let user = user_dir(
-            std::env::var_os(CONFIG_DIR_ENV),
-            std::env::var_os("XDG_CONFIG_HOME"),
-            dirs::home_dir(),
-        );
+        let user = user_layer_of_env().map(|(dir, passed_over)| {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            if let Some(x) = passed_over {
+                ONCE.call_once(|| log::warn!("{}", passed_over_note(&dir, &x)));
+            }
+            dir
+        });
         Self {
             install,
             source,
@@ -662,6 +696,9 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
             let search = SearchPath::new(run_dir.as_deref());
             for line in where_report(&search) {
                 println!("{line}");
+            }
+            if let Some((used, Some(x))) = user_layer_of_env() {
+                println!("\nuser: {}", passed_over_note(&used, &x));
             }
             Ok(())
         }

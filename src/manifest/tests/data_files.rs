@@ -318,20 +318,40 @@ fn data_where_lists_the_precedence_files_of_the_user_and_project_layers() {
 fn the_user_layer_follows_lupin_s_variable_then_xdg_then_home() {
     let home = Some(PathBuf::from("/home/u"));
     let os = |s: &str| Some(std::ffi::OsString::from(s));
+    let dir = |l, x, h| user_layer(l, x, h).map(|(d, _)| d);
     assert_eq!(
-        user_dir(os("/lupin"), os("/xdg"), home.clone()),
+        dir(os("/lupin"), os("/xdg"), home.clone()),
         Some(PathBuf::from("/lupin"))
     );
     assert_eq!(
-        user_dir(None, os("/xdg"), home.clone()),
+        dir(None, os("/xdg"), home.clone()),
         Some(PathBuf::from("/xdg/lupin"))
     );
     // The XDG spec ignores an empty or relative value.
     for xdg in ["", "rel"] {
         assert_eq!(
-            user_dir(None, os(xdg), home.clone()),
+            dir(None, os(xdg), home.clone()),
             Some(PathBuf::from("/home/u/.config/lupin"))
         );
     }
-    assert_eq!(user_dir(None, None, None), None);
+    assert_eq!(dir(None, None, None), None);
+}
+
+#[test]
+fn an_xdg_folder_without_lupin_s_reads_the_older_one_under_home() {
+    // Files curated in ~/.config/lupin/ before lupin followed XDG stay
+    // read until the XDG folder has its own.
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let xdg = root.path().join("xdg");
+    let older = home.join(".config").join("lupin");
+    std::fs::create_dir_all(&older).unwrap();
+    let os = Some(xdg.clone().into_os_string());
+    let (dir, passed_over) = user_layer(None, os.clone(), Some(home.clone())).unwrap();
+    assert_eq!(dir, older);
+    assert_eq!(passed_over, Some(xdg.join("lupin")));
+    std::fs::create_dir_all(xdg.join("lupin")).unwrap();
+    let (dir, passed_over) = user_layer(None, os, Some(home)).unwrap();
+    assert_eq!(dir, xdg.join("lupin"));
+    assert_eq!(passed_over, None);
 }
