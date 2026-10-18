@@ -935,6 +935,17 @@ impl TypeTree {
     pub fn from_ontology(terms: &ClTerms, panel: &[(String, String)]) -> Option<Self> {
         let types = panel_types(panel);
         let placed = terms.place_labels(types.iter().map(String::as_str));
+        Self::from_placed(terms, panel, &placed)
+    }
+
+    /// [`Self::from_ontology`] with the panel's types already placed
+    /// ([`ClTerms::place_labels`]).
+    #[must_use]
+    pub fn from_placed(
+        terms: &ClTerms,
+        panel: &[(String, String)],
+        placed: &Placed,
+    ) -> Option<Self> {
         if placed.on.len() < 2 {
             return None;
         }

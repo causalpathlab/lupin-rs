@@ -130,7 +130,8 @@ impl PanelTree {
         // with the types it shares them with, or on its own when it shares none. Standing alone
         // is a family of its own at the top, which costs every test there.
         let unmapped: BTreeSet<String> = placed.loose().iter().map(|l| label_key(l)).collect();
-        let groups = TypeTree::from_ontology(terms, panel).map_or_else(Vec::new, |t| t.groups);
+        let groups =
+            TypeTree::from_placed(terms, panel, &placed).map_or_else(Vec::new, |t| t.groups);
         for g in groups {
             let loose: Vec<&String> = g
                 .members
