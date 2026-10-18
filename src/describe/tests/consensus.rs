@@ -308,6 +308,36 @@ fn a_sentence_failing_twice_or_naming_nothing_gives_the_template() {
 }
 
 #[test]
+fn a_sentence_claiming_a_rank_its_method_does_not_give_is_the_template() {
+    // SuSiE's first is CT_B.
+    let mut stub = Stub::new(
+        &[("CT A", -0.1)],
+        &[" has the highest enrichment score and SuSiE ranks it first."],
+    );
+    let p = propose_with(&mut stub);
+    assert_eq!(p.check, Check::Template, "{}", p.rationale);
+    assert_eq!(stub.asked.len(), 1, "no word to ban: not retried");
+    let mut stub = Stub::new(
+        &[("CT A", -0.1)],
+        &[" has the highest enrichment score, while SuSiE ranks CT B first."],
+    );
+    assert_eq!(propose_with(&mut stub).check, Check::Ok);
+}
+
+#[test]
+fn the_template_for_another_label_than_the_clusters_does_not_say_it_is_annotated_so() {
+    let mut stub = Stub::new(&[("CT B", -0.1)], &[" or CT C.", " or CT C again."]);
+    let p = propose_with(&mut stub);
+    assert_eq!((p.label.as_str(), p.check), ("CT_B", Check::Template));
+    assert!(
+        p.rationale
+            .starts_with("The consensus suggests CT_B for K3."),
+        "{}",
+        p.rationale
+    );
+}
+
+#[test]
 fn a_number_bans_every_digit_and_a_sentence_naming_nothing_is_not_retried() {
     let mut stub = Stub::new(
         &[("CT A", -0.1)],

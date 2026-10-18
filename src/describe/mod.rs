@@ -7,6 +7,7 @@
 //! applied, the user confirms it in the TUI. Every sentence, template or model's, is
 //! citation-checked against the entities its evidence allows ([`citation_check`]).
 
+pub(crate) mod claims;
 pub mod consensus;
 pub mod lm;
 pub mod trajectory;
@@ -1019,6 +1020,9 @@ pub enum CitationError {
     Markup(String),
     /// (A model's text) nothing.
     Empty,
+    /// (A model's text) a claim its evidence does not bear out
+    /// ([`claims`]).
+    Claim(String),
 }
 
 impl std::fmt::Display for CitationError {
@@ -1030,6 +1034,7 @@ impl std::fmt::Display for CitationError {
             Self::Digits(d) => write!(f, "a number ({d})"),
             Self::Markup(m) => write!(f, "markup ({m})"),
             Self::Empty => write!(f, "no sentence"),
+            Self::Claim(c) => write!(f, "a claim its evidence does not bear out: {c}"),
         }
     }
 }

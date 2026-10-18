@@ -144,14 +144,41 @@ fn a_model_text_that_strays_falls_back_to_the_template() {
         &[],
         &["It starts at NK cells.", "It starts at NK cells again."],
     );
-    let d = word(&mut stub, "m", "r", s, &types()).unwrap();
+    let d = word(&mut stub, "m", "r", s, &f).unwrap();
     assert_eq!(d.check, Check::Template);
     assert_eq!(d.text, run_template(&f));
     assert_eq!(stub.asked[1].1.words, ["NK_cells"]);
     let mut stub = Stub::new(&[], &["The order runs from HSC like through MPP like."]);
-    let d = word(&mut stub, "m", "r", s, &types()).unwrap();
+    let d = word(&mut stub, "m", "r", s, &f).unwrap();
     assert_eq!(d.check, Check::Ok);
     assert_eq!(d.cited, ["HSC_like", "MPP_like"]);
+}
+
+#[test]
+fn a_model_text_contradicting_the_facts_falls_back_to_the_template() {
+    let f = facts();
+    let mono = (subjects(&f).into_iter())
+        .find(|s| s.subject.as_deref() == Some("MONO"))
+        .unwrap();
+    // MPP_like → MONO is unsupported, and MONO comes after MPP_like.
+    for wrong in [
+        "MONO sits after MPP like, with a supported edge from MPP like.",
+        "MONO sits between HSC like and MPP like.",
+        "MONO gives rise to MPP like.",
+    ] {
+        let mut stub = Stub::new(&[], &[wrong]);
+        let d = word(&mut stub, "m", "r", &mono, &f).unwrap();
+        assert_eq!(d.check, Check::Template, "{wrong}");
+        assert_eq!(d.text, type_template(&f, "MONO"));
+    }
+    let mut stub = Stub::new(
+        &[],
+        &["MONO comes after MPP like and ends its lineage, with an unsupported edge from it."],
+    );
+    assert_eq!(
+        word(&mut stub, "m", "r", &mono, &f).unwrap().check,
+        Check::Ok
+    );
 }
 
 #[test]

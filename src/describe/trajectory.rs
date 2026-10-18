@@ -5,10 +5,12 @@
 //! (`trajectory_lineages.tsv`, `trajectory_edges.parquet` and each type's
 //! median pseudotime); with `--lm` the model words them ([`super::lm`]),
 //! greedily and deciding nothing, and each text names only the types its
-//! facts allow or the template stands in.
+//! facts allow and says of them only what the facts bear out
+//! ([`super::claims`]), or the template stands in.
 
 use super::consensus::{append, cached_or, chat, check_lm, cited, key, Check};
 use super::lm::{Lm, LmSpec};
+use super::CitationError;
 use crate::manifest::run::{resolve, Loaded};
 use crate::trajectory::edges::{self, EdgeRow};
 use anyhow::{Context, Result};
@@ -407,21 +409,26 @@ pub struct Described {
 }
 
 /// `s`'s text by `lm` (named `model` at `revision`), checked against the
-/// run's `types`; the template when it fails.
+/// run's facts `f`: the names it uses and what it says of them
+/// ([`super::claims::order_claims`]); the template when it fails.
 pub fn word(
     lm: &mut dyn Lm,
     model: &str,
     revision: &str,
     s: &Subject,
-    types: &BTreeSet<String>,
+    f: &OrderFacts,
 ) -> Result<Described> {
+    let types: BTreeSet<String> = f.types().into_iter().collect();
     let text = super::consensus::checked(
         lm,
         &s.prompt,
         "",
         s.max_tokens,
         super::consensus::numbered(&s.named, &s.own),
-        |t| check_lm(t, types, &s.named, &s.own),
+        |t| {
+            check_lm(t, &types, &s.named, &s.own)?;
+            super::claims::order_claims(t, f, s.subject.as_deref()).map_err(CitationError::Claim)
+        },
     )?;
     let (text, check) = match text {
         Some(t) => (t, Check::Ok),
@@ -448,7 +455,6 @@ pub fn describe(
     load: impl FnOnce() -> Result<Box<dyn Lm>>,
 ) -> Result<Vec<Described>> {
     let all = subjects(f);
-    let types: BTreeSet<String> = f.types().into_iter().collect();
     let Some(spec) = spec else {
         return Ok(all
             .iter()
@@ -474,7 +480,7 @@ pub fn describe(
         "texts",
         load,
         |lm, k| {
-            let d = word(lm, &model, &revision, &all[k], &types)?;
+            let d = word(lm, &model, &revision, &all[k], f)?;
             append(cache, &d)?;
             Ok(d)
         },

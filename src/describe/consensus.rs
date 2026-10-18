@@ -11,8 +11,9 @@
 //! ([`super::lm`]) scores each choice as the continuation of `LABEL:`, so
 //! the label is one of the choices by construction; then, from the same
 //! evidence stated in words (a small model copies the numbers it is shown),
-//! it continues `WHY: {label}` greedily, and the sentence passes the citation check or is
-//! replaced by the template ([`super::template_sentence`]).
+//! it continues `WHY: {label}` greedily, and the sentence passes the citation check and
+//! the check of what it claims of the methods' ranks ([`super::claims`]) or is replaced by
+//! the template ([`super::template_sentence`]).
 //!
 //! Prior art for language-model cell typing: Hou & Ji, *Assessing GPT-4 for
 //! cell type annotation in single-cell RNA-seq analysis*, Nat Methods
@@ -41,7 +42,7 @@ const TOP: usize = 5;
 /// How the model is asked; part of the cache key.
 const DECODE: &str = "label: mean log-probability of each choice, softmax; why: from the label, \
                       greedy to a newline, 60 tokens, no numbers or markup but the names', \
-                      one retry with the offender banned";
+                      one retry with the offender banned; claims checked against the evidence";
 
 /// One label choice as the model is shown it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -605,8 +606,9 @@ fn template(c: &ClusterInput, label: &str, p: &BTreeMap<String, f32>) -> String 
         .filter(|(.., q)| *q < 0.1)
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(x, _, q)| (x.label().to_string(), q));
-    template_sentence(&ClusterEvidence {
-        id: format!("K{}", c.cluster),
+    let id = format!("K{}", c.cluster);
+    let text = template_sentence(&ClusterEvidence {
+        id: id.clone(),
         coarse_label: label.to_string(),
         best_label: label.to_string(),
         best_q: q,
@@ -617,7 +619,15 @@ fn template(c: &ClusterInput, label: &str, p: &BTreeMap<String, f32>) -> String 
         markers: ch.map(|x| x.markers.clone()).unwrap_or_default(),
         neighbour_genes: Vec::new(),
         incidence_words: Vec::new(),
-    })
+    });
+    // The cluster is annotated so only when the label is already its own.
+    let lead = format!("{id} is annotated as {label}.");
+    match text.strip_prefix(&lead) {
+        Some(rest) if c.label.as_deref() != Some(label) => {
+            format!("The consensus suggests {label} for {id}.{rest}")
+        }
+        _ => text,
+    }
 }
 
 /// The proposal for cluster `c` of a round whose types and terms are
@@ -666,7 +676,10 @@ pub fn propose(
         &lead,
         RATIONALE_TOKENS,
         numbered(&named, &own),
-        |t| check_lm(t, run, &named, &own),
+        |t| {
+            check_lm(t, run, &named, &own)?;
+            super::claims::rank_claims(t, c, &label).map_err(CitationError::Claim)
+        },
     )?;
     let (rationale, check) = match sentence {
         Some(s) => (first_sentence(&s), Check::Ok),
