@@ -233,3 +233,23 @@ fn a_run_given_no_min_cells_counts_types_as_the_run_does() {
     };
     assert_eq!(given.min_cells(), 5);
 }
+
+#[test]
+fn the_ontology_reads_the_nodes_as_it_reads_every_type_on_screen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let search = SearchPath::new(Some(tmp.path()));
+    let cl = ClTerms::parse(
+        crate::tui::ontology::tests::ORGAN,
+        &crate::annotate::cl_rules::shipped(),
+    );
+    // Two nodes are too few to tell the organ's word; the four types are not.
+    let types = vec![
+        ("Alpha".into(), 10),
+        ("Beta".into(), 10),
+        ("Gamma".into(), 1),
+        ("Epsilon".into(), 1),
+    ];
+    let v = OrderView::load(types, Some(&cl), &search, Vec::new(), 5);
+    let edges: Vec<(String, String)> = v.edges().into_iter().map(|e| (e.from, e.to)).collect();
+    assert_eq!(edges, [("Alpha".to_string(), "Beta".to_string())]);
+}

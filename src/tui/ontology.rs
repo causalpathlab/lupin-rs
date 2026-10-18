@@ -612,4 +612,4 @@ impl Mixed {
 
 #[cfg(test)]
 #[path = "tests/ontology.rs"]
-mod tests;
+pub(crate) mod tests;

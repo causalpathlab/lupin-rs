@@ -469,3 +469,27 @@ fn a_climb_keeps_the_term_climbed_from_on_its_own_row() {
     );
     assert_eq!(v.selected().unwrap().id, "CL:103");
 }
+
+/// Four kinds of one organ's cells, each named with the organ's word the
+/// panel leaves off its labels; beta develops from alpha.
+pub(crate) const ORGAN: &str = "[Term]\nid: CL:1\nname: organx alpha cell\n\n\
+    [Term]\nid: CL:2\nname: organx beta cell\nrelationship: RO:0002202 CL:1\n\n\
+    [Term]\nid: CL:3\nname: organx gamma cell\n\n\
+    [Term]\nid: CL:4\nname: organx epsilon cell\n";
+
+#[test]
+fn a_label_off_the_panel_is_read_with_the_panels_word() {
+    let cl = ClTerms::parse(ORGAN, &crate::annotate::cl_rules::shipped());
+    let panel: Vec<(String, String)> = [("G1", "Alpha"), ("G2", "Beta"), ("G3", "Gamma")]
+        .iter()
+        .map(|(g, t)| ((*g).to_string(), (*t).to_string()))
+        .collect();
+    let tree = PanelTree::from_ontology(&cl, &panel).unwrap();
+    assert_eq!(term_of(&cl, &tree, "Alpha").as_deref(), Some("CL:1"));
+    assert_eq!(
+        term_of(&cl, &tree, "Epsilon").as_deref(),
+        Some("CL:4"),
+        "one label alone is read as the tree reads the panel's"
+    );
+    assert_eq!(term_of(&cl, &tree, "Delta"), None);
+}
