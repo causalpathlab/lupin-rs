@@ -383,14 +383,27 @@ impl ClTerms {
     #[must_use]
     pub fn map_labels<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> Mapped {
         let labels: Vec<&str> = labels.into_iter().collect();
+        self.map_with(&labels, self.context_word(&labels).as_deref())
+    }
+
+    /// [`Self::map_labels`] with the panel's word `context`.
+    fn map_with(&self, labels: &[&str], context: Option<&str>) -> Mapped {
         let matched = self.match_labels(labels.iter().copied());
-        let completed = match &self.panel_context {
-            Some(word) => (word.as_deref()).map(|w| self.completed_by(&matched.1, w)),
-            None => self.context_of(&self.unnamed(&labels)).map(|(_, c)| c),
-        };
-        match completed {
-            Some(c) => with_completed(matched, c),
+        match context {
+            Some(w) => {
+                let completed = self.completed_by(&matched.1, w);
+                with_completed(matched, completed)
+            }
             None => matched,
+        }
+    }
+
+    /// The word the panel leaves off: the one [`Self::set_panel`] read,
+    /// else the one told from `labels`.
+    fn context_word(&self, labels: &[&str]) -> Option<String> {
+        match &self.panel_context {
+            Some(word) => word.clone(),
+            None => self.context_of(&self.unnamed(labels)).map(|(w, _)| w),
         }
     }
 
@@ -438,13 +451,15 @@ impl ClTerms {
     /// only as a hint of its lineage.
     #[must_use]
     pub fn place_labels<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> Placed {
-        let (on, unmapped) = self.map_labels(labels);
+        let labels: Vec<&str> = labels.into_iter().collect();
+        let context = self.context_word(&labels);
+        let (on, unmapped) = self.map_with(&labels, context.as_deref());
         let mut placed = Placed {
             on,
             ..Placed::default()
         };
         for label in unmapped {
-            match self.by_part(&label) {
+            match self.by_part(&label, context.as_deref()) {
                 Some((id, true)) => {
                     placed.under.insert(label, id);
                 }
@@ -457,17 +472,23 @@ impl ClTerms {
         placed
     }
 
-    /// The term the longest run of `label`'s words matches, when one run of
+    /// The term the longest run of `label`'s words matches, the panel's word
+    /// `context` completing a run as it completes a label, when one run of
     /// that length matches one term, and whether every word left off is a
     /// modifier.
-    fn by_part(&self, label: &str) -> Option<(String, bool)> {
+    fn by_part(&self, label: &str, context: Option<&str>) -> Option<(String, bool)> {
         self.rules.part.min_pairs?;
         let single = self.rules.singular(&self.rules.normalise(label));
         let w = words(&single);
         for len in (1..w.len()).rev() {
             let mut found: BTreeMap<String, bool> = BTreeMap::new();
             for start in 0..=w.len() - len {
-                if let Some(id) = self.match_label(&w[start..start + len].join(" ")) {
+                let run = w[start..start + len].join(" ");
+                let id = self.match_label(&run).or_else(|| {
+                    let completed = self.completed_by(std::slice::from_ref(&run), context?);
+                    completed.into_values().next()
+                });
+                if let Some(id) = id {
                     let left = w[..start].iter().chain(&w[start + len..]);
                     let modifiers = self.modifiers.get_or_init(|| self.modifier_words());
                     let kind = left.clone().all(|d| modifiers.contains(d));

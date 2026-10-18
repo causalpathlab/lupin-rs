@@ -1074,3 +1074,27 @@ fn an_alias_for_one_label_leaves_the_panel_s_word_to_the_others() {
     t.set_panel(&panel(&[("G1", "Alpha"), ("G2", "Beta"), ("G3", "Gamma")]));
     assert_eq!(t.panel_context, Some(Some("organx".into())));
 }
+
+#[test]
+fn a_kind_of_a_type_the_panel_s_word_completes_is_placed_under_it() {
+    let obo = "[Term]\nid: CL:1\nname: organx A cell\nsynonym: \"organx alpha cell\" EXACT []\n\n\
+               [Term]\nid: CL:2\nname: organx beta cell\n\n\
+               [Term]\nid: CL:3\nname: organx gamma cell\n\n\
+               [Term]\nid: CL:11\nname: foo cell\n\n\
+               [Term]\nid: CL:12\nname: mature foo cell\nis_a: CL:11\n\n\
+               [Term]\nid: CL:21\nname: bar cell\n\n\
+               [Term]\nid: CL:22\nname: mature bar cell\nis_a: CL:21\n\n\
+               [Term]\nid: CL:31\nname: baz cell\n\n\
+               [Term]\nid: CL:32\nname: mature baz cell\nis_a: CL:31\n";
+    let labels = ["Alpha", "Beta", "Gamma", "Mature Beta"];
+    let mut t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let placed = t.place_labels(labels);
+    assert_eq!(placed.on["Beta"], "CL:2");
+    assert_eq!(placed.under["Mature Beta"], "CL:2", "told from the labels");
+    t.set_panel(&panel(&labels.map(|l| ("G", l))));
+    let placed = t.place_labels(["Mature Beta"]);
+    assert_eq!(
+        placed.under["Mature Beta"], "CL:2",
+        "read with the panel's word"
+    );
+}
