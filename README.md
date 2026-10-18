@@ -197,7 +197,7 @@ of the binary so they can be updated and amended without rebuilding:
 | file | what |
 |---|---|
 | `cl-basic.obo` | the Cell Ontology (downloaded once, then cached) |
-| `cl_matching.json` | matching rules: which synonyms count (abbreviations such as CT1 for its full name), plurals, word order, which ontology subsets are classes |
+| `cl_matching.json` | matching rules: which synonyms count (abbreviations such as CT1 for its full name, plural forms), plurals, word order, marker signs (`X+`, `X positive` and `X-positive` read alike), qualifiers a label may leave off (`alpha-beta`, a species), which ontology subsets are classes and which terms are states that group nothing |
 
 Each is looked up in layers, later ones winning (rules key by key): the
 install's `share/lupin/` (or `LUPIN_DATA_DIR`) or the source's `data/`, else a
