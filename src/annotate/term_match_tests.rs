@@ -135,6 +135,18 @@ fn the_index_reads_back_from_its_cache_file() {
 }
 
 #[test]
+fn a_save_writes_through_a_file_of_its_own() {
+    // Another process writing the same index holds a name of its own: a
+    // fixed partial name, here taken, would be shared with it.
+    let (_, idx) = index();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("index.parquet");
+    std::fs::create_dir_all(file.with_extension("partial")).unwrap();
+    idx.save(&file).unwrap();
+    assert!(TermIndex::load(&file).is_ok());
+}
+
+#[test]
 fn the_cache_is_keyed_by_the_ontology_release_and_the_model_revision() {
     let rules = crate::annotate::cl_rules::shipped();
     let v1 = ClTerms::parse(&format!("data-version: r1\n\n{OBO}"), &rules);

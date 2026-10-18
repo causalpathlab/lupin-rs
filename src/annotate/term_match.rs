@@ -130,22 +130,29 @@ impl TermIndex {
     }
 
     /// Write the index to `file` (a parquet table: the term, then the
-    /// vector), whole or not at all.
+    /// vector), whole or not at all: through a file of its own beside it,
+    /// so another process writing the same index never shares it.
     pub fn save(&self, file: &Path) -> Result<()> {
-        if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
+        let dir = file.parent().filter(|d| !d.as_os_str().is_empty());
+        let dir = dir.unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(dir)?;
         let dim = self.vecs.first().map_or(0, Vec::len);
         let m =
             DMatrix::from_row_iterator(self.vecs.len(), dim, self.vecs.iter().flatten().copied());
         let rows: Vec<Box<str>> = self.ids.iter().map(|s| s.as_str().into()).collect();
-        let partial = file.with_extension("partial");
+        let partial = tempfile::Builder::new()
+            .suffix(".partial")
+            .tempfile_in(dir)
+            .with_context(|| format!("a file to write {} through", file.display()))?;
         m.to_parquet_with_names(
-            &partial.to_string_lossy(),
+            &partial.path().to_string_lossy(),
             (Some(&rows), Some("term")),
             None,
         )?;
-        std::fs::rename(&partial, file).with_context(|| format!("writing {}", file.display()))
+        partial
+            .persist(file)
+            .with_context(|| format!("writing {}", file.display()))?;
+        Ok(())
     }
 
     /// The index [`Self::save`] wrote to `file`.
