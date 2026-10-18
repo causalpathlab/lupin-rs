@@ -220,8 +220,57 @@ pub struct Qwen3 {
     /// token's log-probabilities.
     last: Option<(Vec<u32>, qwen3::Model, Vec<f32>)>,
     stops: Vec<u32>,
-    /// [`Self::numeric_tokens`], once found.
+    /// [`numeric_ids`], once found.
     numeric: Option<Vec<u32>>,
+}
+
+/// The tokens that end a turn.
+fn stop_ids(tokenizer: &Tokenizer) -> Vec<u32> {
+    ["<|im_end|>", "<|endoftext|>"]
+        .iter()
+        .filter_map(|t| tokenizer.token_to_id(t))
+        .collect()
+}
+
+/// Every token whose text has a digit or a [`MARKUP`] sign.
+fn numeric_ids(tokenizer: &Tokenizer) -> Vec<u32> {
+    let n = tokenizer.get_vocab_size(true) as u32;
+    (0..n)
+        .filter(|&id| {
+            let text = tokenizer.decode(&[id], false).unwrap_or_default();
+            text.chars().any(|c| c.is_numeric() || MARKUP.contains(c))
+        })
+        .collect()
+}
+
+fn encode(tokenizer: &Tokenizer, text: &str) -> Result<Vec<u32>> {
+    Ok(tokenizer
+        .encode(text, false)
+        .map_err(|e| anyhow::anyhow!("tokenizing: {e}"))?
+        .get_ids()
+        .to_vec())
+}
+
+/// The tokens a generation under `bans` may not write, `numeric` being
+/// [`numeric_ids`]; never one of `stops`, or the model could not end its
+/// turn (their text has `<`, `|` and `>`).
+fn banned(tokenizer: &Tokenizer, numeric: &[u32], stops: &[u32], bans: &Bans) -> Result<Vec<u32>> {
+    let mut ban: Vec<u32> = Vec::new();
+    if bans.numbers {
+        let keep: Vec<u32> = (bans.keep.iter())
+            .flat_map(|k| [k.clone(), format!(" {k}")])
+            .map(|k| encode(tokenizer, &k))
+            .collect::<Result<Vec<_>>>()?
+            .concat();
+        ban.extend(numeric.iter().filter(|t| !keep.contains(t)));
+    }
+    for w in &bans.words {
+        for form in [w.clone(), format!(" {w}")] {
+            ban.extend(encode(tokenizer, &form)?.first().copied());
+        }
+    }
+    ban.retain(|t| !stops.contains(t));
+    Ok(ban)
 }
 
 impl Qwen3 {
@@ -255,10 +304,7 @@ impl Qwen3 {
         } else {
             vb.pp("lm_head").get(shape, "weight")?
         };
-        let stops = ["<|im_end|>", "<|endoftext|>"]
-            .iter()
-            .filter_map(|t| tokenizer.token_to_id(t))
-            .collect();
+        let stops = stop_ids(&tokenizer);
         info!(
             "describe: {}@{} on {:?}",
             spec.name(),
@@ -276,29 +322,8 @@ impl Qwen3 {
         })
     }
 
-    /// Every token whose text has a digit or a [`MARKUP`] sign, found once.
-    fn numeric_tokens(&mut self) -> Vec<u32> {
-        if let Some(t) = &self.numeric {
-            return t.clone();
-        }
-        let n = self.tokenizer.get_vocab_size(true) as u32;
-        let t: Vec<u32> = (0..n)
-            .filter(|&id| {
-                let text = self.tokenizer.decode(&[id], false).unwrap_or_default();
-                text.chars().any(|c| c.is_numeric() || MARKUP.contains(c))
-            })
-            .collect();
-        self.numeric = Some(t.clone());
-        t
-    }
-
     fn encode(&self, text: &str) -> Result<Vec<u32>> {
-        Ok(self
-            .tokenizer
-            .encode(text, false)
-            .map_err(|e| anyhow::anyhow!("tokenizing: {e}"))?
-            .get_ids()
-            .to_vec())
+        encode(&self.tokenizer, text)
     }
 
     /// Log-probabilities over the vocabulary from `hidden` ([1, n, h]) at
@@ -376,21 +401,10 @@ impl Lm for Qwen3 {
     fn generate(&mut self, prompt: &str, max_tokens: usize, bans: &Bans) -> Result<String> {
         let tokens = self.encode(prompt)?;
         let (mut model, mut lp) = self.prefill(&tokens)?;
-        let mut ban: Vec<u32> = Vec::new();
-        if bans.numbers {
-            let keep: Vec<u32> = (bans.keep.iter())
-                .flat_map(|k| [k.clone(), format!(" {k}")])
-                .map(|k| self.encode(&k))
-                .collect::<Result<Vec<_>>>()?
-                .concat();
-            let numeric = self.numeric_tokens();
-            ban.extend(numeric.iter().filter(|t| !keep.contains(t)));
-        }
-        for w in &bans.words {
-            for form in [w.clone(), format!(" {w}")] {
-                ban.extend(self.encode(&form)?.first().copied());
-            }
-        }
+        let numeric = (self.numeric)
+            .get_or_insert_with(|| numeric_ids(&self.tokenizer))
+            .clone();
+        let ban = banned(&self.tokenizer, &numeric, &self.stops, bans)?;
         let mut out: Vec<u32> = Vec::new();
         for step in 0..max_tokens {
             for &b in &ban {
