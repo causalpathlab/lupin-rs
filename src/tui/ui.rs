@@ -1886,15 +1886,13 @@ fn draw_ontology(f: &mut Frame, area: Rect, app: &App, v: &OntologyView, cl: &Cl
             c.candidates
                 .iter()
                 .filter_map(|cand| {
-                    let t = super::ontology::term_of(cl, &app.tree, &cand.label)?;
+                    let t = app.term_of(&cand.label)?;
                     Some((cand.share, cl.ancestors_or_self(&t)))
                 })
                 .collect()
         })
         .unwrap_or_default();
-    let now = app
-        .current_label()
-        .and_then(|l| super::ontology::term_of(cl, &app.tree, &l));
+    let now = app.current_label().and_then(|l| app.term_of(&l));
     let rows: Vec<Row> = v
         .rows
         .iter()

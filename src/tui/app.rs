@@ -507,6 +507,9 @@ pub struct App {
     pub panel_ancestry: Vec<(String, std::collections::BTreeSet<String>)>,
     /// Where the run's data files are found, and aliases remembered.
     pub data_search: crate::manifest::data_files::SearchPath,
+    /// Each label's Cell Ontology term ([`Self::term_of`]) as worked out
+    /// since the ontology, its aliases or the panel's tree last changed.
+    terms_of: std::cell::RefCell<std::collections::HashMap<String, Option<String>>>,
     /// The marker panel, as read: (gene, type) rows.
     pub panel: Vec<(String, String)>,
     /// The marker panel the session started from: label key → genes.
@@ -634,6 +637,7 @@ impl App {
             cl: None,
             panel_ancestry: Vec::new(),
             panel: Vec::new(),
+            terms_of: Default::default(),
             data_search: crate::manifest::data_files::SearchPath::new(None),
             original: std::collections::BTreeMap::new(),
             round: None,
@@ -2770,7 +2774,7 @@ impl App {
     fn node_term(&self, i: usize) -> Option<String> {
         self.tree.nodes[i].cl_id.clone().or_else(|| {
             let cl = self.cl.as_ref()?;
-            super::ontology::term_of(cl, &self.tree, self.tree.label(i)).filter(|id| cl.has(id))
+            self.term_of(self.tree.label(i)).filter(|id| cl.has(id))
         })
     }
 
@@ -3352,6 +3356,7 @@ impl App {
         match terms {
             Ok(t) => {
                 self.cl = t;
+                self.terms_of.borrow_mut().clear();
                 if let Some(cl) = &mut self.cl {
                     cl.set_panel(&self.panel);
                     self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
@@ -3859,10 +3864,7 @@ impl App {
             .visible()
             .get(self.tree_sel)
             .and_then(|&i| self.node_term(i));
-        let from_cluster = self
-            .cl
-            .as_ref()
-            .and_then(|cl| super::ontology::term_of(cl, &self.tree, &self.label_or_top()?));
+        let from_cluster = self.label_or_top().and_then(|l| self.term_of(&l));
         if let Some(v) = self.ontology_on(from_node.or(from_cluster)) {
             self.tree_mode = TreeMode::Ontology(Box::new(v));
             self.ontology_from_map = from_map;
@@ -3916,7 +3918,7 @@ impl App {
         };
         let mut data: std::collections::BTreeMap<String, Vec<(String, usize)>> = Default::default();
         for (t, n) in types {
-            if let Some(id) = super::ontology::term_of(cl, &self.tree, &t).filter(|id| cl.has(id)) {
+            if let Some(id) = self.term_of(&t).filter(|id| cl.has(id)) {
                 data.entry(id).or_default().push((t, n));
             }
         }
@@ -3951,7 +3953,7 @@ impl App {
     fn pick_term(&mut self, id: &str) {
         let Some(cl) = &self.cl else { return };
         let label = super::ontology::term_label(cl, &self.tree, id);
-        let term_of = |l: &str| super::ontology::term_of(cl, &self.tree, l);
+        let term_of = |l: &str| self.term_of(l);
         let pooled =
             self.pooled(|t| term_of(t).is_some_and(|t| cl.ancestors_or_self(&t).contains(id)));
         let name = cl.name(id).unwrap_or(id);
@@ -4121,6 +4123,7 @@ impl App {
     fn learn_alias(&mut self, label: &str, id: &str, file: &Path) {
         let Some(cl) = &mut self.cl else { return };
         cl.add_aliases(&format!("{label}\t{id}\n"), &file.display().to_string());
+        self.terms_of.borrow_mut().clear();
         if self.panel.is_empty() {
             return;
         }
@@ -4139,9 +4142,22 @@ impl App {
             cl.set_panel(&self.panel);
         }
         self.tree = crate::manifest::ontology::panel_tree_on(self.cl.as_ref(), &self.panel);
+        self.terms_of.borrow_mut().clear();
         if let Some(cl) = &self.cl {
             self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
         }
+    }
+
+    /// The Cell Ontology term `label` names ([`super::ontology::term_of`]);
+    /// none without an ontology.
+    pub fn term_of(&self, label: &str) -> Option<String> {
+        let cl = self.cl.as_ref()?;
+        if let Some(t) = self.terms_of.borrow().get(label) {
+            return t.clone();
+        }
+        let t = super::ontology::term_of(cl, &self.tree, label);
+        (self.terms_of.borrow_mut()).insert(label.to_string(), t.clone());
+        t
     }
 
     /// Select the next flagged cluster without an edit, wrapping around.
