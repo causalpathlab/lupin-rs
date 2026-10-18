@@ -6,7 +6,7 @@
 //! [`super::mentions`] finds names.
 
 /// Words putting one type before another.
-const FORWARD: [&str; 18] = [
+const FORWARD: [&str; 20] = [
     "gives rise to",
     "give rise to",
     "giving rise to",
@@ -23,6 +23,8 @@ const FORWARD: [&str; 18] = [
     "differentiate into",
     "develops into",
     "develop into",
+    "developing into",
+    "differentiating into",
     "becomes",
     "become",
 ];
@@ -126,7 +128,7 @@ const METHOD: [&str; 12] = [
 ];
 
 /// Every word and phrase of the vocabulary.
-fn all() -> impl Iterator<Item = &'static str> {
+pub(crate) fn all() -> impl Iterator<Item = &'static str> {
     FORWARD
         .into_iter()
         .chain(BACKWARD)

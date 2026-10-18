@@ -6,6 +6,10 @@ use super::*;
 fn a_word_is_found_whole_and_a_phrase_as_its_words() {
     assert_eq!(used("its markers rise before the end."), Some("before"));
     assert_eq!(used("ct a gives rise to ct b."), Some("gives rise to"));
+    assert_eq!(
+        used("its role in developing into b cells."),
+        Some("developing into")
+    );
     assert_eq!(used("ct a ranks it second."), Some("second"));
     assert_eq!(used("ct a, as susie says."), Some("susie"));
     assert_eq!(used("a supported edge."), Some("supported"));

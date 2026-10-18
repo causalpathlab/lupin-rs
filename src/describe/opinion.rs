@@ -240,11 +240,13 @@ pub fn prompt(c: &ClusterInput, panel: &[PanelType]) -> String {
         .join("\n")
 }
 
-/// The cache key of a prompt for a model at a revision, under [`DECODE`].
+/// The cache key of a prompt for a model at a revision, under [`DECODE`]
+/// and the words it bans ([`super::vocabulary`]).
 #[must_use]
 pub fn key(prompt: &str, model: &str, revision: &str) -> String {
     let mut h = Sha256::new();
-    for part in [prompt, model, revision, DECODE] {
+    let words = super::vocabulary::all().collect::<Vec<_>>().join(",");
+    for part in [prompt, model, revision, DECODE, &words] {
         h.update(part.as_bytes());
         h.update([0]);
     }
