@@ -633,22 +633,22 @@ fn plural_forms_match_as_the_rules_count_them() {
 
 #[test]
 fn separators_may_be_ignored_as_a_last_resort() {
-    let obo = "[Term]\nid: CL:1\nname: proCT9blast\n\n\
-               [Term]\nid: CL:2\nname: preCT3 cell\n";
+    let obo = "[Term]\nid: CL:1\nname: proxyblast\n\n\
+               [Term]\nid: CL:2\nname: prezed cell\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    let (mapped, unmapped) = t.map_labels(["Pro-CT9blasts", "Pre-CT3"]);
-    assert_eq!(mapped["Pro-CT9blasts"], "CL:1");
-    assert_eq!(mapped["Pre-CT3"], "CL:2", "with an implied word");
+    let (mapped, unmapped) = t.map_labels(["Pro-Xyblasts", "Pre-Zed"]);
+    assert_eq!(mapped["Pro-Xyblasts"], "CL:1");
+    assert_eq!(mapped["Pre-Zed"], "CL:2", "with an implied word");
     assert!(unmapped.is_empty());
-    let spaced = format!("{obo}\n[Term]\nid: CL:3\nname: pre CT3 cell\n");
+    let spaced = format!("{obo}\n[Term]\nid: CL:3\nname: pre zed cell\n");
     let t = ClTerms::parse(&spaced, &crate::annotate::cl_rules::shipped());
     assert_eq!(
-        t.map_labels(["Pre-CT3"]).0["Pre-CT3"],
+        t.map_labels(["Pre-Zed"]).0["Pre-Zed"],
         "CL:3",
         "the words as written first"
     );
     let literal = ClTerms::parse(obo, &crate::annotate::cl_rules::MatchRules::default());
-    assert_eq!(literal.map_labels(["Pro-CT9blast"]).1, ["Pro-CT9blast"]);
+    assert_eq!(literal.map_labels(["Pro-Xyblast"]).1, ["Pro-Xyblast"]);
 }
 
 /// A lineage written out in a term's name, with its specialisations under it.
@@ -963,5 +963,53 @@ fn a_lone_type_s_group_that_takes_another_is_named_for_its_term() {
     assert_eq!(
         (both.name.as_str(), both.cl_id.as_deref()),
         ("CT4_cell", Some("CL:4"))
+    );
+}
+
+/// Terms named for markers, with and without their sign, and hyphenated
+/// names whose hyphens part words of letters alone.
+const SIGNED: &str = "[Term]\nid: CL:1\nname: CD4 T cell\n\n\
+    [Term]\nid: CL:2\nname: CD34 cell\n\n\
+    [Term]\nid: CL:3\nname: CD4 CD8 thymocyte\n\n\
+    [Term]\nid: CL:4\nname: CD16-negative monocyte\nsynonym: \"CD16- monocyte\" EXACT []\n\n\
+    [Term]\nid: CL:5\nname: pro-B cell\n\n\
+    [Term]\nid: CL:6\nname: T cell\n";
+
+#[test]
+fn a_marker_s_sign_is_kept_however_the_label_is_compared() {
+    let t = ClTerms::parse(SIGNED, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels([
+        "CD4- T",
+        "CD4-T",
+        "CD34-",
+        "CD34- cells",
+        "CD4-CD8- thymocyte",
+        "CD16 Monocytes",
+        "Pro-B",
+        "Pro B",
+        "T-cell",
+        "Tcells",
+    ]);
+    assert_eq!(
+        mapped["Pro-B"], "CL:5",
+        "a hyphen between letters parts words"
+    );
+    assert_eq!(mapped["Pro B"], "CL:5");
+    assert_eq!(mapped["T-cell"], "CL:6");
+    assert_eq!(
+        mapped["Tcells"], "CL:6",
+        "separators ignored as a last resort"
+    );
+    assert_eq!(
+        unmapped,
+        [
+            "CD4- T",
+            "CD4-T",
+            "CD34-",
+            "CD34- cells",
+            "CD4-CD8- thymocyte",
+            "CD16 Monocytes"
+        ],
+        "a negative marker is not the marker, and the marker is not its negative"
     );
 }

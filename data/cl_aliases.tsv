@@ -10,7 +10,8 @@
 # Columns: label, CL id, note. Labels compare as lupin labels do (case,
 # spaces, commas and underscores do not matter). A hyphen reads as a space
 # only between two words of letters alone (Pro-B is pro B); any other is
-# kept as written (CD34- is not CD34, CD8-T is not CD8 T).
+# kept as written (CD34- is not CD34, CD8-T is not CD8 T). Ontology names
+# are compared under the same rule.
 # label	cl_id	note
 HSPC	CL:0008001	hematopoietic precursor cell (umbrella)
 Prog Mk	CL:0000553	megakaryocyte progenitor cell

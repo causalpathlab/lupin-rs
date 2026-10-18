@@ -80,8 +80,9 @@ pub struct MatchRules {
     /// Match a label whose words are a term's in another order.
     pub any_word_order: bool,
     pub qualifiers: QualifierRules,
-    /// As a last resort, compare without spaces and hyphens
-    /// (`Pro-X blast` for `proXblast`).
+    /// As a last resort, compare without spaces, nor a hyphen between
+    /// words (`Pro-X blast` for `proXblast`); a hyphen [`part_hyphens`]
+    /// keeps stays.
     pub compact: bool,
     pub contained: ContainedRules,
     pub context: ContextRules,
@@ -315,16 +316,22 @@ impl Aliases {
     }
 }
 
-/// How aliases compare labels: as lupin labels, ignoring case. A hyphen
-/// reads as a space only between two words of letters alone (`Pro-B` is
-/// `Pro B`, `T-cell` is `T cell`, `alpha-beta` is `alpha beta`); every
-/// other hyphen is kept as written, so a negative marker or a name with
-/// digits keys as its literal text (`CD34-` is not `CD34`, `CD34-CD38-` is
-/// not `CD34 CD38-`, `CD4- T` is not `CD4 T`, `NK-CD56bright` and `B-1a`
-/// are as written).
+/// How aliases compare labels: as lupin labels, ignoring case, with
+/// hyphens read by [`part_hyphens`].
 fn key(label: &str) -> String {
-    let chars: Vec<char> = label.to_lowercase().chars().collect();
-    let parted: String = (chars.iter().enumerate())
+    label_key(&part_hyphens(&label.to_lowercase()))
+}
+
+/// `text` with each hyphen between two words of letters alone read as a
+/// space (`Pro-B` is `Pro B`, `T-cell` is `T cell`, `alpha-beta` is `alpha
+/// beta`); every other hyphen is kept as written, so a negative marker or a
+/// name with digits stays its literal text (`CD34-` is not `CD34`,
+/// `CD34-CD38-` is not `CD34 CD38-`, `CD4- T` is not `CD4 T`,
+/// `NK-CD56bright` and `B-1a` are as written). Aliases and term names are
+/// compared under this one rule.
+pub(crate) fn part_hyphens(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    (chars.iter().enumerate())
         .map(|(i, &c)| {
             let before = chars[..i].iter().rev().copied();
             let after = chars[i + 1..].iter().copied();
@@ -334,8 +341,7 @@ fn key(label: &str) -> String {
                 c
             }
         })
-        .collect();
-    label_key(&parted)
+        .collect()
 }
 
 /// Whether the word `chars` start with (up to the first character that is

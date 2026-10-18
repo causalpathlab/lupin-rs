@@ -30,7 +30,7 @@
     "parenthetical": true,
     "comma_word": true
   },
-  "_compact": "As a last resort, compare without spaces and hyphens (Pro-Erythroblast -> proerythroblast).",
+  "_compact": "As a last resort, compare without spaces (Pro-Erythroblast -> proerythroblast); a hyphen that is a sign, as in CD34-, stays.",
   "compact": true,
   "contained": {
     "_doc": "A label of at least min_words words (an implied one not counted) that a term's own name (not a synonym) spells out among other words takes the most general such term, else the one whose name adds the fewest words (CD4 Central Memory -> central memory CD4-positive, alpha-beta T cell; X+ and X-positive are X). null turns it off.",

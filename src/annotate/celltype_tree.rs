@@ -22,7 +22,7 @@
 //!
 //! Pure: [`crate::manifest`] finds the ontology and the evidence.
 
-use crate::annotate::cl_rules::{Aliases, MatchRules};
+use crate::annotate::cl_rules::{part_hyphens, Aliases, MatchRules};
 use crate::annotate::markers::label_key;
 use data_beans::alg::union_find::UnionFind;
 use serde::{Deserialize, Serialize};
@@ -72,7 +72,7 @@ struct NameIndex {
     /// Each term's own name (no synonyms) by [`ClTerms::name_key`]: what an
     /// implied trailing word may complete.
     by_term_name: HashMap<String, BTreeSet<String>>,
-    /// Names and counted synonyms without spaces or hyphens, when the rules
+    /// Names and counted synonyms without spaces ([`compact`]), when the rules
     /// compare so ([`MatchRules::compact`]); and the own names alone.
     by_compact: HashMap<String, BTreeSet<String>>,
     by_compact_name: HashMap<String, BTreeSet<String>>,
@@ -151,14 +151,19 @@ impl Stanza {
     }
 }
 
-/// A normalised name's words: spaces and hyphens part them.
-fn words(normalised: &str) -> impl Iterator<Item = &str> {
-    normalised.split([' ', '-']).filter(|w| !w.is_empty())
+/// A normalised name's words: spaces part them, and so does a hyphen
+/// between two words of letters alone; any other hyphen is a sign kept
+/// ([`part_hyphens`]).
+fn words(normalised: &str) -> Vec<String> {
+    (part_hyphens(normalised).split(' '))
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// A normalised name's [`words`] in sorted order.
 fn word_bag(normalised: &str) -> String {
-    let mut words: Vec<&str> = words(normalised).collect();
+    let mut words = words(normalised);
     words.sort_unstable();
     words.join(" ")
 }
@@ -179,12 +184,10 @@ fn only(ids: &BTreeSet<String>) -> Option<String> {
     (ids.len() == 1).then(|| ids.iter().next().cloned())?
 }
 
-/// A normalised name with no spaces or hyphens.
+/// A normalised name's [`words`] run together: no spaces, nor a hyphen
+/// between words; a sign's hyphen is kept.
 fn compact(normalised: &str) -> String {
-    normalised
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '-'))
-        .collect()
+    words(normalised).concat()
 }
 
 /// A normalised name's words as a label may give them: parted by spaces
@@ -365,9 +368,10 @@ impl ClTerms {
 
     /// Match panel labels to terms by name or exact synonym, as written or
     /// with plural words made singular, else by the same words in any order
-    /// (hyphens as spaces), else with an implied trailing word completing a
-    /// term's name, else as the rules allow beyond: without spaces and
-    /// hyphens, by words a term's name spells out among others, and with a
+    /// (a hyphen between words as a space, a marker's sign kept, see
+    /// [`part_hyphens`]), else with an implied
+    /// trailing word completing a term's name, else as the rules allow
+    /// beyond: without spaces, by words a term's name spells out among others, and with a
     /// word the panel leaves off its labels. Where a text names several
     /// terms, a term's own name wins over another's synonym, and a term
     /// every other is a kind of wins over its specialisations; a label still
@@ -448,14 +452,14 @@ impl ClTerms {
     fn by_part(&self, label: &str) -> Option<(String, bool)> {
         self.rules.part.min_pairs?;
         let single = self.rules.singular(&self.rules.normalise(label));
-        let w: Vec<&str> = words(&single).collect();
+        let w = words(&single);
         for len in (1..w.len()).rev() {
             let mut found: BTreeMap<String, bool> = BTreeMap::new();
             for start in 0..=w.len() - len {
                 if let Some(id) = self.match_label(&w[start..start + len].join(" ")) {
                     let left = w[..start].iter().chain(&w[start + len..]);
                     let modifiers = self.modifiers.get_or_init(|| self.modifier_words());
-                    let kind = left.clone().all(|d| modifiers.contains(*d));
+                    let kind = left.clone().all(|d| modifiers.contains(d));
                     *found.entry(id).or_default() |= kind;
                 }
             }
@@ -479,7 +483,9 @@ impl ClTerms {
         let exact = self.rules.normalise(label);
         let single = self.rules.singular(&exact);
         // A label with no word names nothing.
-        words(&single).next()?;
+        if words(&single).is_empty() {
+            return None;
+        }
         self.match_in(&self.names, &exact, &single)
             .or_else(|| self.match_in(&self.unqualified, &exact, &single))
             .flatten()
@@ -570,7 +576,7 @@ impl ClTerms {
         let mut found: BTreeSet<&str> = BTreeSet::new();
         for label in labels {
             let single = self.rules.singular(&self.rules.normalise(label));
-            let own: Vec<&str> = words(&single).collect();
+            let own = words(&single);
             if own.is_empty() {
                 continue;
             }
@@ -613,7 +619,7 @@ impl ClTerms {
         let mut completed = BTreeMap::new();
         for label in labels {
             let single = self.rules.singular(&self.rules.normalise(label));
-            if words(&single).next().is_none() {
+            if words(&single).is_empty() {
                 continue;
             }
             let with = |more: &str| word_bag(&format!("{single} {w}{more}"));
