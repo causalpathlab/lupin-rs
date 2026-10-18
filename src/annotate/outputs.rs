@@ -43,6 +43,15 @@ pub fn labels_path(out: &str) -> String {
     use graph_embedding_util::type_annotation::CELL_LABELS_SUFFIX;
     format!("{out}{CELL_LABELS_SUFFIX}")
 }
+
+/// The per-cell labels file found under `out`, in the forms a round may
+/// record, newest first: the parquet, else an older pass's TSV.
+#[must_use]
+pub fn labels_under(out: &str) -> Option<String> {
+    [labels_path(out), format!("{out}{ARGMAX_TSV}")]
+        .into_iter()
+        .find(|p| Path::new(p).exists())
+}
 /// `{out}.annot.parquet`: projection's per-cell table (`community`, `coarse_label`, …).
 pub const ANNOT_PARQUET: &str = ".annot.parquet";
 /// Projection score pass: each cell's cluster, call and margin.

@@ -1,8 +1,12 @@
 use super::*;
 
-/// [`EvidenceFiles::locate`] on `from`, its manifest loaded when it is one.
+/// The evidence files of `from`, as `describe` finds them: in its manifest
+/// when it is one, else by name.
 fn located(from: &str) -> EvidenceFiles {
-    EvidenceFiles::locate(from, crate::manifest::run::load(from).ok().as_ref())
+    crate::manifest::run::load(from)
+        .ok()
+        .as_ref()
+        .map_or_else(|| EvidenceFiles::by_name(from), EvidenceFiles::locate_in)
 }
 
 fn sample_sig() -> ClusterEvidence {

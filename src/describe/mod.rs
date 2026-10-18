@@ -14,12 +14,11 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 use crate::annotate::outputs::{
-    ANNOT_PARQUET, ARGMAX_TSV, CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_TERM_Q,
+    labels_under, ANNOT_PARQUET, CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_TERM_Q,
 };
 use crate::gene_text::vocab::Vocabulary;
 use anyhow::{bail, Context, Result};
 use clap::Args;
-use graph_embedding_util::type_annotation::CELL_LABELS_SUFFIX;
 use legume_numeric::matrix::common_io::open_buf_reader;
 use legume_numeric::matrix::parquet::peek_parquet_field_names;
 use log::info;
@@ -116,7 +115,10 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     {
         return describe_trajectory(l, &args.from, out);
     }
-    let files = EvidenceFiles::locate(&args.from, loaded.as_ref());
+    let files = loaded.as_ref().map_or_else(
+        || EvidenceFiles::by_name(&args.from),
+        EvidenceFiles::locate_in,
+    );
 
     let mut enriched = load_evidence(&files, args.fdr_alpha)?;
     attach_second_best(&mut enriched, &files, args.fdr_alpha)?;
@@ -195,19 +197,10 @@ struct EvidenceFiles {
 }
 
 impl EvidenceFiles {
-    /// From the manifest's `annotate.*` slots when `--from` is a run
-    /// manifest (or its prefix) — those point at the latest pass, whatever its
-    /// `-o` was. Otherwise `--from` is an annotate output prefix and
-    /// the files are looked for by name.
-    /// `loaded` is `--from`'s manifest, when it is one.
-    fn locate(from: &str, loaded: Option<&crate::manifest::run::Loaded>) -> Self {
-        match loaded {
-            Some(l) => Self::locate_in(l),
-            None => Self::by_name(from),
-        }
-    }
-
-    /// From the `annotate.*` slots of the manifest `loaded`.
+    /// From the `annotate.*` slots of the manifest `loaded`, when `--from`
+    /// is a run manifest (or its prefix): those point at the latest pass,
+    /// whatever its `-o` was. Otherwise `--from` is an annotate output
+    /// prefix, and the files are looked for [by name](Self::by_name).
     fn locate_in(loaded: &crate::manifest::run::Loaded) -> Self {
         let a = &loaded.manifest.annotate;
         let at = |slot: &Option<String>| {
@@ -242,8 +235,7 @@ impl EvidenceFiles {
             annot: found(ANNOT_PARQUET),
             enrichment_q: found(CLUSTER_CELLTYPE_Q_VALUES),
             term_q: found(CLUSTER_TERM_Q),
-            // The parquet, else the TSV of an older pass.
-            argmax: found(CELL_LABELS_SUFFIX).or_else(|| found(ARGMAX_TSV)),
+            argmax: labels_under(from),
             marker_embedding: found(".marker_embedding.parquet"),
             markers_tsv: None,
         }
