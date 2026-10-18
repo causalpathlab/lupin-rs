@@ -542,6 +542,9 @@ pub struct App {
     pub suggestions: Option<super::suggest::Suggestions>,
     /// The type whose suggestions open when the ranking job is done.
     pub suggest_for: Option<String>,
+    /// The files jobs hand to their child: a folder only the user can
+    /// open, made on first use and removed with the app.
+    jobs_dir: Option<tempfile::TempDir>,
     /// How `L` runs `lupin describe --lm`: the model, from where, on what.
     pub lm: crate::describe::LmArgs,
     /// The round's proposals, followed in its cache.
@@ -655,6 +658,7 @@ impl App {
             mixed: super::ontology::Mixed::default(),
             suggestions: None,
             suggest_for: None,
+            jobs_dir: None,
             lm: crate::describe::LmArgs::default(),
             following: None,
             order_texts: None,
@@ -1078,23 +1082,23 @@ impl App {
             .into();
             return;
         }
-        let file = std::env::temp_dir().join(format!(
-            "lupin-rescore-{}-{}.jsonl",
-            std::process::id(),
-            self.edits.len()
-        ));
         let started = (|| -> anyhow::Result<_> {
+            let file = job_file(
+                &mut self.jobs_dir,
+                &format!("rescore-{}.jsonl", self.edits.len()),
+            )?;
             let lines: Vec<String> = decisions(&want, round, None)
                 .iter()
                 .map(serde_json::to_string)
                 .collect::<Result<_, _>>()?;
             std::fs::write(&file, lines.join("\n") + "\n")?;
-            runner::spawn_preview(&round.manifest, &file, self.log_tx.clone())
+            let (child, out) = runner::spawn_preview(&round.manifest, &file, self.log_tx.clone())?;
+            Ok((child, out, file))
         })();
         match started {
             // The table's title says it is rescoring; the status keeps what
             // the edit said.
-            Ok((child, out)) => {
+            Ok((child, out, file)) => {
                 self.rescoring = Some(Rescoring {
                     child,
                     out,
@@ -4087,10 +4091,13 @@ impl App {
             return;
         }
         let labels = super::suggest::unmatched(&self.tree);
-        let file = std::env::temp_dir().join(format!("lupin-suggest-{}.json", std::process::id()));
-        let obo = self.args.obo.as_deref();
-        match runner::spawn_suggest(&self.source, obo, &labels, &file, self.log_tx.clone()) {
-            Ok(c) => {
+        let started = self.job_file("suggest.json").and_then(|file| {
+            let obo = self.args.obo.as_deref();
+            runner::spawn_suggest(&self.source, obo, &labels, &file, self.log_tx.clone())
+                .map(|c| (c, file))
+        });
+        match started {
+            Ok((c, file)) => {
                 self.push_log(format!(
                     "── suggestions: lupin data suggest-cl for {} type(s) without a term",
                     labels.len()
@@ -4101,6 +4108,11 @@ impl App {
             }
             Err(e) => self.status = format!("{e:#}"),
         }
+    }
+
+    /// A file for a job's child to read or write, in the app's own folder.
+    pub fn job_file(&mut self, name: &str) -> anyhow::Result<PathBuf> {
+        job_file(&mut self.jobs_dir, name)
     }
 
     /// Offer `label`'s suggested terms, when they are ranked; `false` when
@@ -4421,6 +4433,23 @@ impl Drop for App {
 }
 
 /// A round's clusters and how many need a look, as the status says them.
+/// `name` in the app's jobs folder, made on first use: a name in the shared
+/// temporary folder could be taken first by someone else, or a link there
+/// send the write elsewhere.
+fn job_file(dir: &mut Option<tempfile::TempDir>, name: &str) -> anyhow::Result<PathBuf> {
+    let dir = match dir {
+        Some(d) => d,
+        empty => {
+            let mut b = tempfile::Builder::new();
+            b.prefix("lupin-tui-");
+            #[cfg(unix)]
+            b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+            empty.insert(b.tempdir().context("making a folder for the jobs' files")?)
+        }
+    };
+    Ok(dir.path().join(name))
+}
+
 fn round_counts(r: &RoundView) -> String {
     let flagged = r.clusters.iter().filter(|c| c.flagged()).count();
     format!(
