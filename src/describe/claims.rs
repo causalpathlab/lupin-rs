@@ -3,10 +3,28 @@
 //! uses; this polices the claims it makes of them, in the words its prompt
 //! states the facts in: a method ranking a type first or second, a type
 //! sitting between two others or before one, an edge's verdict, a root,
-//! branch point or end. A claim is read from the clause it is in (split
-//! at commas and `and`, `but`, `while`, `with`, `which`), about the types
-//! that clause names, else the text's subject; a claim no word of the
-//! vocabulary makes is not checked.
+//! branch point or end. A claim is read from the clause it is in, split at
+//! commas, semicolons, colons and the joins `and`, `but`, `while`,
+//! `whereas`, `with`, `which` and `where` (as whole words, `and` inside
+//! `between A and B` none). Whom it is about:
+//!
+//! - an order word (`before`, `after`, `gives rise to`, `between`, …): the
+//!   last type its clause names before it; else, in a relative clause (led
+//!   by `which` or `where`), the last its sentence names before it; else
+//!   the sentence's subject, the last type named before its first order
+//!   word (`A comes after B, whereas it comes before C` says `before` of
+//!   A); else the text's subject;
+//! - a verdict or a role: the types its clause names; else, in a clause a
+//!   join and a verb open (`… and is a root`, `… while it has an
+//!   unsupported edge`), the first type named in the nearest clause before
+//!   it that names one, relative clauses passed over; else the text's
+//!   subject;
+//! - a method's rank: the nearest rank word of its clause (a relative
+//!   clause right after the method included); else, listed after another
+//!   method, that one's, unless its clause has a predicate of its own; of
+//!   the type its clause names, else the one the sentence proposes.
+//!
+//! A claim no word of the vocabulary makes is not checked.
 
 use super::consensus::ClusterInput;
 use super::norm;
