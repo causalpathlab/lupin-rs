@@ -316,33 +316,33 @@ impl Aliases {
 }
 
 /// How aliases compare labels: as lupin labels, ignoring case. A hyphen
-/// that ends a word, before a space, the end or a marker (a word of
-/// letters and digits both, `CD34`, `CD45RA`), is a negative sign and is
-/// kept, parted from the marker after it (`CD34-` is not `CD34`,
-/// `CD34-CD38-` is `CD34- CD38-` and not `CD34 CD38-`); one before any
-/// other word parts the two as a space does (`Pro-B` is `Pro B`, `CD8-T` is
-/// `CD8 T`, `CD4-positive` is `CD4 positive`).
+/// reads as a space only between two words of letters alone (`Pro-B` is
+/// `Pro B`, `T-cell` is `T cell`, `alpha-beta` is `alpha beta`); every
+/// other hyphen is kept as written, so a negative marker or a name with
+/// digits keys as its literal text (`CD34-` is not `CD34`, `CD34-CD38-` is
+/// not `CD34 CD38-`, `CD4- T` is not `CD4 T`, `NK-CD56bright` and `B-1a`
+/// are as written).
 fn key(label: &str) -> String {
     let chars: Vec<char> = label.to_lowercase().chars().collect();
-    let mut parted = String::with_capacity(chars.len() + 1);
-    for (i, &c) in chars.iter().enumerate() {
-        let after_word = i > 0 && chars[i - 1].is_alphanumeric();
-        if c != '-' || !after_word {
-            parted.push(c);
-            continue;
-        }
-        let next: Vec<char> = (chars[i + 1..].iter())
-            .take_while(|n| n.is_alphanumeric())
-            .copied()
-            .collect();
-        let marker = next.iter().any(|n| n.is_alphabetic()) && next.iter().any(|n| n.is_numeric());
-        parted.push_str(match (next.is_empty(), marker) {
-            (true, _) => "-",
-            (false, true) => "- ",
-            (false, false) => " ",
-        });
-    }
+    let parted: String = (chars.iter().enumerate())
+        .map(|(i, &c)| {
+            let before = chars[..i].iter().rev().copied();
+            let after = chars[i + 1..].iter().copied();
+            if c == '-' && letters_only(before) && letters_only(after) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
     label_key(&parted)
+}
+
+/// Whether the word `chars` start with (up to the first character that is
+/// neither a letter nor a digit) is there and has letters alone.
+fn letters_only(chars: impl Iterator<Item = char>) -> bool {
+    let mut word = chars.take_while(|c| c.is_alphanumeric()).peekable();
+    word.peek().is_some() && word.all(char::is_alphabetic)
 }
 
 /// The rules the repository ships (`data/cl_matching.json`), for tests.
