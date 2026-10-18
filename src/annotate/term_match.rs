@@ -52,11 +52,7 @@ pub trait TextEncoder {
 
 impl TextEncoder for Encoder {
     fn encode(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        Ok(self
-            .encode_batch(texts)?
-            .into_iter()
-            .map(|d| d.pooled)
-            .collect())
+        self.encode_pooled(texts)
     }
 }
 

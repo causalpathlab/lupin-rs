@@ -10,7 +10,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
 use log::info;
 use std::path::PathBuf;
-use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
+use tokenizers::{Encoding, PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pooling {
@@ -140,6 +140,44 @@ impl Encoder {
     /// Encode a batch of texts. The batch is padded to its longest text, so
     /// callers should group texts of similar length.
     pub fn encode_batch(&self, texts: &[&str]) -> Result<Vec<DocEncoding>> {
+        let (encodings, hidden, pooled) = self.forward(texts)?;
+        let l = encodings.first().map_or(0, |e| e.get_ids().len());
+        let pooled = pooled.to_vec2::<f32>()?;
+        let mut hidden = hidden.to_vec3::<f32>()?;
+        let mut out = Vec::with_capacity(encodings.len());
+        for ((e, pooled), hidden) in encodings.iter().zip(pooled).zip(&mut hidden) {
+            let offsets = e.get_offsets();
+            let m = e.get_attention_mask();
+            let special = e.get_special_tokens_mask();
+            let mut tokens = Vec::with_capacity(l);
+            for t in 0..l {
+                if m[t] == 0 || special.get(t).copied().unwrap_or(0) == 1 {
+                    continue;
+                }
+                let (s, en) = offsets[t];
+                if en <= s {
+                    continue;
+                }
+                tokens.push(TokenVec {
+                    start: s,
+                    end: en,
+                    vec: std::mem::take(&mut hidden[t]),
+                });
+            }
+            out.push(DocEncoding { pooled, tokens });
+        }
+        Ok(out)
+    }
+
+    /// [`Self::encode_batch`]'s pooled vectors only: the token states stay
+    /// on the device.
+    pub fn encode_pooled(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        Ok(self.forward(texts)?.2.to_vec2::<f32>()?)
+    }
+
+    /// The batch's encodings, its hidden states ([b, l, h]) and its
+    /// L2-normalised pooled vectors ([b, h]).
+    fn forward(&self, texts: &[&str]) -> Result<(Vec<Encoding>, Tensor, Tensor)> {
         let encodings = self
             .tokenizer
             .encode_batch(texts.to_vec(), true)
@@ -170,30 +208,7 @@ impl Encoder {
             .sum_keepdim(1)?
             .sqrt()?
             .clamp(1e-12, f64::MAX)?;
-        let pooled = pooled.broadcast_div(&norm)?.to_vec2::<f32>()?;
-        let mut hidden = hidden.to_vec3::<f32>()?;
-        let mut out = Vec::with_capacity(b);
-        for ((e, pooled), hidden) in encodings.iter().zip(pooled).zip(&mut hidden) {
-            let offsets = e.get_offsets();
-            let m = e.get_attention_mask();
-            let special = e.get_special_tokens_mask();
-            let mut tokens = Vec::with_capacity(l);
-            for t in 0..l {
-                if m[t] == 0 || special.get(t).copied().unwrap_or(0) == 1 {
-                    continue;
-                }
-                let (s, en) = offsets[t];
-                if en <= s {
-                    continue;
-                }
-                tokens.push(TokenVec {
-                    start: s,
-                    end: en,
-                    vec: std::mem::take(&mut hidden[t]),
-                });
-            }
-            out.push(DocEncoding { pooled, tokens });
-        }
-        Ok(out)
+        let pooled = pooled.broadcast_div(&norm)?;
+        Ok((encodings, hidden, pooled))
     }
 }
