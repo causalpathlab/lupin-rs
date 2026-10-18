@@ -110,8 +110,8 @@ enum Commands {
                       run, code writes its order in words from the run's outputs,\n\
                       `{out}.trajectory.describe.md`.\n\
                       \n\
-                      The composer never invents labels: sentences are citation-checked.\n\
-                      Default composer is a citation-checked template (candle decoder TBD)."
+                      The composer never invents labels: sentences are citation-checked\n\
+                      templates; no language model writes them."
     )]
     Describe(DescribeArgs),
     #[command(

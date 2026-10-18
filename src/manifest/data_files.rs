@@ -636,6 +636,11 @@ pub enum DataCmd {
     },
 }
 
+/// The folder of run `from` (a manifest or its prefix), when one is given.
+fn run_dir(from: Option<&str>) -> Result<Option<PathBuf>> {
+    from.map(|f| super::run::load(f).map(|l| l.dir)).transpose()
+}
+
 pub fn run_data(args: &DataArgs) -> Result<()> {
     match &args.cmd {
         DataCmd::SuggestCl {
@@ -644,10 +649,7 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
             out,
             labels,
         } => {
-            let run_dir = from
-                .as_deref()
-                .map(|f| super::run::load(f).map(|l| l.dir))
-                .transpose()?;
+            let run_dir = run_dir(from.as_deref())?;
             crate::annotate::term_match::run(
                 run_dir.as_deref(),
                 obo.as_deref(),
@@ -656,10 +658,7 @@ pub fn run_data(args: &DataArgs) -> Result<()> {
             )
         }
         DataCmd::Where { from } => {
-            let run_dir = from
-                .as_deref()
-                .map(|f| super::run::load(f).map(|l| l.dir))
-                .transpose()?;
+            let run_dir = run_dir(from.as_deref())?;
             let search = SearchPath::new(run_dir.as_deref());
             for line in where_report(&search) {
                 println!("{line}");

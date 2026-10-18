@@ -1,8 +1,8 @@
 //! `lupin describe` — compose a short sentence from annotate evidence.
 //!
 //! The composer **never decides**: evidence comes from annotate artifacts (and optional
-//! keyword incidence from a `word-graph` vocab). Sentences are citation-checked against
-//! the allowed entity set. On a trajectory run, code writes its order in words from the
+//! keyword incidence from a `word-graph` vocab). Sentences are templates, citation-checked
+//! against the allowed entity set; no language model writes them. On a trajectory run, code writes its order in words from the
 //! run's outputs ([`trajectory`]).
 
 pub mod trajectory;
