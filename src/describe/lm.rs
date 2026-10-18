@@ -8,9 +8,7 @@
 //! continuations of a prompt, and it continues a prompt greedily until a
 //! newline. The last prompt's KV cache is kept for a prompt it starts, so
 //! the label choices pay for their prompt once, and a sentence asked again
-//! for its prompt once. The label and the rationale are asked after two
-//! prompts that state the evidence apart (with its numbers, in words) and
-//! part after the system text: each is run in full.
+//! for its prompt once.
 
 use crate::gene_text::cli::ComputeDevice;
 use anyhow::{Context, Result};
@@ -42,9 +40,10 @@ pub const MARKUP: &str = "$\\~=*^{}<>|#_";
 pub struct Bans {
     /// The first token of each (with or without a space before it).
     pub words: Vec<String>,
-    /// Every token with a digit or a [`MARKUP`] sign, but those of `keep`.
+    /// Every token with a digit or a [`MARKUP`] sign.
     pub numbers: bool,
-    /// Names whose tokens stay allowed (`CD8` needs its digit).
+    /// Names whose tokens stay allowed whatever else bans them (`CD8` needs
+    /// its digit, a term its words).
     pub keep: Vec<String>,
 }
 
@@ -255,24 +254,24 @@ fn encode(tokenizer: &Tokenizer, text: &str) -> Result<Vec<u32>> {
 }
 
 /// The tokens a generation under `bans` may not write, `numeric` being
-/// [`numeric_ids`]; never one of `stops`, or the model could not end its
-/// turn (their text has `<`, `|` and `>`).
+/// [`numeric_ids`]: never one of `bans.keep`'s names, nor one of `stops`, or
+/// the model could not end its turn (their text has `<`, `|` and `>`).
 fn banned(tokenizer: &Tokenizer, numeric: &[u32], stops: &[u32], bans: &Bans) -> Result<Vec<u32>> {
     let mut ban: Vec<u32> = Vec::new();
     if bans.numbers {
-        let keep: Vec<u32> = (bans.keep.iter())
-            .flat_map(|k| [k.clone(), format!(" {k}")])
-            .map(|k| encode(tokenizer, &k))
-            .collect::<Result<Vec<_>>>()?
-            .concat();
-        ban.extend(numeric.iter().filter(|t| !keep.contains(t)));
+        ban.extend(numeric);
     }
     for w in &bans.words {
         for form in [w.clone(), format!(" {w}")] {
             ban.extend(encode(tokenizer, &form)?.first().copied());
         }
     }
-    ban.retain(|t| !stops.contains(t));
+    let keep: Vec<u32> = (bans.keep.iter())
+        .flat_map(|k| [k.clone(), format!(" {k}")])
+        .map(|k| encode(tokenizer, &k))
+        .collect::<Result<Vec<_>>>()?
+        .concat();
+    ban.retain(|t| !stops.contains(t) && !keep.contains(t));
     Ok(ban)
 }
 

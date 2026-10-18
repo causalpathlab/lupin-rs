@@ -8,7 +8,7 @@
 //! round, as `lupin relabel --next` does.
 
 mod app;
-mod consensus;
+mod describe;
 mod export;
 mod figure_pane;
 mod gallery;

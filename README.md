@@ -41,7 +41,7 @@ lupin annotate -f run.senna.json -m markers.tsv -o out   # writes out.senna.json
 lupin trajectory -f out.senna.json -o out.T1           # prior, check, pseudotime
 lupin trajectory                                       # the TUI: pick a run, state the order, run
 lupin describe -f run.senna.json --text-prefix run -o out
-lupin describe -f out.senna.json -o out --lm             # a suggested label per cluster
+lupin describe -f out.senna.json -o out --lm             # a small local model's opinion per cluster
 ```
 
 ## Cell-type labels
@@ -156,12 +156,12 @@ and `{out}.marker_history.json` keeps each cell type's edits with their
 rationale. `lupin annotate -f <round>` without `-m` re-annotates from that
 panel.
 
-## Suggested labels and descriptions by a small local model
+## A small local model's opinion, and what code writes
 
 ```sh
-lupin describe -f r0.senna.json -o r0 --lm   # batch: r0.describe.json, .md, r0.consensus.jsonl
+lupin describe -f r0.senna.json -o r0 --lm   # batch: r0.describe.json, .md; the model's cache r0.llm.jsonl
 lupin describe -f r0.senna.json              # the TUI on the round, running it (L reruns it)
-lupin describe -f out.T1.senna.json -o out.T1 --lm   # a trajectory: out.T1.trajectory.describe.md
+lupin describe -f out.T1.senna.json -o out.T1   # a trajectory: out.T1.trajectory.describe.md
 ```
 
 `--lm` runs Qwen3 (Qwen Team, *Qwen3 Technical Report*, arXiv:2505.09388)
@@ -169,28 +169,49 @@ through candle at a pinned revision: `--lm-model qwen3-1.7b` (the default)
 or `qwen3-0.6b`, fetched once into the Hugging Face cache (`HF_HOME`, else
 `~/.cache/huggingface`; `LUPIN_OFFLINE` or `HF_HUB_OFFLINE=1` rules the
 download out), or local files with `--lm-dir`; `--device` defaults to `cuda` in a CUDA build. Nothing is
-sent anywhere. For each cluster it scores the TUI's label choices (each
-method's top three, and `unassigned`) as continuations of the prompt, so
-its label is always one of them, and writes one sentence on why that must
-name only the cluster's own choices, terms and markers, with no numbers,
-and claim of them only what the evidence shows (a method ranking a choice
-first or second); a sentence that fails the check twice, or makes a claim
-the evidence does not bear out, is replaced by the template. Results
-are appended to `{out}.consensus.jsonl`, keyed by the prompt, model and
-revision, so only clusters whose evidence changed are asked again. The
-TUI's run (`describe` without `-o`, or `L`) writes that cache alone,
-never a description file.
+sent anywhere.
 
-In the annotate TUI the suggestion shows under the candidates and, marked
-◆, among the label choices (`P` opens them on it). It is a suggestion, not
-a call: it flags no cluster and is taken only when you confirm it; the
-decision then records `agent_proposed_user_accepted` with the model, its
-revision and probabilities, or `user_override` with the suggestion among
-the alternatives. On a trajectory, `L` in the order view writes a
-paragraph on its roots, branches and ends and a line per type, shown under
-the order table; a text that says what the run did not find (an edge's
-verdict, a type between two others, a root or an end) gives the template. Without the model (offline, never fetched) the TUI says
-so and the rest works.
+The model is a method of its own beside the enrichment (with SuSiE) and the
+projection score, run on request (`--lm`, or `L` in the TUI), never by a
+pass. It reads only a cluster's size, its fifty most specific genes (as the
+TUI's genes pane ranks them, on the panel or not) and its gene-set terms:
+no other method's reading, no label and no ontology placement. It scores
+every type of the panel, with its first markers, and `unassigned` as the
+answer, so it names no type off the panel; a softmax gives its probability
+of each. Its opinions are appended to `{stem}.llm.jsonl` beside the round,
+keyed by the prompt, model and revision, so only clusters whose genes or
+terms changed are asked again; the TUI's run (`describe` without `-o`, or
+`L`) writes that cache alone, never a description file. Where the cache is,
+`review --json` adds the model's top (`tops.llm`) and its probability of
+each type it puts forward (`llm` in `types`); a round without it reviews as
+before.
+
+What is written where:
+
+- **By code, from the evidence:** every fact about it. For the model's top
+  type, where the enrichment, SuSiE and the score put it, with their
+  readings; for a trajectory, the run's paragraph (its components, roots,
+  branch points and ends, each lineage) and each type's line (its
+  lineages, the types either side of it, its edges' verdicts). These are
+  true of the evidence by construction.
+- **By the model:** its probability of each panel type, and one sentence
+  on what the cluster's genes and terms indicate for its top type. The
+  sentence is decoded without numbers, formula signs or the words that
+  state a rank, an order, a role, a verdict or a method; it may name only
+  the type, its markers, the top genes and the cluster's terms, no other
+  type of the run. A sentence that fails is asked once more without the
+  offending word, then dropped, and the facts stand alone.
+
+In the annotate TUI the model's probability is a column (`llm`) of the
+candidates, `S` lists by it, and its top three join the label choices. Its
+top is suggested under the candidates and, marked ◆, among the label
+choices (`P` opens them on it), with the facts and its sentence. It is a
+suggestion, not a call: it flags no cluster and is taken only when you
+confirm it; the decision then records `agent_proposed_user_accepted` with
+the model, its revision and probability, or `user_override` with the
+suggestion among the alternatives. A trajectory's texts need no model: the
+order view shows them under the table at once. Without the model (offline,
+never fetched) the TUI says so and the rest works.
 
 ## GO terms
 

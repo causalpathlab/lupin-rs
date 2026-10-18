@@ -72,7 +72,7 @@ fn app_with_terms(terms: bool) -> App {
         rescorable: false,
         by: Default::default(),
         figures: Default::default(),
-        proposals: Default::default(),
+        opinions: Default::default(),
     });
     app.focus = Focus::Genes;
     app
@@ -2488,11 +2488,11 @@ fn capital_s_sorts_the_candidates_by_the_next_method_and_a_number_picks_what_is_
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     c.candidates = vec![
         Candidate {
-            ranks: [Some(0), None, Some(1)],
+            ranks: [Some(0), None, Some(1), None],
             ..Candidate::new("CT1", 0.6)
         },
         Candidate {
-            ranks: [Some(1), None, Some(0)],
+            ranks: [Some(1), None, Some(0), None],
             ..Candidate::new("CT2", 0.3)
         },
     ];
@@ -2515,7 +2515,7 @@ fn app_with_two_readings() -> App {
     use super::super::round::Candidate;
     let mut app = app_with_terms(false);
     let c = &mut app.round.as_mut().unwrap().clusters[0];
-    let cand = |label: &str, share, ranks: [Option<usize>; 3]| {
+    let cand = |label: &str, share, ranks: [Option<usize>; 4]| {
         let mut c = Candidate {
             ranks,
             ..Candidate::new(label, share)
@@ -2524,9 +2524,9 @@ fn app_with_two_readings() -> App {
         c
     };
     c.candidates = vec![
-        cand("CT1", 0.6, [Some(0), None, Some(1)]),
-        cand("CT3", 0.3, [Some(1), None, None]),
-        cand("CT2", 0.1, [Some(2), None, Some(0)]),
+        cand("CT1", 0.6, [Some(0), None, Some(1), None]),
+        cand("CT3", 0.3, [Some(1), None, None, None]),
+        cand("CT2", 0.1, [Some(2), None, Some(0), None]),
     ];
     app.focus = Focus::Clusters;
     app
@@ -3196,7 +3196,7 @@ fn app_with_candidates(n: usize) -> App {
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     c.candidates = (0..n)
         .map(|k| Candidate {
-            ranks: [Some(k), None, None],
+            ranks: [Some(k), None, None, None],
             ..Candidate::new(&format!("CT{}", k + 1), 0.5 / (k + 1) as f32)
         })
         .collect();
@@ -3312,7 +3312,7 @@ fn the_candidates_value_column_follows_the_method_they_are_sorted_by() {
     let mut app = app_with_terms(false);
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     let mut cand = Candidate {
-        ranks: [Some(0), Some(0), None],
+        ranks: [Some(0), Some(0), None, None],
         ..Candidate::new("CT1", 0.61)
     };
     (

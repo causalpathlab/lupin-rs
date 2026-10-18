@@ -1,18 +1,21 @@
-//! What `lupin describe --lm` writes, in the TUI. In annotate, each
-//! cluster's suggested label among its choices with the model's sentence on
-//! why, under the candidates (`L` runs it, `P` opens the choices on it). It
-//! is a suggestion, not a call: it flags no cluster, nothing is taken until
-//! the user confirms it, and the decision then records whether the user
-//! took it or overrode it. The proposals are read from the job's cache as
-//! it appends to it, and only what was made on the evidence on screen
-//! shows. In the order view, the trajectory's paragraph and each type's
+//! What `lupin describe` gives the TUI. In annotate, the language model's
+//! opinion of each cluster, a method beside the others: its probabilities
+//! join the candidates' evidence, and its top is suggested under the
+//! candidates (`L` runs it, `P` opens the choices on it) with the facts on
+//! that type by code and the model's sentence on its biology. It is a
+//! suggestion, not a call: it flags no cluster, nothing is taken until the
+//! user confirms it, and the decision then records whether the user took
+//! it or overrode it. The opinions are read from the round's cache as the
+//! job appends to it, and only those made on the genes and terms on screen
+//! show. In the order view, the trajectory's paragraph and each type's
 //! line, written by code from the run's outputs and read again when they
 //! change.
 
 use crate::annotate::rounds::ClusterId;
-use crate::describe::consensus::{self, cache_path, Proposal};
+use crate::describe::opinion::{self, Opinion};
 use crate::describe::trajectory::{self, OrderFacts, OrderText};
-use crate::manifest::run::{derive_out_prefix, load};
+use crate::manifest::run::load;
+use crate::tui::round::Candidate;
 use anyhow::Result;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -26,8 +29,8 @@ fn stamp(file: &Path) -> Stamp {
     Some((m.len(), m.modified().ok()))
 }
 
-/// A round's proposals, followed in its cache: each cluster's prompt as the
-/// round's evidence makes it, so a line made on other evidence is left out.
+/// A round's opinions, followed in its cache: each cluster's prompt as the
+/// round's genes and terms make it, so a line made on others is left out.
 pub struct Following {
     pub round: PathBuf,
     prompts: BTreeMap<ClusterId, String>,
@@ -39,23 +42,23 @@ pub struct Following {
 impl Following {
     pub fn of(round: &Path) -> Result<Self> {
         let loaded = load(&round.to_string_lossy())?;
-        let inputs = consensus::inputs(&loaded)?;
+        let inputs = opinion::inputs(&loaded)?;
         Ok(Self {
             round: round.to_path_buf(),
-            prompts: consensus::prompts(&inputs),
-            cache: cache_path(&derive_out_prefix(&round.to_string_lossy())),
+            prompts: opinion::prompts(&inputs),
+            cache: opinion::cache_of(&loaded),
             read: None,
         })
     }
 
-    /// The proposals now in the cache, when it changed since last read.
-    pub fn poll(&mut self) -> Option<BTreeMap<ClusterId, Proposal>> {
+    /// The opinions now in the cache, when it changed since last read.
+    pub fn poll(&mut self) -> Option<BTreeMap<ClusterId, Opinion>> {
         let now = stamp(&self.cache);
         if now == self.read {
             return None;
         }
         self.read = now;
-        Some(consensus::current(&self.prompts, &self.cache))
+        Some(opinion::current(&self.prompts, &self.cache))
     }
 }
 
@@ -115,17 +118,19 @@ impl OrderTexts {
     }
 }
 
-/// The strip under the candidates: the suggestion, its probability and why.
+/// The strip under the candidates: the model's suggestion, its
+/// probability, the facts on it and its sentence, on a cluster of
+/// `candidates`.
 #[must_use]
-pub fn strip(p: &Proposal) -> String {
+pub fn strip(o: &Opinion, candidates: &[Candidate]) -> String {
     format!(
         "◆ suggested {} {:.2} — {}",
-        p.label,
-        p.p_label(),
-        p.rationale
+        o.label,
+        o.p_label(),
+        o.text(candidates)
     )
 }
 
 #[cfg(test)]
-#[path = "tests/consensus.rs"]
+#[path = "tests/describe.rs"]
 mod tests;

@@ -47,7 +47,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     };
     let [clusters, genes] =
         Layout::vertical([Constraint::Min(8), Constraint::Length(16)]).areas(left);
-    let proposal = app.proposal_line();
+    let proposal = app.opinion_line();
     let [tree, candidates, strip] = Layout::vertical([
         Constraint::Min(8),
         Constraint::Length(candidates_height(app, right.height.saturating_sub(8))),
@@ -166,7 +166,7 @@ fn draw_order_screen(f: &mut Frame, app: &App, [header, body, summary, log, keys
             Layout::horizontal([Constraint::Percentage(38), Constraint::Fill(1)]).areas(body);
         [l, m, Rect::default()]
     };
-    let proposal = app.proposal_line();
+    let proposal = app.opinion_line();
     let [clusters, genes, candidates, strip] = Layout::vertical([
         Constraint::Min(8),
         Constraint::Length(12),
@@ -405,8 +405,8 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "u unassign",
             "⌫ undo",
             "] next flagged",
-            "P proposal",
-            "L consensus",
+            "P suggestion",
+            "L llm",
             "S sort",
             "a all",
             "r run",
@@ -424,8 +424,8 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "u unassign",
             "⌫ undo",
             "] next flagged",
-            "P proposal",
-            "L consensus",
+            "P suggestion",
+            "L llm",
             "S sort",
             "a all",
             "r form",
@@ -602,15 +602,15 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("↑↓", "select a cluster"),
             ("1-9", "label it with that candidate"),
             ("enter", "the label choices: each method's top types, the tree, or a name"),
-            ("S", "list the candidates by the next method: enrichment, SuSiE, score"),
+            ("S", "list the candidates by the next method: enrichment, SuSiE, score, llm"),
             ("a", "list every candidate, not only the first ten and each method's top"),
             ("k", "keep its label (✓ = decided)"),
             ("u", "unassign it"),
             ("A", "annotate again: the annotation form"),
             ("⌫", "undo its edit"),
             ("]", "next flagged (?) cluster not yet decided"),
-            ("L", "the consensus: a small local model suggests one of each cluster's label choices with a sentence on why, checked to name only its evidence, shown under the candidates (lupin describe --lm; the first run fetches the model, a few GB; offline without it, there are none). A suggestion, not a call: it flags no cluster"),
-            ("P", "the label choices on the suggestion (◆), its sentence in the detail; enter, then confirm, takes it and records that you accepted it; another label records that you overrode it"),
+            ("L", "the llm: a small local model gives its own opinion of each cluster from its top genes and terms, a method beside the others (its probability in the llm column, its top three among the label choices); its top is suggested under the candidates with the facts on it, written by code, and its sentence on the biology (lupin describe --lm; the first run fetches the model, a few GB; offline without it, there are none). A suggestion, not a call: it flags no cluster"),
+            ("P", "the label choices on the suggestion (◆), its facts and sentence in the detail; enter, then confirm, takes it and records that you accepted it; another label records that you overrode it"),
         ],
     ),
     (
@@ -703,7 +703,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         "marks",
         &[
             ("?  ✓", "cluster flagged (weak or no call) / decided"),
-            ("◆", "the consensus's suggested label, under the candidates and among the label choices"),
+            ("◆", "the model's suggested label, under the candidates and among the label choices"),
             ("new", "a specific gene no panel type lists"),
             (
                 "weak",
@@ -1200,20 +1200,22 @@ enum CandColumn {
     P,
     Q,
     Score,
+    Llm,
 }
 
 impl CandColumn {
     /// The columns the pane keeps when it has room, most wanted first (it
     /// shows them in [`CandColumn`]'s order): the sorting method's reading,
-    /// FDR's q, the NES, SuSiE's PIP and fold, the score, the p-value and
-    /// the reading's bar.
-    const WANTED: [Self; 8] = [
+    /// FDR's q, the NES, SuSiE's PIP and fold, the score, the language
+    /// model's probability, the p-value and the reading's bar.
+    const WANTED: [Self; 9] = [
         Self::Value,
         Self::Q,
         Self::Nes,
         Self::Pip,
         Self::Fold,
         Self::Score,
+        Self::Llm,
         Self::P,
         Self::Bar,
     ];
@@ -1228,6 +1230,7 @@ impl CandColumn {
             Self::P => "p",
             Self::Q => "q",
             Self::Score => "score",
+            Self::Llm => "llm",
         }
     }
 
@@ -1245,6 +1248,7 @@ impl CandColumn {
             Self::P => cand.p,
             Self::Q => cand.q,
             Self::Score => cand.score,
+            Self::Llm => cand.llm,
         }
     }
 
@@ -1264,7 +1268,7 @@ impl CandColumn {
         match self {
             Self::Value | Self::Bar => by != crate::annotate::rounds::Method::Enrichment,
             Self::Pip | Self::Fold | Self::Score => true,
-            Self::Nes | Self::P | Self::Q => false,
+            Self::Nes | Self::P | Self::Q | Self::Llm => false,
         }
     }
 }
@@ -1334,6 +1338,7 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     let has = |col: CandColumn| match col {
         CandColumn::Value => true,
         CandColumn::Score if by == crate::annotate::rounds::Method::Score => false,
+        CandColumn::Llm if by == crate::annotate::rounds::Method::Llm => false,
         _ => shown.iter().any(|t| col.reading(t, by).is_some()),
     };
     let longest = shown
@@ -1521,6 +1526,7 @@ fn value_header(by: crate::annotate::rounds::Method) -> &'static str {
         Method::Enrichment => "enrich",
         Method::Susie => "susie",
         Method::Score => "score",
+        Method::Llm => "llm",
     }
 }
 

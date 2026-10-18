@@ -1,17 +1,16 @@
-//! The consensus suggestion in the annotate TUI: shown under the
-//! candidates and among the label choices, flagging no cluster, taken only
-//! once confirmed, and recorded as the user's call on it; and
-//! the trajectory's description in the order view.
+//! The language model's opinion in the annotate TUI: among the candidates'
+//! evidence, its top suggested under them and among the label choices,
+//! flagging no cluster, taken only once confirmed, and recorded as the
+//! user's call on it; and the trajectory's texts in the order view.
 
 use super::super::app::{App, Focus, Job, Running};
 use super::super::round::decisions;
-use crate::annotate::rounds::DecidedBy;
+use crate::annotate::rounds::{DecidedBy, Method};
 use crate::annotate_cmd::AnnotateCliArgs;
-use crate::describe::consensus::tests::{fixture_round, Stub};
-use crate::describe::consensus::{self, cache_path, Proposal};
 use crate::describe::lm::{Lm, LmModel, LmSpec};
+use crate::describe::opinion::tests::{fixture_round, Stub};
+use crate::describe::opinion::{self, Opinion};
 use crate::gene_text::cli::ComputeDevice;
-use crate::manifest::run::derive_out_prefix;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::{Path, PathBuf};
 
@@ -19,7 +18,7 @@ fn press(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
-const WHY: &str = "CT2 fits by its scores.";
+const WHY: &str = "CT2 cells express GENE1.";
 
 fn spec() -> LmSpec {
     LmSpec {
@@ -31,18 +30,24 @@ fn spec() -> LmSpec {
 
 /// The round's cache.
 fn cache_of(round: &Path) -> PathBuf {
-    cache_path(&derive_out_prefix(&round.to_string_lossy()))
+    opinion::cache_of(&crate::manifest::run::load(&round.to_string_lossy()).unwrap())
 }
 
-/// CT2 proposed for every cluster of `round`, cached as the job writes it.
-fn propose_ct2(round: &Path) -> Vec<Proposal> {
+/// The model's opinion of every cluster of `round` by a stub scoring the
+/// panel's types `scores`, cached as the job writes it.
+fn opine_by(round: &Path, scores: &[(&str, f32)]) -> Vec<Opinion> {
     let loaded = crate::manifest::run::load(&round.to_string_lossy()).unwrap();
-    let r = consensus::inputs(&loaded).unwrap();
+    let r = opinion::inputs(&loaded).unwrap();
     let load = || -> anyhow::Result<Box<dyn Lm>> {
         let cont = WHY.trim_start_matches("CT2");
-        Ok(Box::new(Stub::new(&[("CT2", -0.1)], &[cont, cont, cont])))
+        Ok(Box::new(Stub::new(scores, &[cont, cont, cont])))
     };
-    consensus::propose_round(&r, &spec(), &cache_of(round), load).unwrap()
+    opinion::opine_round(&r, &spec(), &cache_of(round), load).unwrap()
+}
+
+/// CT2 the model's top for every cluster of `round`.
+fn opine_ct2(round: &Path) -> Vec<Opinion> {
+    opine_by(round, &[("CT2", -0.1)])
 }
 
 /// An app on the fixture round in `dir`.
@@ -63,23 +68,23 @@ fn app_on(round: &Path) -> App {
     app
 }
 
-/// Cluster `id` has a suggestion on screen.
+/// Cluster `id` has an opinion on screen.
 fn has(app: &App, id: u32) -> bool {
     app.round
         .as_ref()
-        .is_some_and(|r| r.proposals.contains_key(&id))
+        .is_some_and(|r| r.opinions.contains_key(&id))
 }
 
 #[test]
-fn a_rounds_cached_suggestions_show_under_each_clusters_candidates_and_flag_none() {
+fn a_rounds_cached_opinions_suggest_their_top_under_each_cluster_and_flag_none() {
     let dir = tempfile::tempdir().unwrap();
     let round = fixture_round(dir.path());
-    propose_ct2(&round);
+    opine_ct2(&round);
     let mut app = app_on(&round);
     for (sel, id) in [(0usize, 0u32), (1, 1), (2, 2)] {
         app.cluster_sel = sel;
         assert!(has(&app, id));
-        let line = app.proposal_line().unwrap();
+        let line = app.opinion_line().unwrap();
         assert!(line.starts_with("◆ suggested CT2 "), "{line}");
     }
     // A suggestion is no call: the clusters' flags stay the evidence's.
@@ -89,48 +94,97 @@ fn a_rounds_cached_suggestions_show_under_each_clusters_candidates_and_flag_none
 }
 
 #[test]
-fn proposals_made_on_other_evidence_are_not_shown() {
+fn opinions_made_on_other_genes_are_not_shown() {
     let dir = tempfile::tempdir().unwrap();
     let round = fixture_round(dir.path());
-    let mut stale = propose_ct2(&round);
+    let mut stale = opine_ct2(&round);
     std::fs::remove_file(cache_of(&round)).unwrap();
     stale[0].key = "another prompt's".into();
-    consensus::append(&cache_of(&round), &stale[0]).unwrap();
+    opinion::append(&cache_of(&round), &stale[0]).unwrap();
     let app = app_on(&round);
     assert!(!has(&app, 0));
-    assert!(app.proposal_line().is_none());
+    assert!(app.opinion_line().is_none());
 }
 
 #[test]
-fn the_strip_and_the_choices_show_the_proposal_and_p_takes_it_with_its_reason() {
+fn the_models_reading_joins_the_candidates_as_a_method_of_its_own() {
     let dir = tempfile::tempdir().unwrap();
     let round = fixture_round(dir.path());
-    propose_ct2(&round);
+    // Before it runs, the candidates are the other methods' alone.
+    let app = app_on(&round);
+    let c = &app.round.as_ref().unwrap().clusters[0];
+    assert!(c.candidates.iter().all(|t| t.llm.is_none()));
+    assert!(c
+        .candidates
+        .iter()
+        .all(|t| t.ranks[Method::Llm.index()].is_none()));
+    opine_by(&round, &[("CT3", -0.1), ("CT2", -0.5), ("CT1", -1.0)]);
     let mut app = app_on(&round);
-    let line = app.proposal_line().expect("K0's proposal");
+    let c = &app.round.as_ref().unwrap().clusters[0];
+    let rank = |l: &str| {
+        let t = c.candidates.iter().find(|t| t.label == l).unwrap();
+        (
+            t.ranks[Method::Llm.index()],
+            t.ranks[Method::Enrichment.index()],
+        )
+    };
+    assert_eq!(
+        rank("CT3"),
+        (Some(0), Some(2)),
+        "the model's top, ranked by the others as before"
+    );
+    assert_eq!(rank("CT1"), (Some(2), Some(0)));
+    // Its top three are among the label choices; S lists by it.
+    let choices = super::super::round::choices(&c.candidates);
+    assert!(["CT1", "CT2", "CT3"]
+        .iter()
+        .all(|l| choices.iter().any(|t| t.label == *l)));
+    for _ in 0..Method::ALL.len() {
+        if app.cand_method() == Method::Llm {
+            break;
+        }
+        press(&mut app, KeyCode::Char('S'));
+    }
+    assert_eq!(app.cand_method(), Method::Llm);
+    assert_eq!(app.listed_candidates()[0].label, "CT3");
+    // The suggestion's facts say where the others put it.
+    let line = app.opinion_line().unwrap();
+    assert!(line.starts_with("◆ suggested CT3 "), "{line}");
+    assert!(line.contains("CT3: third by enrichment"), "{line}");
+}
+
+#[test]
+fn the_strip_and_the_choices_show_the_suggestion_and_p_takes_it_with_its_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let round = fixture_round(dir.path());
+    opine_ct2(&round);
+    let mut app = app_on(&round);
+    let line = app.opinion_line().expect("K0's suggestion");
     assert!(line.starts_with("◆ suggested CT2 "), "{line}");
-    assert!(line.ends_with(&format!("— {WHY}")), "{line}");
-    // The choices mark it, keyed as before, its reason in its detail.
+    assert!(line.ends_with(&format!(" {WHY}")), "{line}");
+    let text = line.split_once(" — ").unwrap().1.to_string();
+    assert!(text.starts_with("CT2: "), "the facts by code first: {text}");
+    // The choices mark it, keyed as before, its text in its detail.
     press(&mut app, KeyCode::Enter);
     let m = app.menu.as_ref().expect("the label choices");
     let at = m
         .choices
         .iter()
         .position(|c| c.label.starts_with("◆ CT2"))
-        .expect("the proposal marked");
+        .expect("the suggestion marked");
     assert_eq!(m.choices[at].key, Some('2'), "CT2 keeps its key");
     assert!(
-        m.choices[at].detail.contains(WHY),
+        m.choices[at].detail.contains(&text),
         "{}",
         m.choices[at].detail
     );
     assert_eq!(m.sel, 0, "Enter opens on the first choice");
     press(&mut app, KeyCode::Esc);
-    // P opens them on the proposal; Enter takes it, its reason the model's.
+    // P opens them on it; Enter takes it, its reason the facts and sentence.
     press(&mut app, KeyCode::Char('P'));
     assert_eq!(app.menu.as_ref().unwrap().sel, at);
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.prompt.as_ref().unwrap().text, WHY);
+    assert_eq!(app.prompt.as_ref().unwrap().text, text);
     assert!(
         app.edits.is_empty(),
         "nothing is applied before the confirm"
@@ -141,8 +195,8 @@ fn the_strip_and_the_choices_show_the_proposal_and_p_takes_it_with_its_reason() 
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].label.as_deref(), Some("CT2"));
     assert_eq!(d[0].decided_by, DecidedBy::AgentProposedUserAccepted);
-    assert_eq!(d[0].rationale, WHY);
-    let c = &d[0].evidence[0]["consensus"];
+    assert_eq!(d[0].rationale, text);
+    let c = &d[0].evidence[0]["llm"];
     assert_eq!(c["model"], "Qwen/Qwen3-0.6B");
     assert_eq!(c["revision"], LmModel::Qwen3_0_6b.revision());
     assert!(c["p"].as_f64().unwrap() > 0.5);
@@ -151,33 +205,40 @@ fn the_strip_and_the_choices_show_the_proposal_and_p_takes_it_with_its_reason() 
         "the cited type's row: {:?}",
         d[0].evidence
     );
-    let alt: Vec<&str> = d[0]
-        .alternatives
-        .iter()
-        .filter_map(|a| a["label"].as_str())
-        .collect();
-    assert!(alt.contains(&"CT1") && !alt.contains(&"CT2"), "{alt:?}");
-    assert!(d[0].alternatives.iter().all(|a| a["p"].is_number()));
+    assert!(
+        d[0].alternatives
+            .iter()
+            .all(|a| a["label"] != "CT2" && a["p"].is_number()),
+        "{:?}",
+        d[0].alternatives
+    );
 }
 
 #[test]
-fn another_label_while_a_proposal_is_shown_is_the_users_override() {
+fn another_label_while_a_suggestion_is_shown_is_the_users_override() {
     let dir = tempfile::tempdir().unwrap();
     let round = fixture_round(dir.path());
-    propose_ct2(&round);
+    opine_ct2(&round);
     let mut app = app_on(&round);
-    // The first candidate, CT1, over the proposal.
+    let text = app
+        .opinion_line()
+        .unwrap()
+        .split_once(" — ")
+        .unwrap()
+        .1
+        .to_string();
+    // The first candidate, CT1, over the suggestion.
     press(&mut app, KeyCode::Char('1'));
-    assert_ne!(app.prompt.as_ref().unwrap().text, WHY);
+    assert_ne!(app.prompt.as_ref().unwrap().text, text);
     press(&mut app, KeyCode::Enter);
     let d = decisions(&app.edits, app.round.as_ref().unwrap(), None);
     assert_eq!(d[0].label.as_deref(), Some("CT1"));
     assert_eq!(d[0].decided_by, DecidedBy::UserOverride);
     let first = &d[0].alternatives[0];
     assert_eq!(first["label"], "CT2");
-    assert_eq!(first["proposed_by"], "consensus");
-    assert_eq!(first["rationale"], WHY);
-    // A round without proposals decides as before.
+    assert_eq!(first["proposed_by"], "llm");
+    assert_eq!(first["rationale"], text.as_str());
+    // A round without opinions decides as before.
     let plain = fixture_round(&dir.path().join("plain").tap_mkdir());
     let mut app = app_on(&plain);
     press(&mut app, KeyCode::Char('1'));
@@ -199,7 +260,7 @@ impl TapMkdir for PathBuf {
 }
 
 #[test]
-fn p_without_a_proposal_says_how_to_get_one() {
+fn p_without_a_suggestion_says_how_to_get_one() {
     let dir = tempfile::tempdir().unwrap();
     let round = fixture_round(dir.path());
     let mut app = app_on(&round);
@@ -243,25 +304,25 @@ fn finish(app: &mut App) {
 }
 
 #[test]
-fn proposals_fill_in_as_the_running_job_appends_them() {
+fn opinions_fill_in_as_the_running_job_appends_them() {
     let dir = tempfile::tempdir().unwrap();
     let round = fixture_round(dir.path());
-    let made = propose_ct2(&round);
+    let made = opine_ct2(&round);
     let cache = cache_of(&round);
     std::fs::remove_file(&cache).unwrap();
     let mut app = app_on(&round);
     assert!(!has(&app, 0));
-    app.follow_consensus().unwrap();
+    app.follow_opinions().unwrap();
     let child = std::process::Command::new("sleep")
         .arg("30")
         .spawn()
         .unwrap();
-    app.child = Some(Running::new(child, Job::Consensus(round.clone())));
-    consensus::append(&cache, &made[0]).unwrap();
+    app.child = Some(Running::new(child, Job::Llm(round.clone())));
+    opinion::append(&cache, &made[0]).unwrap();
     app.tick();
     assert!(has(&app, 0), "K0's line is in");
     assert!(!has(&app, 2), "K2's is not yet");
-    consensus::append(&cache, &made[2]).unwrap();
+    opinion::append(&cache, &made[2]).unwrap();
     app.tick();
     assert!(has(&app, 2));
     if let Some(r) = &mut app.child {
@@ -272,14 +333,14 @@ fn proposals_fill_in_as_the_running_job_appends_them() {
 }
 
 #[test]
-fn a_consensus_job_without_the_model_says_so_and_the_rest_works() {
+fn a_model_job_without_the_model_says_so_and_the_rest_works() {
     let dir = tempfile::tempdir().unwrap();
     let round = fixture_round(dir.path());
     let mut app = app_on(&round);
-    app.follow_consensus().unwrap();
+    app.follow_opinions().unwrap();
     app.push_log(format!("Error: {}", crate::describe::lm::OFFLINE));
     let child = std::process::Command::new("false").spawn().unwrap();
-    app.child = Some(Running::new(child, Job::Consensus(round.clone())));
+    app.child = Some(Running::new(child, Job::Llm(round.clone())));
     finish(&mut app);
     assert!(app.failed.is_none(), "no failure popup: the rest works");
     assert!(
@@ -333,7 +394,7 @@ fn the_order_texts_notice_a_rewrite_of_the_same_size() {
     let dir = tempfile::tempdir().unwrap();
     let t = fixture_trajectory(dir.path());
     relineage(&t, &["HSC_like > MPP_like > ERY"]);
-    let mut texts = super::super::consensus::OrderTexts::of(&t).unwrap();
+    let mut texts = super::super::describe::OrderTexts::of(&t).unwrap();
     assert!(!texts.poll(), "nothing changed");
     relineage(&t, &["HSC_like > MPP_like > MON"]);
     assert!(texts.poll());

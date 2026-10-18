@@ -15,7 +15,7 @@ use crate::annotate::markers::label_key;
 use crate::annotate::panel_tree::PanelTree;
 use crate::annotate::rounds::ClusterId;
 use crate::annotate_cmd::{AnnotateCliArgs, AnnotateMethod};
-use crate::describe::consensus::{cache_path, Proposal};
+use crate::describe::opinion::Opinion;
 use crate::manifest::rounds::chain_rounds;
 use crate::manifest::run::annotated_path;
 use crate::manifest::run::derive_out_prefix;
@@ -421,7 +421,7 @@ pub enum Job {
     Suggest(PathBuf),
     /// `lupin describe --lm` on this round or trajectory, appending to its
     /// cache.
-    Consensus(PathBuf),
+    Llm(PathBuf),
 }
 
 impl Job {
@@ -432,7 +432,7 @@ impl Job {
             Self::Save(_) => "save",
             Self::Trajectory(_) => "trajectory",
             Self::Suggest(_) => "term ranking",
-            Self::Consensus(_) => "consensus",
+            Self::Llm(_) => "llm",
         }
     }
 
@@ -548,11 +548,11 @@ pub struct App {
     /// How `L` runs `lupin describe --lm`: the model, from where, on what.
     pub lm: crate::describe::LmArgs,
     /// The round's proposals, followed in its cache.
-    following: Option<super::consensus::Following>,
+    following: Option<super::describe::Following>,
     /// The trajectory's texts: in the order view always those of
     /// [`Self::shown_trajectory`], as [`Self::keep_order_current`] keeps
     /// them, or none.
-    pub order_texts: Option<super::consensus::OrderTexts>,
+    pub order_texts: Option<super::describe::OrderTexts>,
     /// The manifests [`Self::order_texts`] and the order view's edges were
     /// last read among.
     order_texts_for: Option<Vec<PathBuf>>,
@@ -745,8 +745,8 @@ impl App {
                 self.status.clear();
             }
         }
-        if matches!(self.child.as_ref().map(|r| &r.job), Some(Job::Consensus(_))) {
-            self.refresh_consensus();
+        if matches!(self.child.as_ref().map(|r| &r.job), Some(Job::Llm(_))) {
+            self.refresh_opinions();
         }
         let Some(r) = &mut self.child else {
             return;
@@ -786,8 +786,8 @@ impl App {
                     self.suggestions_done(&file, secs);
                     return;
                 }
-                if let Job::Consensus(_) = job {
-                    self.consensus_done(secs);
+                if let Job::Llm(_) = job {
+                    self.opinions_done(secs);
                     return;
                 }
                 let after = std::mem::take(&mut self.after_pass);
@@ -890,9 +890,9 @@ impl App {
                 self.push_log(format!("[WARN] {}", self.status));
             }
             // So is the consensus: without the model the rest goes on.
-            Ok(Some(_)) if matches!(job, Job::Consensus(_)) => {
+            Ok(Some(_)) if matches!(job, Job::Llm(_)) => {
                 self.child = None;
-                self.refresh_consensus();
+                self.refresh_opinions();
                 let offline = self
                     .log
                     .iter()
@@ -902,7 +902,7 @@ impl App {
                 self.status = if offline {
                     crate::describe::lm::OFFLINE.to_string()
                 } else {
-                    "the consensus stopped (see the log); the rest works".into()
+                    "the model stopped (see the log); the rest works".into()
                 };
                 self.push_log(format!("[WARN] {}", self.status));
             }
@@ -943,7 +943,7 @@ impl App {
             Job::Save(n) => format!("saving {n} edit(s)"),
             Job::Trajectory(m) => format!("trajectory → {}", file_name(m)),
             Job::Suggest(_) => "Cell Ontology terms for the types without one".into(),
-            Job::Consensus(m) => format!("consensus → {}", file_name(m)),
+            Job::Llm(m) => format!("llm → {}", file_name(m)),
         };
         Some((what, started.elapsed()))
     }
@@ -985,7 +985,7 @@ impl App {
         let mut r = r;
         self.load_cell_map(r.as_mut().map(|r| std::mem::take(&mut r.figures)));
         self.round = r;
-        self.load_proposals();
+        self.load_opinions();
         self.edits.clear();
         self.marked.clear();
         self.tree_marked.clear();
@@ -1550,7 +1550,7 @@ impl App {
     /// which could leave a round half-written: it finishes on its own.
     fn stop(&mut self) {
         match self.child.as_ref().map(|r| r.job.clone()) {
-            Some(job @ (Job::Pass | Job::Trajectory(_) | Job::Suggest(_) | Job::Consensus(_))) => {
+            Some(job @ (Job::Pass | Job::Trajectory(_) | Job::Suggest(_) | Job::Llm(_))) => {
                 self.after_pass = AfterPass::Nothing;
                 let Some(mut r) = self.child.take() else {
                     return;
@@ -1561,10 +1561,10 @@ impl App {
                     let _ = std::fs::remove_file(file);
                     self.suggest_for = None;
                 }
-                if let Job::Consensus(_) = &job {
+                if let Job::Llm(_) = &job {
                     // What it appended stays in the cache, and shows.
-                    self.refresh_consensus();
-                    self.status = "stopped: the proposals made so far stay in the cache".into();
+                    self.refresh_opinions();
+                    self.status = "stopped: the opinions made so far stay in the cache".into();
                     return;
                 }
                 if job != Job::Pass {
@@ -1728,8 +1728,9 @@ impl App {
     fn open_choice(&mut self) {
         use super::menu::{numbered_but, Choice, Menu};
         let Some(c) = self.selected() else { return };
-        let proposed = self.proposal();
-        let is_proposed = |l: &str| proposed.is_some_and(|p| label_key(&p.label) == label_key(l));
+        let proposed = self.opinion_text();
+        let is_proposed =
+            |l: &str| (proposed.as_ref()).is_some_and(|(o, _)| label_key(&o.label) == label_key(l));
         let mut options: Vec<(String, String, Action)> = super::round::choices(&c.candidates)
             .into_iter()
             .map(|t| {
@@ -1739,23 +1740,26 @@ impl App {
                     cluster: c.id,
                     label: label.clone(),
                 };
-                if let Some(p) = proposed.filter(|_| is_proposed(&t.label)) {
-                    detail = format!("{}\n{detail}", proposed_detail(p));
+                if let Some((o, text)) = proposed.as_ref().filter(|_| is_proposed(&t.label)) {
+                    detail = format!("{}\n{detail}", proposed_detail(o, text));
                     label = format!("◆ {label}");
                 }
                 (label, detail, action)
             })
             .collect();
-        // Unassigned is a choice of the model's too.
-        if let Some(p) = proposed.filter(|p| p.label == UNASSIGNED_LABEL) {
-            options.push((
-                format!("◆ {UNASSIGNED_LABEL}"),
-                proposed_detail(p),
-                Action::Label {
-                    cluster: c.id,
-                    label: UNASSIGNED_LABEL.into(),
-                },
-            ));
+        // The model's top, `unassigned` or a type it alone puts so low, is
+        // a choice too.
+        if let Some((o, text)) = proposed.as_ref() {
+            if !options.iter().any(|(l, ..)| l.starts_with('◆')) {
+                options.push((
+                    format!("◆ {}", o.label),
+                    proposed_detail(o, text),
+                    Action::Label {
+                        cluster: c.id,
+                        label: o.label.clone(),
+                    },
+                ));
+            }
         }
         let mut choices = numbered_but(options, "tn");
         choices.extend([
@@ -1780,7 +1784,8 @@ impl App {
     }
 
     /// A label choice's evidence, one paragraph a line: each method's
-    /// reading and its place in that method's ranking, the type's markers,
+    /// reading (the model's probability among them) and its place in that
+    /// method's ranking, the type's markers,
     /// and the cluster's gene-set terms.
     fn choice_detail(&self, c: &super::round::ClusterView, t: &super::round::Candidate) -> String {
         use crate::annotate::rounds::Method;
@@ -1815,6 +1820,9 @@ impl App {
                 place(Method::Score)
             ));
         }
+        if let Some(p) = t.llm {
+            lines.push(format!("llm: p {p:.2}{}", place(Method::Llm)));
+        }
         if let Some(r) = &self.round {
             let markers: Vec<String> = (r.markers_of(&t.label, &self.edits).into_iter())
                 .map(|(g, _)| g)
@@ -1844,11 +1852,10 @@ impl App {
             ),
             _ => format!("top candidate {} ({})", pick.label, evidence(&pick)),
         };
-        let reason = match self
-            .proposal()
-            .filter(|p| label_key(&p.label) == label_key(&pick.label))
+        let suggested = self.opinion_text();
+        let reason = match suggested.filter(|(o, _)| label_key(&o.label) == label_key(&pick.label))
         {
-            Some(p) => p.rationale.clone(),
+            Some((_, text)) => text,
             None => self.rescored_note(reason, Some(&pick)),
         };
         self.ask_label(pick.evidence.label, reason, None);
@@ -2624,8 +2631,8 @@ impl App {
                     KeyCode::Backspace | KeyCode::Delete => self.undo(),
                     KeyCode::Char(']') => self.next_flagged(),
                     KeyCode::Enter => self.open_choice(),
-                    KeyCode::Char('P') => self.open_proposal(),
-                    KeyCode::Char('L') => self.start_consensus(),
+                    KeyCode::Char('P') => self.open_suggestion(),
+                    KeyCode::Char('L') => self.start_opinions(),
                     // Annotate again: the form, and from the order view a
                     // choice to run the trajectory after.
                     KeyCode::Char('A') => {
@@ -3183,7 +3190,7 @@ impl App {
             Action::OpenRun { pick, drop_edits } => self.open_run(pick, drop_edits),
             Action::Label { cluster, label } if label == UNASSIGNED_LABEL => {
                 if self.reselect(cluster) {
-                    let why = self.proposal().map(|p| p.rationale.clone());
+                    let why = self.opinion_text().map(|(_, text)| text);
                     self.ask_label(label, why.unwrap_or_default(), None);
                 }
             }
@@ -4150,24 +4157,32 @@ impl App {
         }
     }
 
-    /// The selected cluster's proposal, when the consensus made one on its
-    /// evidence as the round has it.
-    pub(super) fn proposal(&self) -> Option<&Proposal> {
+    /// The selected cluster's opinion by the model, when it made one on
+    /// its genes and terms as the round has them.
+    pub(super) fn opinion(&self) -> Option<&Opinion> {
         let r = self.round.as_ref()?;
-        r.proposals.get(&r.clusters.get(self.cluster_sel)?.id)
+        r.opinions.get(&r.clusters.get(self.cluster_sel)?.id)
     }
 
-    /// The strip under the candidates: the selected cluster's proposal.
+    /// The selected cluster's opinion with its text: the facts on its label
+    /// by code on the candidates on screen, and the model's sentence.
+    fn opinion_text(&self) -> Option<(&Opinion, String)> {
+        let o = self.opinion()?;
+        Some((o, o.text(&self.selected()?.candidates)))
+    }
+
+    /// The strip under the candidates: the selected cluster's suggestion.
     #[must_use]
-    pub fn proposal_line(&self) -> Option<String> {
-        self.proposal().map(super::consensus::strip)
+    pub fn opinion_line(&self) -> Option<String> {
+        let o = self.opinion()?;
+        Some(super::describe::strip(o, &self.selected()?.candidates))
     }
 
-    /// `P`: the label choices, the cursor on the proposal.
-    fn open_proposal(&mut self) {
-        if self.proposal().is_none() {
+    /// `P`: the label choices, the cursor on the model's suggestion.
+    fn open_suggestion(&mut self) {
+        if self.opinion().is_none() {
             let id = self.selected().map_or(0, |c| c.id);
-            self.status = format!("no proposal for K{id}: L runs the consensus on the round");
+            self.status = format!("no suggestion for K{id}: L runs the model on the round");
             return;
         }
         self.open_choice();
@@ -4178,65 +4193,65 @@ impl App {
         }
     }
 
-    /// The proposals of the round now on screen, from its cache when it
+    /// The opinions of the round now on screen, from its cache when it
     /// has one.
-    fn load_proposals(&mut self) {
+    fn load_opinions(&mut self) {
         self.following = None;
         let Some(r) = &self.round else { return };
-        let cache = cache_path(&derive_out_prefix(&r.manifest.to_string_lossy()));
-        if cache.is_file() {
-            if let Err(e) = self.follow_consensus() {
-                self.push_log(format!("[WARN] no proposals: {e:#}"));
+        let loaded = crate::manifest::run::load(&r.manifest.to_string_lossy());
+        if loaded.is_ok_and(|l| crate::describe::opinion::cache_of(&l).is_file()) {
+            if let Err(e) = self.follow_opinions() {
+                self.push_log(format!("[WARN] no opinions: {e:#}"));
             }
         }
     }
 
     /// Follow the round on screen's cache: its proposals now, and as a job
     /// appends them.
-    pub(super) fn follow_consensus(&mut self) -> anyhow::Result<()> {
+    pub(super) fn follow_opinions(&mut self) -> anyhow::Result<()> {
         let r = self.round.as_ref().context("no round on screen")?;
-        self.following = Some(super::consensus::Following::of(&r.manifest)?);
-        self.refresh_consensus();
+        self.following = Some(super::describe::Following::of(&r.manifest)?);
+        self.refresh_opinions();
         Ok(())
     }
 
-    fn refresh_consensus(&mut self) {
+    fn refresh_opinions(&mut self) {
         let (Some(f), Some(r)) = (&mut self.following, &mut self.round) else {
             return;
         };
         if f.round == r.manifest {
-            if let Some(p) = f.poll() {
-                r.proposals = p;
+            if let Some(o) = f.poll() {
+                r.set_opinions(o);
             }
         }
     }
 
-    /// Run what `lupin describe` without `-o` asks for: the round's
-    /// consensus.
+    /// Run what `lupin describe` without `-o` asks for: the model on the
+    /// round.
     pub(super) fn start_describing(&mut self) {
         if self.round.is_some() {
-            self.start_consensus();
+            self.start_opinions();
         } else {
-            self.status = "no round to propose labels for: r runs a pass, then L".into();
+            self.status = "no round for the model: r runs a pass, then L".into();
         }
     }
 
-    /// `L` in the clusters: run the consensus on the round on screen.
-    fn start_consensus(&mut self) {
+    /// `L` in the clusters: run the model on the round on screen.
+    fn start_opinions(&mut self) {
         if self.child.is_some() {
-            self.status = "wait for the running job (x stops it), then L runs the consensus".into();
+            self.status = "wait for the running job (x stops it), then L runs the model".into();
             return;
         }
         let Some(manifest) = self.round.as_ref().map(|r| r.manifest.clone()) else {
             return;
         };
-        if let Err(e) = self.follow_consensus() {
-            self.status = format!("no consensus on this round: {e:#}");
+        if let Err(e) = self.follow_opinions() {
+            self.status = format!("no model on this round: {e:#}");
             return;
         }
         self.spawn_describe(
             &manifest,
-            "consensus: the model reads each cluster (its first run fetches it, a few GB); its suggestions show under the candidates",
+            "llm: the model reads each cluster's genes and terms (its first run fetches it, a few GB); its opinions join the candidates",
         );
     }
 
@@ -4250,19 +4265,19 @@ impl App {
                     "── describe: lupin describe -f {} -o {stem} --lm --cache-only",
                     manifest.display()
                 ));
-                self.child = Some(Running::new(c, Job::Consensus(manifest.to_path_buf())));
+                self.child = Some(Running::new(c, Job::Llm(manifest.to_path_buf())));
                 self.status = status.into();
             }
             Err(e) => self.status = format!("{e:#}"),
         }
     }
 
-    /// A consensus job ended well: its last lines in, said.
-    fn consensus_done(&mut self, secs: u64) {
-        self.refresh_consensus();
-        let n = self.round.as_ref().map_or(0, |r| r.proposals.len());
+    /// A model job ended well: its last lines in, said.
+    fn opinions_done(&mut self, secs: u64) {
+        self.refresh_opinions();
+        let n = self.round.as_ref().map_or(0, |r| r.opinions.len());
         self.status = format!(
-            "consensus done in {secs}s: a suggested label with a sentence for {n} cluster(s), under the candidates (P opens the choices on it; you decide)"
+            "llm done in {secs}s: the model's opinion of {n} cluster(s) among the candidates, its top under them (P opens the choices on it; you decide)"
         );
     }
 
@@ -4313,7 +4328,7 @@ impl App {
         let Some(m) = shown else {
             return;
         };
-        match super::consensus::OrderTexts::of(&m) {
+        match super::describe::OrderTexts::of(&m) {
             Ok(t) => self.order_texts = Some(t),
             Err(e) => self.push_log(format!("[WARN] no trajectory texts: {e:#}")),
         }
@@ -4489,11 +4504,10 @@ fn remember_alias(file: &Path, label: &str, id: &str, note: &str) -> anyhow::Res
 }
 
 /// A proposal in the label choices' detail.
-fn proposed_detail(p: &Proposal) -> String {
+fn proposed_detail(o: &Opinion, text: &str) -> String {
     format!(
-        "◆ suggested by the consensus ({:.2}), a suggestion, not a call: {}",
-        p.p_label(),
-        p.rationale
+        "◆ suggested by the model ({:.2}), a suggestion, not a call: {text}",
+        o.p_label()
     )
 }
 

@@ -41,7 +41,7 @@ fn round() -> RoundView {
         rescorable: false,
         by: Default::default(),
         figures: Default::default(),
-        proposals: Default::default(),
+        opinions: Default::default(),
     }
 }
 
@@ -250,7 +250,7 @@ fn rescored_scores_replace_a_clusters_and_swap_back() {
     assert_eq!(shares.len(), 3, "every rescored type has its share");
     assert_eq!(
         candidates[0].ranks,
-        [Some(0), None, None],
+        [Some(0), None, None, None],
         "an enrichment round is ranked by the rescored enrichment"
     );
 
@@ -465,7 +465,7 @@ fn a_rounds_candidates_carry_the_scores_share_beside_the_enrichments() {
     assert_eq!((top.label.as_str(), top.score), ("A", Some(1.0)));
 }
 
-fn ranked(label: &str, share: f32, ranks: [Option<usize>; 3]) -> Candidate {
+fn ranked(label: &str, share: f32, ranks: [Option<usize>; 4]) -> Candidate {
     Candidate {
         ranks,
         ..candidate(label, share)
@@ -480,7 +480,7 @@ fn the_list_shows_ten_then_any_methods_top_below_them_and_all_on_asking() {
             ranked(
                 &format!("T{i:02}"),
                 0.5 - 0.01 * i as f32,
-                [Some(i), None, None],
+                [Some(i), None, None, None],
             )
         })
         .collect();
@@ -514,8 +514,8 @@ fn a_rounds_candidates_know_where_each_method_ranks_them() {
     let view = RoundView::load(&round.file).unwrap();
     let k0 = &view.clusters[0].candidates;
     let ranks = |l: &str| k0.iter().find(|c| c.label == l).unwrap().ranks;
-    assert_eq!(ranks("A"), [Some(0), None, Some(0)]);
-    assert_eq!(ranks("B"), [Some(1), None, None]);
+    assert_eq!(ranks("A"), [Some(0), None, Some(0), None]);
+    assert_eq!(ranks("B"), [Some(1), None, None, None]);
 }
 
 #[test]
@@ -549,11 +549,11 @@ fn types_tied_on_the_share_follow_q_then_nes_as_review_json_tops_do() {
 #[test]
 fn the_choices_are_every_methods_top_three_firsts_first() {
     let cands = vec![
-        ranked("A", 0.5, [Some(0), None, Some(1)]),
-        ranked("C", 0.2, [Some(2), None, None]),
-        ranked("B", 0.3, [Some(1), None, Some(0)]),
-        ranked("D", 0.1, [Some(3), None, Some(2)]),
-        ranked("E", 0.0, [Some(4), None, Some(3)]),
+        ranked("A", 0.5, [Some(0), None, Some(1), None]),
+        ranked("C", 0.2, [Some(2), None, None, None]),
+        ranked("B", 0.3, [Some(1), None, Some(0), None]),
+        ranked("D", 0.1, [Some(3), None, Some(2), None]),
+        ranked("E", 0.0, [Some(4), None, Some(3), None]),
     ];
     let labels: Vec<&str> = choices(&cands).iter().map(|c| c.label.as_str()).collect();
     assert_eq!(labels, ["A", "B", "C", "D"]);

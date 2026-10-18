@@ -2,15 +2,18 @@
 //!
 //! The template composer **never decides**: evidence comes from annotate artifacts (and
 //! optional keyword incidence from a `word-graph` vocab). With `--lm` a small local model
-//! ([`lm`]) proposes a label among each cluster's choices with one sentence on why
-//! ([`consensus`]), and describes a trajectory's order ([`trajectory`]); nothing is
-//! applied, the user confirms it in the TUI. Every sentence, template or model's, is
-//! citation-checked against the entities its evidence allows ([`citation_check`]).
+//! ([`lm`]) gives its own opinion of each cluster, a method beside the others: its
+//! probability of each panel type from the cluster's genes and terms, and one sentence
+//! on what they indicate for its top ([`opinion`]); code writes every fact about the
+//! evidence (where the other methods put that type, and a trajectory's order,
+//! [`trajectory`]). Nothing is applied: the user confirms a label in the TUI. Every
+//! sentence, template or model's, is citation-checked against the entities its evidence
+//! allows ([`citation_check`]).
 
-pub(crate) mod claims;
-pub mod consensus;
 pub mod lm;
+pub mod opinion;
 pub mod trajectory;
+pub(crate) mod vocabulary;
 
 use enrichment::UNASSIGNED_LABEL;
 use std::collections::{BTreeMap, BTreeSet};
@@ -79,7 +82,7 @@ pub struct DescribeArgs {
     #[arg(
         long,
         short = 'o',
-        help = "Output prefix; without it, the TUI opens on the round (or the trajectory) and runs the consensus"
+        help = "Output prefix; without it, the TUI opens on the round (or the trajectory), the model run on the round"
     )]
     pub out: Option<Box<str>>,
 
@@ -87,7 +90,7 @@ pub struct DescribeArgs {
         long,
         requires = "lm",
         hide = true,
-        help = "With --lm: write only the model's cache (`{out}.consensus.jsonl`), not the description files; what the TUI runs"
+        help = "With --lm: write only the model's cache (`{stem}.llm.jsonl` beside the round), not the description files; what the TUI runs"
     )]
     pub cache_only: bool,
 
@@ -100,7 +103,7 @@ pub struct DescribeArgs {
 pub struct LmArgs {
     #[arg(
         long,
-        help = "Propose a label per cluster among its choices, with a citation-checked sentence on why (or describe a trajectory's order), by a small local model; nothing is applied"
+        help = "A small local model's opinion of each cluster, a method beside the others: its probability of each panel type from the cluster's genes and terms, with a checked sentence on what they indicate; nothing is applied"
     )]
     pub lm: bool,
 
@@ -258,14 +261,19 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     {
         return describe_trajectory(l, args, out);
     }
-    // The model's proposals come first: they need only the round.
-    let proposals = if args.lm.lm {
+    // The model's opinions come first: they need only the round. Its cache
+    // is the round's, beside it, which its review and the TUI read.
+    let opinions: Vec<(opinion::Opinion, String)> = if args.lm.lm {
         let loaded = loaded
             .as_ref()
-            .context("--lm proposes labels for an annotated round: give its manifest")?;
-        let round = consensus::inputs(loaded)?;
-        let cache = consensus::cache_path(out);
-        consensus::propose_round(&round, &args.lm.spec(), &cache, args.lm.loader())?
+            .context("--lm gives the model's opinion of an annotated round: give its manifest")?;
+        let round = opinion::inputs(loaded)?;
+        let cache = opinion::cache_of(loaded);
+        let made = opinion::opine_round(&round, &args.lm.spec(), &cache, args.lm.loader())?;
+        if args.cache_only {
+            return Ok(());
+        }
+        opinion_texts(loaded, made)?
     } else {
         Vec::new()
     };
@@ -276,8 +284,8 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     let files = EvidenceFiles::locate(&args.from);
     let mut enriched = match load_evidence(&files, args.fdr_alpha) {
         Ok(e) => e,
-        // With proposals, the template sentences are extra.
-        Err(e) if !proposals.is_empty() => {
+        // With the model's opinions, the template sentences are extra.
+        Err(e) if !opinions.is_empty() => {
             log::warn!("describe: no template sentences ({e:#})");
             Vec::new()
         }
@@ -301,7 +309,11 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
         sentences.push((c.id.clone(), sentence));
     }
 
-    let proposal_of = |id: &str| proposals.iter().find(|p| format!("K{}", p.cluster) == id);
+    let opinion_of = |id: &str| {
+        opinions
+            .iter()
+            .find(|(o, _)| format!("K{}", o.cluster) == id)
+    };
     let mut evidence = json!({
         "from": args.from.as_ref(),
         "text_prefix": args.text_prefix.as_ref().map(|s| s.as_ref()),
@@ -321,8 +333,9 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
                 "neighbour_genes": c.neighbour_genes,
                 "incidence_words": c.incidence_words,
             });
-            if let Some(p) = proposal_of(&c.id) {
-                v["proposal"] = json!(p);
+            if let Some((o, text)) = opinion_of(&c.id) {
+                v["llm"] = json!(o);
+                v["llm"]["text"] = json!(text);
             }
             v
         }).collect::<Vec<_>>(),
@@ -331,7 +344,14 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     if args.lm.lm {
         let spec = args.lm.spec();
         evidence["lm"] = json!({"model": spec.name(), "revision": spec.revision()});
-        evidence["proposals"] = json!(proposals);
+        evidence["opinions"] = json!(opinions
+            .iter()
+            .map(|(o, text)| {
+                let mut v = json!(o);
+                v["text"] = json!(text);
+                v
+            })
+            .collect::<Vec<_>>());
     }
 
     let json_path = format!("{out}.describe.json");
@@ -346,13 +366,12 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     writeln!(mw)?;
     writeln!(mw, "From `{from}`.", from = args.from.as_ref())?;
     writeln!(mw)?;
-    let proposed = |mw: &mut File, p: &consensus::Proposal| {
+    let opined = |mw: &mut File, (o, text): &(opinion::Opinion, String)| {
         writeln!(
             mw,
-            "Proposed: **{}** ({:.2}) — {}",
-            p.label,
-            p.p_label(),
-            p.rationale
+            "The model: **{}** ({:.2}) — {text}",
+            o.label,
+            o.p_label()
         )
         .and_then(|()| writeln!(mw))
     };
@@ -361,20 +380,38 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
         writeln!(mw)?;
         writeln!(mw, "{s}")?;
         writeln!(mw)?;
-        if let Some(p) = proposal_of(id) {
-            proposed(&mut mw, p)?;
+        if let Some(o) = opinion_of(id) {
+            opined(&mut mw, o)?;
         }
     }
-    for p in &proposals {
-        let id = format!("K{}", p.cluster);
+    for o in &opinions {
+        let id = format!("K{}", o.0.cluster);
         if !sentences.iter().any(|(s, _)| *s == id) {
             writeln!(mw, "## {id}")?;
             writeln!(mw)?;
-            proposed(&mut mw, p)?;
+            opined(&mut mw, o)?;
         }
     }
     info!("wrote {md_path} ({} cluster(s))", sentences.len());
     Ok(())
+}
+
+/// Each opinion with its text: the facts on its label by code, on the
+/// round's evidence as its review reads it, and the model's sentence.
+fn opinion_texts(
+    loaded: &crate::manifest::run::Loaded,
+    made: Vec<opinion::Opinion>,
+) -> Result<Vec<(opinion::Opinion, String)>> {
+    let r = crate::manifest::rounds::Reviewed::read(loaded, true)?;
+    let by = crate::manifest::rounds::called_by(&loaded.manifest.annotate).unwrap_or_default();
+    Ok(made
+        .into_iter()
+        .map(|o| {
+            let (candidates, _) = crate::tui::round::ranked_view(&r.tables.evidence(o.cluster), by);
+            let text = o.text(&candidates);
+            (o, text)
+        })
+        .collect())
 }
 
 /// Where each piece of annotate evidence lives.
@@ -1023,12 +1060,6 @@ fn runner_up_clause(c: &ClusterEvidence) -> String {
 }
 
 fn template_sentence(c: &ClusterEvidence) -> String {
-    template_led(c, None)
-}
-
-/// [`template_sentence`] with `lead` in place of its opening `{id} is
-/// annotated as {label}.`, for a label the cluster does not have yet.
-fn template_led(c: &ClusterEvidence, lead: Option<&str>) -> String {
     let words = if c.incidence_words.is_empty() {
         String::new()
     } else {
@@ -1045,11 +1076,10 @@ fn template_led(c: &ClusterEvidence, lead: Option<&str>) -> String {
     let runner = runner_up_clause(c);
     if c.has_significant_call() {
         let markers = marker_sentence(c, false);
-        let lead = lead.map_or_else(
-            || format!("{} is annotated as {}.", c.id, c.coarse_label),
-            str::to_string,
-        );
-        format!("{lead}{markers}{runner}{words}")
+        format!(
+            "{} is annotated as {}.{markers}{runner}{words}",
+            c.id, c.coarse_label
+        )
     } else if c.best_label != UNASSIGNED_LABEL {
         let q = c
             .best_q
@@ -1081,9 +1111,9 @@ pub enum CitationError {
     Markup(String),
     /// (A model's text) nothing.
     Empty,
-    /// (A model's text) a claim its evidence does not bear out
-    /// ([`claims`]).
-    Claim(String),
+    /// (A model's text) a word that states an order, a role, a verdict, a
+    /// rank or a method, which code states ([`vocabulary`]).
+    Vocabulary(String),
 }
 
 impl std::fmt::Display for CitationError {
@@ -1095,7 +1125,7 @@ impl std::fmt::Display for CitationError {
             Self::Digits(d) => write!(f, "a number ({d})"),
             Self::Markup(m) => write!(f, "markup ({m})"),
             Self::Empty => write!(f, "no sentence"),
-            Self::Claim(c) => write!(f, "a claim its evidence does not bear out: {c}"),
+            Self::Vocabulary(w) => write!(f, "a word only code may use ({w})"),
         }
     }
 }
@@ -1111,7 +1141,7 @@ pub(crate) fn norm(s: &str) -> String {
 /// `text` names `entity` (both [`norm`]ed) as a whole word or words, or
 /// their plural (`cells`).
 pub(crate) fn mentions(text: &str, entity: &str) -> bool {
-    !entity.is_empty() && !claims::find(text, entity, true).is_empty()
+    !entity.is_empty() && !vocabulary::find(text, entity, true).is_empty()
 }
 
 /// Check `draft` against what it may say: it names at least one of `named`

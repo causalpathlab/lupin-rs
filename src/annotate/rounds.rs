@@ -154,6 +154,11 @@ pub enum Stat {
     Explained,
     /// The projection score's share of the cluster's cells called the type.
     Score,
+    /// The small local language model's probability of the type
+    /// ([`crate::describe::opinion`]). No pass writes it, so it is not in
+    /// [`Stat::ALL`]: it is read from the round's own cache of the model's
+    /// opinions, where there is one.
+    Llm,
 }
 
 impl Stat {
@@ -180,6 +185,7 @@ impl Stat {
             Stat::Fold => "fold",
             Stat::Explained => "explained",
             Stat::Score => "score",
+            Stat::Llm => "llm",
         }
     }
 }
@@ -209,6 +215,9 @@ pub struct TypeEvidence {
     pub explained: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
+    /// The language model's probability ([`Stat::Llm`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm: Option<f32>,
 }
 
 impl TypeEvidence {
@@ -228,6 +237,7 @@ impl TypeEvidence {
             Stat::Fold => &self.fold,
             Stat::Explained => &self.explained,
             Stat::Score => &self.score,
+            Stat::Llm => &self.llm,
         }
     }
 
@@ -241,6 +251,7 @@ impl TypeEvidence {
             Stat::Fold => &mut self.fold,
             Stat::Explained => &mut self.explained,
             Stat::Score => &mut self.score,
+            Stat::Llm => &mut self.llm,
         }
     }
 }
@@ -277,6 +288,8 @@ impl TypeTables {
 
 /// Below this PIP SuSiE does not put a type forward.
 pub const MIN_CANDIDATE_PIP: f32 = 0.05;
+/// Below this probability the language model does not put a type forward.
+pub const MIN_LLM_P: f32 = 0.05;
 
 /// A method whose reading a round may carry.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,10 +302,19 @@ pub enum Method {
     Susie,
     /// The projection score's share of the cluster's cells.
     Score,
+    /// A small local language model's opinion from the cluster's genes and
+    /// terms alone: its probability of each panel type
+    /// ([`crate::describe::opinion`]).
+    Llm,
 }
 
 impl Method {
-    pub const ALL: [Method; 3] = [Method::Enrichment, Method::Susie, Method::Score];
+    pub const ALL: [Method; 4] = [
+        Method::Enrichment,
+        Method::Susie,
+        Method::Score,
+        Method::Llm,
+    ];
 
     /// Its place in [`Method::ALL`].
     #[must_use]
@@ -306,25 +328,29 @@ impl Method {
             Method::Enrichment => "enrichment",
             Method::Susie => "susie",
             Method::Score => "score",
+            Method::Llm => "llm",
         }
     }
 
     /// The share of a cluster's evidence this method gives `e`: the
-    /// enrichment's Q, SuSiE's explained share, the score's share of cells.
+    /// enrichment's Q, SuSiE's explained share, the score's share of cells,
+    /// the language model's probability.
     #[must_use]
     pub fn reading(self, e: &TypeEvidence) -> Option<f32> {
         match self {
             Method::Enrichment => e.enrichment,
             Method::Susie => e.explained,
             Method::Score => e.score,
+            Method::Llm => e.llm,
         }
     }
 
     /// The types this method puts forward in one cluster's `evidence`, best
     /// first. SuSiE puts forward a PIP of at least [`MIN_CANDIDATE_PIP`],
     /// ranked as SuSiE calls ([`crate::annotate::susie::call_order`]). The
-    /// others put forward a share above zero, largest first; types of one
-    /// share go by their q, smallest first, then their NES, largest first,
+    /// language model puts forward a probability of at least [`MIN_LLM_P`],
+    /// the others a share above zero, largest first; types of one reading
+    /// go by their q, smallest first, then their NES, largest first,
     /// unknowns last; types tied on all three stay in `evidence`'s order.
     #[must_use]
     pub fn ranked(self, evidence: &[TypeEvidence]) -> Vec<&TypeEvidence> {
@@ -332,6 +358,7 @@ impl Method {
             .iter()
             .filter(|e| match self {
                 Method::Susie => e.pip >= Some(MIN_CANDIDATE_PIP),
+                Method::Llm => e.llm >= Some(MIN_LLM_P),
                 _ => self.reading(e) > Some(0.0),
             })
             .collect();

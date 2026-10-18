@@ -45,6 +45,12 @@ fn a_generation_without_numbers_or_markup_can_still_end_its_turn() {
     );
     assert!(ban.contains(&2), "the word banned");
     assert!(!ban.contains(&4), "a name kept keeps its digit");
+    let bans = Bans {
+        keep: vec!["cell".into()],
+        ..bans
+    };
+    let ban = banned(&t, &numeric_ids(&t), &stops, &bans).unwrap();
+    assert!(!ban.contains(&2), "a name kept keeps its words too");
     assert!(
         !ban.contains(&0) && !ban.contains(&1),
         "the stop tokens are never banned, though their text has `<`, `|` and `>`: {ban:?}"

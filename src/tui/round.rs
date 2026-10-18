@@ -8,7 +8,8 @@ use crate::annotate::markers::read_marker_pairs;
 use crate::annotate::rounds::{
     digest, parse_cluster_id, Action, ClusterId, DecidedBy, Decision, Evidence, Term,
 };
-use crate::annotate::rounds::{Method, TypeEvidence};
+use crate::annotate::rounds::{Method, TypeEvidence, MIN_LLM_P};
+use crate::describe::opinion::Opinion;
 use crate::manifest::rounds::{called_by, read_cells, read_score_cells, read_type_tables};
 use crate::manifest::run::{self, resolve};
 use anyhow::Result;
@@ -36,7 +37,7 @@ pub struct Candidate {
     pub share: f32,
     /// Where each method ([`Method::ALL`], in order) ranks the type among
     /// those it puts forward; 0 is its top.
-    pub ranks: [Option<usize>; 3],
+    pub ranks: [Option<usize>; Method::ALL.len()],
 }
 
 impl std::ops::Deref for Candidate {
@@ -56,7 +57,7 @@ impl Candidate {
                 ..TypeEvidence::default()
             },
             share,
-            ranks: [None; 3],
+            ranks: [None; Method::ALL.len()],
         }
     }
 
@@ -78,7 +79,7 @@ impl Candidate {
 #[must_use]
 pub fn ranked_view(evidence: &[TypeEvidence], by: Method) -> (Vec<Candidate>, Vec<(String, f32)>) {
     let ranked = Method::ALL.map(|m| m.ranked(evidence));
-    let place: [HashMap<&str, usize>; 3] = ranked.each_ref().map(|r| {
+    let place: [HashMap<&str, usize>; Method::ALL.len()] = ranked.each_ref().map(|r| {
         r.iter()
             .enumerate()
             .map(|(k, e)| (e.label.as_str(), k))
@@ -325,9 +326,11 @@ pub struct RoundView {
     /// The round's cells on its run's layouts, for the cell map; taken by
     /// the app when it shows the round.
     pub figures: crate::figures::CellFigures,
-    /// Each cluster's proposal by the consensus, made on its evidence as
-    /// the round has it (`L`); none until one is read.
-    pub proposals: BTreeMap<ClusterId, crate::describe::consensus::Proposal>,
+    /// Each cluster's opinion by the language model, made on its genes and
+    /// terms as the round has them (`L`); none until one is read. Its
+    /// probabilities are in the candidates' evidence too
+    /// ([`RoundView::set_opinions`]).
+    pub opinions: BTreeMap<ClusterId, Opinion>,
 }
 
 impl RoundView {
@@ -387,7 +390,7 @@ impl RoundView {
             decided,
             rescorable: a.stats_cache.is_some() && a.expression_clusters.is_some(),
             by,
-            proposals: BTreeMap::new(),
+            opinions: BTreeMap::new(),
         })
     }
 
@@ -567,8 +570,46 @@ impl RoundView {
             .collect()
     }
 
-    /// Show `scores` in place of the clusters' own; the ones replaced, to
-    /// put back.
+    /// Take `opinions` as the language model's, its probabilities into each
+    /// cluster's candidates as [`Method::Llm`]'s evidence.
+    pub fn set_opinions(&mut self, opinions: BTreeMap<ClusterId, Opinion>) {
+        self.opinions = opinions;
+        self.merge_opinions();
+    }
+
+    /// Each cluster's candidates with its opinion's probabilities in their
+    /// evidence (a type the model alone puts forward joins them), ranked
+    /// again; the other methods' ranks are as they were.
+    fn merge_opinions(&mut self) {
+        let by = self.by.unwrap_or_default();
+        for c in &mut self.clusters {
+            let mut evidence: Vec<TypeEvidence> = (c.candidates.iter())
+                .map(|t| TypeEvidence {
+                    llm: None,
+                    ..t.evidence.clone()
+                })
+                .collect();
+            let opinion = self.opinions.get(&c.id);
+            for (label, &p) in opinion.into_iter().flat_map(|o| &o.p) {
+                if label == UNASSIGNED_LABEL {
+                    continue;
+                }
+                match (evidence.iter_mut()).find(|e| label_key(&e.label) == label_key(label)) {
+                    Some(e) => e.llm = Some(p),
+                    None => evidence.push(TypeEvidence {
+                        cluster: c.id,
+                        label: label.clone(),
+                        llm: Some(p),
+                        ..TypeEvidence::default()
+                    }),
+                }
+            }
+            c.candidates = ranked_view(&evidence, by).0;
+        }
+    }
+
+    /// Show `scores` in place of the clusters' own, the model's opinions
+    /// among their evidence; the ones replaced, to put back.
     pub fn swap_scores(&mut self, mut scores: Scores) -> Scores {
         let mut old = Scores::new();
         for c in &mut self.clusters {
@@ -581,6 +622,9 @@ impl RoundView {
                     ),
                 );
             }
+        }
+        if !self.opinions.is_empty() {
+            self.merge_opinions();
         }
         old
     }
@@ -726,12 +770,13 @@ pub fn decisions(edits: &[Edit], round: &RoundView, recorded: Option<&Scores>) -
             Vec::new(),
             reason,
         );
-        // A label given while the consensus proposed one: the user took it
-        // or overrode it, and the record says which.
-        if let (Some(label), Some(p)) = (&label, round.proposals.get(&id)) {
+        // A label given while the model suggested one: the user took it or
+        // overrode it, and the record says which.
+        if let (Some(label), Some(p)) = (&label, round.opinions.get(&id)) {
             let taken = label_key(label) == label_key(&p.label);
-            let terms = round.clusters.iter().find(|c| c.id == id);
-            let terms = terms.map_or(&[][..], |c| &c.terms[..]);
+            let cluster = round.clusters.iter().find(|c| c.id == id);
+            let terms = cluster.map_or(&[][..], |c| &c.terms[..]);
+            let text = p.text(cluster.map_or(&[][..], |c| &c.candidates[..]));
             let cited: Vec<serde_json::Value> = (p.cited.iter())
                 .filter_map(|name| {
                     let row = evidence.iter().position(|e| e["term"] == name.as_str());
@@ -743,14 +788,14 @@ pub fn decisions(edits: &[Edit], round: &RoundView, recorded: Option<&Scores>) -
                                 "effect": t.effect, "q": t.q}))
                 })
                 .collect();
-            let consensus = json!({"consensus": {"model": p.model, "revision": p.revision,
-                                                 "label": p.label, "p": p.p_label()}});
-            evidence = std::iter::once(consensus)
-                .chain(cited)
-                .chain(evidence)
-                .collect();
+            let llm = json!({"llm": {"model": p.model, "revision": p.revision,
+                                     "label": p.label, "p": p.p_label()}});
+            evidence = std::iter::once(llm).chain(cited).chain(evidence).collect();
+            // The others the model puts forward.
             let mut others: Vec<(&String, &f32)> = (p.p.iter())
-                .filter(|(l, _)| label_key(l) != label_key(label) && **l != p.label)
+                .filter(|(l, v)| {
+                    label_key(l) != label_key(label) && **l != p.label && **v >= MIN_LLM_P
+                })
                 .collect();
             others.sort_by(|a, b| b.1.total_cmp(a.1).then_with(|| a.0.cmp(b.0)));
             let others = others.into_iter().map(|(l, v)| json!({"label": l, "p": v}));
@@ -760,7 +805,7 @@ pub fn decisions(edits: &[Edit], round: &RoundView, recorded: Option<&Scores>) -
             } else {
                 d.decided_by = DecidedBy::UserOverride;
                 std::iter::once(json!({"label": p.label, "p": p.p_label(),
-                                       "proposed_by": "consensus", "rationale": p.rationale}))
+                                       "proposed_by": "llm", "rationale": text}))
                 .chain(others)
                 .collect()
             };

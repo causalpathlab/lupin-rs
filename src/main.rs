@@ -94,7 +94,7 @@ enum Commands {
     Annotate(AnnotateCliArgs),
     #[command(
         name = "describe",
-        about = "Short citation-checked sentences from annotate evidence; with --lm, a proposed label per cluster by a small local model",
+        about = "Short citation-checked sentences from annotate evidence; with --lm, a small local model's opinion of each cluster",
         long_about = "Builds structured evidence from `{from}.annot.parquet` (or argmax).\n\
                       Optionally fishes per-cluster keywords from a `word-graph` prefix\n\
                       (`feature_word.edges` over each cluster's markers;\n\
@@ -104,16 +104,18 @@ enum Commands {
                       Writes `{out}.describe.json` and `{out}.describe.md`.\n\
                       \n\
                       `--lm` runs a small local model (Qwen3, pinned revision, fetched once\n\
-                      from the Hub; `--lm-dir` for local files): for each cluster of a round\n\
-                      it proposes one of the TUI's label choices with one sentence on why,\n\
-                      cached in `{out}.consensus.jsonl` and added to the outputs. On a\n\
-                      trajectory run it describes the order instead,\n\
-                      `{out}.trajectory.describe.md`. Nothing is applied: the TUI offers\n\
-                      the proposals, the user confirms them.\n\
+                      from the Hub; `--lm-dir` for local files) as a method of its own: from\n\
+                      each cluster's size, top genes and terms alone it gives its probability\n\
+                      of each panel type, and one sentence on what they indicate for its top.\n\
+                      Code writes the facts beside it (where the other methods put that type).\n\
+                      Its opinions are cached beside the round, `{stem}.llm.jsonl`, which\n\
+                      `review --json` and the TUI read. On a trajectory run the order is\n\
+                      described by code from its outputs, `{out}.trajectory.describe.md`.\n\
+                      Nothing is applied: the TUI offers the model's top, the user confirms.\n\
                       \n\
-                      Without `-o` the TUI opens on the round (or the trajectory) and runs it\n\
-                      into the manifest's `{stem}.consensus.jsonl` alone, so no description\n\
-                      file is written over.\n\
+                      Without `-o` the TUI opens on the round, running the model into the\n\
+                      round's cache alone, so no description file is written over; or on a\n\
+                      trajectory's order view.\n\
                       Every sentence is citation-checked: it names only its evidence."
     )]
     Describe(DescribeArgs),

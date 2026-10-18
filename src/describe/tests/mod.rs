@@ -326,5 +326,31 @@ fn a_trajectory_is_described_by_code_and_cache_only_leaves_its_description() {
     ]))
     .unwrap();
     assert_eq!(std::fs::read_to_string(&md).unwrap(), "mine\n");
-    assert!(!consensus::cache_path(&out).exists(), "nothing to cache");
+    assert!(!opinion::cache_path(&out).exists(), "nothing to cache");
+}
+
+#[test]
+fn a_models_opinion_is_written_with_the_facts_on_its_top_by_code() {
+    use super::opinion::tests::{fixture_round, Stub};
+    let dir = tempfile::tempdir().unwrap();
+    let file = fixture_round(dir.path());
+    let loaded = crate::manifest::run::load(&file.to_string_lossy()).unwrap();
+    let spec = describe_args(&["-f", "x", "--lm", "--lm-model", "qwen3-0.6b"])
+        .lm
+        .spec();
+    let made = opinion::opine_round(
+        &opinion::inputs(&loaded).unwrap(),
+        &spec,
+        &opinion::cache_of(&loaded),
+        || Ok(Box::new(Stub::new(&[("CT2", -0.1)], &[" cells."; 3])) as Box<dyn lm::Lm>),
+    )
+    .unwrap();
+    let texts = opinion_texts(&loaded, made).unwrap();
+    // K0's enrichment puts CT2 second; no other method ran.
+    let (o, text) = &texts[0];
+    assert_eq!(o.label, "CT2");
+    assert_eq!(
+        text,
+        "CT2: second by enrichment (share 0.15, q 0.50). CT2 cells."
+    );
 }
