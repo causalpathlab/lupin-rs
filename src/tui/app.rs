@@ -23,7 +23,7 @@ use anyhow::Context as _;
 use enrichment::UNASSIGNED_LABEL;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::{Path, PathBuf};
-use std::process::Child;
+use std::process::{Child, ExitStatus};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -482,7 +482,30 @@ impl Ranking {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+
+    /// Its log lines not yet forwarded once the child has ended: its reader
+    /// sends the last ones (often the reason it failed) after the exit, so
+    /// they are waited for, a moment at most, until the reader is done.
+    fn rest_of_log(&self) -> Vec<String> {
+        let until = Instant::now() + RANKING_LOG_TAIL;
+        std::iter::from_fn(|| {
+            let left = until.checked_duration_since(Instant::now())?;
+            self.log.recv_timeout(left).ok()
+        })
+        .collect()
+    }
+
+    #[cfg(test)]
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
 }
+
+/// How long an ended ranking's last log lines are waited for.
+const RANKING_LOG_TAIL: Duration = Duration::from_millis(500);
+
+/// How the ranking's status line begins: it is renewed only over its own.
+const RANKING_STATUS: &str = "ranking Cell Ontology terms";
 
 /// A key that needs pressing twice, and what it will do.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -918,22 +941,33 @@ impl App {
     /// on, so a failed ranking raises no failure popup.
     fn keep_ranking(&mut self) {
         let Some(r) = &mut self.ranking else { return };
-        let lines: Vec<String> = std::iter::from_fn(|| r.log.try_recv().ok())
-            .filter(|l| crate::progress::parse(l).is_none())
-            .collect();
+        let mut lines: Vec<String> = std::iter::from_fn(|| r.log.try_recv().ok()).collect();
         let secs = r.started.elapsed().as_secs();
         let ended = r.child.try_wait();
-        for line in lines {
+        if !matches!(ended, Ok(None)) {
+            lines.extend(r.rest_of_log());
+        }
+        for line in lines
+            .into_iter()
+            .filter(|l| crate::progress::parse(l).is_none())
+        {
             self.push_log(line);
         }
+        self.ranking_ended(ended, secs);
+    }
+
+    /// What the ranking's child's state, `ended`, after `secs`, means.
+    pub(super) fn ranking_ended(&mut self, ended: std::io::Result<Option<ExitStatus>>, secs: u64) {
         match ended {
             Ok(None) => {
                 // The other job's progress, or a key's reply, says more.
+                // A job's or a key's word stays: the ranking renews its own.
                 let quiet = self.child.is_none()
                     && self.armed.is_none()
-                    && self.replied.is_none_or(|t| t.elapsed() >= KEY_REPLY_HOLD);
+                    && self.replied.is_none_or(|t| t.elapsed() >= KEY_REPLY_HOLD)
+                    && (self.status.is_empty() || self.status.starts_with(RANKING_STATUS));
                 if quiet {
-                    self.status = format!("ranking Cell Ontology terms… {secs}s (x: stop)");
+                    self.status = format!("{RANKING_STATUS}… {secs}s (x: stop)");
                 }
             }
             Ok(Some(st)) if st.success() => {
@@ -941,12 +975,26 @@ impl App {
                 self.suggestions_done(&r.file, &r.label, secs);
             }
             _ => {
-                self.ranking = None;
+                if let Some(r) = self.ranking.take() {
+                    r.stop();
+                }
                 self.status =
                     "no Cell Ontology suggestions (offline, or no text model): see the log; the rest works"
                         .into();
                 self.push_log(format!("[WARN] {}", self.status));
             }
+        }
+    }
+
+    /// Drop the suggestions, and a ranking under way: both are of the
+    /// terms or the panel as they were.
+    fn forget_suggestions(&mut self) {
+        self.suggestions = None;
+        if let Some(r) = self.ranking.take() {
+            r.stop();
+            self.push_log(
+                "── suggestions: the ranking stopped, the terms or the panel changed".into(),
+            );
         }
     }
 
@@ -3446,7 +3494,7 @@ impl App {
             Ok(t) => {
                 self.cl = t;
                 // Ranked against the terms as they were.
-                self.suggestions = None;
+                self.forget_suggestions();
                 self.rebuild_tree_keeping(None);
                 self.args.label_cl = Some(p.clone().into());
                 // One --label-cl: the new file replaces one given before.
@@ -3575,7 +3623,7 @@ impl App {
         match read {
             Ok((panel, sets)) => {
                 self.panel = panel;
-                self.suggestions = None;
+                self.forget_suggestions();
                 self.rebuild_tree();
                 self.original = sets;
                 self.status = format!("marker panel: {}", file_name(path));
@@ -4096,7 +4144,7 @@ impl App {
                     labels.len()
                 ));
                 self.ranking = Some(Ranking::new(c, rx, file, label));
-                self.status = "ranking Cell Ontology terms (the first time fetches the text model and encodes the ontology: a minute or two)".into();
+                self.status = format!("{RANKING_STATUS} (the first time fetches the text model and encodes the ontology: a minute or two)");
             }
             Err(e) => self.status = format!("{e:#}"),
         }
@@ -4201,7 +4249,8 @@ impl App {
     /// or `--label-cl`) maps `label` too: it wins on every start, so the
     /// session keeps its reading, and that table comes back.
     fn learn_alias(&mut self, label: &str, id: &str, file: &Path) -> Option<PathBuf> {
-        let run = self.args.label_cl.as_deref().map(PathBuf::from);
+        // As the ontology's loading reads it: as given, else beside the run.
+        let run = (self.args.label_cl.as_deref()).and_then(|f| self.data_search.run_file(f));
         let later = (self.data_search.alias_layers_after(file).into_iter())
             .chain(run)
             .filter(|p| p.as_path() != file)

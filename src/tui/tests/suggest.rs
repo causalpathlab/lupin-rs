@@ -457,3 +457,104 @@ fn a_confirmed_term_a_later_alias_table_overrides_says_so_and_shows_what_a_resta
         app.status
     );
 }
+
+#[test]
+fn a_label_cl_file_beside_the_run_counts_as_a_later_table() {
+    // `--label-cl map.tsv`, read beside the run as the ontology's loading
+    // reads it: it maps XQ, so a confirmed term does not take there.
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let map = dir.path().join("lupin-map-beside-the-run.tsv");
+    std::fs::write(&map, "XQ\tCL:999\n").unwrap();
+    let mut app = app(dir.path());
+    app.data_search.project = Some(project);
+    app.args.label_cl = Some("lupin-map-beside-the-run.tsv".into());
+    app.suggestions = Some(Suggestions::read(&suggested(dir.path())).unwrap());
+    press(&mut app, KeyCode::Char('c'));
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.tree.cl_of("XQ").is_none(), "as a restart reads it");
+    assert!(
+        app.status.contains(&map.display().to_string()),
+        "{}",
+        app.status
+    );
+}
+
+#[test]
+fn a_rankings_last_log_line_reaches_the_log() {
+    // The reader forwards the child's last line after the child has ended.
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut child = std::process::Command::new("false").spawn().unwrap();
+    while child.try_wait().unwrap().is_none() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let late = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        tx.send("[ERROR] the reason it failed".to_string()).unwrap();
+    });
+    app.ranking = Some(Ranking::new(
+        child,
+        rx,
+        dir.path().join("none.json"),
+        "XQ".into(),
+    ));
+    finish_ranking(&mut app);
+    late.join().unwrap();
+    assert!(
+        app.log.iter().any(|l| l.contains("the reason it failed")),
+        "{:?}",
+        app.log
+    );
+}
+
+#[test]
+fn a_ranking_under_way_when_the_panel_changes_offers_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    let file = suggested(dir.path());
+    let mut slow = std::process::Command::new("sleep");
+    slow.arg("0.5");
+    ranking(&mut app, &mut slow, file);
+    app.set_markers(Some(&dir.path().join("panel.tsv")));
+    finish_ranking(&mut app);
+    assert!(app.suggestions.is_none(), "ranked for the panel as it was");
+    assert!(app.menu.is_none());
+}
+
+#[test]
+fn a_ranking_under_way_keeps_off_a_status_a_job_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    let mut sleep = std::process::Command::new("sleep");
+    sleep.arg("30");
+    ranking(&mut app, &mut sleep, dir.path().join("s.json"));
+    // Its own word, as `c` leaves it, is renewed.
+    app.status = "ranking Cell Ontology terms (…)".into();
+    app.tick();
+    assert!(app.status.contains("s (x: stop)"), "{}", app.status);
+    // A job ends and says what it did.
+    app.status = "saved the round".into();
+    app.tick();
+    assert_eq!(app.status, "saved the round");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_ranking_lost_is_stopped_not_left_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    let mut sleep = std::process::Command::new("sleep");
+    sleep.arg("30");
+    ranking(&mut app, &mut sleep, dir.path().join("s.json"));
+    let pid = app.ranking.as_ref().unwrap().pid();
+    app.ranking_ended(Err(std::io::Error::other("lost")), 0);
+    assert!(app.ranking.is_none());
+    assert!(
+        !Path::new(&format!("/proc/{pid}")).exists(),
+        "the child is killed and waited for"
+    );
+}
