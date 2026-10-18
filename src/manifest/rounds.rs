@@ -4,8 +4,9 @@
 //!
 //! A round writes, beside its manifest:
 //! - `{out}.clusters.parquet`: per-cell cluster id (`cluster.clusters`)
-//! - `{out}.argmax.tsv`: per-cell label (`annotate.argmax`), with
-//!   `{out}.argmax.parquet` and `{out}.membership.tsv` beside it
+//! - `{out}.argmax.parquet`: per-cell label (`annotate.argmax`; older rounds
+//!   record the TSV), with `{out}.argmax.tsv` and `{out}.membership.tsv`
+//!   beside it
 //! - `{out}.cluster_summary.json`: the digest (`annotate.cluster_summary`)
 //! - `{out}.cluster_evidence.parquet`: every cluster's types with every
 //!   method's statistic, one row each (`annotate.cluster_evidence`)
@@ -110,8 +111,8 @@ pub(crate) fn read_argmax(path: &str) -> Result<HashMap<String, (String, f32)>> 
 }
 
 /// Write a round's per-cell labels under `out` through the shared writer
-/// (`{out}.argmax.parquet` beside the TSVs the viewers read); the file to
-/// record, [`crate::annotate::outputs::labels_path`].
+/// (`{out}.argmax.parquet`, the TSVs beside it); the file to record,
+/// [`crate::annotate::outputs::labels_path`].
 pub(super) fn write_argmax(
     out: &str,
     cells: &[Box<str>],

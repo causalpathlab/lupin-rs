@@ -5,6 +5,7 @@
 use super::diffusion::{DiffusionMap, Neighbours, DIFFMAP_COMPS};
 use super::edges::{self, EdgeRow, Verdict};
 use super::encode_groups;
+use super::lineages::Lineage;
 use super::prior::{self, Prior, Source, Statement};
 use super::type_connectivity::connectivity;
 use crate::cell_labels::read_cell_labels;
@@ -938,13 +939,15 @@ fn write_ordering(
     )?;
     written.insert("diffusion", dc_path);
 
-    let mut text = String::from("# lineage\tcomponent\tpath\n");
-    for (k, (c, p)) in o.lineages.iter().enumerate() {
-        let path: Vec<&str> = p.iter().map(|&g| inputs.names[g].as_ref()).collect();
-        text += &format!("L{k}\t{c}\t{}\n", path.join(" > "));
-    }
+    let lineages: Vec<Lineage> = (o.lineages.iter().enumerate())
+        .map(|(k, (c, p))| Lineage {
+            name: format!("L{k}"),
+            component: c.to_string(),
+            path: p.iter().map(|&g| inputs.names[g].to_string()).collect(),
+        })
+        .collect();
     let lin_path = format!("{out}.trajectory_lineages.tsv");
-    std::fs::write(&lin_path, text).with_context(|| format!("writing {lin_path}"))?;
+    super::lineages::write(&lin_path, &lineages)?;
     written.insert("lineages", lin_path);
     Ok(written)
 }

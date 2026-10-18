@@ -21,3 +21,4 @@ pub mod outputs;
 pub mod panel_tree;
 pub mod rounds;
 pub mod susie;
+pub mod term_match;

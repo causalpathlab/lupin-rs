@@ -305,6 +305,16 @@ fn member(dir: &Path, path: PathBuf, m: &RunManifest, source: Option<&RunManifes
     }
 }
 
+/// Whether `m`, the manifest at `path`, records a trajectory run of its
+/// own: an order (lineages or edges) that is not the one a pass on a
+/// trajectory run copies into its round ([`borrowed_trajectory`]). What
+/// `describe` describes as a trajectory.
+#[must_use]
+pub fn is_trajectory(m: &RunManifest, path: &Path) -> bool {
+    let t = &m.trajectory;
+    (t.lineages.is_some() || t.edges.is_some()) && borrowed_trajectory(m, path).is_none()
+}
+
 /// The prefix of the trajectory whose outputs `m` (read from `path`)
 /// records, when they were written under another prefix: a pass on a
 /// trajectory run copies that run's section, made on its labels, into the

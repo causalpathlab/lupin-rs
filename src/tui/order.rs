@@ -5,11 +5,14 @@
 
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::panel_tree::PanelTree;
+use crate::describe::trajectory::{self, OrderFacts, OrderText};
 use crate::manifest::data_files::{append_row, SearchPath, PRECEDENCE};
-use crate::manifest::run::{load, resolve};
+use crate::manifest::run::load;
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
+use crate::trajectory::lineages;
 use crate::trajectory::prior::{self, Prior, Relation, Source, Statement};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// How the order view runs `lupin trajectory`: the options it carries over
 /// and the output prefix last used.
@@ -319,17 +322,145 @@ impl OrderView {
     }
 }
 
-/// The edge table of the first of `manifests` whose `trajectory` section
-/// records one that can be read; empty otherwise.
-pub fn run_edges(manifests: &[&Path]) -> Vec<EdgeRow> {
-    manifests
-        .iter()
-        .find_map(|m| {
-            let loaded = load(&m.to_string_lossy()).ok()?;
-            let rel = loaded.manifest.trajectory.edges.as_deref()?;
-            edges::read(&resolve(&loaded.dir, rel)).ok()
+/// A file's size and last change, to tell when it changed; `None` when it
+/// is missing.
+type Stamp = Option<(u64, Option<std::time::SystemTime>)>;
+
+fn stamp(file: &Path) -> Stamp {
+    let m = std::fs::metadata(file).ok()?;
+    Some((m.len(), m.modified().ok()))
+}
+
+/// The trajectory the order view shows: its edges for the table and the
+/// texts code writes from its outputs for the strip, read together.
+pub struct ShownRun {
+    /// The manifest it was read from, which tests check.
+    #[cfg(test)]
+    pub manifest: PathBuf,
+    pub edges: Vec<EdgeRow>,
+    pub texts: Vec<OrderText>,
+}
+
+/// Files read, each with its stamp from just before it was read.
+type Watched = Vec<(PathBuf, Stamp)>;
+
+impl ShownRun {
+    /// The first of `manifests` whose `trajectory` section records an edge
+    /// table that can be read (its own or one a round borrowed from the run
+    /// it was made on), and every file the look read, each stamped before it
+    /// was read: the manifests tried and the outputs they record.
+    #[must_use]
+    pub fn find(manifests: &[PathBuf]) -> (Option<Self>, Watched) {
+        let mut watched = Vec::new();
+        for m in manifests {
+            if let Some(run) = Self::read(m, &mut watched) {
+                return (Some(run), watched);
+            }
+        }
+        (None, watched)
+    }
+
+    /// The run `manifest` records, if it records one that reads; each file
+    /// read goes to `watched` with its stamp from before the read, so a
+    /// write that lands while it is read shows as a change on the next look.
+    fn read(manifest: &Path, watched: &mut Watched) -> Option<Self> {
+        let loaded = read_stamped(manifest, watched, |m| load(&m.to_string_lossy())).ok()?;
+        let [lineages_file, edges_file] = OrderFacts::files(&loaded);
+        let edges_file = PathBuf::from(edges_file?);
+        let edges =
+            read_stamped(&edges_file, watched, |f| edges::read(&f.to_string_lossy())).ok()?;
+        let lineages = match lineages_file.map(PathBuf::from) {
+            Some(p) => read_stamped(&p, watched, |f| lineages::read(&f.to_string_lossy()))
+                .unwrap_or_else(|e| {
+                    log::warn!("no trajectory texts: {e:#}");
+                    Vec::new()
+                }),
+            None => Vec::new(),
+        };
+        let facts = OrderFacts { lineages, edges };
+        Some(Self {
+            #[cfg(test)]
+            manifest: manifest.to_path_buf(),
+            texts: trajectory::texts(&facts),
+            edges: facts.edges,
         })
-        .unwrap_or_default()
+    }
+
+    /// Type `ty`'s line, or the run's paragraph without one.
+    #[must_use]
+    pub fn line(&self, ty: Option<&str>) -> Option<&str> {
+        let of = |s: Option<&str>| {
+            self.texts
+                .iter()
+                .find(|d| d.subject.as_deref() == s)
+                .map(|d| d.text.as_str())
+        };
+        ty.and_then(|t| of(Some(t))).or_else(|| of(None))
+    }
+}
+
+/// How often the order view looks at its trajectory's files for a change.
+pub const POLL_EVERY: Duration = Duration::from_secs(1);
+
+/// The trajectory the order view shows and where it was looked for, and
+/// when its files were last looked at.
+pub struct Shown {
+    pub among: Vec<PathBuf>,
+    pub run: Option<ShownRun>,
+    /// The files the last look read, with their stamps then.
+    watched: Watched,
+    polled: Instant,
+}
+
+impl Shown {
+    /// The run found among `among` ([`ShownRun::find`]).
+    #[must_use]
+    pub fn find(among: Vec<PathBuf>) -> Self {
+        let (run, watched) = ShownRun::find(&among);
+        Self {
+            among,
+            run,
+            watched,
+            polled: Instant::now(),
+        }
+    }
+
+    /// Whether it is time to look at the files again: at most every
+    /// [`POLL_EVERY`].
+    pub fn due(&mut self) -> bool {
+        if self.polled.elapsed() < POLL_EVERY {
+            return false;
+        }
+        self.polled = Instant::now();
+        true
+    }
+
+    /// Look among the candidates again once a file the last look read
+    /// changed; whether a run was found. With none found, the run shown
+    /// before is kept.
+    pub fn refresh(&mut self) -> bool {
+        if unchanged(&self.watched) {
+            return false;
+        }
+        let (run, watched) = ShownRun::find(&self.among);
+        self.watched = watched;
+        let found = run.is_some();
+        if found {
+            self.run = run;
+        }
+        found
+    }
+}
+
+/// Whether every file in `watched` still has its stamp.
+fn unchanged(watched: &Watched) -> bool {
+    watched.iter().all(|(f, s)| stamp(f) == *s)
+}
+
+/// `read` of `file`, `file` going to `watched` with its stamp taken before.
+fn read_stamped<T>(file: &Path, watched: &mut Watched, read: impl FnOnce(&Path) -> T) -> T {
+    watched.push((file.to_path_buf(), stamp(file)));
+    read(file)
 }
 
 #[cfg(test)]

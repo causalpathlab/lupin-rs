@@ -1,6 +1,7 @@
 //! Remembering an alias picked in the TUI; the GO pane and setting;
 //! the keys.
 
+use super::super::drive::press;
 use super::*;
 use crate::annotate::cl_rules::Aliases;
 
@@ -37,9 +38,8 @@ fn app_with_terms(terms: bool) -> App {
     use super::super::round::{ClusterView, RoundView};
     use crate::annotate::rounds::Term;
     let args = cli(&[]);
-    let panel = [("GENE1".to_string(), "CT1".to_string())];
-    let tree = crate::manifest::ontology::panel_tree_on(None, &panel);
-    let mut app = App::new(args, PathBuf::new(), PathBuf::new(), tree);
+    let panel = vec![("GENE1".to_string(), "CT1".to_string())];
+    let mut app = App::new(args, PathBuf::new(), PathBuf::new(), panel, None);
     let term = |t: &str| Term {
         source: "go".into(),
         term: t.into(),
@@ -148,10 +148,6 @@ fn the_go_setting_toggles_go_unless_gene_sets_are_named() {
     Setting::Go.adjust(&mut b, true);
     assert!(!b.go);
     assert_eq!(Setting::Go.value(&b), "--gaf");
-}
-
-fn press(app: &mut App, code: KeyCode) {
-    app.key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
 fn ctrl_c(app: &mut App) {
@@ -1993,6 +1989,63 @@ fn a_typed_name_off_the_panel_is_not_said_to_have_failed_fdr() {
 }
 
 #[test]
+fn a_group_named_for_a_members_term_is_said_to_be_a_tree_group() {
+    use super::super::round::Edit;
+    // Stray shares CT1's markers, so CT1's term is the group of both.
+    let cl = crate::annotate::celltype_tree::ClTerms::parse(
+        "[Term]\nid: CL:0\nname: top\n\n\
+         [Term]\nid: CL:1\nname: CT1 cell\nis_a: CL:0\n\n\
+         [Term]\nid: CL:2\nname: CT2 cell\nis_a: CL:0\n",
+        &crate::annotate::cl_rules::shipped(),
+    );
+    let mut app = app_with_terms(false);
+    let panel = [
+        ("GENE1".to_string(), "CT1 cells".to_string()),
+        ("GENE2".to_string(), "CT2 cells".to_string()),
+        ("GENE1".to_string(), "Stray".to_string()),
+    ];
+    app.tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &panel);
+    app.edits = vec![Edit::Label {
+        cluster: 0,
+        label: "CT1_cell".into(),
+        reason: "why".into(),
+    }];
+    let screen = drawn(&app);
+    assert!(screen.contains("a tree group"), "{screen}");
+}
+
+#[test]
+fn a_label_naming_a_types_own_term_is_said_to_be_that_type() {
+    use super::super::round::Edit;
+    // CT1 cells sits on its term alone: a label named for the term is the
+    // type's leaf, which groups nothing.
+    let cl = crate::annotate::celltype_tree::ClTerms::parse(
+        "[Term]\nid: CL:0\nname: top\n\n\
+         [Term]\nid: CL:1\nname: CT1 cell\nis_a: CL:0\n\n\
+         [Term]\nid: CL:2\nname: CT2 cell\nis_a: CL:0\n",
+        &crate::annotate::cl_rules::shipped(),
+    );
+    let mut app = app_with_terms(false);
+    let panel = [
+        ("GENE1".to_string(), "CT1 cells".to_string()),
+        ("GENE2".to_string(), "CT2 cells".to_string()),
+    ];
+    app.tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &panel);
+    let leaf = app
+        .tree
+        .node_of("CT1_cell")
+        .expect("found by its term's name");
+    assert!(app.tree.nodes[leaf].children.is_empty());
+    app.edits = vec![Edit::Label {
+        cluster: 0,
+        label: "CT1_cell".into(),
+        reason: "why".into(),
+    }];
+    let screen = drawn(&app);
+    assert!(!screen.contains("a tree group"), "{screen}");
+}
+
+#[test]
 fn a_round_with_no_cluster_expression_says_so_and_calls_no_marker_weak() {
     let mut app = app_with_terms(false);
     if let Some(r) = app.round.as_mut() {
@@ -2251,9 +2304,8 @@ fn the_cluster_list_shows_a_susie_calls_share_not_its_pip() {
 /// The app on a four-cell round of two clusters, with a UMAP when `layout`.
 fn map_app(dir: &std::path::Path, layout: bool) -> App {
     let l = crate::figures::tests::round(dir, layout);
-    let panel = [("GENE1".to_string(), "A".to_string())];
-    let tree = crate::manifest::ontology::panel_tree_on(None, &panel);
-    let mut app = App::new(cli(&[]), PathBuf::new(), PathBuf::new(), tree);
+    let panel = vec![("GENE1".to_string(), "A".to_string())];
+    let mut app = App::new(cli(&[]), PathBuf::new(), PathBuf::new(), panel, None);
     app.open(&l.file);
     app
 }
@@ -2519,8 +2571,8 @@ fn enter_offers_each_methods_top_choices_first_then_the_tree_and_a_name() {
         .collect();
     assert_eq!(
         labels,
-        ["CT1", "CT2", "CT3", "on the tree…", "a name…"],
-        "the methods' tops first"
+        ["CT2", "CT1", "CT3", "on the tree…", "a name…"],
+        "the methods' tops first, the score's leading where they disagree"
     );
     let screen = drawn(&app);
     assert!(
@@ -2536,7 +2588,7 @@ fn enter_offers_each_methods_top_choices_first_then_the_tree_and_a_name() {
     assert!(app.menu.is_none());
     assert!(matches!(
         app.prompt.as_ref().map(|p| &p.pending),
-        Some(Pending::Label { label, .. }) if label == "CT2"
+        Some(Pending::Label { label, .. }) if label == "CT1"
     ));
 }
 

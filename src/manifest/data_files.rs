@@ -8,7 +8,9 @@
 //!    the user cache, filled by download (the rules from this release's tag
 //!    of the repository, the ontology from the rules' `ontology_url`) unless
 //!    `LUPIN_OFFLINE` is set;
-//! 2. **user**: `~/.config/lupin/` (`LUPIN_CONFIG_DIR` overrides);
+//! 2. **user**: `~/.config/lupin/` (`$XDG_CONFIG_HOME/lupin/` when that is
+//!    set and exists, or there is no `~/.config/lupin/` to keep reading;
+//!    `LUPIN_CONFIG_DIR` overrides both);
 //! 3. **project**: `lupin/` beside the run manifest;
 //! 4. **run**: a file named on the command line (`--label-cl`, `--obo`).
 //!
@@ -69,6 +71,53 @@ pub struct SearchPath {
     pub panel: Option<PathBuf>,
 }
 
+/// The user layer: `lupin` (`LUPIN_CONFIG_DIR`) as given, else `lupin/`
+/// in `xdg` (`XDG_CONFIG_HOME`, when absolute, as the XDG spec reads it),
+/// else in `home`'s `.config/`. Not `dirs::config_dir`: on macOS that is
+/// `Library/Application Support`, and lupin keeps `.config/` everywhere.
+///
+/// lupin read only `home`'s `.config/lupin/` before it followed XDG: while
+/// the XDG folder has no `lupin/` and that one exists, it is still the one
+/// read, and the XDG folder passed over comes back beside it.
+fn user_layer(
+    lupin: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<(PathBuf, Option<PathBuf>)> {
+    if let Some(d) = lupin {
+        return Some((PathBuf::from(d), None));
+    }
+    let older = home.map(|h| h.join(".config").join("lupin"));
+    match xdg.map(PathBuf::from).filter(|d| d.is_absolute()) {
+        Some(x) => {
+            let x = x.join("lupin");
+            match older {
+                Some(o) if o != x && !x.exists() && o.is_dir() => Some((o, Some(x))),
+                _ => Some((x, None)),
+            }
+        }
+        None => older.map(|o| (o, None)),
+    }
+}
+
+/// [`user_layer`] as the environment gives it.
+fn user_layer_of_env() -> Option<(PathBuf, Option<PathBuf>)> {
+    user_layer(
+        std::env::var_os(CONFIG_DIR_ENV),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        dirs::home_dir(),
+    )
+}
+
+/// What [`user_layer`] says of an XDG folder it passed over.
+fn passed_over_note(used: &Path, xdg: &Path) -> String {
+    format!(
+        "{} has no lupin folder yet: reading {}, where lupin kept its files before it followed XDG_CONFIG_HOME (move them there to use it)",
+        xdg.display(),
+        used.display()
+    )
+}
+
 /// The alias sidecar of marker panel `panel`: its table extensions
 /// (`.gz`, then `.tsv`, `.txt` or `.csv`) replaced by `.cl.tsv`, beside it.
 #[must_use]
@@ -108,8 +157,13 @@ impl SearchPath {
         let source =
             Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("data")).filter(|d| d.is_dir());
         let cache = dirs::cache_dir().map(|d| d.join("lupin"));
-        let user = env_dir(CONFIG_DIR_ENV)
-            .or_else(|| dirs::home_dir().map(|h| h.join(".config").join("lupin")));
+        let user = user_layer_of_env().map(|(dir, passed_over)| {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            if let Some(x) = passed_over {
+                ONCE.call_once(|| log::warn!("{}", passed_over_note(&dir, &x)));
+            }
+            dir
+        });
         Self {
             install,
             source,
@@ -147,6 +201,27 @@ impl SearchPath {
             )
             .filter(|p| p.is_file())
             .collect()
+    }
+
+    /// The alias tables read after `file` (and so winning over it, key by
+    /// key), in the order they are read; every layer when `file` is none of
+    /// them.
+    #[must_use]
+    pub fn alias_layers_after(&self, file: &Path) -> Vec<PathBuf> {
+        let layers = self.alias_layers(false);
+        let from = layers.iter().position(|p| p == file).map_or(0, |i| i + 1);
+        layers[from..].to_vec()
+    }
+
+    /// The user's own alias table, where a term suggested in the TUI is
+    /// written once confirmed: the user layer's `cl_aliases.tsv`, else the
+    /// project's.
+    #[must_use]
+    pub fn user_aliases(&self) -> Option<PathBuf> {
+        self.user
+            .as_ref()
+            .or(self.project.as_ref())
+            .map(|d| d.join(ALIASES))
     }
 
     /// Where a label's alias chosen in the TUI is written: the panel's
@@ -585,18 +660,55 @@ pub enum DataCmd {
         #[arg(long)]
         force: bool,
     },
+    /// Suggest Cell Ontology terms for labels by text embedding, as JSON:
+    /// each label's nearest terms with their scores, none taken (the
+    /// annotate TUI's `c` offers them to confirm). The first run fetches the
+    /// text model and caches the ontology's index
+    SuggestCl {
+        /// A run manifest, for the ontology its project finds
+        #[arg(long, short = 'f')]
+        from: Option<Box<str>>,
+        /// The Cell Ontology OBO file, as annotate's --obo
+        #[arg(long)]
+        obo: Option<Box<str>>,
+        /// Write the JSON here instead of stdout
+        #[arg(long, short = 'o')]
+        out: Option<Box<str>>,
+        /// The labels to suggest terms for
+        #[arg(required = true)]
+        labels: Vec<String>,
+    },
+}
+
+/// The folder of run `from` (a manifest or its prefix), when one is given.
+fn run_dir(from: Option<&str>) -> Result<Option<PathBuf>> {
+    from.map(|f| super::run::load(f).map(|l| l.dir)).transpose()
 }
 
 pub fn run_data(args: &DataArgs) -> Result<()> {
     match &args.cmd {
+        DataCmd::SuggestCl {
+            from,
+            obo,
+            out,
+            labels,
+        } => {
+            let run_dir = run_dir(from.as_deref())?;
+            crate::annotate::term_match::run(
+                run_dir.as_deref(),
+                obo.as_deref(),
+                out.as_deref(),
+                labels,
+            )
+        }
         DataCmd::Where { from } => {
-            let run_dir = from
-                .as_deref()
-                .map(|f| super::run::load(f).map(|l| l.dir))
-                .transpose()?;
+            let run_dir = run_dir(from.as_deref())?;
             let search = SearchPath::new(run_dir.as_deref());
             for line in where_report(&search) {
                 println!("{line}");
+            }
+            if let Some((used, Some(x))) = user_layer_of_env() {
+                println!("\nuser: {}", passed_over_note(&used, &x));
             }
             Ok(())
         }

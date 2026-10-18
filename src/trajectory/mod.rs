@@ -6,6 +6,7 @@
 
 pub(crate) mod diffusion;
 pub(crate) mod edges;
+pub(crate) mod lineages;
 pub(crate) mod prior;
 pub(crate) mod run;
 pub(crate) mod type_connectivity;

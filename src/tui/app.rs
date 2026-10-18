@@ -11,6 +11,7 @@ use super::ontology::ViewKey;
 use super::round::{decisions, Edit, RoundView};
 use super::runner;
 use crate::annotate::args::ProjectionMethod;
+use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::markers::label_key;
 use crate::annotate::panel_tree::PanelTree;
 use crate::annotate::rounds::ClusterId;
@@ -18,10 +19,11 @@ use crate::annotate_cmd::{AnnotateCliArgs, AnnotateMethod};
 use crate::manifest::rounds::chain_rounds;
 use crate::manifest::run::annotated_path;
 use crate::trajectory::prior::Relation;
+use anyhow::Context as _;
 use enrichment::UNASSIGNED_LABEL;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::{Path, PathBuf};
-use std::process::Child;
+use std::process::{Child, ExitStatus};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -449,6 +451,62 @@ impl Rescoring {
     }
 }
 
+/// `lupin data suggest-cl` ranking Cell Ontology terms for the panel types
+/// without one. It runs beside the other jobs, in a slot of its own: the
+/// first ranking (the text model fetched, the ontology encoded) takes
+/// minutes, and passes, saves and rescoring go on meanwhile.
+pub struct Ranking {
+    child: Child,
+    /// Its log lines, apart from the other jobs'.
+    log: Receiver<String>,
+    started: Instant,
+    /// Where it writes the suggestions.
+    file: PathBuf,
+    /// The type `c` was pressed on, whose suggestions open when it is done.
+    label: String,
+}
+
+impl Ranking {
+    #[must_use]
+    pub fn new(child: Child, log: Receiver<String>, file: PathBuf, label: String) -> Self {
+        Self {
+            child,
+            log,
+            started: Instant::now(),
+            file,
+            label,
+        }
+    }
+
+    fn stop(mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    /// Its log lines not yet forwarded once the child has ended: its reader
+    /// sends the last ones (often the reason it failed) after the exit, so
+    /// they are waited for, a moment at most, until the reader is done.
+    fn rest_of_log(&self) -> Vec<String> {
+        let until = Instant::now() + RANKING_LOG_TAIL;
+        std::iter::from_fn(|| {
+            let left = until.checked_duration_since(Instant::now())?;
+            self.log.recv_timeout(left).ok()
+        })
+        .collect()
+    }
+
+    #[cfg(test)]
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+}
+
+/// How long an ended ranking's last log lines are waited for.
+const RANKING_LOG_TAIL: Duration = Duration::from_millis(500);
+
+/// How the ranking's status line begins: it is renewed only over its own.
+const RANKING_STATUS: &str = "ranking Cell Ontology terms";
+
 /// A key that needs pressing twice, and what it will do.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Armed {
@@ -498,11 +556,16 @@ pub struct App {
     pub tree: PanelTree,
     pub tree_mode: TreeMode,
     /// The Cell Ontology, when there is one.
-    pub cl: Option<crate::annotate::celltype_tree::ClTerms>,
+    pub cl: Option<ClTerms>,
     /// Each panel type on a CL term with every term above it.
     pub panel_ancestry: Vec<(String, std::collections::BTreeSet<String>)>,
     /// Where the run's data files are found, and aliases remembered.
     pub data_search: crate::manifest::data_files::SearchPath,
+    /// Each label's Cell Ontology term ([`Self::term_of`]) as worked out
+    /// since the ontology, its aliases or the panel's tree last changed.
+    terms_of: std::cell::RefCell<std::collections::HashMap<String, Option<String>>>,
+    /// The marker panel, as read: (gene, type) rows.
+    pub panel: Vec<(String, String)>,
     /// The marker panel the session started from: label key → genes.
     pub original: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     pub round: Option<RoundView>,
@@ -527,6 +590,17 @@ pub struct App {
     pub tree_marked: Vec<String>,
     /// Mixed labels by name.
     pub mixed: super::ontology::Mixed,
+    /// Cell Ontology terms suggested for the panel types without one, once
+    /// ranked (`c` in the tree pane).
+    pub suggestions: Option<super::suggest::Suggestions>,
+    /// The ranking those come from, while it runs.
+    pub ranking: Option<Ranking>,
+    /// The files jobs hand to their child: a folder only the user can
+    /// open, made on first use and removed with the app.
+    jobs_dir: Option<tempfile::TempDir>,
+    /// The trajectory the order view shows, whose edges its table and whose
+    /// texts its strip are, as [`Self::keep_order_current`] keeps it.
+    pub order_shown: Option<super::order::Shown>,
     pub tree_sel: usize,
     /// The order view's types on the Cell Ontology, drawn beside the
     /// precedence table as the tree pane draws the panel.
@@ -605,17 +679,28 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(args: AnnotateCliArgs, source: PathBuf, target: PathBuf, tree: PanelTree) -> Self {
+    /// The app on marker panel `panel` (gene, type rows), its tree placed
+    /// on the ontology `cl` when there is one.
+    pub fn new(
+        args: AnnotateCliArgs,
+        source: PathBuf,
+        target: PathBuf,
+        panel: Vec<(String, String)>,
+        cl: Option<ClTerms>,
+    ) -> Self {
         let (log_tx, log_rx) = channel();
-        Self {
+        let mut app = Self {
             args,
             source,
             target,
             fixed_clusters: false,
-            tree,
+            // Built below, from `panel`.
+            tree: crate::manifest::ontology::panel_tree_on(None, &[]),
             tree_mode: TreeMode::Panel,
-            cl: None,
+            cl,
             panel_ancestry: Vec::new(),
+            panel,
+            terms_of: Default::default(),
             data_search: crate::manifest::data_files::SearchPath::new(None),
             original: std::collections::BTreeMap::new(),
             round: None,
@@ -632,6 +717,10 @@ impl App {
             marked: Vec::new(),
             tree_marked: Vec::new(),
             mixed: super::ontology::Mixed::default(),
+            suggestions: None,
+            ranking: None,
+            jobs_dir: None,
+            order_shown: None,
             tree_sel: 0,
             form: None,
             help_open: false,
@@ -671,7 +760,9 @@ impl App {
             frame_behind: Default::default(),
             progress_hidden: false,
             failed: None,
-        }
+        };
+        app.rebuild_tree();
+        app
     }
 
     pub fn push_log(&mut self, line: String) {
@@ -698,6 +789,8 @@ impl App {
             self.push_log(line);
         }
         self.keep_scores_current();
+        self.keep_order_current();
+        self.keep_ranking();
         // A question asked again lapses, and the status with it unless
         // something has said more since.
         if let Some((_, _, asked)) = self
@@ -843,6 +936,76 @@ impl App {
         }
     }
 
+    /// Take in the ranking's log, and its suggestions once it has ended.
+    /// Suggestions are extra: without them (offline, no model) the rest goes
+    /// on, so a failed ranking raises no failure popup.
+    fn keep_ranking(&mut self) {
+        let Some(r) = &mut self.ranking else { return };
+        let mut lines: Vec<String> = std::iter::from_fn(|| r.log.try_recv().ok()).collect();
+        let secs = r.started.elapsed().as_secs();
+        let ended = r.child.try_wait();
+        if !matches!(ended, Ok(None)) {
+            lines.extend(r.rest_of_log());
+        }
+        for line in lines
+            .into_iter()
+            .filter(|l| crate::progress::parse(l).is_none())
+        {
+            self.push_log(line);
+        }
+        self.ranking_ended(ended, secs);
+    }
+
+    /// What the ranking's child's state, `ended`, after `secs`, means.
+    pub(super) fn ranking_ended(&mut self, ended: std::io::Result<Option<ExitStatus>>, secs: u64) {
+        match ended {
+            Ok(None) => {
+                // The other job's progress, or a key's reply, says more.
+                // A job's or a key's word stays: the ranking renews its own.
+                let quiet = self.child.is_none()
+                    && self.armed.is_none()
+                    && self.replied.is_none_or(|t| t.elapsed() >= KEY_REPLY_HOLD)
+                    && (self.status.is_empty() || self.status.starts_with(RANKING_STATUS));
+                if quiet {
+                    self.status = format!("{RANKING_STATUS}… {secs}s (x: stop)");
+                }
+            }
+            Ok(Some(st)) if st.success() => {
+                let Some(r) = self.ranking.take() else { return };
+                self.suggestions_done(&r.file, &r.label, secs);
+            }
+            _ => {
+                if let Some(r) = self.ranking.take() {
+                    r.stop();
+                }
+                self.status =
+                    "no Cell Ontology suggestions (offline, or no text model): see the log; the rest works"
+                        .into();
+                self.push_log(format!("[WARN] {}", self.status));
+            }
+        }
+    }
+
+    /// Drop the suggestions, and a ranking under way: both are of the
+    /// terms or the panel as they were.
+    fn forget_suggestions(&mut self) {
+        self.suggestions = None;
+        if let Some(r) = self.ranking.take() {
+            r.stop();
+            self.push_log(
+                "── suggestions: the ranking stopped, the terms or the panel changed".into(),
+            );
+        }
+    }
+
+    /// Stop the ranking.
+    fn stop_ranking(&mut self) {
+        if let Some(r) = self.ranking.take() {
+            r.stop();
+            self.status = "stopped the term ranking".into();
+        }
+    }
+
     /// The job has ended and the next tick reads what it wrote: keys wait
     /// for that.
     #[must_use]
@@ -854,7 +1017,7 @@ impl App {
     /// else changed: a running job's elapsed time and ETA move on the clock.
     #[must_use]
     pub fn redraw_due(&self, since: Duration) -> bool {
-        self.child.is_some() && since >= Duration::from_secs(1)
+        (self.child.is_some() || self.ranking.is_some()) && since >= Duration::from_secs(1)
     }
 
     /// The running job for its popup: what it is and how long it has run.
@@ -1006,23 +1169,23 @@ impl App {
             .into();
             return;
         }
-        let file = std::env::temp_dir().join(format!(
-            "lupin-rescore-{}-{}.jsonl",
-            std::process::id(),
-            self.edits.len()
-        ));
         let started = (|| -> anyhow::Result<_> {
+            let file = job_file(
+                &mut self.jobs_dir,
+                &format!("rescore-{}.jsonl", self.edits.len()),
+            )?;
             let lines: Vec<String> = decisions(&want, round, None)
                 .iter()
                 .map(serde_json::to_string)
                 .collect::<Result<_, _>>()?;
             std::fs::write(&file, lines.join("\n") + "\n")?;
-            runner::spawn_preview(&round.manifest, &file, self.log_tx.clone())
+            let (child, out) = runner::spawn_preview(&round.manifest, &file, self.log_tx.clone())?;
+            Ok((child, out, file))
         })();
         match started {
             // The table's title says it is rescoring; the status keeps what
             // the edit said.
-            Ok((child, out)) => {
+            Ok((child, out, file)) => {
                 self.rescoring = Some(Rescoring {
                     child,
                     out,
@@ -1089,6 +1252,19 @@ impl App {
     /// A prompt or menu waits for an answer.
     pub(super) fn asking(&self) -> bool {
         self.prompt.is_some() || self.menu.is_some()
+    }
+
+    /// Keys go to the panel tree, and to nothing on top of it: no popup,
+    /// form, help or file picker, and no search being typed (the panel tree
+    /// shows none).
+    fn idle_on_panel_tree(&self) -> bool {
+        self.focus == Focus::Tree
+            && matches!(self.tree_mode, TreeMode::Panel)
+            && !self.asking()
+            && self.failed.is_none()
+            && self.browser.is_none()
+            && self.form.is_none()
+            && !self.help_open
     }
 
     /// The trajectory's order view is up (the tree pane shows it).
@@ -2148,7 +2324,16 @@ impl App {
                     }
                     Pending::Remember { label, id, file } => {
                         self.status = match remember_alias(&file, &label, &id, &reason) {
-                            Ok(()) => format!("remembered {label} → {id} in {}", file.display()),
+                            Ok(()) => match self.learn_alias(&label, &id, &file) {
+                                None => {
+                                    format!("remembered {label} → {id} in {}", file.display())
+                                }
+                                Some(later) => format!(
+                                    "wrote {label} → {id} to {}, but {} maps {label} too and is read after it: that reading stays (edit it there)",
+                                    file.display(),
+                                    later.display()
+                                ),
+                            },
                             Err(e) => format!("could not remember the alias: {e:#}"),
                         };
                     }
@@ -2292,7 +2477,10 @@ impl App {
                 Some(false) => self.stop(),
                 Some(true) if armed == Some(Armed::Stop) => self.stop(),
                 Some(true) => self.ask_again(Armed::Stop, "x again stops it".into()),
-                None => {}
+                // With no other job, x is the ranking's.
+                None if self.ranking.is_none() => {}
+                None if armed == Some(Armed::Stop) => self.stop_ranking(),
+                None => self.ask_again(Armed::Stop, "x again stops the term ranking".into()),
             }
             return;
         }
@@ -2640,6 +2828,11 @@ impl App {
                 }
             }
             Focus::Tree if code == KeyCode::Char('o') => self.toggle_ontology(),
+            Focus::Tree
+                if code == KeyCode::Char('c') && matches!(self.tree_mode, TreeMode::Panel) =>
+            {
+                self.suggest_terms();
+            }
             // A search is of the ontology: open it there.
             Focus::Tree
                 if code == KeyCode::Char('/') && matches!(self.tree_mode, TreeMode::Panel) =>
@@ -2717,7 +2910,7 @@ impl App {
     fn node_term(&self, i: usize) -> Option<String> {
         self.tree.nodes[i].cl_id.clone().or_else(|| {
             let cl = self.cl.as_ref()?;
-            super::ontology::term_of(cl, &self.tree, self.tree.label(i)).filter(|id| cl.has(id))
+            self.term_of(self.tree.label(i)).filter(|id| cl.has(id))
         })
     }
 
@@ -2745,7 +2938,7 @@ impl App {
                 v.shown = show_figures;
             }
         }
-        self.reload_order();
+        self.show_trajectory();
         self.status = "order view: space marks a type, then > states the first precedes the second, u that they are unrelated".into();
     }
 
@@ -2773,7 +2966,7 @@ impl App {
 
     /// Take `out` as the output prefix of passes; its latest round, when it
     /// has one, is opened.
-    fn set_output(&mut self, out: &str) {
+    pub(super) fn set_output(&mut self, out: &str) {
         if self.child.is_some() {
             self.status = "wait for the running job before changing the output".into();
             return;
@@ -3069,6 +3262,25 @@ impl App {
                 }
             }
             Action::LabelOnTree => self.jump_to_tree(),
+            Action::Suggested {
+                label,
+                id,
+                note,
+                file,
+            } => {
+                let name = self.cl.as_ref().and_then(|cl| cl.name(&id)).unwrap_or(&id);
+                self.prompt = Some(Prompt {
+                    title: format!(
+                        " {label} → {name} ({id}): write it to {}? enter: yes (the text is the note) · esc: no ",
+                        file.display()
+                    ),
+                    text: note,
+                    pending: Pending::Remember { label, id, file },
+                });
+            }
+            Action::NoneSuggested { label } => {
+                self.status = format!("none taken: {label} stays without a Cell Ontology term");
+            }
             Action::LabelByName { cluster } => {
                 self.prompt = Some(Prompt {
                     title: format!(" label K{cluster} as (any name): "),
@@ -3216,8 +3428,8 @@ impl App {
             }
         }
         if self.in_order() {
-            // The order view's edges follow the trajectory now shown.
-            self.rebuild_order(true);
+            // The order view's edges and texts follow the trajectory now shown.
+            self.show_trajectory();
         }
         self.status = match (&self.round, trajectory) {
             (Some(r), true) => format!(
@@ -3281,9 +3493,9 @@ impl App {
         match terms {
             Ok(t) => {
                 self.cl = t;
-                if let Some(cl) = &self.cl {
-                    self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
-                }
+                // Ranked against the terms as they were.
+                self.forget_suggestions();
+                self.rebuild_tree_keeping(None);
                 self.args.label_cl = Some(p.clone().into());
                 // One --label-cl: the new file replaces one given before.
                 let argv = std::mem::take(&mut self.trajectory.argv);
@@ -3410,10 +3622,9 @@ impl App {
             .and_then(|panel| Ok((panel, super::round::panel_sets(&p)?)));
         match read {
             Ok((panel, sets)) => {
-                self.tree = crate::manifest::ontology::panel_tree_on(self.cl.as_ref(), &panel);
-                if let Some(cl) = &self.cl {
-                    self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
-                }
+                self.panel = panel;
+                self.forget_suggestions();
+                self.rebuild_tree();
                 self.original = sets;
                 self.status = format!("marker panel: {}", file_name(path));
                 self.args.markers = p.into();
@@ -3452,18 +3663,13 @@ impl App {
                 None
             }
         };
-        let edges = match &self.figures {
-            Some(f) => f.data.edges.clone(),
-            None => super::order::run_edges(&[manifest]),
-        };
-        if let TreeMode::Order(v) = &mut self.tree_mode {
-            v.edges = edges;
-        }
         if let Some(f) = &mut self.figures {
             f.shown = true;
         }
         if self.in_order() {
-            self.reload_order();
+            // Its manifest is written anew, maybe over the one shown: its
+            // edges and texts are read again.
+            self.show_trajectory();
         }
         // The header names the manifest whose figures are up.
         self.status = if self.figures.is_some() && self.trajectory_tui {
@@ -3524,33 +3730,17 @@ impl App {
         )
     }
 
-    /// (Re)build the order view from the labels on screen and the data files.
-    /// The trajectory run's edges are kept from the view on screen (or the
-    /// figures), so only the precedence files are read again.
+    /// (Re)build the order view from the labels on screen, the data files
+    /// and the edges of the trajectory shown, already read.
     fn reload_order(&mut self) {
-        self.rebuild_order(false);
-    }
-
-    /// The edges of the trajectory shown: the figures', else the manifests'.
-    fn shown_edges(&self) -> Vec<crate::trajectory::edges::EdgeRow> {
-        match &self.figures {
-            Some(f) => f.data.edges.clone(),
-            None => {
-                let manifests = self.manifests();
-                let refs: Vec<&Path> = manifests.iter().map(PathBuf::as_path).collect();
-                super::order::run_edges(&refs)
-            }
-        }
-    }
-
-    /// [`Self::reload_order`]; with `new_edges` (the manifest shown changed)
-    /// the edges are those of the trajectory now shown, not the view's.
-    fn rebuild_order(&mut self, new_edges: bool) {
-        let (sel, edges, ontology) = match std::mem::replace(&mut self.tree_mode, TreeMode::Panel) {
-            TreeMode::Order(v) if !new_edges => (v.sel, v.edges, v.ontology),
-            TreeMode::Order(v) => (v.sel, self.shown_edges(), v.ontology),
-            _ => (0, self.shown_edges(), None),
+        let (sel, ontology) = match std::mem::replace(&mut self.tree_mode, TreeMode::Panel) {
+            TreeMode::Order(v) => (v.sel, v.ontology),
+            _ => (0, None),
         };
+        let edges = (self.order_shown.as_ref())
+            .and_then(|s| s.run.as_ref())
+            .map(|r| r.edges.clone())
+            .unwrap_or_default();
         let mut v = super::order::OrderView::load(
             self.order_types(),
             self.cl.as_ref(),
@@ -3801,10 +3991,7 @@ impl App {
             .visible()
             .get(self.tree_sel)
             .and_then(|&i| self.node_term(i));
-        let from_cluster = self
-            .cl
-            .as_ref()
-            .and_then(|cl| super::ontology::term_of(cl, &self.tree, &self.label_or_top()?));
+        let from_cluster = self.label_or_top().and_then(|l| self.term_of(&l));
         if let Some(v) = self.ontology_on(from_node.or(from_cluster)) {
             self.tree_mode = TreeMode::Ontology(Box::new(v));
             self.ontology_from_map = from_map;
@@ -3858,7 +4045,7 @@ impl App {
         };
         let mut data: std::collections::BTreeMap<String, Vec<(String, usize)>> = Default::default();
         for (t, n) in types {
-            if let Some(id) = super::ontology::term_of(cl, &self.tree, &t).filter(|id| cl.has(id)) {
+            if let Some(id) = self.term_of(&t).filter(|id| cl.has(id)) {
                 data.entry(id).or_default().push((t, n));
             }
         }
@@ -3893,7 +4080,7 @@ impl App {
     fn pick_term(&mut self, id: &str) {
         let Some(cl) = &self.cl else { return };
         let label = super::ontology::term_label(cl, &self.tree, id);
-        let term_of = |l: &str| super::ontology::term_of(cl, &self.tree, l);
+        let term_of = |l: &str| self.term_of(l);
         let pooled =
             self.pooled(|t| term_of(t).is_some_and(|t| cl.ancestors_or_self(&t).contains(id)));
         let name = cl.name(id).unwrap_or(id);
@@ -3913,6 +4100,224 @@ impl App {
             .filter(|t| term_of(&t.label).is_none())
             .map(|t| (t.label.clone(), id.to_string()));
         self.ask_label(label, reason, remember);
+    }
+
+    /// `c` on the panel tree: the selected type's suggested Cell Ontology
+    /// terms when it has no term of its own, ranked first by a job (for
+    /// every such type) when they are not yet.
+    fn suggest_terms(&mut self) {
+        let Some(i) = self.tree.visible().get(self.tree_sel).copied() else {
+            return;
+        };
+        let label = self.tree.label(i).to_string();
+        let Some(cl) = &self.cl else {
+            self.status = "no Cell Ontology at hand: nothing to suggest terms from".into();
+            return;
+        };
+        if !super::suggest::needs_term(cl, &self.tree, &label) {
+            let what = if self.tree.is_type(&label) {
+                "has its own Cell Ontology term"
+            } else {
+                "is a group, not a panel type"
+            };
+            self.status = format!("{label} {what}: c suggests terms for a type without one");
+            return;
+        }
+        let labels = super::suggest::unmatched(cl, &self.tree);
+        if self.offer_suggestions(&label) {
+            return;
+        }
+        if self.ranking.is_some() {
+            self.status =
+                "the terms are being ranked: c offers them once they are (x stops it)".into();
+            return;
+        }
+        let (tx, rx) = channel();
+        let started = self.job_file("suggest.json").and_then(|file| {
+            let obo = self.args.obo.as_deref();
+            runner::spawn_suggest(&self.source, obo, &labels, &file, tx).map(|c| (c, file))
+        });
+        match started {
+            Ok((c, file)) => {
+                self.push_log(format!(
+                    "── suggestions: lupin data suggest-cl for {} type(s) without a term",
+                    labels.len()
+                ));
+                self.ranking = Some(Ranking::new(c, rx, file, label));
+                self.status = format!("{RANKING_STATUS} (the first time fetches the text model and encodes the ontology: a minute or two)");
+            }
+            Err(e) => self.status = format!("{e:#}"),
+        }
+    }
+
+    /// A file for a job's child to read or write, in the app's own folder.
+    pub fn job_file(&mut self, name: &str) -> anyhow::Result<PathBuf> {
+        job_file(&mut self.jobs_dir, name)
+    }
+
+    /// Offer `label`'s suggested terms, when they are ranked and it still
+    /// has no term; `false` when they are not.
+    fn offer_suggestions(&mut self, label: &str) -> bool {
+        let Some(cl) = &self.cl else { return false };
+        if !super::suggest::needs_term(cl, &self.tree, label) {
+            return false;
+        }
+        let Some(s) = self.suggestions.as_ref().and_then(|s| s.of(label)) else {
+            return false;
+        };
+        match self.data_search.user_aliases() {
+            _ if s.is_empty() => self.status = format!("no term near {label}"),
+            Some(file) => self.menu = Some(super::suggest::menu(label, s, &file)),
+            None => self.status = "no user or project folder to write an alias to".into(),
+        }
+        true
+    }
+
+    /// A ranking job wrote `file`: keep its suggestions, and offer those of
+    /// the type it was started on while the user waits on the panel tree;
+    /// else the next `c` does, so no menu takes keys meant for elsewhere.
+    fn suggestions_done(&mut self, file: &Path, label: &str, secs: u64) {
+        match super::suggest::Suggestions::read(file) {
+            Ok(s) => {
+                self.suggestions = Some(s);
+                self.status = format!(
+                    "Cell Ontology terms ranked in {secs}s: c on a type without a term offers them"
+                );
+                if !self.idle_on_panel_tree() {
+                    self.status = format!("suggestions for {label} ready: press c on it");
+                } else {
+                    self.offer_suggestions(label);
+                }
+            }
+            Err(e) => self.status = format!("no suggestions: {e:#}"),
+        }
+    }
+
+    /// Where the trajectory shown is looked for: the figures' manifest,
+    /// then the order view's.
+    fn trajectory_candidates(&self) -> Vec<PathBuf> {
+        let figures = self.figures.as_ref().map(|f| f.data.manifest.clone());
+        figures.into_iter().chain(self.manifests()).collect()
+    }
+
+    /// Show in the order view the trajectory found now among
+    /// [`Self::trajectory_candidates`]: its edges in the table, its texts in
+    /// the strip, read together.
+    fn show_trajectory(&mut self) {
+        let among = self.trajectory_candidates();
+        self.order_shown = Some(super::order::Shown::find(among));
+        self.reload_order();
+    }
+
+    /// In the order view, keep the table and the strip on the trajectory
+    /// shown, whatever changed it: when where it is looked for has changed,
+    /// it is found again; else, looked at every [`super::order::POLL_EVERY`],
+    /// once a file it was read from changed.
+    fn keep_order_current(&mut self) {
+        if !self.in_order() {
+            return;
+        }
+        let among = self.trajectory_candidates();
+        match &mut self.order_shown {
+            Some(s) if s.among == among => {
+                if s.due() && s.refresh() {
+                    self.reload_order();
+                }
+            }
+            _ => self.show_trajectory(),
+        }
+    }
+
+    /// The order view's strip: the selected type's line while the table has
+    /// the focus, else (or for a type the run does not order) the run's
+    /// paragraph.
+    #[must_use]
+    pub fn order_line(&self) -> Option<&str> {
+        let t = self.order_shown.as_ref()?.run.as_ref()?;
+        let ty = match &self.tree_mode {
+            TreeMode::Order(v) if self.focus == Focus::Order => {
+                v.types.get(v.sel).map(|(t, _)| t.as_str())
+            }
+            _ => None,
+        };
+        t.line(ty)
+    }
+
+    /// Take alias `label → id`, just written to `file`, in this session:
+    /// the ontology matches by it and the panel's tree is built again, the
+    /// cursor on `label`. Unless a table read after `file` (a later layer,
+    /// or `--label-cl`) maps `label` too: it wins on every start, so the
+    /// session keeps its reading, and that table comes back.
+    fn learn_alias(&mut self, label: &str, id: &str, file: &Path) -> Option<PathBuf> {
+        // As the ontology's loading reads it: as given, else beside the run.
+        let run = (self.args.label_cl.as_deref()).and_then(|f| self.data_search.run_file(f));
+        let later = (self.data_search.alias_layers_after(file).into_iter())
+            .chain(run)
+            .filter(|p| p.as_path() != file)
+            .find(|p| {
+                let mut a = crate::annotate::cl_rules::Aliases::default();
+                let text = std::fs::read_to_string(p).unwrap_or_default();
+                a.add_tsv(&text, &p.display().to_string());
+                a.get(label).is_some()
+            });
+        if later.is_some() {
+            return later;
+        }
+        let cl = self.cl.as_mut()?;
+        cl.add_aliases(&format!("{label}\t{id}\n"), &file.display().to_string());
+        self.rebuild_tree_keeping(Some(label));
+        None
+    }
+
+    /// [`Self::rebuild_tree`], keeping what was folded, and the selection
+    /// on node `on`, else on the one selected before, shown.
+    pub(super) fn rebuild_tree_keeping(&mut self, on: Option<&str>) {
+        let tree = &self.tree;
+        let folded: Vec<String> = (0..tree.nodes.len())
+            .filter(|&i| tree.is_folded(i))
+            .map(|i| tree.label(i).to_string())
+            .collect();
+        let selected = (tree.visible().get(self.tree_sel)).map(|&i| tree.label(i).to_string());
+        self.rebuild_tree();
+        for l in &folded {
+            if let Some(i) = self.tree.node_of(l) {
+                self.tree.fold(i, true);
+            }
+        }
+        let node = |l: Option<&str>| l.and_then(|l| self.tree.node_of(l));
+        if let Some(i) = node(on).or_else(|| node(selected.as_deref())) {
+            self.tree.reveal(i);
+            self.select_node(i);
+        }
+        self.clamp_tree_sel();
+    }
+
+    /// Build the panel's tree again from [`Self::panel`], with each type's
+    /// terms; the selection stays on a row of the new tree.
+    pub(super) fn rebuild_tree(&mut self) {
+        self.tree = crate::manifest::ontology::panel_tree_on(self.cl.as_ref(), &self.panel);
+        self.clamp_tree_sel();
+        self.terms_of.borrow_mut().clear();
+        if let Some(cl) = &self.cl {
+            self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
+        }
+    }
+
+    /// Keep the panel tree's selection on a row it shows.
+    fn clamp_tree_sel(&mut self) {
+        self.tree_sel = (self.tree_sel).min(self.tree.visible().len().saturating_sub(1));
+    }
+
+    /// The Cell Ontology term `label` names ([`super::ontology::term_of`]);
+    /// none without an ontology.
+    pub fn term_of(&self, label: &str) -> Option<String> {
+        let cl = self.cl.as_ref()?;
+        if let Some(t) = self.terms_of.borrow().get(label) {
+            return t.clone();
+        }
+        let t = super::ontology::term_of(cl, &self.tree, label);
+        (self.terms_of.borrow_mut()).insert(label.to_string(), t.clone());
+        t
     }
 
     /// Select the next flagged cluster without an edit, wrapping around.
@@ -3961,8 +4366,28 @@ impl Drop for App {
             }
             let _ = r.child.wait();
         }
+        if let Some(r) = self.ranking.take() {
+            r.stop();
+        }
         self.stop_rescoring();
     }
+}
+
+/// `name` in the app's jobs folder, made on first use: a name in the shared
+/// temporary folder could be taken first by someone else, or a link there
+/// send the write elsewhere.
+fn job_file(dir: &mut Option<tempfile::TempDir>, name: &str) -> anyhow::Result<PathBuf> {
+    let dir = match dir {
+        Some(d) => d,
+        empty => {
+            let mut b = tempfile::Builder::new();
+            b.prefix("lupin-tui-");
+            #[cfg(unix)]
+            b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+            empty.insert(b.tempdir().context("making a folder for the jobs' files")?)
+        }
+    };
+    Ok(dir.path().join(name))
 }
 
 /// A round's clusters and how many need a look, as the status says them.

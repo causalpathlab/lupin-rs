@@ -173,7 +173,23 @@ fn draw_order_screen(f: &mut Frame, app: &App, [header, body, summary, log, keys
     match app.figures.as_ref().filter(|fig| fig.shown) {
         _ if !wide && app.focus == Focus::Tree => draw_order_ontology(f, middle, app, v),
         Some(fig) => draw_figures(f, middle, app, fig),
-        None => draw_order(f, middle, app, v),
+        None => match app.order_line() {
+            // The trajectory's words under the table: the selected type's
+            // line, or the run's paragraph.
+            Some(text) => {
+                let [table, words] =
+                    Layout::vertical([Constraint::Min(6), Constraint::Length(4)]).areas(middle);
+                draw_order(f, table, app, v);
+                f.render_widget(
+                    Paragraph::new(text)
+                        .wrap(Wrap { trim: true })
+                        .fg(Color::LightCyan)
+                        .block(Block::default().borders(Borders::TOP).dim()),
+                    words,
+                );
+            }
+            None => draw_order(f, middle, app, v),
+        },
     }
     if wide {
         draw_order_ontology(f, right, app, v);
@@ -511,6 +527,7 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "→ into the ontology",
             "o ontology",
             "/ search",
+            "c suggest a term",
             "v cells",
             "esc clusters",
         ],
@@ -590,6 +607,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("o", "panel tree ↔ the Cell Ontology; from the cell map, the Cell Ontology and o back to the map"),
             ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, o the Cell Ontology, w all figures, p export, f the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, R re-check) / the tree again"),
             ("d", "Cell Ontology: the terms in the data (the labels, under their common ancestor) ↔ all"),
+            ("c", "on a panel type with no Cell Ontology term: its three nearest terms by text embedding, with their scores; one you confirm goes to your cl_aliases.tsv and the tree is built again (the first ranking fetches the text model and encodes the ontology, a minute or two; offline without the model, there are none)"),
             (
                 "/",
                 "search the Cell Ontology (names, synonyms, abbreviations)",
@@ -1485,15 +1503,19 @@ fn pinned_note(app: &App, label: &str, share: Option<f32>) -> &'static str {
     let edited = app.edits.iter().any(|e| {
         matches!(e, super::round::Edit::Markers { label: l, .. } if label_key(l) == label_key(label))
     });
+    let node = app.tree.node_of(label);
     match share {
         Some(s) if s > 0.0 => "below the top candidates",
         _ if app.rescoring.is_some() => "rescoring…",
         _ if edited && app.recorded.is_none() => "scored on save",
         // A typed name has no markers: nothing tested it.
-        _ if app.tree.node_of(label).is_none() => "not a panel type: no markers to score",
+        _ if node.is_none() => "not a panel type: no markers to score",
         // A node above the types: TreeBH tests it only as their family, and
-        // a pass calls the types, never the group.
-        _ if !app.tree.is_type(label) => "a tree group: the pass calls its panel types",
+        // a pass calls the types, never the group. A type's own leaf, found
+        // by its term's name, is the type.
+        _ if node.is_some_and(|i| !app.tree.nodes[i].children.is_empty()) => {
+            "a tree group: the pass calls its panel types"
+        }
         _ => "not called (did not pass FDR)",
     }
 }
@@ -1868,15 +1890,13 @@ fn draw_ontology(f: &mut Frame, area: Rect, app: &App, v: &OntologyView, cl: &Cl
             c.candidates
                 .iter()
                 .filter_map(|cand| {
-                    let t = super::ontology::term_of(cl, &app.tree, &cand.label)?;
+                    let t = app.term_of(&cand.label)?;
                     Some((cand.share, cl.ancestors_or_self(&t)))
                 })
                 .collect()
         })
         .unwrap_or_default();
-    let now = app
-        .current_label()
-        .and_then(|l| super::ontology::term_of(cl, &app.tree, &l));
+    let now = app.current_label().and_then(|l| app.term_of(&l));
     let rows: Vec<Row> = v
         .rows
         .iter()

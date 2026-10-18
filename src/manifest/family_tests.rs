@@ -174,3 +174,18 @@ fn a_round_names_the_trajectory_its_section_was_copied_from() {
         None
     );
 }
+
+#[test]
+fn a_trajectory_is_a_manifest_with_an_order_of_its_own() {
+    let mut t: RunManifest =
+        serde_json::from_str(r#"{"version":2,"kind":"topic","prefix":"X"}"#).unwrap();
+    assert!(!is_trajectory(&t, Path::new("/d/X.senna.json")), "no order");
+    t.trajectory.lineages = Some("X.T1.trajectory_lineages.tsv".into());
+    t.trajectory.edges = Some("X.T1.trajectory_edges.parquet".into());
+    t.trajectory.pseudotime = Some("X.T1.cell_pseudotime.parquet".into());
+    assert!(is_trajectory(&t, Path::new("/d/X.T1.senna.json")));
+    assert!(
+        !is_trajectory(&t, Path::new("/d/X.T1.L1.senna.json")),
+        "a round made from the trajectory carries its section, not its own order"
+    );
+}

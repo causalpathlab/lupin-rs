@@ -174,12 +174,13 @@ fn visit_cosine_rows(
     Ok(())
 }
 
-/// The `k` largest `(index, score)` of a row, descending: a partial
-/// selection, so a row of `m` scores costs `O(m + k log k)`, not a sort.
-fn top_k(scores: impl Iterator<Item = (usize, f32)>, k: usize) -> Vec<(usize, f32)> {
+/// The `k` largest `(index, score)` of a row, descending, ties by index:
+/// a partial selection, so a row of `m` scores costs `O(m + k log k)`, not
+/// a sort.
+pub(crate) fn top_k(scores: impl Iterator<Item = (usize, f32)>, k: usize) -> Vec<(usize, f32)> {
     let mut idx: Vec<(usize, f32)> = scores.collect();
     let desc = |a: &(usize, f32), b: &(usize, f32)| {
-        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        (b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)).then(a.0.cmp(&b.0))
     };
     if k < idx.len() {
         idx.select_nth_unstable_by(k, desc);

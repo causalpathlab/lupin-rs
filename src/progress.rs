@@ -19,7 +19,7 @@ pub const ENV: &str = "LUPIN_PROGRESS";
 
 const PREFIX: &str = "@progress ";
 
-fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var(ENV).is_ok_and(|v| v == "1"))
 }

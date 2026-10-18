@@ -106,17 +106,22 @@ pub fn ranked_view(evidence: &[TypeEvidence], by: Method) -> (Vec<Candidate>, Ve
 const CHOICE_DEPTH: usize = 3;
 
 /// The label choices for a cluster: every type in some method's top
-/// [`CHOICE_DEPTH`], the ones more methods put first ahead, then by their
-/// best place in any ranking, then in the candidates' order.
+/// [`CHOICE_DEPTH`], the ones more methods put first ahead; among those as
+/// many methods put first, the projection score's top (where the methods
+/// disagree, its top was right more often than the enrichment's call on
+/// the bench); then by their best place in any ranking, then in the
+/// candidates' order. An order to choose from: nothing is taken.
 #[must_use]
 pub fn choices(candidates: &[Candidate]) -> Vec<&Candidate> {
+    use std::cmp::Reverse;
     let best = |c: &Candidate| c.ranks.iter().flatten().min().copied();
     let firsts = |c: &Candidate| c.ranks.iter().filter(|r| **r == Some(0)).count();
+    let score_top = |c: &Candidate| c.ranks[Method::Score.index()] == Some(0);
     let mut offered: Vec<&Candidate> = candidates
         .iter()
         .filter(|c| best(c).is_some_and(|b| b < CHOICE_DEPTH))
         .collect();
-    offered.sort_by_key(|c| (std::cmp::Reverse(firsts(c)), best(c)));
+    offered.sort_by_key(|c| (Reverse(firsts(c)), Reverse(score_top(c)), best(c)));
     offered
 }
 

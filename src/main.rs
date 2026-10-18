@@ -7,6 +7,7 @@ mod describe;
 mod docs;
 mod figures;
 mod gene_text;
+mod hub;
 mod manifest;
 mod marker_embedding;
 mod progress;
@@ -19,6 +20,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use describe::{run_describe, DescribeArgs};
 use trajectory::run::{run_trajectory, TrajectoryArgs};
+
+/// `bytes` as lower-case hex.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 #[derive(Parser)]
 #[command(
@@ -100,10 +106,13 @@ enum Commands {
                       `--feature-embedding` adds nearest-neighbour genes first).\n\
                       When `{from}.cluster_term_q.parquet` is present,\n\
                       a second FDR-significant contender is named if one exists.\n\
-                      Writes `{out}.describe.json` and `{out}.describe.md`.\n\
+                      Writes `{out}.describe.json` and `{out}.describe.md`. On a trajectory\n\
+                      run, code also writes its order in words from the run's outputs,\n\
+                      `{out}.trajectory.describe.md`; its clusters are described as above\n\
+                      when it carries a round's evidence, and only its order otherwise.\n\
                       \n\
-                      The composer never invents labels: sentences are citation-checked.\n\
-                      Default composer is a citation-checked template (candle decoder TBD)."
+                      The composer never invents labels: sentences are citation-checked\n\
+                      templates; no language model writes them."
     )]
     Describe(DescribeArgs),
     #[command(

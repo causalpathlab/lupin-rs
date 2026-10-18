@@ -1,8 +1,11 @@
 //! `lupin describe` — compose a short sentence from annotate evidence.
 //!
 //! The composer **never decides**: evidence comes from annotate artifacts (and optional
-//! keyword incidence from a `word-graph` vocab). Sentences are citation-checked against
-//! the allowed entity set. Candle Hub decoding is not wired yet — templates only.
+//! keyword incidence from a `word-graph` vocab). Sentences are templates, citation-checked
+//! against the allowed entity set; no language model writes them. On a trajectory run, code writes its order in words from the
+//! run's outputs ([`trajectory`]).
+
+pub mod trajectory;
 
 use enrichment::UNASSIGNED_LABEL;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -11,14 +14,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 use crate::annotate::outputs::{
-    ANNOT_PARQUET, ARGMAX_TSV, CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_TERM_Q,
+    labels_under, ANNOT_PARQUET, CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_TERM_Q,
 };
 use crate::gene_text::vocab::Vocabulary;
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use legume_numeric::matrix::common_io::open_buf_reader;
 use legume_numeric::matrix::parquet::peek_parquet_field_names;
-use log::info;
+use log::{info, warn};
 use serde_json::json;
 
 #[derive(Args, Debug)]
@@ -90,10 +93,41 @@ impl ClusterEvidence {
     }
 }
 
+/// `describe` on a trajectory run: the run's paragraph and each type's line
+/// to `{out}.trajectory.describe.md`, written by code from its outputs
+/// ([`trajectory`]).
+fn describe_trajectory(loaded: &crate::manifest::run::Loaded, from: &str, out: &str) -> Result<()> {
+    let texts = trajectory::texts(&trajectory::OrderFacts::read(loaded)?);
+    let md = trajectory::md_path(out);
+    std::fs::write(&md, trajectory::markdown(from, &texts))
+        .with_context(|| format!("writing {}", md.display()))?;
+    info!("wrote {} ({} text(s))", md.display(), texts.len());
+    Ok(())
+}
+
 pub fn run_describe(args: &DescribeArgs) -> Result<()> {
-    let files = EvidenceFiles::locate(&args.from);
     let out: &str = &args.out;
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
+    let loaded = crate::manifest::run::load(&args.from).ok();
+    let files = loaded.as_ref().map_or_else(
+        || EvidenceFiles::by_name(&args.from),
+        EvidenceFiles::locate_in,
+    );
+    // A trajectory run: its order in words, and its clusters as on any
+    // round when it carries the round's evidence.
+    if let Some(l) =
+        (loaded.as_ref()).filter(|l| crate::manifest::family::is_trajectory(&l.manifest, &l.file))
+    {
+        describe_trajectory(l, &args.from, out)?;
+        if !files.has_evidence() {
+            return Ok(());
+        }
+        // A slot whose file has gone leaves the order its own description.
+        if let Some(gone) = files.missing().first() {
+            warn!("{gone} is gone: the clusters are not described, only the order");
+            return Ok(());
+        }
+    }
 
     let mut enriched = load_evidence(&files, args.fdr_alpha)?;
     attach_second_best(&mut enriched, &files, args.fdr_alpha)?;
@@ -172,49 +206,68 @@ struct EvidenceFiles {
 }
 
 impl EvidenceFiles {
-    /// From the manifest's `annotate.*` slots when `--from` is a run
-    /// manifest (or its prefix) — those point at the latest pass, whatever its
-    /// `-o` was. Otherwise `--from` is an annotate output prefix and
-    /// the files are looked for by name.
-    fn locate(from: &str) -> Self {
-        match crate::manifest::run::load(from) {
-            Ok(loaded) => {
-                let a = &loaded.manifest.annotate;
-                let at = |slot: &Option<String>| {
-                    slot.as_deref()
-                        .map(|rel| crate::manifest::run::resolve(&loaded.dir, rel))
-                };
-                let term_q = at(&a.cluster_term_q);
-                Self {
-                    // `annotation` holds projection's per-cell table only on a projection pass.
-                    annot: term_q.is_some().then(|| at(&a.annotation)).flatten(),
-                    enrichment_q: at(&a.cluster_celltype_q_values),
-                    term_q,
-                    argmax: at(&a.argmax),
-                    marker_embedding: at(&a.marker_embedding),
-                    // Manifest-relative; older manifests recorded the path as
-                    // typed on the command line, so fall back to it as given.
-                    markers_tsv: a
-                        .markers
-                        .as_deref()
-                        .filter(|m| !m.is_empty())
-                        .map(|m| loaded.recorded(m).unwrap_or_else(|| m.to_string())),
-                }
-            }
-            Err(_) => {
-                let found = |suffix: &str| {
-                    let p = format!("{from}{suffix}");
-                    Path::new(&p).exists().then_some(p)
-                };
-                Self {
-                    annot: found(ANNOT_PARQUET),
-                    enrichment_q: found(CLUSTER_CELLTYPE_Q_VALUES),
-                    term_q: found(CLUSTER_TERM_Q),
-                    argmax: found(ARGMAX_TSV),
-                    marker_embedding: found(".marker_embedding.parquet"),
-                    markers_tsv: None,
-                }
-            }
+    /// Whether any table [`load_evidence`] reads a round's calls from is at hand.
+    fn has_evidence(&self) -> bool {
+        self.annot.is_some() || self.enrichment_q.is_some() || self.argmax.is_some()
+    }
+
+    /// The files recorded here that are not on disk.
+    fn missing(&self) -> Vec<&str> {
+        [
+            &self.annot,
+            &self.enrichment_q,
+            &self.term_q,
+            &self.argmax,
+            &self.marker_embedding,
+        ]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .filter(|p| !Path::new(p).exists())
+        .collect()
+    }
+
+    /// From the `annotate.*` slots of the manifest `loaded`, when `--from`
+    /// is a run manifest (or its prefix): those point at the latest pass,
+    /// whatever its `-o` was. Otherwise `--from` is an annotate output
+    /// prefix, and the files are looked for [by name](Self::by_name).
+    fn locate_in(loaded: &crate::manifest::run::Loaded) -> Self {
+        let a = &loaded.manifest.annotate;
+        let at = |slot: &Option<String>| {
+            slot.as_deref()
+                .map(|rel| crate::manifest::run::resolve(&loaded.dir, rel))
+        };
+        let term_q = at(&a.cluster_term_q);
+        Self {
+            // `annotation` holds projection's per-cell table only on a projection pass.
+            annot: term_q.is_some().then(|| at(&a.annotation)).flatten(),
+            enrichment_q: at(&a.cluster_celltype_q_values),
+            term_q,
+            argmax: at(&a.argmax),
+            marker_embedding: at(&a.marker_embedding),
+            // Manifest-relative; older manifests recorded the path as
+            // typed on the command line, so fall back to it as given.
+            markers_tsv: a
+                .markers
+                .as_deref()
+                .filter(|m| !m.is_empty())
+                .map(|m| loaded.recorded(m).unwrap_or_else(|| m.to_string())),
+        }
+    }
+
+    /// Looked for by name beside annotate output prefix `from`.
+    fn by_name(from: &str) -> Self {
+        let found = |suffix: &str| {
+            let p = format!("{from}{suffix}");
+            Path::new(&p).exists().then_some(p)
+        };
+        Self {
+            annot: found(ANNOT_PARQUET),
+            enrichment_q: found(CLUSTER_CELLTYPE_Q_VALUES),
+            term_q: found(CLUSTER_TERM_Q),
+            argmax: labels_under(from),
+            marker_embedding: found(".marker_embedding.parquet"),
+            markers_tsv: None,
         }
     }
 }
@@ -227,11 +280,11 @@ fn load_evidence(files: &EvidenceFiles, fdr_alpha: f32) -> Result<Vec<ClusterEvi
         return load_from_enrichment_q(p, fdr_alpha);
     }
     if let Some(p) = &files.argmax {
-        return load_from_argmax_tsv(p);
+        return load_from_argmax(p);
     }
     bail!(
         "no annotate evidence found: need a projection annot table, an enrichment \
-         q-value table, or an argmax TSV (run `lupin annotate` first)"
+         q-value table, or per-cell labels (run `lupin annotate` first)"
     );
 }
 
@@ -349,7 +402,7 @@ fn load_from_annot_parquet(path: &str) -> Result<Vec<ClusterEvidence>> {
     Ok(by_comm.into_values().collect())
 }
 
-fn load_from_argmax_tsv(path: &str) -> Result<Vec<ClusterEvidence>> {
+fn load_from_argmax(path: &str) -> Result<Vec<ClusterEvidence>> {
     let labels = crate::cell_labels::read_cell_labels(path)?.unique_groups();
     Ok(labels
         .into_iter()

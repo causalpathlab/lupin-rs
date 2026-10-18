@@ -555,7 +555,33 @@ fn the_choices_are_every_methods_top_three_firsts_first() {
         ranked("E", 0.0, [Some(4), None, Some(3)]),
     ];
     let labels: Vec<&str> = choices(&cands).iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, ["A", "B", "C", "D"]);
+    assert_eq!(labels, ["B", "A", "C", "D"], "the score's top leads a tie");
+}
+
+#[test]
+fn where_the_methods_disagree_the_scores_top_leads_the_choices() {
+    let labels = |cands: &[Candidate]| -> Vec<String> {
+        choices(cands).iter().map(|c| c.label.clone()).collect()
+    };
+    // Enrichment and SuSiE call A, the score B: two firsts beat one.
+    let two = vec![
+        ranked("A", 0.5, [Some(0), Some(0), Some(1)]),
+        ranked("B", 0.3, [Some(1), Some(1), Some(0)]),
+    ];
+    assert_eq!(labels(&two), ["A", "B"]);
+    // One first each: the score's top comes first.
+    let three = vec![
+        ranked("A", 0.5, [Some(0), Some(1), Some(2)]),
+        ranked("S", 0.2, [Some(1), Some(0), Some(1)]),
+        ranked("B", 0.3, [Some(2), Some(2), Some(0)]),
+    ];
+    assert_eq!(labels(&three), ["B", "A", "S"]);
+    // A round without the score keeps the candidates' order.
+    let no_score = vec![
+        ranked("A", 0.5, [Some(0), Some(1), None]),
+        ranked("S", 0.2, [Some(1), Some(0), None]),
+    ];
+    assert_eq!(labels(&no_score), ["A", "S"]);
 }
 
 #[test]
