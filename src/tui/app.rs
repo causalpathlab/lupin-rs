@@ -4251,6 +4251,7 @@ impl App {
     fn learn_alias(&mut self, label: &str, id: &str, file: &Path) -> Option<PathBuf> {
         // As the ontology's loading reads it: as given, else beside the run.
         let run = (self.args.label_cl.as_deref()).and_then(|f| self.data_search.run_file(f));
+        let cl = self.cl.as_ref();
         let later = (self.data_search.alias_layers_after(file).into_iter())
             .chain(run)
             .filter(|p| p.as_path() != file)
@@ -4258,7 +4259,11 @@ impl App {
                 let mut a = crate::annotate::cl_rules::Aliases::default();
                 let text = std::fs::read_to_string(p).unwrap_or_default();
                 a.add_tsv(&text, &p.display().to_string());
-                a.get(label).is_some()
+                // As the ontology compares labels: any spelling of its signs.
+                match cl {
+                    Some(cl) => a.iter().any(|(l, _)| cl.alike(l, label)),
+                    None => a.get(label).is_some(),
+                }
             });
         if later.is_some() {
             return later;

@@ -12,7 +12,7 @@ fn without_a_rules_file_matching_is_literal() {
     assert_eq!(r.singular("t cells"), "t cells");
     assert!(!r.any_word_order);
     assert!(r.implied.suffixes.is_empty(), "no word is implied");
-    assert!(!r.classes.is_class(&["cellxgene_subset".into()]));
+    assert!(!r.classes.is_class("CL:1", &["cellxgene_subset".into()]));
 }
 
 #[test]
@@ -21,6 +21,7 @@ fn the_shipped_rules_reproduce_the_matching_lupin_had() {
         serde_json::from_str(include_str!("../../../data/cl_matching.json")).unwrap();
     let r = MatchRules::from_layers(&[shipped]).unwrap();
     assert!(r.counts("RELATED", &["OMO:0003000"]));
+    assert!(r.counts("RELATED", &["OMO:0003004"]), "plural forms");
     assert!(
         !r.counts("RELATED", &[]),
         "a plain RELATED synonym does not count"
@@ -35,10 +36,17 @@ fn the_shipped_rules_reproduce_the_matching_lupin_had() {
     );
     assert!(r.any_word_order);
     assert_eq!(r.implied.suffixes, ["cell"]);
-    assert!(r.classes.is_class(&["blood_and_immune_upper_slim".into()]));
+    assert!(r
+        .classes
+        .is_class("CL:1", &["blood_and_immune_upper_slim".into()]));
     assert!(!r
         .classes
-        .is_class(&["cellxgene_subset".into(), "upper_level".into()]));
+        .is_class("CL:1", &["cellxgene_subset".into(), "upper_level".into()]));
+    assert!(
+        !r.classes
+            .is_class("CL:0000034", &["cellxgene_subset".into()]),
+        "a state is no class"
+    );
 }
 
 #[test]

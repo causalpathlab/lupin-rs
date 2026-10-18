@@ -18,12 +18,19 @@ pub struct ClassRules {
     pub subsets: Vec<String>,
     pub subset_suffixes: Vec<String>,
     pub exclude_subset_suffixes: Vec<String>,
+    /// Terms that are no class however they are subset: states cells of
+    /// many lineages pass through, which would group types across them.
+    pub states: Vec<String>,
 }
 
 impl ClassRules {
-    /// Whether a term in `subsets` is a class.
+    /// Whether the term `id`, in `subsets`, is a class.
     #[must_use]
-    pub fn is_class(&self, subsets: &[String]) -> bool {
+    pub fn is_class(&self, id: &str, subsets: &[String]) -> bool {
+        !self.states.iter().any(|s| s == id) && self.in_class_subset(subsets)
+    }
+
+    fn in_class_subset(&self, subsets: &[String]) -> bool {
         let excluded = subsets.iter().any(|s| {
             self.exclude_subset_suffixes
                 .iter()
@@ -62,6 +69,15 @@ pub struct MatchRules {
     pub implied: ImpliedRules,
     /// Match a label whose words are a term's in another order.
     pub any_word_order: bool,
+    /// Marker signs: each sign's word and the symbol that writes it
+    /// (`positive` → `+`). However a label writes one (`X-positive`,
+    /// `X positive`, `X+`), it is compared as one word, `x-positive`.
+    pub marker_signs: BTreeMap<String, String>,
+    /// Words a term's name may have that a label leaves off (`alpha-beta`,
+    /// a species): a label that matches no name is matched to the most
+    /// general of the terms whose names it is but for these words, when
+    /// one is above all the others.
+    pub qualifiers: Vec<String>,
 }
 
 /// Words a label may leave off its end.
@@ -86,6 +102,8 @@ impl Default for MatchRules {
             plural: PluralRules::default(),
             implied: ImpliedRules::default(),
             any_word_order: false,
+            marker_signs: BTreeMap::new(),
+            qualifiers: Vec::new(),
         }
     }
 }
@@ -115,10 +133,21 @@ impl MatchRules {
     }
 
     /// A label or name as compared: lower case, lupin's separators as one
-    /// space, trailing plural words replaced.
+    /// space, each marker sign one word ([`Self::marker_signs`]), trailing
+    /// plural words replaced.
     #[must_use]
     pub fn normalise(&self, s: &str) -> String {
-        let mut s = label_key(&s.to_lowercase()).replace('_', " ");
+        self.singular_words(self.signed(&label_key(&s.to_lowercase()).replace('_', " ")))
+    }
+
+    /// [`Self::normalise`] but for marker signs: a text as written.
+    #[must_use]
+    pub fn normalise_unsigned(&self, s: &str) -> String {
+        self.singular_words(label_key(&s.to_lowercase()).replace('_', " "))
+    }
+
+    /// Trailing plural words replaced.
+    fn singular_words(&self, mut s: String) -> String {
         for (from, to) in &self.plural.suffixes {
             if let Some(stem) = s.strip_suffix(&format!(" {from}")) {
                 s = format!("{stem} {to}");
@@ -127,6 +156,123 @@ impl MatchRules {
             }
         }
         s
+    }
+
+    /// Each marker sign written `marker-word`: a sign word after its marker
+    /// (`x positive`) joins it, and a word ending in a sign's symbol is
+    /// marker-sign pairs at every symbol (`x+y-` → `x-positive y-negative`),
+    /// but a hyphen is a sign only at the word's end (`x-y+` →
+    /// `x-y-positive`); a word that ends in no symbol (`pro-x`) has no sign.
+    fn signed(&self, spaced: &str) -> String {
+        if self.marker_signs.is_empty() {
+            return spaced.to_string();
+        }
+        // Each one-character symbol and its sign.
+        let symbols: Vec<(char, &str)> = (self.marker_signs.iter())
+            .filter_map(|(sign, sym)| {
+                let mut c = sym.chars();
+                c.next()
+                    .filter(|_| c.next().is_none())
+                    .map(|c| (c, sign.as_str()))
+            })
+            .collect();
+        let sign_of = |c: char| symbols.iter().find(|(s, _)| *s == c).map(|(_, w)| *w);
+        // Sign the last word, unless it has a sign already.
+        let sign_last = |out: &mut Vec<String>, sign: &str| match out.last_mut() {
+            Some(last) if !self.has_sign(last) => {
+                last.push('-');
+                last.push_str(sign);
+                true
+            }
+            _ => false,
+        };
+        let mut out: Vec<String> = Vec::new();
+        for w in spaced.split(' ').filter(|w| !w.is_empty()) {
+            if self.marker_signs.contains_key(w) && sign_last(&mut out, w) {
+                continue;
+            }
+            if w.chars().last().and_then(sign_of).is_none() {
+                out.push(w.to_string());
+                continue;
+            }
+            // A hyphen symbol inside a word is the marker's own (`x-y+`);
+            // only at the end is it a sign.
+            let mut marker = String::new();
+            let n = w.chars().count();
+            for (i, c) in w.chars().enumerate() {
+                match sign_of(c).filter(|_| c != '-' || i + 1 == n) {
+                    None => marker.push(c),
+                    // A symbol alone signs the word before it (`x +`).
+                    Some(sign) if marker.is_empty() => {
+                        sign_last(&mut out, sign);
+                    }
+                    Some(sign) => out.push(format!("{}-{sign}", std::mem::take(&mut marker))),
+                }
+            }
+        }
+        out.join(" ")
+    }
+
+    /// A normalised text's words: spaces part them, and hyphens too, but
+    /// not in a marker with its sign (`x-y-positive` stays one word).
+    pub fn words<'a>(&'a self, normalised: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        normalised
+            .split(' ')
+            .filter(|w| !w.is_empty())
+            .flat_map(move |w| {
+                let whole = self.has_sign(w).then_some(w);
+                let parts = whole
+                    .is_none()
+                    .then(|| w.split('-').filter(|p| !p.is_empty()));
+                whole.into_iter().chain(parts.into_iter().flatten())
+            })
+    }
+
+    /// Whether `w` is a marker with its sign (`x-positive`).
+    fn has_sign(&self, w: &str) -> bool {
+        (self.marker_signs.keys())
+            .any(|s| (w.strip_suffix(s.as_str())).is_some_and(|m| m.len() > 1 && m.ends_with('-')))
+    }
+
+    /// [`Self::words`] in sorted order, for matching words in any order.
+    #[must_use]
+    pub fn word_bag(&self, normalised: &str) -> String {
+        let mut words: Vec<&str> = self.words(normalised).collect();
+        words.sort_unstable();
+        words.join(" ")
+    }
+
+    /// Each of [`Self::qualifiers`] as its words, compared as names are.
+    #[must_use]
+    pub fn qualifier_words(&self) -> Vec<Vec<String>> {
+        (self.qualifiers.iter())
+            .map(|q| {
+                self.words(&self.normalise(q))
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|q| !q.is_empty())
+            .collect()
+    }
+
+    /// A normalised name's [`Self::words`] without its `qualifiers` (from
+    /// [`Self::qualifier_words`]), when it has any and other words besides.
+    #[must_use]
+    pub fn unqualified(&self, normalised: &str, qualifiers: &[Vec<String>]) -> Option<String> {
+        let words: Vec<&str> = self.words(normalised).collect();
+        let (mut core, mut rest) = (Vec::new(), &words[..]);
+        while let Some(w) = rest.first() {
+            match (qualifiers.iter())
+                .find(|q| q.len() <= rest.len() && q.iter().zip(rest).all(|(a, b)| a == b))
+            {
+                Some(q) => rest = &rest[q.len()..],
+                None => {
+                    core.push(*w);
+                    rest = &rest[1..];
+                }
+            }
+        }
+        (!core.is_empty() && core.len() < words.len()).then(|| core.join(" "))
     }
 
     /// Every word made singular, when the rules say so.
@@ -178,8 +324,9 @@ fn strip_docs(v: &mut Value) {
 /// Curated label → CL term aliases.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Aliases {
-    /// [`label_key`], lower case → term.
-    map: BTreeMap<String, String>,
+    /// [`label_key`], lower case → term, and when the row was taken.
+    map: BTreeMap<String, (String, usize)>,
+    taken: usize,
 }
 
 impl Aliases {
@@ -199,7 +346,8 @@ impl Aliases {
                 skipped += 1;
                 continue;
             }
-            self.map.insert(key(label), id.to_string());
+            self.taken += 1;
+            self.map.insert(key(label), (id.to_string(), self.taken));
             n += 1;
         }
         if skipped > 0 {
@@ -211,7 +359,16 @@ impl Aliases {
     /// The term `label` is aliased to.
     #[must_use]
     pub fn get(&self, label: &str) -> Option<&str> {
-        self.map.get(&key(label)).map(String::as_str)
+        self.map.get(&key(label)).map(|(id, _)| id.as_str())
+    }
+
+    /// Each aliased label (as [`label_key`] keys it, lower case) and its
+    /// term, in the order the rows were taken: a later one overrides.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        let mut rows: Vec<_> = self.map.iter().collect();
+        rows.sort_by_key(|(_, (_, at))| *at);
+        rows.into_iter()
+            .map(|(l, (id, _))| (l.as_str(), id.as_str()))
     }
 
     /// How many labels are aliased.
