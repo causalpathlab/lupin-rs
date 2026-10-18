@@ -172,8 +172,13 @@ impl TermIndex {
         let rows: Vec<Box<str>> = (self.spans())
             .flat_map(|(t, r)| std::iter::repeat_n(Box::<str>::from(t), r.len()))
             .collect();
-        let partial = tempfile::Builder::new()
-            .suffix(".partial")
+        let mut partial = tempfile::Builder::new();
+        partial.suffix(".partial");
+        // A file of its own is made for the owner alone; the index is read
+        // as any file written there is, under the umask.
+        #[cfg(unix)]
+        partial.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
+        let partial = partial
             .tempfile_in(dir)
             .with_context(|| format!("a file to write {} through", file.display()))?;
         m.to_parquet_with_names(

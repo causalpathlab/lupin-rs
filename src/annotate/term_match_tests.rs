@@ -146,6 +146,21 @@ fn a_save_writes_through_a_file_of_its_own() {
     assert!(TermIndex::load(&file).is_ok());
 }
 
+#[cfg(unix)]
+#[test]
+fn a_saved_index_is_as_readable_as_any_file_written_there() {
+    // A shared cache folder: others read the index as they read any file.
+    use std::os::unix::fs::PermissionsExt;
+    let (_, idx) = index();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("index.parquet");
+    idx.save(&file).unwrap();
+    let plain = dir.path().join("plain");
+    std::fs::write(&plain, "x").unwrap();
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&file), mode(&plain));
+}
+
 #[test]
 fn the_cache_is_keyed_by_the_ontology_release_and_the_model_revision() {
     let rules = crate::annotate::cl_rules::shipped();
