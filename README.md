@@ -172,8 +172,10 @@ download out), or local files with `--lm-dir`; `--device` defaults to `cuda` in 
 sent anywhere. For each cluster it scores the TUI's label choices (each
 method's top three, and `unassigned`) as continuations of the prompt, so
 its label is always one of them, and writes one sentence on why that must
-name only the cluster's own choices, terms and markers, with no numbers;
-a sentence that fails the check twice is replaced by the template. Results
+name only the cluster's own choices, terms and markers, with no numbers,
+and claim of them only what the evidence shows (a method ranking a choice
+first or second); a sentence that fails the check twice, or makes a claim
+the evidence does not bear out, is replaced by the template. Results
 are appended to `{out}.consensus.jsonl`, keyed by the prompt, model and
 revision, so only clusters whose evidence changed are asked again.
 
@@ -184,7 +186,8 @@ decision then records `agent_proposed_user_accepted` with the model, its
 revision and probabilities, or `user_override` with the suggestion among
 the alternatives. On a trajectory, `L` in the order view writes a
 paragraph on its roots, branches and ends and a line per type, shown under
-the order table. Without the model (offline, never fetched) the TUI says
+the order table; a text that says what the run did not find (an edge's
+verdict, a type between two others, a root or an end) gives the template. Without the model (offline, never fetched) the TUI says
 so and the rest works.
 
 ## GO terms
