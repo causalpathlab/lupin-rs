@@ -1052,6 +1052,25 @@ fn a_negative_marker_s_word_is_no_panel_context() {
     let labels = ["CD2 ya", "CD3 za", "CD5 wa"];
     let (mapped, _) = t.map_labels(labels);
     assert!(mapped.is_empty(), "{mapped:?}");
-    t.set_panel(&panel(&[("G1", "CD2 ya"), ("G2", "CD3 za"), ("G3", "CD5 wa")]));
+    t.set_panel(&panel(&[
+        ("G1", "CD2 ya"),
+        ("G2", "CD3 za"),
+        ("G3", "CD5 wa"),
+    ]));
     assert_eq!(t.panel_context, Some(None));
+}
+
+#[test]
+fn an_alias_for_one_label_leaves_the_panel_s_word_to_the_others() {
+    let obo = "[Term]\nid: CL:1\nname: organx A cell\nsynonym: \"organx alpha cell\" EXACT []\n\n\
+               [Term]\nid: CL:2\nname: organx beta cell\n\n\
+               [Term]\nid: CL:3\nname: organx gamma cell\n";
+    let mut t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    t.add_aliases("Alpha\tCL:1\n", "test");
+    let labels = ["Alpha", "Beta", "Gamma"];
+    let (mapped, unmapped) = t.map_labels(labels);
+    assert!(unmapped.is_empty(), "{unmapped:?}");
+    assert_eq!(mapped["Beta"], "CL:2");
+    t.set_panel(&panel(&[("G1", "Alpha"), ("G2", "Beta"), ("G3", "Gamma")]));
+    assert_eq!(t.panel_context, Some(Some("organx".into())));
 }

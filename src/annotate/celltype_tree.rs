@@ -382,10 +382,11 @@ impl ClTerms {
     /// do; without one, it is told from `labels`.
     #[must_use]
     pub fn map_labels<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> Mapped {
-        let matched = self.match_labels(labels);
+        let labels: Vec<&str> = labels.into_iter().collect();
+        let matched = self.match_labels(labels.iter().copied());
         let completed = match &self.panel_context {
             Some(word) => (word.as_deref()).map(|w| self.completed_by(&matched.1, w)),
-            None => self.context_of(&matched.1).map(|(_, c)| c),
+            None => self.context_of(&self.unnamed(&labels)).map(|(_, c)| c),
         };
         match completed {
             Some(c) => with_completed(matched, c),
@@ -395,15 +396,25 @@ impl ClTerms {
 
     /// Read the word marker panel `panel` leaves off its labels, for
     /// [`Self::map_labels`] to complete any of them by; an empty panel
-    /// leaves the word to be told from the labels mapped.
+    /// leaves the word to be told from the labels given.
     pub fn set_panel(&mut self, panel: &[(String, String)]) {
         self.panel_context = None;
         let types = panel_types(panel);
         if types.is_empty() {
             return;
         }
-        let (_, unmapped) = self.match_labels(types.iter().map(String::as_str));
-        self.panel_context = Some(self.context_of(&unmapped).map(|(w, _)| w));
+        let types: Vec<&str> = types.iter().map(String::as_str).collect();
+        self.panel_context = Some(self.context_of(&self.unnamed(&types)).map(|(w, _)| w));
+    }
+
+    /// The labels of `labels` no name matches, aliases aside: the ones the
+    /// panel's word is told from, so an alias for one changes nothing for
+    /// the others.
+    fn unnamed(&self, labels: &[&str]) -> Vec<String> {
+        (labels.iter())
+            .filter(|l| self.match_name(l).is_none())
+            .map(|l| (*l).to_string())
+            .collect()
     }
 
     /// Each label's term by every tier but the panel's context, and the
@@ -480,6 +491,12 @@ impl ClTerms {
         if let Some(id) = self.aliases.get(label).filter(|id| self.has(id)) {
             return Some(id.to_string());
         }
+        self.match_name(label)
+    }
+
+    /// One label's term by the names alone, every tier but the aliases and
+    /// the panel's context.
+    fn match_name(&self, label: &str) -> Option<String> {
         let exact = self.rules.normalise(label);
         let single = self.rules.singular(&exact);
         // A label with no word names nothing.
@@ -637,7 +654,8 @@ impl ClTerms {
     }
 
     /// The panel's context word among the completions of `labels` (the ones
-    /// the other tiers leave, [`Self::completions`]): the one that completes
+    /// no name matches, [`Self::unnamed`], [`Self::completions`]): the one
+    /// that completes
     /// the most labels, when it completes enough of them and more than any
     /// other word, with the labels it completes and their terms. None when
     /// the rules leave context off.
@@ -807,8 +825,13 @@ fn with_completed(
     (mut mapped, mut unmapped): Mapped,
     completed: BTreeMap<String, String>,
 ) -> Mapped {
-    unmapped.retain(|l| !completed.contains_key(l));
-    mapped.extend(completed);
+    unmapped.retain(|l| match completed.get(l) {
+        Some(id) => {
+            mapped.insert(l.clone(), id.clone());
+            false
+        }
+        None => true,
+    });
     (mapped, unmapped)
 }
 
