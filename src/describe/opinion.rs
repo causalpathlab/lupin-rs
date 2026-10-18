@@ -48,7 +48,7 @@ const TOP: usize = 5;
 /// The longest biology sentence, in tokens.
 pub const BIOLOGY_TOKENS: usize = 60;
 /// How the model is asked; part of the cache key.
-const DECODE: &str = "label: mean log-probability of each panel type and unassigned, softmax; \
+const DECODE: &str = "label: log-probability of each panel type and unassigned, softmax; \
                       biology: from the label, greedy to a newline, 60 tokens, no numbers, markup \
                       or evidence words but the names', one retry with the offender banned";
 
@@ -212,10 +212,10 @@ pub fn opinion_prompt(c: &ClusterInput, panel: &[PanelType]) -> String {
     chat(SYSTEM, user.trim_end(), "LABEL:")
 }
 
-const BIOLOGY: &str =
-    "You say what one single-cell cluster's genes indicate about its cell type.\n\
-                       One sentence in words, no numbers. Name only the cell type, genes and gene \
-                       sets below.";
+const BIOLOGY: &str = "You explain in one plain sentence what a single-cell cluster's genes say \
+                       about its cell type: what the genes do, and why that fits the type.\n\
+                       Write a sentence, not a list: name at most three genes. No numbers. Name \
+                       only the cell type, genes and gene sets below.";
 
 /// The prompt the biology sentence on `label` for cluster `c` is written
 /// after: the type, its markers among the cluster's genes, the top genes
@@ -396,7 +396,8 @@ pub(crate) fn cited(text: &str, named: &BTreeSet<String>, own: &BTreeSet<String>
 
 /// The check a biology sentence passes beyond [`citation_check`]: some
 /// text, and outside the names it may cite (`CD8`) no number, formula or
-/// markup sign, nor a word of the [`super::vocabulary`].
+/// markup sign, nor a word of the [`super::vocabulary`]; a sentence, not a
+/// list of more than [`MAX_NAMED`] of its names.
 pub fn check(
     text: &str,
     run: &BTreeSet<String>,
@@ -433,7 +434,28 @@ pub fn check(
     if let Some(w) = super::vocabulary::used(&rest) {
         return Err(CitationError::Vocabulary(w.to_string()));
     }
+    // A sentence, not a list of the genes it was given.
+    let own_named = cited(text, &BTreeSet::new(), own).len();
+    if own_named > MAX_NAMED {
+        return Err(CitationError::List(own_named));
+    }
     cites.map(|_| ())
+}
+
+/// The most genes, terms and markers a biology sentence names: more is a
+/// list of what it was given.
+const MAX_NAMED: usize = 5;
+
+/// How a biology sentence on `label` begins: the type's cells, so it reads
+/// as a sentence about them.
+fn lead(label: &str) -> String {
+    let shown = shown(label);
+    let last = shown.rsplit(' ').next().unwrap_or_default().to_lowercase();
+    if last == "cell" || last == "cells" {
+        shown
+    } else {
+        format!("{shown} cells")
+    }
 }
 
 /// A sentence from `lm` begun with `lead` after `prompt`, decoded under
@@ -484,8 +506,9 @@ fn first_sentence(text: &str) -> String {
 }
 
 /// The opinion on cluster `c` of `round` by `lm` (named `model` at
-/// `revision`): every panel type and `unassigned` scored, then the biology
-/// sentence on the top.
+/// `revision`): every panel type and `unassigned` scored by its
+/// log-probability as the answer, a softmax of those its probability; then
+/// the biology sentence on the top.
 pub fn opine(
     lm: &mut dyn Lm,
     model: &str,
@@ -527,7 +550,7 @@ pub fn opine(
             numbers: true,
             keep: names,
         };
-        let sentence = checked(lm, &biology_prompt(c, &label), &shown(&label), bans, |t| {
+        let sentence = checked(lm, &biology_prompt(c, &label), &lead(&label), bans, |t| {
             check(t, &round.entities, &named, &own)
         })?
         .map(|s| first_sentence(&s));

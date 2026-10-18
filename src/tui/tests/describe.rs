@@ -39,7 +39,7 @@ fn opine_by(round: &Path, scores: &[(&str, f32)]) -> Vec<Opinion> {
     let loaded = crate::manifest::run::load(&round.to_string_lossy()).unwrap();
     let r = opinion::inputs(&loaded).unwrap();
     let load = || -> anyhow::Result<Box<dyn Lm>> {
-        let cont = WHY.trim_start_matches("CT2");
+        let cont = WHY.trim_start_matches("CT2 cells");
         Ok(Box::new(Stub::new(scores, &[cont, cont, cont])))
     };
     opinion::opine_round(&r, &spec(), &cache_of(round), load).unwrap()

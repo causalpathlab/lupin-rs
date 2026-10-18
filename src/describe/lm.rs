@@ -5,10 +5,10 @@
 //! only when they are not cached yet.
 //!
 //! The model does two things, behind [`Lm`]: it scores a closed set of
-//! continuations of a prompt, and it continues a prompt greedily until a
-//! newline. The last prompt's KV cache is kept for a prompt it starts, so
-//! the label choices pay for their prompt once, and a sentence asked again
-//! for its prompt once.
+//! continuations of a prompt (each one's log-probability), and it continues
+//! a prompt greedily until a newline. The last prompt's KV cache is kept for
+//! a prompt it starts, so the answers pay for their prompt once, and a
+//! sentence asked again for its prompt once.
 
 use crate::gene_text::cli::ComputeDevice;
 use anyhow::{Context, Result};
@@ -22,8 +22,9 @@ use tokenizers::Tokenizer;
 /// What a model does for `describe`; [`Qwen3`] is the real one, the tests
 /// use their own.
 pub trait Lm {
-    /// The mean log-probability per token of each continuation after
-    /// `prompt`.
+    /// The log-probability of each continuation after `prompt`: the sum
+    /// over its tokens, so a long name is not favoured for the tokens its
+    /// first one makes certain.
     fn score(&mut self, prompt: &str, continuations: &[String]) -> Result<Vec<f32>>;
 
     /// `prompt` continued greedily up to a newline or `max_tokens`, never
@@ -391,7 +392,7 @@ impl Lm for Qwen3 {
                         total += row[next as usize];
                     }
                 }
-                Ok(total / ids.len() as f32)
+                Ok(total)
             })
             .collect()
     }

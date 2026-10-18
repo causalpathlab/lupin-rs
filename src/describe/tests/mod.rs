@@ -342,7 +342,7 @@ fn a_models_opinion_is_written_with_the_facts_on_its_top_by_code() {
         &opinion::inputs(&loaded).unwrap(),
         &spec,
         &opinion::cache_of(&loaded),
-        || Ok(Box::new(Stub::new(&[("CT2", -0.1)], &[" cells."; 3])) as Box<dyn lm::Lm>),
+        || Ok(Box::new(Stub::new(&[("CT2", -0.1)], &["."; 3])) as Box<dyn lm::Lm>),
     )
     .unwrap();
     let texts = opinion_texts(&loaded, made).unwrap();

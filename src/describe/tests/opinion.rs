@@ -183,7 +183,7 @@ fn the_biology_prompt_states_the_type_its_markers_here_the_genes_and_the_terms()
 fn the_label_is_the_best_scored_panel_type_and_every_type_has_its_probability() {
     let mut stub = Stub::new(
         &[("CT A", -1.0), ("CT B", -0.2), ("CD8 T", -3.0)],
-        &[" cells express GENE1."],
+        &[" express GENE1."],
     );
     let o = opine_with(&mut stub);
     assert_eq!(o.label, "CT_B");
@@ -193,7 +193,10 @@ fn the_label_is_the_best_scored_panel_type_and_every_type_has_its_probability() 
     assert!(o.p_label() > o.p["CT_A"]);
     // The sentence is asked for after the type taken, its biology alone.
     let (asked, bans) = &stub.asked[0];
-    assert!(asked.ends_with("<think>\n\n</think>\n\nCT B"), "{asked}");
+    assert!(
+        asked.ends_with("<think>\n\n</think>\n\nCT B cells"),
+        "{asked}"
+    );
     assert!(asked.contains("CELL TYPE: CT B\n"), "{asked}");
     assert!(bans.numbers);
     for w in [
@@ -264,14 +267,28 @@ fn a_biology_sentence_names_only_its_inputs_and_states_no_fact_of_the_evidence()
             "{text}"
         );
     }
+    assert_eq!(
+        check(
+            "CT A cells: GENE1, GENE2, CD8A, GENE9, T cell activation, B cell receptor signaling."
+        ),
+        Err(CitationError::List(6)),
+        "a list, not a sentence"
+    );
     assert_eq!(check("  "), Err(CitationError::Empty));
+}
+
+#[test]
+fn a_biology_sentence_begins_with_the_types_cells() {
+    assert_eq!(lead("CT_A"), "CT A cells");
+    assert_eq!(lead("Plasma_Cell"), "Plasma Cell");
+    assert_eq!(lead("NK_cells"), "NK cells");
 }
 
 #[test]
 fn a_failing_sentence_is_tried_again_with_the_offender_banned_then_dropped() {
     let mut stub = Stub::new(
         &[("CT A", -0.1)],
-        &[" ranks it by GENE1.", " cells express GENE1."],
+        &[" ranks it by GENE1.", " express GENE1."],
     );
     let o = opine_with(&mut stub);
     assert_eq!(stub.asked.len(), 2);
@@ -303,7 +320,7 @@ fn unassigned_has_no_sentence_and_only_the_first_is_kept() {
     assert_eq!((o.check, o.biology), (Check::Template, None));
     let mut stub = Stub::new(
         &[("CT A", -0.1)],
-        &[" cells express GENE1. They also express GENE2."],
+        &[" express GENE1. They also express GENE2."],
     );
     assert_eq!(
         opine_with(&mut stub).biology.as_deref(),
@@ -378,7 +395,7 @@ fn the_facts_say_where_each_other_method_puts_the_type_with_its_readings() {
         facts("CT_A", &[]),
         "No other method ranks this cluster's types."
     );
-    let mut stub = Stub::new(&[("CT B", -0.1)], &[" cells express GENE1."]);
+    let mut stub = Stub::new(&[("CT B", -0.1)], &[" express GENE1."]);
     let o = opine_with(&mut stub);
     assert_eq!(
         o.text(&c),
@@ -408,10 +425,7 @@ fn the_key_is_the_prompts_the_model_and_its_revision() {
 
 #[test]
 fn an_opinion_reads_back_from_its_line_and_tables_what_the_model_puts_forward() {
-    let mut stub = Stub::new(
-        &[("CT A", -0.1), ("CT B", -1.0)],
-        &[" cells express GENE1."],
-    );
+    let mut stub = Stub::new(&[("CT A", -0.1), ("CT B", -1.0)], &[" express GENE1."]);
     let o = opine_with(&mut stub);
     let line = serde_json::to_string(&o).unwrap();
     assert!(line.contains(r#""check":"ok""#), "{line}");

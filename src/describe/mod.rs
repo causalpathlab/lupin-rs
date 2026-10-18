@@ -1114,6 +1114,9 @@ pub enum CitationError {
     /// (A model's text) a word that states an order, a role, a verdict, a
     /// rank or a method, which code states ([`vocabulary`]).
     Vocabulary(String),
+    /// (A model's text) a list of this many of the names it was given, not
+    /// a sentence.
+    List(usize),
 }
 
 impl std::fmt::Display for CitationError {
@@ -1126,6 +1129,7 @@ impl std::fmt::Display for CitationError {
             Self::Markup(m) => write!(f, "markup ({m})"),
             Self::Empty => write!(f, "no sentence"),
             Self::Vocabulary(w) => write!(f, "a word only code may use ({w})"),
+            Self::List(n) => write!(f, "a list of {n} names, not a sentence"),
         }
     }
 }
