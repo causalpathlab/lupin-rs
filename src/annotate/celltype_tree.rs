@@ -627,15 +627,16 @@ impl ClTerms {
     /// Per word that, with at most an implied one, turns labels of `labels`
     /// into a term's name or counted synonym: those labels, with their
     /// terms (see `ContextRules`). A scan of every name finds the words;
-    /// [`Self::completed_by`] completes by each.
+    /// [`Self::complete`] completes by each.
     fn completions(&self, labels: &[String]) -> BTreeMap<&str, BTreeMap<String, String>> {
         let implied = &self.rules.implied.suffixes;
+        // Each label's words, worked out once for every word tried.
+        let own: Vec<(&String, Vec<String>)> = (labels.iter())
+            .map(|l| (l, self.label_words(l)))
+            .filter(|(_, w)| !w.is_empty())
+            .collect();
         let mut found: BTreeSet<&str> = BTreeSet::new();
-        for label in labels {
-            let own = self.label_words(label);
-            if own.is_empty() {
-                continue;
-            }
+        for (_, own) in &own {
             for bag in self.names.by_words.keys() {
                 let mut rest: Vec<&str> = bag.split(' ').collect();
                 let all_there = own.iter().all(|w| {
@@ -659,13 +660,19 @@ impl ClTerms {
             }
         }
         (found.into_iter())
-            .map(|w| (w, self.completed_by(labels, w)))
+            .map(|w| {
+                let completed: BTreeMap<String, String> = (own.iter())
+                    .filter_map(|(l, own)| Some(((*l).clone(), self.complete_words(own, w)?)))
+                    .collect();
+                (w, completed)
+            })
             .filter(|(_, completed)| !completed.is_empty())
             .collect()
     }
 
     /// The labels of `labels` word `w` completes ([`Self::complete`]), with
     /// their terms.
+    #[cfg(test)]
     fn completed_by(&self, labels: &[String], w: &str) -> BTreeMap<String, String> {
         (labels.iter())
             .filter_map(|l| Some((l.clone(), self.complete(l, w)?)))
@@ -677,12 +684,13 @@ impl ClTerms {
     /// implied word or a marker's sign ([`SIGN_WORDS`]) completes nothing: a
     /// label leaving off `negative` is no negative marker's.
     fn complete(&self, label: &str, w: &str) -> Option<String> {
+        self.complete_words(&self.label_words(label), w)
+    }
+
+    /// [`Self::complete`] on a label's words `own` ([`Self::label_words`]).
+    fn complete_words(&self, own: &[String], w: &str) -> Option<String> {
         let implied = &self.rules.implied.suffixes;
-        if implied.iter().any(|s| s == w) || SIGN_WORDS.contains(&w) {
-            return None;
-        }
-        let own = self.label_words(label);
-        if own.is_empty() {
+        if own.is_empty() || implied.iter().any(|s| s == w) || SIGN_WORDS.contains(&w) {
             return None;
         }
         let bag = |more: &[&str]| {
