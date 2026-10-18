@@ -2542,8 +2542,8 @@ fn enter_offers_each_methods_top_choices_first_then_the_tree_and_a_name() {
         .collect();
     assert_eq!(
         labels,
-        ["CT1", "CT2", "CT3", "on the tree…", "a name…"],
-        "the methods' tops first"
+        ["CT2", "CT1", "CT3", "on the tree…", "a name…"],
+        "the methods' tops first, the score's leading where they disagree"
     );
     let screen = drawn(&app);
     assert!(
@@ -2559,7 +2559,7 @@ fn enter_offers_each_methods_top_choices_first_then_the_tree_and_a_name() {
     assert!(app.menu.is_none());
     assert!(matches!(
         app.prompt.as_ref().map(|p| &p.pending),
-        Some(Pending::Label { label, .. }) if label == "CT2"
+        Some(Pending::Label { label, .. }) if label == "CT1"
     ));
 }
 
