@@ -260,8 +260,9 @@ fn a_sentence_names_only_the_types_and_terms_of_its_evidence() {
     );
     let mut with_m2 = run();
     with_m2.insert("M2".into());
-    assert!(
-        check_lm("CT A, like M2 cells.", &with_m2, &c.named(), &c.own()).is_err(),
+    assert_eq!(
+        check_lm("CT A, like M2 cells.", &with_m2, &c.named(), &c.own()),
+        Err(CitationError::Digits("2".into())),
         "a short name of another's, which the citation check lets by, is a number"
     );
     assert_eq!(check("Its cells look odd."), Err(CitationError::NamesNone));
