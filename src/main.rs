@@ -110,6 +110,7 @@ enum Commands {
                       `{out}.trajectory.describe.md`. Nothing is applied: the TUI offers\n\
                       the proposals, the user confirms them.\n\
                       \n\
+                      Without `-o` the TUI opens on the round (or the trajectory) and runs it.\n\
                       Every sentence is citation-checked: it names only its evidence."
     )]
     Describe(DescribeArgs),
@@ -162,6 +163,7 @@ fn main() -> Result<()> {
     let interactive = match &cli.cmd {
         Commands::Annotate(c) => c.opens_tui(),
         Commands::Trajectory(c) => c.opens_tui(),
+        Commands::Describe(c) => c.out.is_none(),
         _ => false,
     };
     if interactive {

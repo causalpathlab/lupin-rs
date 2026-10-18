@@ -70,8 +70,12 @@ pub struct DescribeArgs {
     )]
     pub fdr_alpha: f32,
 
-    #[arg(long, short = 'o', help = "Output prefix")]
-    pub out: Box<str>,
+    #[arg(
+        long,
+        short = 'o',
+        help = "Output prefix; without it, the TUI opens on the round (or the trajectory) and runs the consensus"
+    )]
+    pub out: Option<Box<str>>,
 
     #[command(flatten)]
     pub lm: LmArgs,
@@ -194,7 +198,9 @@ fn describe_trajectory(
 }
 
 pub fn run_describe(args: &DescribeArgs) -> Result<()> {
-    let out: &str = &args.out;
+    let Some(out) = args.out.as_deref() else {
+        return crate::tui::run_describe(&args.from, &args.lm);
+    };
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
     let loaded = crate::manifest::run::load(&args.from).ok();
     if let Some(l) = loaded.as_ref().filter(|l| is_trajectory(l)) {

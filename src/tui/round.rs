@@ -325,6 +325,9 @@ pub struct RoundView {
     /// The round's cells on its run's layouts, for the cell map; taken by
     /// the app when it shows the round.
     pub figures: crate::figures::CellFigures,
+    /// Each cluster's proposal by the consensus, made on its evidence as
+    /// the round has it (`L`); none until one is read.
+    pub proposals: BTreeMap<ClusterId, crate::describe::consensus::Proposal>,
 }
 
 impl RoundView {
@@ -384,6 +387,7 @@ impl RoundView {
             decided,
             rescorable: a.stats_cache.is_some() && a.expression_clusters.is_some(),
             by,
+            proposals: BTreeMap::new(),
         })
     }
 
@@ -701,26 +705,68 @@ pub fn decisions(edits: &[Edit], round: &RoundView, recorded: Option<&Scores>) -
             })
             .unwrap_or_default();
         // As listed by the round's method: the first ten and each method's top.
-        let evidence = listed(evidence, round.by.unwrap_or_default(), false)
-            .into_iter()
-            .map(|c| {
-                json!({"kind": "marker", "term": c.label, "share": c.share, "nes": c.nes,
+        let mut evidence: Vec<serde_json::Value> =
+            listed(evidence, round.by.unwrap_or_default(), false)
+                .into_iter()
+                .map(|c| {
+                    json!({"kind": "marker", "term": c.label, "share": c.share, "nes": c.nes,
                        "p": c.p, "q": c.q, "pip": c.pip, "fold": c.fold, "score": c.score})
-            })
-            .collect();
+                })
+                .collect();
         let (action, label, reason) = match e {
             Edit::Label { label, reason, .. } => (Action::Label, Some(label.clone()), reason),
             Edit::Keep { reason, .. } => (Action::Keep, None, reason),
             Edit::Markers { .. } => continue,
         };
-        out.push(decision(
+        let mut d = decision(
             action,
             vec![id],
-            label,
+            label.clone(),
             Vec::new(),
-            evidence,
+            Vec::new(),
             reason,
-        ));
+        );
+        // A label given while the consensus proposed one: the user took it
+        // or overrode it, and the record says which.
+        if let (Some(label), Some(p)) = (&label, round.proposals.get(&id)) {
+            let taken = label_key(label) == label_key(&p.label);
+            let terms = round.clusters.iter().find(|c| c.id == id);
+            let terms = terms.map_or(&[][..], |c| &c.terms[..]);
+            let cited: Vec<serde_json::Value> = (p.cited.iter())
+                .filter_map(|name| {
+                    let row = evidence.iter().position(|e| e["term"] == name.as_str());
+                    if let Some(i) = row {
+                        return Some(evidence.remove(i));
+                    }
+                    let t = terms.iter().find(|t| &t.term == name)?;
+                    Some(json!({"kind": "term", "source": t.source, "term": t.term,
+                                "effect": t.effect, "q": t.q}))
+                })
+                .collect();
+            let consensus = json!({"consensus": {"model": p.model, "revision": p.revision,
+                                                 "label": p.label, "p": p.p_label()}});
+            evidence = std::iter::once(consensus)
+                .chain(cited)
+                .chain(evidence)
+                .collect();
+            let mut others: Vec<(&String, &f32)> = (p.p.iter())
+                .filter(|(l, _)| label_key(l) != label_key(label) && **l != p.label)
+                .collect();
+            others.sort_by(|a, b| b.1.total_cmp(a.1).then_with(|| a.0.cmp(b.0)));
+            let others = others.into_iter().map(|(l, v)| json!({"label": l, "p": v}));
+            d.alternatives = if taken {
+                d.decided_by = DecidedBy::AgentProposedUserAccepted;
+                others.collect()
+            } else {
+                d.decided_by = DecidedBy::UserOverride;
+                std::iter::once(json!({"label": p.label, "p": p.p_label(),
+                                       "proposed_by": "consensus", "rationale": p.rationale}))
+                .chain(others)
+                .collect()
+            };
+        }
+        d.evidence = evidence;
+        out.push(d);
     }
     out
 }

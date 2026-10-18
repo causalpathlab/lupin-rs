@@ -56,6 +56,25 @@ pub fn spawn_suggest(
     spawn(&argv, log)
 }
 
+/// Start `lupin describe -f <manifest> -o <out> --lm` as a child, with
+/// `lm`'s model, directory and device.
+pub fn spawn_describe(
+    manifest: &Path,
+    out: &str,
+    lm: &crate::describe::LmArgs,
+    log: Sender<String>,
+) -> Result<Child> {
+    let mut argv = vec![
+        "describe".to_string(),
+        "-f".into(),
+        manifest.to_string_lossy().into_owned(),
+        "-o".into(),
+        out.to_string(),
+    ];
+    argv.extend(lm.to_argv());
+    spawn(&argv, log)
+}
+
 /// Start `lupin relabel -f <round> -d <decisions> --next` as a child.
 pub fn spawn_relabel(round: &Path, decisions: &Path, log: Sender<String>) -> Result<Child> {
     let argv = [
