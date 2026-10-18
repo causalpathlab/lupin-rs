@@ -117,6 +117,9 @@ fn a_node_is_called_by_its_panel_type_else_its_name() {
         Some(ct1_cell),
         "a node holding a type is also found by its term's name"
     );
+    // A type's leaf groups nothing: its term's name is no group's.
+    assert!(t.node_of("CT0_cells").is_some());
+    assert_eq!(t.node_of("CT0_cell"), None, "no group of CT0's");
     let mut under = t.labels_under(group2);
     under.sort_unstable();
     assert_eq!(under, ["CT0_cells", "CT1_cells", "CT1_helper"]);

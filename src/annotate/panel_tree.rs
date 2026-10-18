@@ -304,16 +304,18 @@ impl PanelTree {
         })
     }
 
-    /// The node a label names: a panel type, a node called by it, or one
-    /// whose term it is (a group named for a member's own term).
+    /// The node a label names: a panel type, a node called by it, or a
+    /// group whose term it is (a group named for a member's own term). A
+    /// type's leaf, which groups nothing, is not found by its term's name.
     #[must_use]
     pub fn node_of(&self, label: &str) -> Option<usize> {
         let key = label_key(label);
+        let group = |i: usize| !self.nodes[i].children.is_empty() && self.nodes[i].name == key;
         self.of_label
             .get(&key)
             .copied()
             .or_else(|| (0..self.nodes.len()).find(|&i| self.label(i) == key))
-            .or_else(|| (0..self.nodes.len()).find(|&i| self.nodes[i].name == key))
+            .or_else(|| (0..self.nodes.len()).find(|&i| group(i)))
     }
 
     /// `i` and its ancestors, root first.
