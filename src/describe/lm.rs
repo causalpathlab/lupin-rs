@@ -6,8 +6,11 @@
 //!
 //! The model does two things, behind [`Lm`]: it scores a closed set of
 //! continuations of a prompt, and it continues a prompt greedily until a
-//! newline. Both share the prompt's KV cache, so the label choices and the
-//! rationale after them pay for the prompt once.
+//! newline. The last prompt's KV cache is kept for a prompt it starts, so
+//! the label choices pay for their prompt once, and a sentence asked again
+//! for its prompt once. The label and the rationale are asked after two
+//! prompts that state the evidence apart (with its numbers, in words) and
+//! part after the system text: each is run in full.
 
 use crate::gene_text::cli::ComputeDevice;
 use anyhow::{Context, Result};
