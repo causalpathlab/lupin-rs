@@ -11,7 +11,7 @@
     "subsets": ["cellxgene_subset"],
     "subset_suffixes": ["_upper_slim"],
     "exclude_subset_suffixes": ["upper_level"],
-    "_lineage": "Terms in these subsets are lineages: the first round's groups below one lineage are one group (T cell types under alpha-beta T cell). The general slim names whole systems, too broad for that.",
+    "_lineage": "Terms in these subsets are lineages: the first round's groups below one lineage are one group (T cell types under alpha-beta T cell), when that adds no level: no other group lies below the lineage, or the lineage is a panel type's own term. The general slim names whole systems, too broad for that.",
     "lineage_suffixes": ["_upper_slim"],
     "lineage_exclude": ["general_cell_types_upper_slim"]
   },

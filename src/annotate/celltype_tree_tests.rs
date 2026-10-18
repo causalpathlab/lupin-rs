@@ -1217,3 +1217,27 @@ fn a_run_of_words_a_name_matches_comes_before_one_the_panel_s_word_completes() {
         "{placed:?}"
     );
 }
+
+#[test]
+fn a_lineage_a_type_is_on_takes_its_kinds_whatever_lies_below() {
+    // lin M is a panel type's own term, over phagocytes and the nested
+    // lineage lin AB.
+    let obo = "[Term]\nid: CL:0\nname: root cell\n\n\
+               [Term]\nid: CL:1\nname: lin M cell\nsubset: blood_and_immune_upper_slim\nis_a: CL:0\n\n\
+               [Term]\nid: CL:2\nname: phago cell\nsubset: cellxgene_subset\nis_a: CL:1\n\n\
+               [Term]\nid: CL:3\nname: mono A cell\nis_a: CL:2\n\n\
+               [Term]\nid: CL:4\nname: mono B cell\nis_a: CL:2\n\n\
+               [Term]\nid: CL:6\nname: lin AB cell\nsubset: blood_and_immune_upper_slim\nis_a: CL:1\n\n\
+               [Term]\nid: CL:7\nname: ab one cell\nis_a: CL:6\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let p = panel(&[
+        ("G1", "Lin M"),
+        ("G2", "Mono A"),
+        ("G3", "Mono B"),
+        ("G4", "AB one"),
+    ]);
+    let tree = TypeTree::from_ontology(&t, &p).unwrap();
+    assert_eq!(members(&tree, "lin_M_cell"), ["Lin M", "Mono A", "Mono B"]);
+    assert_eq!(members(&tree, "ab_one_cell"), ["AB one"]);
+    assert_eq!(tree.groups.len(), 2, "{:?}", tree.groups);
+}

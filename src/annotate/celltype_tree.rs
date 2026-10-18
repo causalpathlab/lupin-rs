@@ -9,8 +9,10 @@
 //! and `cellxgene_subset`) that it shares with another panel type, short of
 //! one that is a panel type's own term over a kind of it; a group whose
 //! class is a kind of another group's then joins that one, and groups below
-//! one curated lineage (a domain `*_upper_slim` term) are one, so the groups
-//! are one level. A type
+//! one curated lineage (a domain `*_upper_slim` term) are one when that adds
+//! no level: when no other group lies below the lineage, or when the
+//! lineage is already one of the merging groups' class (a panel type's own
+//! term). A type
 //! the ontology has only a kind of term for (`Early X` for `X`) groups as
 //! that term; one that matches no term joins the group sharing its most
 //! specific markers, keeping to the lineage its words hint at. A fine panel
@@ -1132,9 +1134,10 @@ impl TypeTree {
             }
         }
         // Groups below one lineage are one group: each group's lineage is the
-        // nearest above its class, or above its lone type's own term. A
-        // lineage over a group it does not take merges nothing, so the
-        // groups stay one level.
+        // nearest above its class, or above its lone type's own term. The
+        // groups stay one level: a lineage over a group it does not take
+        // merges nothing, unless it is already one merging group's class (a
+        // panel type's own term), which adds no level.
         let class_of = |id: &str, members: &[String]| match members {
             [m] => mapped[m.as_str()].to_string(),
             _ => id.to_string(),
@@ -1156,10 +1159,12 @@ impl TypeTree {
         // a lineage may be the class of a group merging elsewhere.
         let merged: Vec<(String, Vec<String>)> = (by_lineage.into_iter())
             .filter(|(lineage, ids)| {
+                let is_a_class = ids.iter().any(|id| classes[id] == *lineage);
                 ids.len() >= 2
-                    && (classes.iter())
-                        .filter(|(id, _)| !ids.contains(id))
-                        .all(|(_, class)| !above(class).contains(lineage))
+                    && (is_a_class
+                        || (classes.iter())
+                            .filter(|(id, _)| !ids.contains(id))
+                            .all(|(_, class)| !above(class).contains(lineage)))
             })
             .map(|(lineage, ids)| {
                 let members = (ids.iter())

@@ -19,7 +19,8 @@ pub struct ClassRules {
     pub subset_suffixes: Vec<String>,
     pub exclude_subset_suffixes: Vec<String>,
     /// Subsets whose terms are lineages: groups of the first round below
-    /// one lineage are one group.
+    /// one lineage are one group, when that adds no level (see
+    /// [`crate::annotate::celltype_tree`]).
     pub lineage_suffixes: Vec<String>,
     /// Subsets too general to be a lineage.
     pub lineage_exclude: Vec<String>,
