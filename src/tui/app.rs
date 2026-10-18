@@ -551,10 +551,10 @@ pub struct App {
     following: Option<super::consensus::Following>,
     /// The trajectory's texts, once described (`L` in the order view):
     /// in the order view always those of [`Self::shown_trajectory`], as
-    /// [`Self::keep_order_texts_current`] keeps them, or none.
+    /// [`Self::keep_order_current`] keeps them, or none.
     pub order_texts: Option<super::consensus::OrderTexts>,
-    /// The manifests [`Self::order_texts`] were last read among, or none
-    /// to read them again.
+    /// The manifests [`Self::order_texts`] and the order view's edges were
+    /// last read among.
     order_texts_for: Option<Vec<PathBuf>>,
     pub tree_sel: usize,
     /// The order view's types on the Cell Ontology, drawn beside the
@@ -734,7 +734,7 @@ impl App {
             self.push_log(line);
         }
         self.keep_scores_current();
-        self.keep_order_texts_current();
+        self.keep_order_current();
         // A question asked again lapses, and the status with it unless
         // something has said more since.
         if let Some((_, _, asked)) = self
@@ -2874,6 +2874,7 @@ impl App {
             }
         }
         self.reload_order();
+        self.load_order_texts(true);
         self.status = "order view: space marks a type, then > states the first precedes the second, u that they are unrelated".into();
     }
 
@@ -3368,8 +3369,9 @@ impl App {
             }
         }
         if self.in_order() {
-            // The order view's edges follow the trajectory now shown.
+            // The order view's edges and texts follow the trajectory now shown.
             self.rebuild_order(true);
+            self.load_order_texts(true);
         }
         self.status = match (&self.round, trajectory) {
             (Some(r), true) => format!(
@@ -3616,10 +3618,10 @@ impl App {
         }
         if self.in_order() {
             self.reload_order();
+            // Its manifest is written anew, maybe over the one shown: its
+            // texts are read again, on its new facts.
+            self.load_order_texts(true);
         }
-        // Its manifest is written anew: its texts are read again.
-        self.order_texts_for = None;
-        self.keep_order_texts_current();
         // The header names the manifest whose figures are up.
         self.status = if self.figures.is_some() && self.trajectory_tui {
             format!("trajectory done in {secs}s: its figures (g lists the runs)")
@@ -4299,33 +4301,42 @@ impl App {
         shown_among(self.trajectory_candidates())
     }
 
-    /// In the order view, whose strip alone shows them, read the texts
-    /// again whenever where the trajectory shown is looked for has changed,
-    /// whatever changed it: the one place [`Self::order_texts`] is kept
-    /// the shown trajectory's.
-    fn keep_order_texts_current(&mut self) {
-        if self.in_order() && self.order_texts_for != Some(self.trajectory_candidates()) {
-            self.load_order_texts();
+    /// In the order view, keep the table and the strip on the trajectory
+    /// shown, whatever changed it: when where it is looked for has changed,
+    /// its edges and texts are read again together; else the texts are
+    /// polled. Entering the view, opening a run and a run done read the
+    /// texts again themselves (`force`, [`Self::load_order_texts`]).
+    fn keep_order_current(&mut self) {
+        if !self.in_order() {
+            return;
+        }
+        if self.order_texts_for != Some(self.trajectory_candidates()) {
+            self.rebuild_order(true);
+            self.load_order_texts(false);
+        } else {
+            self.refresh_order_texts();
         }
     }
 
-    /// The texts of the trajectory shown, when its cache has some; another
-    /// trajectory's are let go.
-    pub(super) fn load_order_texts(&mut self) {
+    /// The texts of the trajectory shown: polled when they are followed
+    /// already and nothing `force`s a new read; else read again from its
+    /// cache, else its templates when they were followed (`L`), else none.
+    pub(super) fn load_order_texts(&mut self, force: bool) {
         let candidates = self.trajectory_candidates();
         let shown = shown_among(candidates.iter().cloned());
         self.order_texts_for = Some(candidates);
-        if self
-            .order_texts
-            .as_ref()
-            .is_some_and(|t| Some(&t.manifest) != shown.as_ref())
+        if !force
+            && shown.is_some()
+            && self.order_texts.as_ref().map(|t| &t.manifest) == shown.as_ref()
         {
-            self.order_texts = None;
+            return self.refresh_order_texts();
         }
+        let followed = self.order_texts.take().map(|t| t.manifest);
         let Some(m) = shown else {
             return;
         };
-        if cache_path(&derive_out_prefix(&m.to_string_lossy())).is_file() {
+        let cached = cache_path(&derive_out_prefix(&m.to_string_lossy())).is_file();
+        if cached || followed.as_ref() == Some(&m) {
             if let Err(e) = self.follow_order_texts(&m) {
                 self.push_log(format!("[WARN] no trajectory texts: {e:#}"));
             }
