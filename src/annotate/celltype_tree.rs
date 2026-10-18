@@ -376,9 +376,13 @@ impl ClTerms {
         labels: impl IntoIterator<Item = &'a str>,
     ) -> (BTreeMap<String, String>, Vec<String>, Option<String>) {
         let matched = self.match_labels(labels);
-        let word = self.context_of(&matched.1);
-        let (mapped, unmapped) = self.complete(matched, word.as_deref());
-        (mapped, unmapped, word)
+        match self.context_of(&matched.1) {
+            Some((word, completed)) => {
+                let (mapped, unmapped) = with_completed(matched, completed);
+                (mapped, unmapped, Some(word))
+            }
+            None => (matched.0, matched.1, None),
+        }
     }
 
     /// [`Self::map_labels`] with the panel's context word given (the one it
@@ -390,18 +394,15 @@ impl ClTerms {
         labels: impl IntoIterator<Item = &'a str>,
         context: Option<&str>,
     ) -> Mapped {
-        self.complete(self.match_labels(labels), context)
-    }
-
-    /// `matched` with each label it leaves that the `context` word
-    /// completes ([`Self::completed_by`]) mapped, and the rest left.
-    fn complete(&self, (mut mapped, mut unmapped): Mapped, context: Option<&str>) -> Mapped {
-        if let Some(w) = context {
-            let completed = self.completed_by(&unmapped, w);
-            unmapped.retain(|l| !completed.contains_key(l));
-            mapped.extend(completed);
+        let matched = self.match_labels(labels);
+        match context {
+            // Each label left that the word completes.
+            Some(w) => {
+                let completed = self.completed_by(&matched.1, w);
+                with_completed(matched, completed)
+            }
+            None => matched,
         }
-        (mapped, unmapped)
     }
 
     /// Each label's term by every tier but the panel's context, and the
@@ -646,18 +647,18 @@ impl ClTerms {
     /// The panel's context word among the completions of `labels` (the ones
     /// the other tiers leave, [`Self::completions`]): the one that completes
     /// the most labels, when it completes enough of them and more than any
-    /// other word. None when the rules leave context off.
-    fn context_of(&self, labels: &[String]) -> Option<String> {
+    /// other word, with the labels it completes and their terms. None when
+    /// the rules leave context off.
+    fn context_of(&self, labels: &[String]) -> Option<(String, BTreeMap<String, String>)> {
         let min = self.rules.context.min_labels?;
-        let by_word = self.completions(labels);
-        let mut ranked: Vec<(&str, usize)> = by_word.iter().map(|(w, m)| (*w, m.len())).collect();
-        ranked.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-        match &ranked[..] {
-            [(w, n), rest @ ..] if *n >= min.max(1) && rest.first().is_none_or(|r| r.1 < *n) => {
-                Some(w.to_string())
-            }
-            _ => None,
-        }
+        let mut ranked: Vec<(&str, BTreeMap<String, String>)> =
+            self.completions(labels).into_iter().collect();
+        ranked.sort_by_key(|(_, m)| std::cmp::Reverse(m.len()));
+        let mut ranked = ranked.into_iter();
+        let (w, completed) = ranked.next()?;
+        let n = completed.len();
+        (n >= min.max(1) && ranked.next().is_none_or(|r| r.1.len() < n))
+            .then(|| (w.to_string(), completed))
     }
 
     /// The one of `ids` every other is a kind of (`is_a`), if there is one.
@@ -806,6 +807,17 @@ impl ClTerms {
 
 /// Labels with the terms they map to, and the labels left unmapped.
 type Mapped = (BTreeMap<String, String>, Vec<String>);
+
+/// `matched` with the labels of `completed` mapped to their terms, and the
+/// rest left.
+fn with_completed(
+    (mut mapped, mut unmapped): Mapped,
+    completed: BTreeMap<String, String>,
+) -> Mapped {
+    unmapped.retain(|l| !completed.contains_key(l));
+    mapped.extend(completed);
+    (mapped, unmapped)
+}
 
 /// Where [`ClTerms::place_labels`] put a panel's labels.
 #[derive(Debug, Default, Clone, PartialEq)]
