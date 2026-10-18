@@ -131,6 +131,43 @@ fn an_order_word_speaks_of_its_clauses_type_else_the_sentences_subject() {
 }
 
 #[test]
+fn a_contrast_is_no_relative_clause() {
+    // `whereas` and `while` start a clause of the sentence's subject, not
+    // of the type named before them as `which` and `where` do.
+    for join in ["whereas", "while"] {
+        wrong(
+            &format!(
+                "CT1 cell comes after the stem cell, {join} it comes before the CT4 mature cell."
+            ),
+            None,
+        );
+    }
+    // Spaced or joined, and a word `where` only begins.
+    wrong(
+        "CT1 cell comes after the stem cell whereas it comes before the CT4 mature cell.",
+        None,
+    );
+    wrong(
+        "CT1 cell comes after the stem cell, whereby it comes before the CT4 mature cell.",
+        None,
+    );
+    ok(
+        "CT1 cell comes after the stem cell, whereas it comes after the narrow progenitor cell.",
+        None,
+    );
+    // `which` and `where` still speak of the type before them.
+    ok(
+        "CT1 cell comes after the narrow progenitor cell, which comes before CT3 cell.",
+        None,
+    );
+    ok(
+        "CT1 cell comes after the narrow progenitor cell, where the lineages part before \
+         CT3 cell.",
+        None,
+    );
+}
+
+#[test]
 fn a_role_is_held_by_a_type_the_clause_names_else_the_subject() {
     wrong(
         "The wide progenitor cell is a root.",

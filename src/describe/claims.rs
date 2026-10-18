@@ -19,7 +19,9 @@ use std::collections::BTreeMap;
 pub type Claim = Result<(), String>;
 
 /// Words that join clauses, a claim read in each on its own.
-const JOINS: [&str; 7] = ["and", "but", "while", "whereas", "with", "which", "where"];
+const JOINS: [&str; 5] = ["and", "but", "while", "whereas", "with"];
+/// Words that join a relative clause, one of the type named before it.
+const RELATIVE: [&str; 2] = ["which", "where"];
 /// Words for the place a type holds: a lineage's root, a branch point or
 /// an end.
 const ROOT: [&str; 11] = [
@@ -219,7 +221,7 @@ impl Text {
         // `and` inside `between A and B` joins no clauses.
         let tied: Vec<usize> = text.betweens().iter().map(|b| b.3).collect();
         let mut breaks = text.marks(&[',', ';', ':']);
-        for w in JOINS {
+        for w in JOINS.iter().chain(&RELATIVE) {
             breaks.extend(
                 (find(&text.t, w, false).into_iter())
                     .map(|(i, _)| i)
@@ -268,11 +270,12 @@ impl Text {
             .collect()
     }
 
-    /// The last entity named from `a` on before `p`.
-    fn last_named(&self, a: usize, p: usize) -> Option<&str> {
-        (self.spans.iter().rev())
-            .find(|s| s.end <= p && s.start >= a)
-            .map(|s| s.entity.as_str())
+    /// The word of `words` that opens the clause from `a`, a whole word at
+    /// the break before it.
+    fn opener(&self, a: usize, words: &[&'static str]) -> Option<&'static str> {
+        let i = a.checked_sub(1)?;
+        (words.iter().copied())
+            .find(|w| self.t[i..].starts_with(w) && whole(&self.t, i, i + w.len()))
     }
 
     /// Who the text speaks of at `p`, among the order words at `said`: the
@@ -283,14 +286,12 @@ impl Text {
     fn speaker(&self, p: usize, said: &[usize]) -> Option<&str> {
         let (a, _) = self.clause(p);
         let (s, _) = self.sentence(p);
-        let relative = a > 0
-            && ["which", "where"]
-                .iter()
-                .any(|w| self.t[a - 1..].starts_with(w));
+        let relative = self.opener(a, &RELATIVE).is_some();
         let lead = said.iter().copied().filter(|&q| q >= s).min().unwrap_or(p);
-        self.last_named(a, p)
-            .or_else(|| relative.then(|| self.last_named(s, p)).flatten())
-            .or_else(|| self.last_named(s, lead.min(p)))
+        let last = |a: usize, b: usize| self.named((a, b)).last().copied();
+        last(a, p)
+            .or_else(|| relative.then(|| last(s, p)).flatten())
+            .or_else(|| last(s, lead.min(p)))
     }
 
     /// The first named from `p` on in its sentence.
@@ -357,19 +358,21 @@ fn verdicts<'f>(
 /// type's line) makes of the order `f`.
 pub fn order_claims(text: &str, f: &OrderFacts, subject: Option<&str>) -> Claim {
     let x = Text::new(text, &f.types());
-    let mut said: Vec<usize> = x.betweens().iter().map(|b| b.0).collect();
-    said.extend((x.words(&FORWARD).iter().chain(&x.words(&BACKWARD))).map(|(p, _)| *p));
+    let betweens = x.betweens();
+    let (forward, backward) = (x.words(&FORWARD), x.words(&BACKWARD));
+    let mut said: Vec<usize> = betweens.iter().map(|b| b.0).collect();
+    said.extend(forward.iter().chain(&backward).map(|(p, _)| *p));
     // Who the text speaks of at `p`, else the subject.
     let who = |p: usize| x.speaker(p, &said).or(subject);
-    for (p, a, b, _) in x.betweens() {
-        let Some(t) = who(p) else { continue };
+    for (p, a, b, _) in &betweens {
+        let Some(t) = who(*p) else { continue };
         let fits = |u: &str, v: &str| earlier(f, u, t) && earlier(f, t, v);
-        if !(fits(&a, &b) || fits(&b, &a)) {
+        if !(fits(a, b) || fits(b, a)) {
             return Err(format!("{t} is not between {a} and {b}"));
         }
     }
-    for (words, forward) in [(&FORWARD[..], true), (&BACKWARD[..], false)] {
-        for (p, w) in x.words(words) {
+    for (said, forward) in [(&forward, true), (&backward, false)] {
+        for &(p, w) in said {
             let (Some(l), Some(r)) = (who(p), x.after(p + w.len())) else {
                 continue;
             };
