@@ -479,11 +479,12 @@ pub(crate) const ORGAN: &str = "[Term]\nid: CL:1\nname: organx alpha cell\n\n\
 
 #[test]
 fn a_label_off_the_panel_is_read_with_the_panels_word() {
-    let cl = ClTerms::parse(ORGAN, &crate::annotate::cl_rules::shipped());
+    let mut cl = ClTerms::parse(ORGAN, &crate::annotate::cl_rules::shipped());
     let panel: Vec<(String, String)> = [("G1", "Alpha"), ("G2", "Beta"), ("G3", "Gamma")]
         .iter()
         .map(|(g, t)| ((*g).to_string(), (*t).to_string()))
         .collect();
+    cl.set_panel(&panel);
     let tree = PanelTree::from_ontology(&cl, &panel).unwrap();
     assert_eq!(term_of(&cl, &tree, "Alpha").as_deref(), Some("CL:1"));
     assert_eq!(

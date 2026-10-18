@@ -188,11 +188,15 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         crate::manifest::data_files::Fetch::Allowed,
     )?;
     let search = data.search.clone();
-    let terms = data.into_terms()?;
+    let mut terms = data.into_terms()?;
+    if let Some(t) = &mut terms {
+        t.set_panel(&panel);
+    }
     let tree = crate::manifest::ontology::panel_tree_on(terms.as_ref(), &panel);
 
     let target = annotated_path(&loaded.file, &args.out);
     let mut app = App::new(args, loaded.file.clone(), target.clone(), tree);
+    app.panel = panel;
     app.fixed_clusters = loaded.manifest.cluster.clusters.is_some();
     (app.out_chosen, app.out_typed) = (out_chosen, out_chosen);
     app.trajectory = trajectory.unwrap_or_default();

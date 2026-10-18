@@ -454,7 +454,7 @@ fn gather_statements(
         }
         // The nodes are read as every type is, as the order view reads them.
         let all: Vec<&str> = inputs.names.iter().map(AsRef::as_ref).collect();
-        let on = prior::on_terms(terms, &all);
+        let on = terms.map(|t| prior::OnTerms::new(t, &all));
         let (standing, problems) = prior::standing_layers(on.as_ref(), &node_names, &data.search);
         if let Some(e) = problems.into_iter().next() {
             return Err(e);

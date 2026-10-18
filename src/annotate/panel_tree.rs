@@ -53,8 +53,6 @@ pub struct PanelTree {
     /// Each panel type's ([`label_key`]) node.
     of_label: HashMap<String, usize>,
     folded: BTreeSet<usize>,
-    /// The word the panel leaves off its labels ([`ClTerms::map_labels`]).
-    context: Option<String>,
 }
 
 impl PanelTree {
@@ -89,7 +87,6 @@ impl PanelTree {
         let rank: BTreeMap<&str, usize> = ids.iter().map(|id| (*id, terms.depth(id))).collect();
 
         let mut tree = Self::empty(TreeSource::CellOntology, terms.release.clone());
-        tree.context.clone_from(&placed.context);
         let index: BTreeMap<&str, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
         for id in &ids {
             tree.nodes.push(PanelNode::new(
@@ -243,7 +240,6 @@ impl PanelTree {
             release,
             of_label: HashMap::new(),
             folded: BTreeSet::new(),
-            context: None,
         }
     }
 
@@ -296,13 +292,6 @@ impl PanelTree {
     #[must_use]
     pub fn is_type(&self, label: &str) -> bool {
         self.of_label.contains_key(&label_key(label))
-    }
-
-    /// The word the panel leaves off its labels, which reads a label off
-    /// the panel as the tree reads the panel's ([`ClTerms::map_labels_in`]).
-    #[must_use]
-    pub fn context(&self) -> Option<&str> {
-        self.context.as_deref()
     }
 
     /// The CL term panel type `label` sits on, if the ontology has it.

@@ -52,6 +52,10 @@ pub struct ClTerms {
     lineages: BTreeSet<String>,
     /// The words the ontology uses for kinds of a term (see `PartRules`).
     modifiers: BTreeSet<String>,
+    /// The word a panel leaves off its labels, once [`Self::set_panel`]
+    /// has read it from the panel (`Some(None)` for a panel that leaves
+    /// none): labels are then completed by it, however few are mapped.
+    panel_context: Option<Option<String>>,
     /// The file's `data-version`, when it states one.
     pub release: Option<String>,
 }
@@ -367,42 +371,33 @@ impl ClTerms {
     /// every other is a kind of wins over its specialisations; a label still
     /// matching several, or none, stays unmapped rather than guessed.
     ///
-    /// The word the panel leaves off is told from `labels`, and returned
-    /// beside the mapping: a caller with some of a panel's labels, or one,
-    /// gives it to [`Self::map_labels_in`], so they read as the panel's do.
+    /// The word the panel leaves off is the one [`Self::set_panel`] read
+    /// from the panel, so a few of its labels, or one, read as the panel's
+    /// do; without one, it is told from `labels`.
     #[must_use]
-    pub fn map_labels<'a>(
-        &self,
-        labels: impl IntoIterator<Item = &'a str>,
-    ) -> (BTreeMap<String, String>, Vec<String>, Option<String>) {
+    pub fn map_labels<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> Mapped {
         let matched = self.match_labels(labels);
-        match self.context_of(&matched.1) {
-            Some((word, completed)) => {
-                let (mapped, unmapped) = with_completed(matched, completed);
-                (mapped, unmapped, Some(word))
-            }
-            None => (matched.0, matched.1, None),
+        let completed = match &self.panel_context {
+            Some(word) => (word.as_deref()).map(|w| self.completed_by(&matched.1, w)),
+            None => self.context_of(&matched.1).map(|(_, c)| c),
+        };
+        match completed {
+            Some(c) => with_completed(matched, c),
+            None => matched,
         }
     }
 
-    /// [`Self::map_labels`] with the panel's context word given (the one it
-    /// returns for the panel's labels): it completes each label the other
-    /// tiers leave, however few the labels are.
-    #[must_use]
-    pub fn map_labels_in<'a>(
-        &self,
-        labels: impl IntoIterator<Item = &'a str>,
-        context: Option<&str>,
-    ) -> Mapped {
-        let matched = self.match_labels(labels);
-        match context {
-            // Each label left that the word completes.
-            Some(w) => {
-                let completed = self.completed_by(&matched.1, w);
-                with_completed(matched, completed)
-            }
-            None => matched,
+    /// Read the word marker panel `panel` leaves off its labels, for
+    /// [`Self::map_labels`] to complete any of them by; an empty panel
+    /// leaves the word to be told from the labels mapped.
+    pub fn set_panel(&mut self, panel: &[(String, String)]) {
+        self.panel_context = None;
+        let types = panel_types(panel);
+        if types.is_empty() {
+            return;
         }
+        let (_, unmapped) = self.match_labels(types.iter().map(String::as_str));
+        self.panel_context = Some(self.context_of(&unmapped).map(|(w, _)| w));
     }
 
     /// Each label's term by every tier but the panel's context, and the
@@ -426,10 +421,9 @@ impl ClTerms {
     /// only as a hint of its lineage.
     #[must_use]
     pub fn place_labels<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> Placed {
-        let (on, unmapped, context) = self.map_labels(labels);
+        let (on, unmapped) = self.map_labels(labels);
         let mut placed = Placed {
             on,
-            context,
             ..Placed::default()
         };
         for label in unmapped {
@@ -806,7 +800,8 @@ impl ClTerms {
 }
 
 /// Labels with the terms they map to, and the labels left unmapped.
-type Mapped = (BTreeMap<String, String>, Vec<String>);
+/// Labels with their terms, and the labels left.
+pub type Mapped = (BTreeMap<String, String>, Vec<String>);
 
 /// `matched` with the labels of `completed` mapped to their terms, and the
 /// rest left.
@@ -822,8 +817,6 @@ fn with_completed(
 /// Where [`ClTerms::place_labels`] put a panel's labels.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Placed {
-    /// The word the panel leaves off its labels ([`ClTerms::map_labels`]).
-    pub context: Option<String>,
     /// Label → the term it matched.
     pub on: BTreeMap<String, String>,
     /// Label → the term it is a kind of.

@@ -80,8 +80,7 @@ fn obo_terms_keep_names_exact_synonyms_parents_and_release() {
     let t = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
     assert_eq!(t.release.as_deref(), Some("test/2026-01-01"));
     assert_eq!(t.term_count(), 6, "the obsolete term is skipped");
-    let (mapped, unmapped, _) =
-        t.map_labels(["CT1", "ct3_alias", "CT3 loose", "CT9", "CT7", "CT1s"]);
+    let (mapped, unmapped) = t.map_labels(["CT1", "ct3_alias", "CT3 loose", "CT9", "CT7", "CT1s"]);
     assert_eq!(mapped["CT1"], "CL:9000011");
     assert_eq!(
         mapped["ct3_alias"], "CL:9000021",
@@ -102,7 +101,7 @@ fn labels_match_terms_whose_words_come_in_another_order() {
                [Term]\nid: CL:4\nname: red blue cell\n\n\
                [Term]\nid: CL:5\nname: blue red cell\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    let (mapped, unmapped, _) = t.map_labels([
+    let (mapped, unmapped) = t.map_labels([
         "CT1 cells memory",
         "Xi omicron CT2 cells",
         "Red blue cells",
@@ -121,7 +120,7 @@ fn a_label_that_leaves_off_cell_matches_the_term_that_ends_in_it() {
                [Term]\nid: CL:3\nname: CT3\n\n\
                [Term]\nid: CL:4\nname: CT3 cell\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    let (mapped, unmapped, _) = t.map_labels(["Immature_CT1", "Pro-CT2", "CT3", "CT9"]);
+    let (mapped, unmapped) = t.map_labels(["Immature_CT1", "Pro-CT2", "CT3", "CT9"]);
     assert_eq!(mapped["Immature_CT1"], "CL:1");
     assert_eq!(mapped["Pro-CT2"], "CL:2", "a hyphen parts two words");
     assert_eq!(mapped["CT3"], "CL:3", "a name as written wins");
@@ -129,7 +128,7 @@ fn a_label_that_leaves_off_cell_matches_the_term_that_ends_in_it() {
     let names_only = "[Term]\nid: CL:5\nname: alpha retinal ganglion cell\nsynonym: \"alpha type cell\" EXACT []\n\n\
                       [Term]\nid: CL:6\nname: endothelial cell\n";
     let t1 = ClTerms::parse(names_only, &crate::annotate::cl_rules::shipped());
-    let (m1, u1, _) = t1.map_labels(["Alpha_Type", "Endothelial"]);
+    let (m1, u1) = t1.map_labels(["Alpha_Type", "Endothelial"]);
     assert_eq!(m1["Endothelial"], "CL:6", "one word completes a name");
     assert_eq!(u1, ["Alpha_Type"], "but not a synonym");
     let literal = ClTerms::parse(obo, &crate::annotate::cl_rules::MatchRules::default());
@@ -357,7 +356,7 @@ fn an_implied_word_needs_a_word_to_complete() {
     let obo = "[Term]\nid: CL:0\nname: cell\n\n\
                [Term]\nid: CL:1\nname: progenitor cell\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    let (mapped, unmapped, _) = t.map_labels(["", "-", "Progenitor"]);
+    let (mapped, unmapped) = t.map_labels(["", "-", "Progenitor"]);
     assert_eq!(
         mapped["Progenitor"], "CL:1",
         "a general label, a general term"
@@ -370,7 +369,7 @@ fn a_terms_own_name_beats_another_terms_synonym_in_every_tier() {
                [Term]\nid: CL:2\nname: early CT8 cell\nsynonym: \"pro CT8 cell\" EXACT []\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
     let labels = ["Pro_CT8", "Pro_CT8_cell", "Pros CT8 cell", "CT8 cell pro"];
-    let (mapped, _, _) = t.map_labels(labels);
+    let (mapped, _) = t.map_labels(labels);
     for l in labels {
         assert_eq!(mapped.get(l).map(String::as_str), Some("CL:1"), "{l}");
     }
@@ -499,7 +498,7 @@ fn a_coarse_call_sums_evidence_over_a_group() {
 #[test]
 fn abbreviations_match_but_other_related_synonyms_do_not() {
     let t = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
-    let (mapped, unmapped, _) = t.map_labels(["C1X", "C1Xs", "CT3 loose"]);
+    let (mapped, unmapped) = t.map_labels(["C1X", "C1Xs", "CT3 loose"]);
     assert_eq!(
         mapped["C1X"], "CL:9000011",
         "an abbreviation (OMO:0003000) matches"
@@ -597,7 +596,7 @@ fn a_text_naming_a_term_and_its_specialisations_takes_the_most_general() {
                [Term]\nid: CL:3\nname: CT2 cell\nsynonym: \"C2\" EXACT []\n\n\
                [Term]\nid: CL:4\nname: CT4 cell\nsynonym: \"C2\" EXACT []\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    let (mapped, unmapped, _) = t.map_labels(["CTP", "C2"]);
+    let (mapped, unmapped) = t.map_labels(["CTP", "C2"]);
     assert_eq!(
         mapped["CTP"], "CL:1",
         "the general term, never a guess below it"
@@ -613,7 +612,7 @@ fn a_name_is_also_known_without_its_trailing_qualifier() {
                [Term]\nid: CL:4\nname: CT7 cell (Primate)\n\n\
                [Term]\nid: CL:5\nname: CT8 cell, CD9-positive\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    let (mapped, unmapped, _) = t.map_labels(["CT5 neurons", "CT6", "CT7", "CT8"]);
+    let (mapped, unmapped) = t.map_labels(["CT5 neurons", "CT6", "CT7", "CT8"]);
     assert_eq!(mapped["CT5 neurons"], "CL:1");
     assert_eq!(mapped["CT6"], "CL:2", "an implied word completes it too");
     assert_eq!(
@@ -637,7 +636,7 @@ fn separators_may_be_ignored_as_a_last_resort() {
     let obo = "[Term]\nid: CL:1\nname: proCT9blast\n\n\
                [Term]\nid: CL:2\nname: preCT3 cell\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    let (mapped, unmapped, _) = t.map_labels(["Pro-CT9blasts", "Pre-CT3"]);
+    let (mapped, unmapped) = t.map_labels(["Pro-CT9blasts", "Pre-CT3"]);
     assert_eq!(mapped["Pro-CT9blasts"], "CL:1");
     assert_eq!(mapped["Pre-CT3"], "CL:2", "with an implied word");
     assert!(unmapped.is_empty());
@@ -664,7 +663,7 @@ const LINEAGE: &str = "[Term]\nid: CL:1\nname: CT4-positive, alpha-beta T cell\n
 #[test]
 fn a_label_whose_words_a_term_spells_out_takes_the_most_general_such_term() {
     let t = ClTerms::parse(LINEAGE, &crate::annotate::cl_rules::shipped());
-    let (mapped, unmapped, _) = t.map_labels([
+    let (mapped, unmapped) = t.map_labels([
         "CT4 Central Memory",
         "CT4+ central memory",
         "CT4 Effector Memory",
@@ -694,7 +693,7 @@ fn a_word_the_panel_leaves_off_its_labels_completes_them() {
                [Term]\nid: CL:4\nname: eyey ganglion cell\nsynonym: \"alpha cell\" EXACT []\n\n\
                [Term]\nid: CL:5\nname: brainz delta cell\n";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    let (mapped, unmapped, _) = t.map_labels(["Alpha", "Beta", "Gamma", "Delta", "Duct"]);
+    let (mapped, unmapped) = t.map_labels(["Alpha", "Beta", "Gamma", "Delta", "Duct"]);
     assert_eq!(
         mapped["Alpha"], "CL:1",
         "the panel's word, not another tissue's synonym"
@@ -706,7 +705,7 @@ fn a_word_the_panel_leaves_off_its_labels_completes_them() {
         ["Delta", "Duct"],
         "another word, for one label only"
     );
-    let (few, _, _) = t.map_labels(["Alpha", "Beta", "Delta"]);
+    let (few, _) = t.map_labels(["Alpha", "Beta", "Delta"]);
     assert!(
         few.is_empty(),
         "two labels are too few to say what the panel leaves off"
@@ -721,9 +720,11 @@ fn a_known_context_word_completes_by_lookup_as_the_scan_does() {
                [Term]\nid: CL:4\nname: organx duct\n\n\
                [Term]\nid: CL:5\nname: brainz delta cell\n\n\
                [Term]\nid: CL:6\nname: organx cell\n";
-    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
-    let (_, unmapped, word) = t.map_labels(["Alpha", "Beta", "Gamma", "Duct", "Delta", "Pi"]);
-    assert_eq!(word.as_deref(), Some("organx"));
+    let mut t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let panel: Vec<(String, String)> = ["Alpha", "Beta", "Gamma", "Duct", "Delta", "Pi"]
+        .map(|l| (String::new(), l.to_string()))
+        .into();
+    let (_, unmapped) = t.map_labels(panel.iter().map(|(_, l)| l.as_str()));
     let labels: Vec<String> = [
         "Alpha",
         "Beta",
@@ -743,7 +744,13 @@ fn a_known_context_word_completes_by_lookup_as_the_scan_does() {
         "with or without the implied word; not another word's label"
     );
     assert_eq!(unmapped, ["Delta", "Pi"]);
-    let (one, _) = t.map_labels_in(["Gamma"], word.as_deref());
+    assert!(
+        t.map_labels(["Gamma"]).0.is_empty(),
+        "one label is too few to tell"
+    );
+    t.set_panel(&panel);
+    assert_eq!(t.panel_context, Some(Some("organx".into())));
+    let (one, _) = t.map_labels(["Gamma"]);
     assert_eq!(one["Gamma"], "CL:3", "one label read with the panel's word");
     assert!(
         t.completed_by(&labels, "cell").is_empty(),

@@ -87,6 +87,7 @@ fn app(dir: &Path) -> App {
     let types = crate::annotate::markers::read_panel(panel.to_str().unwrap()).unwrap();
     let tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &types);
     let mut app = App::new(args, PathBuf::new(), PathBuf::new(), tree);
+    app.panel = types;
     app.cl = Some(cl);
     app.data_search = SearchPath {
         user: Some(dir.join("config")),

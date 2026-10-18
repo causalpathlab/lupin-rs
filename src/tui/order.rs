@@ -131,7 +131,7 @@ impl OrderView {
         let nodes: Vec<&str> = nodes.into_iter().map(|(t, _)| *t).collect();
         let small: std::collections::HashSet<&str> = small.into_iter().map(|(t, _)| *t).collect();
         // The nodes are read as every type on screen is, so as the tree is.
-        let on = prior::on_terms(cl, &refs);
+        let on = cl.map(|t| prior::OnTerms::new(t, &refs));
         let (layers, problems) = prior::standing_layers(on.as_ref(), &nodes, search);
         let problems: Vec<String> = problems.iter().map(|e| format!("{e:#}")).collect();
         let statements = prior::combine(&layers);
@@ -163,7 +163,7 @@ impl OrderView {
             .iter()
             .map(|(t, _)| (String::new(), t.clone()))
             .collect();
-        let mapped = on.as_ref().map_or(0, |(_, m)| m.len());
+        let mapped = on.as_ref().map_or(0, |o| o.mapped.len());
         let links = statements
             .iter()
             .filter(|s| {

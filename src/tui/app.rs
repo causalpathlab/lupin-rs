@@ -507,6 +507,8 @@ pub struct App {
     pub panel_ancestry: Vec<(String, std::collections::BTreeSet<String>)>,
     /// Where the run's data files are found, and aliases remembered.
     pub data_search: crate::manifest::data_files::SearchPath,
+    /// The marker panel, as read: (gene, type) rows.
+    pub panel: Vec<(String, String)>,
     /// The marker panel the session started from: label key → genes.
     pub original: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     pub round: Option<RoundView>,
@@ -631,6 +633,7 @@ impl App {
             tree_mode: TreeMode::Panel,
             cl: None,
             panel_ancestry: Vec::new(),
+            panel: Vec::new(),
             data_search: crate::manifest::data_files::SearchPath::new(None),
             original: std::collections::BTreeMap::new(),
             round: None,
@@ -2979,7 +2982,7 @@ impl App {
         let names: Vec<&str> = v.types.iter().map(|(t, _)| t.as_str()).collect();
         let why = match &self.cl {
             Some(cl) => {
-                let (mapped, ..) = cl.map_labels(names.iter().copied());
+                let (mapped, _) = cl.map_labels(names.iter().copied());
                 match mapped.len() {
                     0 => format!("none of the {} labels map to Cell Ontology terms", names.len()),
                     n => format!(
@@ -3349,7 +3352,8 @@ impl App {
         match terms {
             Ok(t) => {
                 self.cl = t;
-                if let Some(cl) = &self.cl {
+                if let Some(cl) = &mut self.cl {
+                    cl.set_panel(&self.panel);
                     self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
                 }
                 self.args.label_cl = Some(p.clone().into());
@@ -3478,10 +3482,8 @@ impl App {
             .and_then(|panel| Ok((panel, super::round::panel_sets(&p)?)));
         match read {
             Ok((panel, sets)) => {
-                self.tree = crate::manifest::ontology::panel_tree_on(self.cl.as_ref(), &panel);
-                if let Some(cl) = &self.cl {
-                    self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
-                }
+                self.panel = panel;
+                self.rebuild_tree();
                 self.original = sets;
                 self.status = format!("marker panel: {}", file_name(path));
                 self.args.markers = p.into();
@@ -4119,20 +4121,26 @@ impl App {
     fn learn_alias(&mut self, label: &str, id: &str, file: &Path) {
         let Some(cl) = &mut self.cl else { return };
         cl.add_aliases(&format!("{label}\t{id}\n"), &file.display().to_string());
-        if self.args.markers.is_empty() {
+        if self.panel.is_empty() {
             return;
         }
-        let panel = match crate::annotate::markers::read_panel(&self.args.markers) {
-            Ok(p) => p,
-            Err(e) => return self.push_log(format!("[WARN] the tree stays as it was: {e:#}")),
-        };
-        self.tree = crate::manifest::ontology::panel_tree_on(self.cl.as_ref(), &panel);
-        if let Some(cl) = &self.cl {
-            self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
-        }
+        self.rebuild_tree();
         if let Some(i) = self.tree.node_of(label) {
             self.tree.reveal(i);
             self.select_node(i);
+        }
+    }
+
+    /// Build the panel's tree again from [`Self::panel`], with each type's
+    /// terms: the ontology first reads the word the panel leaves off its
+    /// labels.
+    pub(super) fn rebuild_tree(&mut self) {
+        if let Some(cl) = &mut self.cl {
+            cl.set_panel(&self.panel);
+        }
+        self.tree = crate::manifest::ontology::panel_tree_on(self.cl.as_ref(), &self.panel);
+        if let Some(cl) = &self.cl {
+            self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
         }
     }
 

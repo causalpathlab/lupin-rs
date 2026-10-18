@@ -218,29 +218,36 @@ pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Resu
     Ok(out)
 }
 
-/// The terms, with every type of `all` mapped to its term as
-/// [`ClTerms::map_labels`] reads a panel's labels, together: what
-/// [`standing_layers`] reads the types by.
-pub(crate) fn on_terms<'t>(
-    terms: Option<&'t ClTerms>,
-    all: &[&str],
-) -> Option<(&'t ClTerms, BTreeMap<String, String>)> {
-    terms.map(|t| (t, t.map_labels(all.iter().copied()).0))
+/// The terms, with every type of a set mapped to its term as
+/// [`ClTerms::map_labels`] reads them together: what [`standing_layers`]
+/// reads the types by.
+pub(crate) struct OnTerms<'t> {
+    pub terms: &'t ClTerms,
+    pub mapped: BTreeMap<String, String>,
+}
+
+impl<'t> OnTerms<'t> {
+    pub(crate) fn new(terms: &'t ClTerms, all: &[&str]) -> Self {
+        Self {
+            terms,
+            mapped: terms.map_labels(all.iter().copied()).0,
+        }
+    }
 }
 
 /// The standing statements about `names`: the Cell Ontology's (when `cl`
-/// gives it, every type there is mapped to its term by [`on_terms`], so
+/// gives it, every type there is mapped to its term by [`OnTerms`], so
 /// `names` read as the rest do), then the user's and the project's
 /// `precedence.tsv` along `search`. A precedence file that cannot be read
 /// is returned beside the layers that could, for the caller to stop on or
 /// to show.
 pub(crate) fn standing_layers(
-    cl: Option<&(&ClTerms, BTreeMap<String, String>)>,
+    cl: Option<&OnTerms>,
     names: &[&str],
     search: &SearchPath,
 ) -> (Vec<Vec<Statement>>, Vec<anyhow::Error>) {
     let mut layers = Vec::new();
-    if let Some((terms, all)) = cl {
+    if let Some(OnTerms { terms, mapped: all }) = cl {
         let mapped: BTreeMap<String, String> = (names.iter())
             .filter_map(|&n| Some((n.to_string(), all.get(n)?.clone())))
             .collect();
