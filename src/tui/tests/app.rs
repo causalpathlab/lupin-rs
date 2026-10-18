@@ -2015,6 +2015,37 @@ fn a_group_named_for_a_members_term_is_said_to_be_a_tree_group() {
 }
 
 #[test]
+fn a_label_naming_a_types_own_term_is_said_to_be_that_type() {
+    use super::super::round::Edit;
+    // CT1 cells sits on its term alone: a label named for the term is the
+    // type's leaf, which groups nothing.
+    let cl = crate::annotate::celltype_tree::ClTerms::parse(
+        "[Term]\nid: CL:0\nname: top\n\n\
+         [Term]\nid: CL:1\nname: CT1 cell\nis_a: CL:0\n\n\
+         [Term]\nid: CL:2\nname: CT2 cell\nis_a: CL:0\n",
+        &crate::annotate::cl_rules::shipped(),
+    );
+    let mut app = app_with_terms(false);
+    let panel = [
+        ("GENE1".to_string(), "CT1 cells".to_string()),
+        ("GENE2".to_string(), "CT2 cells".to_string()),
+    ];
+    app.tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &panel);
+    let leaf = app
+        .tree
+        .node_of("CT1_cell")
+        .expect("found by its term's name");
+    assert!(app.tree.nodes[leaf].children.is_empty());
+    app.edits = vec![Edit::Label {
+        cluster: 0,
+        label: "CT1_cell".into(),
+        reason: "why".into(),
+    }];
+    let screen = drawn(&app);
+    assert!(!screen.contains("a tree group"), "{screen}");
+}
+
+#[test]
 fn a_round_with_no_cluster_expression_says_so_and_calls_no_marker_weak() {
     let mut app = app_with_terms(false);
     if let Some(r) = app.round.as_mut() {

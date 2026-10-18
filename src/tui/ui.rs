@@ -1503,15 +1503,19 @@ fn pinned_note(app: &App, label: &str, share: Option<f32>) -> &'static str {
     let edited = app.edits.iter().any(|e| {
         matches!(e, super::round::Edit::Markers { label: l, .. } if label_key(l) == label_key(label))
     });
+    let node = app.tree.node_of(label);
     match share {
         Some(s) if s > 0.0 => "below the top candidates",
         _ if app.rescoring.is_some() => "rescoring…",
         _ if edited && app.recorded.is_none() => "scored on save",
         // A typed name has no markers: nothing tested it.
-        _ if app.tree.node_of(label).is_none() => "not a panel type: no markers to score",
+        _ if node.is_none() => "not a panel type: no markers to score",
         // A node above the types: TreeBH tests it only as their family, and
-        // a pass calls the types, never the group.
-        _ if !app.tree.is_type(label) => "a tree group: the pass calls its panel types",
+        // a pass calls the types, never the group. A type's own leaf, found
+        // by its term's name, is the type.
+        _ if node.is_some_and(|i| !app.tree.nodes[i].children.is_empty()) => {
+            "a tree group: the pass calls its panel types"
+        }
         _ => "not called (did not pass FDR)",
     }
 }
