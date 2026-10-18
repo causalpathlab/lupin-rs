@@ -516,13 +516,14 @@ pub fn check_lm(
     if text.trim().is_empty() {
         return Err(CitationError::Empty);
     }
-    // Without every name of the run: a digit in one (`CT2`) is no number,
-    // and when the name is another's, the citation check says so and the
-    // retry is to ban it.
+    // Another's name first: a digit in it (`CT2`) is no number, and the
+    // retry is to ban the name.
+    let cites = citation_check(text, run, named, own);
+    if let Err(e @ CitationError::Foreign(_)) = cites {
+        return Err(e);
+    }
     let mut rest = super::norm(text);
-    let mut names: Vec<String> = (run.iter().chain(named).chain(own))
-        .map(|e| super::norm(e))
-        .collect();
+    let mut names: Vec<String> = named.iter().chain(own).map(|e| super::norm(e)).collect();
     // The longest first, so a name inside another goes with it.
     names.sort_by_key(|n| std::cmp::Reverse(n.len()));
     for n in names.iter().filter(|n| !n.is_empty()) {
@@ -539,7 +540,7 @@ pub fn check_lm(
     if let Some(m) = rest.chars().find(|c| MARKUP.contains(*c)) {
         return Err(CitationError::Markup(m.to_string()));
     }
-    citation_check(text, run, named, own).map(|_| ())
+    cites.map(|_| ())
 }
 
 /// A sentence from `lm` begun with `lead` after `prompt`, decoded without
