@@ -616,6 +616,10 @@ fn a_rounds_inputs_are_its_sizes_specific_genes_and_panel() {
         assert!(r.entities.contains(t), "{t} is a type of the run");
     }
     assert_eq!(cache_of(&loaded), dir.path().join("run.llm.jsonl"));
+    // Without its panel there is nothing to choose among.
+    std::fs::remove_file(dir.path().join("markers.tsv")).unwrap();
+    let err = inputs(&loaded).unwrap_err();
+    assert!(format!("{err:#}").contains("no panel"), "{err:#}");
 }
 
 /// The model's opinions, cached beside the round, are evidence its review

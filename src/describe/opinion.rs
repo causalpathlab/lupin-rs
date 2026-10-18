@@ -95,6 +95,10 @@ pub fn inputs(loaded: &Loaded) -> Result<Round> {
         Some(p) => read_marker_pairs(&p)?,
         None => Vec::new(),
     };
+    anyhow::ensure!(
+        !pairs.is_empty(),
+        "the model chooses among the round's panel types, and the round records no panel that reads"
+    );
     let mut panel: Vec<PanelType> = Vec::new();
     let mut sets: HashMap<String, BTreeSet<String>> = HashMap::new();
     for (gene, label) in &pairs {
