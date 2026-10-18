@@ -21,6 +21,11 @@ use clap::{Parser, Subcommand};
 use describe::{run_describe, DescribeArgs};
 use trajectory::run::{run_trajectory, TrajectoryArgs};
 
+/// `bytes` as lower-case hex.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 #[derive(Parser)]
 #[command(
     name = "lupin",

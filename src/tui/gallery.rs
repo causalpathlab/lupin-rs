@@ -38,7 +38,7 @@ impl FileRecord {
             path: absolute(path),
             size: bytes.len() as u64,
             mtime: std::fs::metadata(path).map_or(0, |m| mtime_of(&m)),
-            hash: hex(&Sha256::digest(&bytes)),
+            hash: crate::hex(&Sha256::digest(&bytes)),
         })
     }
 
@@ -393,10 +393,6 @@ fn verify_set(e: &Entry) -> Result<()> {
         );
     }
     Ok(())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Seconds since the Unix epoch.

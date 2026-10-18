@@ -66,8 +66,10 @@ pub struct TermIndex {
 }
 
 impl TermIndex {
-    /// Every counted name of `terms` with its term, shortest first.
-    fn named(terms: &ClTerms) -> Vec<(&str, &str)> {
+    /// Every counted name of `terms` with its term, shortest first: what
+    /// [`Self::build`] encodes and [`Self::cache_name`] digests.
+    #[must_use]
+    pub fn named(terms: &ClTerms) -> Vec<(&str, &str)> {
         let mut named: Vec<(&str, &str)> = terms
             .named_texts()
             .flat_map(|(text, ids)| ids.iter().map(move |id| (text, id.as_str())))
@@ -76,45 +78,46 @@ impl TermIndex {
         named
     }
 
-    /// Encode every counted name of `terms`; `progress` hears the names
-    /// encoded so far of all, after each batch.
+    /// Encode every counted name ([`Self::named`]); `progress` hears the
+    /// names encoded so far of all, after each batch.
     pub fn build(
-        terms: &ClTerms,
+        named: &[(&str, &str)],
         encoder: &impl TextEncoder,
         mut progress: impl FnMut(usize, usize),
     ) -> Result<Self> {
-        let named = Self::named(terms);
         let mut vecs = Vec::with_capacity(named.len());
         for chunk in named.chunks(BATCH) {
             let texts: Vec<&str> = chunk.iter().map(|(t, _)| *t).collect();
             vecs.extend(encoder.encode(&texts)?);
             progress(vecs.len(), named.len());
         }
-        let ids = named.into_iter().map(|(_, id)| id.to_string()).collect();
+        let ids = named.iter().map(|(_, id)| id.to_string()).collect();
         Ok(Self { ids, vecs })
     }
 
-    /// The cache file's name for the index of `terms` by `model` at
-    /// `revision`: the ontology's release and the revision, then a digest of
-    /// both with every counted name, so other matching rules (which count
-    /// other synonyms) make another index.
+    /// The cache file's name for the index of `terms` (its counted names
+    /// `named`) by `model` at `revision`: the ontology's release and the
+    /// revision, then a digest of both with every counted name, so other
+    /// matching rules (which count other synonyms) make another index.
     #[must_use]
-    pub fn cache_name(terms: &ClTerms, model: &str, revision: &str) -> String {
+    pub fn cache_name(
+        terms: &ClTerms,
+        named: &[(&str, &str)],
+        model: &str,
+        revision: &str,
+    ) -> String {
         let mut h = Sha256::new();
         for part in [model, revision] {
             h.update(part);
             h.update([0]);
         }
-        for (text, id) in Self::named(terms) {
+        for (text, id) in named {
             h.update(text);
             h.update([0]);
             h.update(id);
             h.update([0]);
         }
-        let digest: String = h.finalize()[..8]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let digest = crate::hex(&h.finalize()[..8]);
         let safe = |s: &str| -> String {
             s.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
                 .filter(|w| !w.is_empty())
@@ -168,13 +171,18 @@ impl TermIndex {
             let e = best.entry(id.as_str()).or_insert(f32::NEG_INFINITY);
             *e = e.max(cos);
         }
-        let mut ranked: Vec<(String, f32)> = best
+        let mut ranked: Vec<(&str, f32)> = best.into_iter().collect();
+        let order =
+            |a: &(&str, f32), b: &(&str, f32)| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0));
+        if k < ranked.len() {
+            ranked.select_nth_unstable_by(k, order);
+            ranked.truncate(k);
+        }
+        ranked.sort_by(order);
+        ranked
             .into_iter()
             .map(|(id, s)| (id.to_string(), s))
-            .collect();
-        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        ranked.truncate(k);
-        ranked
+            .collect()
     }
 }
 
@@ -260,9 +268,10 @@ pub fn run(
     )?;
     STAGES.start(0);
     let encoder = load_encoder()?;
+    let named = TermIndex::named(&terms);
     let file = cache.map(|c| {
         c.join("cl-index")
-            .join(TermIndex::cache_name(&terms, MODEL, REVISION))
+            .join(TermIndex::cache_name(&terms, &named, MODEL, REVISION))
     });
     let cached = file
         .as_deref()
@@ -273,7 +282,7 @@ pub fn run(
         _ => {
             let stage = 1;
             STAGES.start(stage);
-            let index = TermIndex::build(&terms, &encoder, |k, n| {
+            let index = TermIndex::build(&named, &encoder, |k, n| {
                 STAGES.within(stage, k, n, Some(&format!("{k} of {n}")));
             })?;
             if let Some(f) = &file {

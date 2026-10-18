@@ -44,7 +44,7 @@ fn fake() -> Fake {
 
 fn index() -> (ClTerms, TermIndex) {
     let terms = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
-    let idx = TermIndex::build(&terms, &fake(), |_, _| {}).unwrap();
+    let idx = TermIndex::build(&TermIndex::named(&terms), &fake(), |_, _| {}).unwrap();
     (terms, idx)
 }
 
@@ -109,7 +109,10 @@ fn no_labels_need_no_encoding() {
 fn building_reports_each_batch_up_to_every_name() {
     let terms = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
     let mut seen = Vec::new();
-    TermIndex::build(&terms, &fake(), |done, total| seen.push((done, total))).unwrap();
+    TermIndex::build(&TermIndex::named(&terms), &fake(), |done, total| {
+        seen.push((done, total))
+    })
+    .unwrap();
     let (done, total) = *seen.last().unwrap();
     assert_eq!(done, total, "the last report is the whole");
     assert!(total >= 5, "every counted name is encoded");
@@ -136,7 +139,8 @@ fn the_cache_is_keyed_by_the_ontology_release_and_the_model_revision() {
     let rules = crate::annotate::cl_rules::shipped();
     let v1 = ClTerms::parse(&format!("data-version: r1\n\n{OBO}"), &rules);
     let v2 = ClTerms::parse(&format!("data-version: r2\n\n{OBO}"), &rules);
-    let key = |t: &ClTerms, rev: &str| TermIndex::cache_name(t, "org/model", rev);
+    let key =
+        |t: &ClTerms, rev: &str| TermIndex::cache_name(t, &TermIndex::named(t), "org/model", rev);
     assert_eq!(key(&v1, "abc"), key(&v1, "abc"));
     assert!(key(&v1, "abc").starts_with("r1-"));
     assert_ne!(key(&v1, "abc"), key(&v2, "abc"), "another release");
