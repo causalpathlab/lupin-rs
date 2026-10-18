@@ -3,13 +3,15 @@
 //! why, under the candidates (`L` runs it, `P` opens the choices on it). It
 //! is a suggestion, not a call: it flags no cluster, nothing is taken until
 //! the user confirms it, and the decision then records whether the user
-//! took it or overrode it. In the order view, the trajectory's
-//! paragraph and each type's line. Both are read from the job's cache as it
-//! appends to it, and only what was made on the evidence on screen shows.
+//! took it or overrode it. The proposals are read from the job's cache as
+//! it appends to it, and only what was made on the evidence on screen
+//! shows. In the order view, the trajectory's paragraph and each type's
+//! line, written by code from the run's outputs and read again when they
+//! change.
 
 use crate::annotate::rounds::ClusterId;
 use crate::describe::consensus::{self, cache_path, Proposal};
-use crate::describe::trajectory::{self, Described, OrderFacts};
+use crate::describe::trajectory::{self, OrderFacts, OrderText};
 use crate::manifest::run::{derive_out_prefix, load};
 use anyhow::Result;
 use std::collections::BTreeMap;
@@ -53,38 +55,46 @@ impl Following {
     }
 }
 
-/// A trajectory's texts, followed in its cache: the templates where it has
-/// none yet.
+/// A trajectory's texts, from its facts: read again when the manifest or a
+/// file of its facts changes.
 pub struct OrderTexts {
     pub manifest: PathBuf,
-    facts: OrderFacts,
-    cache: PathBuf,
-    read: Option<u64>,
-    pub texts: Vec<Described>,
+    /// The manifest and its facts' files, as last read.
+    files: Vec<PathBuf>,
+    read: Vec<Option<u64>>,
+    pub texts: Vec<OrderText>,
 }
 
 impl OrderTexts {
     pub fn of(manifest: &Path) -> Result<Self> {
         let loaded = load(&manifest.to_string_lossy())?;
-        let facts = OrderFacts::read(&loaded)?;
-        let cache = cache_path(&derive_out_prefix(&manifest.to_string_lossy()));
+        let files: Vec<PathBuf> = std::iter::once(manifest.to_path_buf())
+            .chain(
+                OrderFacts::files(&loaded)
+                    .into_iter()
+                    .flatten()
+                    .map(PathBuf::from),
+            )
+            .collect();
         Ok(Self {
             manifest: manifest.to_path_buf(),
-            texts: trajectory::current(&facts, &cache),
-            read: size(&cache),
-            facts,
-            cache,
+            read: files.iter().map(|f| size(f)).collect(),
+            files,
+            texts: trajectory::texts(&OrderFacts::read(&loaded)?),
         })
     }
 
-    /// Read the cache again when it changed; whether it did.
+    /// Read the texts again when their files changed; whether they did. A
+    /// manifest or facts that no longer read keep the texts as they were.
     pub fn poll(&mut self) -> bool {
-        let now = size(&self.cache);
+        let now: Vec<Option<u64>> = self.files.iter().map(|f| size(f)).collect();
         if now == self.read {
             return false;
         }
-        self.read = now;
-        self.texts = trajectory::current(&self.facts, &self.cache);
+        match Self::of(&self.manifest) {
+            Ok(again) => *self = again,
+            Err(_) => self.read = now,
+        }
         true
     }
 

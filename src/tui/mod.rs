@@ -81,9 +81,9 @@ pub fn run_trajectory(t: &crate::trajectory::run::TrajectoryArgs) -> Result<()> 
     run_trajectory_with(t, None)
 }
 
-/// `lupin describe -f <manifest>` without `-o`: the TUI on the round (or,
-/// for a trajectory run, on its order view), running the consensus with
-/// `lm`'s model at once.
+/// `lupin describe -f <manifest>` without `-o`: the TUI on the round,
+/// running the consensus with `lm`'s model at once; or, for a trajectory
+/// run, on its order view, whose texts are the run's own.
 pub fn run_describe(from: &str, lm: &crate::describe::LmArgs) -> Result<()> {
     use clap::Parser;
     let loaded = run::load(from)?;
@@ -115,8 +115,7 @@ pub fn run_describe(from: &str, lm: &crate::describe::LmArgs) -> Result<()> {
     run_with(&a, None, Some(lm))
 }
 
-/// [`run_trajectory`], running the trajectory's description with `lm` at
-/// once when given.
+/// [`run_trajectory`], with `lm` the model `L` runs on a round.
 fn run_trajectory_with(
     t: &crate::trajectory::run::TrajectoryArgs,
     lm: Option<crate::describe::LmArgs>,
@@ -143,8 +142,8 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     run_with(args, trajectory, None)
 }
 
-/// [`run`]; with `lm`, the consensus (or the trajectory's description) runs
-/// with that model as soon as the screen is up.
+/// [`run`]; with `lm`, the consensus runs with that model as soon as a
+/// round is up (not on the order view, whose texts need none).
 fn run_with(
     args: &AnnotateCliArgs,
     trajectory: Option<order::TrajectoryRun>,
@@ -271,9 +270,13 @@ fn run_with(
     if app.round.is_none() && crate::manifest::family::has_round(&loaded.file) {
         app.status = "this run has annotated rounds: g lists them".into();
     }
+    // The order's texts need no model: a trajectory keeps `lm` for `L` on a
+    // round.
     if let Some(lm) = lm {
         app.lm = lm;
-        app.start_describing();
+        if !start_in_order {
+            app.start_describing();
+        }
     }
 
     let mut terminal = ratatui::init();

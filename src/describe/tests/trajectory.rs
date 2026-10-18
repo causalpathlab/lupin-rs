@@ -1,8 +1,8 @@
-//! A trajectory's order in words, on made-up facts and a stub model.
+//! A trajectory's order in words, written by code, on made-up facts.
 
 use super::*;
-use crate::describe::consensus::tests::Stub;
 use crate::trajectory::edges::Verdict;
+use std::path::Path;
 
 fn edge(a: &str, b: &str, verdict: Option<Verdict>) -> EdgeRow {
     EdgeRow {
@@ -32,20 +32,7 @@ fn facts() -> OrderFacts {
             edge("MONO", "NK_cells", Some(Verdict::Candidate)),
             edge("ERY", "DC", None),
         ],
-        medians: [
-            ("HSC_like", 0.01),
-            ("MPP_like", 0.2),
-            ("ERY", 0.7),
-            ("MONO", 0.6),
-        ]
-        .iter()
-        .map(|(t, m)| ((*t).to_string(), *m))
-        .collect(),
     }
-}
-
-fn types() -> BTreeSet<String> {
-    facts().types().into_iter().collect()
 }
 
 #[test]
@@ -84,150 +71,29 @@ fn the_templates_say_the_order_and_each_types_place() {
     assert!(nk.contains("MONO → NK_cells candidate"), "{nk}");
 }
 
-/// The grounding test for the order: a type's line names only the type,
-/// its edges' other ends, the types either side of it and its lineages'
-/// roots.
 #[test]
-fn a_types_line_may_name_only_its_neighbours_and_roots() {
+fn the_texts_are_the_runs_paragraph_then_each_types_line_and_read_as_markdown() {
     let f = facts();
-    let s = subjects(&f);
-    let ery = s
+    let t = texts(&f);
+    assert_eq!(t.len(), 1 + f.types().len());
+    assert_eq!(
+        t[0],
+        OrderText {
+            subject: None,
+            text: run_template(&f)
+        }
+    );
+    let mpp = t
         .iter()
-        .find(|s| s.subject.as_deref() == Some("ERY"))
+        .find(|t| t.subject.as_deref() == Some("MPP_like"))
         .unwrap();
-    assert_eq!(
-        ery.own,
-        BTreeSet::from(["MPP_like".to_string(), "HSC_like".to_string()])
-    );
-    let check = |t: &str| check_lm(t, &types(), &ery.named, &ery.own);
-    assert_eq!(
-        check("ERY follows MPP like on the way from HSC like."),
-        Ok(())
-    );
-    assert_eq!(
-        check("ERY sits beside MONO."),
-        Err(super::super::CitationError::Foreign("MONO".into()))
-    );
-    assert!(check("ERY is the third step.").is_ok());
-    assert!(check("ERY is step 3.").is_err(), "no numbers");
-    // The run's paragraph names roots, branch points and ends only.
-    let run = &s[0];
-    assert!(run.subject.is_none());
-    assert!(run.named.contains("MPP_like") && run.named.contains("DC"));
+    assert_eq!(mpp.text, type_template(&f, "MPP_like"));
+    let md = markdown("t.senna.json", &t);
+    assert!(md.starts_with("# Trajectory description\n\nFrom `t.senna.json`.\n\n"));
     assert!(
-        check_lm(
-            "It starts at HSC like and ends at NK cells.",
-            &types(),
-            &run.named,
-            &run.own
-        )
-        .is_err(),
-        "NK_cells is no root, branch point or end"
+        md.contains(&format!("## MPP_like\n\n{}\n", mpp.text)),
+        "{md}"
     );
-    assert!(
-        run.prompt.contains("BRANCH POINTS: MPP_like"),
-        "{}",
-        run.prompt
-    );
-    assert!(
-        run.prompt.ends_with("<think>\n\n</think>\n\n"),
-        "{}",
-        run.prompt
-    );
-}
-
-#[test]
-fn a_model_text_that_strays_falls_back_to_the_template() {
-    let f = facts();
-    let s = &subjects(&f)[0];
-    let mut stub = Stub::new(
-        &[],
-        &["It starts at NK cells.", "It starts at NK cells again."],
-    );
-    let d = word(&mut stub, "m", "r", s, &f).unwrap();
-    assert_eq!(d.check, Check::Template);
-    assert_eq!(d.text, run_template(&f));
-    assert_eq!(stub.asked[1].1.words, ["NK_cells"]);
-    let mut stub = Stub::new(&[], &["The order runs from HSC like through MPP like."]);
-    let d = word(&mut stub, "m", "r", s, &f).unwrap();
-    assert_eq!(d.check, Check::Ok);
-    assert_eq!(d.cited, ["HSC_like", "MPP_like"]);
-}
-
-#[test]
-fn a_model_text_contradicting_the_facts_falls_back_to_the_template() {
-    let f = facts();
-    let mono = (subjects(&f).into_iter())
-        .find(|s| s.subject.as_deref() == Some("MONO"))
-        .unwrap();
-    // MPP_like → MONO is unsupported, and MONO comes after MPP_like.
-    for wrong in [
-        "MONO sits after MPP like, with a supported edge from MPP like.",
-        "MONO sits between HSC like and MPP like.",
-        "MONO gives rise to MPP like.",
-    ] {
-        let mut stub = Stub::new(&[], &[wrong]);
-        let d = word(&mut stub, "m", "r", &mono, &f).unwrap();
-        assert_eq!(d.check, Check::Template, "{wrong}");
-        assert_eq!(d.text, type_template(&f, "MONO"));
-    }
-    let mut stub = Stub::new(
-        &[],
-        &["MONO comes after MPP like and ends its lineage, with an unsupported edge from it."],
-    );
-    assert_eq!(
-        word(&mut stub, "m", "r", &mono, &f).unwrap().check,
-        Check::Ok
-    );
-}
-
-#[test]
-fn the_texts_are_cached_and_current_falls_back_to_the_templates() {
-    let dir = tempfile::tempdir().unwrap();
-    let cache = dir.path().join("t.consensus.jsonl");
-    let f = facts();
-    let n = subjects(&f).len();
-    // Before any model: the templates.
-    let now = current(&f, &cache);
-    assert_eq!(now.len(), n);
-    assert!(now.iter().all(|d| d.check == Check::Template));
-    let spec = LmSpec {
-        model: super::super::lm::LmModel::Qwen3_0_6b,
-        local_dir: None,
-        device: crate::gene_text::cli::ComputeDevice::Cpu,
-    };
-    let lines: Vec<String> = f
-        .types()
-        .iter()
-        .map(|t| format!("{t} sits here."))
-        .collect();
-    let mut all = vec!["The order runs from HSC like.".to_string()];
-    all.extend(lines);
-    let load = || -> Result<Box<dyn Lm>> {
-        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
-        Ok(Box::new(Stub::new(&[], &refs)))
-    };
-    let made = describe(&f, Some(&spec), &cache, load).unwrap();
-    assert!(made.iter().all(|d| d.check == Check::Ok), "{made:?}");
-    assert_eq!(current(&f, &cache), made);
-    let again = describe(&f, Some(&spec), &cache, || -> Result<Box<dyn Lm>> {
-        panic!("all cached")
-    })
-    .unwrap();
-    assert_eq!(again, made);
-    let md = markdown("t.senna.json", &made);
-    assert!(md.starts_with("# Trajectory description\n\nFrom `t.senna.json`."));
-    assert!(md.contains("## MPP_like\n\nMPP_like sits here.\n"), "{md}");
-    // No model asked for: the templates, nothing cached.
-    let plain = describe(
-        &f,
-        None,
-        &dir.path().join("none.jsonl"),
-        || -> Result<Box<dyn Lm>> { panic!("no model") },
-    )
-    .unwrap();
-    assert_eq!(plain[0].text, run_template(&f));
-    assert!(!dir.path().join("none.jsonl").exists());
 }
 
 /// A trajectory manifest in `dir` with the facts' lineages and edges and a
@@ -269,13 +135,14 @@ pub(crate) fn fixture_trajectory(dir: &Path) -> PathBuf {
 }
 
 #[test]
-fn the_facts_read_from_a_trajectory_run_with_each_types_median() {
+fn the_facts_read_from_a_trajectory_run_with_the_files_they_come_from() {
     let dir = tempfile::tempdir().unwrap();
     let file = fixture_trajectory(dir.path());
     let loaded = crate::manifest::run::load(&file.to_string_lossy()).unwrap();
     let f = OrderFacts::read(&loaded).unwrap();
     assert_eq!(f.lineages, facts().lineages);
     assert_eq!(f.edges.len(), 5);
-    assert!((f.medians["ERY"] - 0.7).abs() < 1e-6);
-    assert!((f.medians["HSC_like"] - 0.01).abs() < 1e-6);
+    let [lineages, edges] = OrderFacts::files(&loaded);
+    assert!(lineages.unwrap().ends_with("t.trajectory_lineages.tsv"));
+    assert!(edges.unwrap().ends_with("t.trajectory_edges.parquet"));
 }

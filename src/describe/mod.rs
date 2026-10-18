@@ -188,19 +188,21 @@ impl ClusterEvidence {
 }
 
 /// `describe` on a trajectory run: the run's paragraph and each type's line
-/// to `{out}.trajectory.describe.md`, by the model with `--lm`.
+/// to `{out}.trajectory.describe.md`, written by code from its outputs
+/// ([`trajectory`]); the model has nothing to add, and `--cache-only` has
+/// nothing to write.
 fn describe_trajectory(
     loaded: &crate::manifest::run::Loaded,
     args: &DescribeArgs,
     out: &str,
 ) -> Result<()> {
-    let facts = trajectory::OrderFacts::read(loaded)?;
-    let spec = args.lm.lm.then(|| args.lm.spec());
-    let cache = consensus::cache_path(out);
-    let texts = trajectory::describe(&facts, spec.as_ref(), &cache, args.lm.loader())?;
+    if args.lm.lm {
+        info!("describe: a trajectory's texts are written from its outputs; the model is not run");
+    }
     if args.cache_only {
         return Ok(());
     }
+    let texts = trajectory::texts(&trajectory::OrderFacts::read(loaded)?);
     let md = trajectory::md_path(out);
     std::fs::write(&md, trajectory::markdown(&args.from, &texts))
         .with_context(|| format!("writing {}", md.display()))?;

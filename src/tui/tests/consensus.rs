@@ -293,37 +293,50 @@ fn a_consensus_job_without_the_model_says_so_and_the_rest_works() {
     assert_eq!(app.edits.len(), 1);
 }
 
+use super::super::app::TreeMode;
+use crate::describe::trajectory::{self, tests::fixture_trajectory, OrderFacts};
+
+/// Trajectory `t`'s texts as code writes them from its facts now.
+fn texts_of(t: &Path) -> Vec<trajectory::OrderText> {
+    let loaded = crate::manifest::run::load(&t.to_string_lossy()).unwrap();
+    trajectory::texts(&OrderFacts::read(&loaded).unwrap())
+}
+
+/// Trajectory `t`'s run paragraph now.
+fn paragraph_of(t: &Path) -> String {
+    texts_of(t)[0].text.clone()
+}
+
+/// Write trajectory `t`'s lineages as `paths` (one `a > b > c` per line).
+fn relineage(t: &Path, paths: &[&str]) {
+    let mut text = String::from("# lineage\tcomponent\tpath\n");
+    for (i, p) in paths.iter().enumerate() {
+        text += &format!("L{i}\t0\t{p}\n");
+    }
+    std::fs::write(t.with_file_name("t.trajectory_lineages.tsv"), text).unwrap();
+}
+
+/// An app on a round in `dir/r`, the order view up on trajectory `t`.
+fn order_on(dir: &Path, t: &Path) -> App {
+    let mut app = app_on(&fixture_round(&dir.join("r").tap_mkdir()));
+    app.source = t.to_path_buf();
+    app.trajectory_tui = true;
+    app.figures = None;
+    app.toggle_order(false);
+    app.figures = None;
+    app
+}
+
 #[test]
 fn the_order_view_shows_the_selected_types_line_or_the_runs_paragraph() {
-    use crate::describe::trajectory::{self, tests::fixture_trajectory, OrderFacts};
     let dir = tempfile::tempdir().unwrap();
     let t = fixture_trajectory(dir.path());
-    let mut app = app_on(&fixture_round(&dir.path().join("r").tap_mkdir()));
-    app.source = t.clone();
-    app.trajectory_tui = true;
-    app.toggle_order(false);
-    assert!(app.order_line().is_none(), "nothing described yet");
-    // L describes the trajectory shown, once a run exists; its texts fill
-    // in from the cache as the job writes them.
-    app.follow_order_texts(&t).unwrap();
-    let loaded = crate::manifest::run::load(&t.to_string_lossy()).unwrap();
-    let f = OrderFacts::read(&loaded).unwrap();
-    let cache = cache_path(&derive_out_prefix(&t.to_string_lossy()));
-    let words = ["The order runs from HSC like.".to_string()]
-        .into_iter()
-        .chain(f.types().iter().map(|t| format!("{t} sits here.")))
-        .collect::<Vec<_>>();
-    let load = || -> anyhow::Result<Box<dyn Lm>> {
-        let refs: Vec<&str> = words.iter().map(String::as_str).collect();
-        Ok(Box::new(Stub::new(&[], &refs)))
-    };
-    trajectory::describe(&f, Some(&spec()), &cache, load).unwrap();
-    app.refresh_order_texts();
+    // Written from the run's outputs: there at once, no model run.
+    let mut app = order_on(dir.path(), &t);
+    assert!(app.child.is_none());
     app.focus = Focus::Clusters;
-    assert_eq!(
-        app.order_line().as_deref(),
-        Some("The order runs from HSC like.")
-    );
+    let paragraph = paragraph_of(&t);
+    assert_eq!(app.order_line().as_deref(), Some(paragraph.as_str()));
     app.focus = Focus::Order;
     let select = |app: &mut App, ty: &str| {
         let TreeMode::Order(v) = &mut app.tree_mode else {
@@ -336,90 +349,57 @@ fn the_order_view_shows_the_selected_types_line_or_the_runs_paragraph() {
     };
     // A type the trajectory does not order has no line: the paragraph.
     select(&mut app, "CT2");
-    assert_eq!(
-        app.order_line().as_deref(),
-        Some("The order runs from HSC like.")
-    );
+    assert_eq!(app.order_line().as_deref(), Some(paragraph.as_str()));
     select(&mut app, "MPP_like");
-    assert_eq!(app.order_line().as_deref(), Some("MPP_like sits here."));
+    let mpp = texts_of(&t)
+        .into_iter()
+        .find(|x| x.subject.as_deref() == Some("MPP_like"))
+        .unwrap();
+    assert_eq!(app.order_line(), Some(mpp.text));
 }
 
-use super::super::app::TreeMode;
-
 #[test]
-fn l_in_the_order_view_without_a_trajectory_run_says_so() {
+fn l_in_the_order_view_runs_no_model() {
     let dir = tempfile::tempdir().unwrap();
-    let mut app = app_on(&fixture_round(dir.path()));
-    app.trajectory_tui = true;
-    app.toggle_order(false);
+    let t = fixture_trajectory(dir.path());
+    let mut app = order_on(dir.path(), &t);
     app.focus = Focus::Order;
     press(&mut app, KeyCode::Char('L'));
     assert!(app.child.is_none());
-    assert!(app.status.contains("no trajectory run"), "{}", app.status);
+    assert!(app.status.contains("no model"), "{}", app.status);
 }
 
 #[test]
-fn another_trajectory_shown_does_not_keep_the_last_ones_texts() {
-    use crate::describe::trajectory::tests::fixture_trajectory;
+fn another_trajectory_shown_shows_its_own_texts() {
     let dir = tempfile::tempdir().unwrap();
     let a = fixture_trajectory(&dir.path().join("a").tap_mkdir());
     let b = fixture_trajectory(&dir.path().join("b").tap_mkdir());
-    let mut app = app_on(&fixture_round(&dir.path().join("r").tap_mkdir()));
-    app.source = a.clone();
-    app.trajectory_tui = true;
-    app.toggle_order(false);
-    app.follow_order_texts(&a).unwrap();
+    relineage(&b, &["HSC_like > ERY"]);
+    let mut app = order_on(dir.path(), &a);
     assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&a));
-    // B, with no figures up and no texts cached yet: none show, not A's.
-    app.source = b;
+    app.source = b.clone();
     app.figures = None;
     app.load_order_texts(false);
-    assert!(app.order_texts.is_none());
-    assert!(app.order_line().is_none());
+    assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&b));
+    app.focus = Focus::Clusters;
+    assert_eq!(app.order_line(), Some(paragraph_of(&b)));
 }
 
 #[test]
-fn opening_another_trajectory_lets_the_last_ones_texts_go() {
-    use crate::describe::trajectory::tests::fixture_trajectory;
+fn opening_another_trajectory_shows_its_texts() {
     use crate::manifest::family::{Kind, Pick};
     let dir = tempfile::tempdir().unwrap();
     let a = fixture_trajectory(&dir.path().join("a").tap_mkdir());
     let b = fixture_trajectory(&dir.path().join("b").tap_mkdir());
-    let mut app = app_on(&fixture_round(&dir.path().join("r").tap_mkdir()));
-    app.source = a.clone();
-    app.trajectory_tui = true;
-    app.toggle_order(false);
-    app.follow_order_texts(&a).unwrap();
-    assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&a));
+    let mut app = order_on(dir.path(), &a);
     let pick = Pick {
-        path: b,
+        path: b.clone(),
         kind: Kind::Trajectory,
         labelled: false,
     };
     app.open_run(pick, true);
     app.tick();
-    assert!(app.order_texts.is_none(), "B's are not cached yet");
-}
-
-#[test]
-fn a_new_output_lets_the_last_trajectorys_texts_go() {
-    use crate::describe::trajectory::tests::fixture_trajectory;
-    let dir = tempfile::tempdir().unwrap();
-    let a = fixture_trajectory(&dir.path().join("a").tap_mkdir());
-    let b = fixture_trajectory(&dir.path().join("b").tap_mkdir());
-    let mut app = app_on(&fixture_round(&dir.path().join("r").tap_mkdir()));
-    app.source = a.clone();
-    app.trajectory_tui = true;
-    app.toggle_order(false);
-    app.figures = None;
-    app.follow_order_texts(&a).unwrap();
-    app.tick();
-    assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&a));
-    // The output now names B, the first trajectory the order view shows.
-    let out = b.to_string_lossy().replace(".senna.json", "");
-    app.set_output(&out);
-    app.tick();
-    assert!(app.order_texts.is_none(), "B's are not cached yet");
+    assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&b));
 }
 
 #[test]
@@ -432,23 +412,6 @@ fn the_tuis_describe_job_writes_its_cache_and_no_description() {
         argv.iter().any(|a| a == "--cache-only"),
         "never writes over a description the user made: {argv:?}"
     );
-}
-
-/// Describe trajectory `t` into its cache by a stub: `paragraph` for the
-/// run, `{type} sits here.` for each type.
-fn describe_by_stub(t: &Path, paragraph: &str) {
-    use crate::describe::trajectory::{self, OrderFacts};
-    let loaded = crate::manifest::run::load(&t.to_string_lossy()).unwrap();
-    let f = OrderFacts::read(&loaded).unwrap();
-    let cache = cache_path(&derive_out_prefix(&t.to_string_lossy()));
-    let words = std::iter::once(paragraph.to_string())
-        .chain(f.types().iter().map(|t| format!("{t} sits here.")))
-        .collect::<Vec<_>>();
-    let load = || -> anyhow::Result<Box<dyn Lm>> {
-        let refs: Vec<&str> = words.iter().map(String::as_str).collect();
-        Ok(Box::new(Stub::new(&[], &refs)))
-    };
-    trajectory::describe(&f, Some(&spec()), &cache, load).unwrap();
 }
 
 /// The order view's edges, as pairs.
@@ -467,39 +430,29 @@ fn pairs(edges: &[crate::trajectory::edges::EdgeRow]) -> Vec<(String, String)> {
 
 #[test]
 fn a_new_output_shows_the_new_trajectorys_edges_with_its_texts() {
-    use crate::describe::trajectory::tests::fixture_trajectory;
     use crate::trajectory::edges;
     let dir = tempfile::tempdir().unwrap();
     let a = fixture_trajectory(&dir.path().join("a").tap_mkdir());
     let b = fixture_trajectory(&dir.path().join("b").tap_mkdir());
-    // B has fewer edges than A, and texts of its own.
+    // B has fewer edges than A, and lineages of its own.
     let b_edges = b.with_file_name("t.trajectory_edges.parquet");
     let b_edges = b_edges.to_string_lossy();
     let fewer = edges::read(&b_edges).unwrap()[..2].to_vec();
     edges::write(&b_edges, &fewer).unwrap();
     let fewer = pairs(&fewer);
-    describe_by_stub(&a, "The first order runs from HSC like.");
-    describe_by_stub(&b, "The other order runs from HSC like.");
-    let mut app = app_on(&fixture_round(&dir.path().join("r").tap_mkdir()));
-    app.source = a.clone();
-    app.trajectory_tui = true;
-    app.figures = None;
-    app.toggle_order(false);
-    app.figures = None;
+    relineage(&b, &["HSC_like > MPP_like"]);
+    let (first, other) = (paragraph_of(&a), paragraph_of(&b));
+    assert_ne!(first, other);
+    let mut app = order_on(dir.path(), &a);
+    app.focus = Focus::Clusters;
     app.tick();
-    assert_eq!(
-        app.order_line().as_deref(),
-        Some("The first order runs from HSC like.")
-    );
+    assert_eq!(app.order_line(), Some(first.clone()));
     assert_ne!(order_edges(&app).len(), fewer.len());
     let out = b.to_string_lossy().replace(".senna.json", "");
     app.set_output(&out);
     app.tick();
     assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&b));
-    assert_eq!(
-        app.order_line().as_deref(),
-        Some("The other order runs from HSC like.")
-    );
+    assert_eq!(app.order_line(), Some(other.clone()));
     assert_eq!(order_edges(&app), fewer, "the table is B's too");
     // Back to A, then to B while the view is away.
     let a_edges = pairs(
@@ -511,87 +464,57 @@ fn a_new_output_shows_the_new_trajectorys_edges_with_its_texts() {
     );
     app.set_output(&a.to_string_lossy().replace(".senna.json", ""));
     app.tick();
-    assert_eq!(
-        app.order_line().as_deref(),
-        Some("The first order runs from HSC like.")
-    );
+    assert_eq!(app.order_line(), Some(first));
     assert_eq!(order_edges(&app), a_edges);
     app.toggle_order(false);
     app.set_output(&out);
     app.toggle_order(false);
     app.figures = None;
     app.tick();
-    assert_eq!(
-        app.order_line().as_deref(),
-        Some("The other order runs from HSC like.")
-    );
+    assert_eq!(app.order_line(), Some(other));
     assert_eq!(order_edges(&app), fewer);
 }
 
 #[test]
 fn the_order_view_entered_again_reads_the_texts_again() {
-    use crate::describe::trajectory::tests::fixture_trajectory;
     let dir = tempfile::tempdir().unwrap();
     let a = fixture_trajectory(&dir.path().join("a").tap_mkdir());
-    describe_by_stub(&a, "The order runs early from HSC like.");
-    let mut app = app_on(&fixture_round(&dir.path().join("r").tap_mkdir()));
-    app.source = a.clone();
-    app.trajectory_tui = true;
+    relineage(&a, &["HSC_like > MPP_like > ERY"]);
+    let early = paragraph_of(&a);
+    let mut app = order_on(dir.path(), &a);
+    app.focus = Focus::Clusters;
+    assert_eq!(app.order_line(), Some(early.clone()));
+    app.toggle_order(false);
+    // Run anew while the view is away, its lineages file the same size.
+    relineage(&a, &["HSC_like > MPP_like > MON"]);
+    let later = paragraph_of(&a);
+    assert_ne!(later, early);
     app.toggle_order(false);
     app.focus = Focus::Clusters;
-    assert_eq!(
-        app.order_line().as_deref(),
-        Some("The order runs early from HSC like.")
-    );
-    app.toggle_order(false);
-    // Described anew while the view is away, the cache the same size.
-    let cache = cache_path(&derive_out_prefix(&a.to_string_lossy()));
-    std::fs::remove_file(&cache).unwrap();
-    describe_by_stub(&a, "The order runs later from HSC like.");
-    app.toggle_order(false);
-    app.focus = Focus::Clusters;
-    assert_eq!(
-        app.order_line().as_deref(),
-        Some("The order runs later from HSC like.")
-    );
+    assert_eq!(app.order_line(), Some(later));
     // So does opening the run again, the view up.
-    std::fs::remove_file(&cache).unwrap();
-    describe_by_stub(&a, "The order runs early from HSC like.");
+    relineage(&a, &["HSC_like > MPP_like > ERY"]);
     let pick = crate::manifest::family::Pick {
         path: a.clone(),
         kind: crate::manifest::family::Kind::Trajectory,
         labelled: false,
     };
     app.open_run(pick, true);
-    assert_eq!(
-        app.order_line().as_deref(),
-        Some("The order runs early from HSC like.")
-    );
+    assert_eq!(app.order_line(), Some(early));
 }
 
 #[test]
-fn a_trajectory_run_again_on_its_output_leaves_no_stale_templates() {
-    use crate::describe::trajectory::tests::fixture_trajectory;
+fn a_trajectory_run_again_on_its_output_leaves_no_stale_texts() {
     let dir = tempfile::tempdir().unwrap();
     let a = fixture_trajectory(&dir.path().join("a").tap_mkdir());
-    let mut app = app_on(&fixture_round(&dir.path().join("r").tap_mkdir()));
-    app.source = a.clone();
-    app.trajectory_tui = true;
-    app.toggle_order(false);
-    // `L` follows A's texts: its templates, nothing cached yet.
-    app.follow_order_texts(&a).unwrap();
+    let mut app = order_on(dir.path(), &a);
     // The run made again on the same output orders other types.
-    std::fs::write(
-        a.with_file_name("t.trajectory_lineages.tsv"),
-        "# lineage\tcomponent\tpath\nL0\t0\tHSC_like > ERY\n",
-    )
-    .unwrap();
+    relineage(&a, &["HSC_like > ERY"]);
     let child = std::process::Command::new("true").spawn().unwrap();
     app.child = Some(Running::new(child, Job::Trajectory(a.clone())));
     finish(&mut app);
-    let fresh = super::super::consensus::OrderTexts::of(&a).unwrap();
     assert_eq!(
         app.order_texts.as_ref().map(|t| &t.texts),
-        Some(&fresh.texts)
+        Some(&texts_of(&a))
     );
 }

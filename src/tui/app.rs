@@ -549,9 +549,9 @@ pub struct App {
     pub lm: crate::describe::LmArgs,
     /// The round's proposals, followed in its cache.
     following: Option<super::consensus::Following>,
-    /// The trajectory's texts, once described (`L` in the order view):
-    /// in the order view always those of [`Self::shown_trajectory`], as
-    /// [`Self::keep_order_current`] keeps them, or none.
+    /// The trajectory's texts: in the order view always those of
+    /// [`Self::shown_trajectory`], as [`Self::keep_order_current`] keeps
+    /// them, or none.
     pub order_texts: Option<super::consensus::OrderTexts>,
     /// The manifests [`Self::order_texts`] and the order view's edges were
     /// last read among.
@@ -747,7 +747,6 @@ impl App {
         }
         if matches!(self.child.as_ref().map(|r| &r.job), Some(Job::Consensus(_))) {
             self.refresh_consensus();
-            self.refresh_order_texts();
         }
         let Some(r) = &mut self.child else {
             return;
@@ -787,8 +786,8 @@ impl App {
                     self.suggestions_done(&file, secs);
                     return;
                 }
-                if let Job::Consensus(m) = job {
-                    self.consensus_done(&m, secs);
+                if let Job::Consensus(_) = job {
+                    self.consensus_done(secs);
                     return;
                 }
                 let after = std::mem::take(&mut self.after_pass);
@@ -894,7 +893,6 @@ impl App {
             Ok(Some(_)) if matches!(job, Job::Consensus(_)) => {
                 self.child = None;
                 self.refresh_consensus();
-                self.refresh_order_texts();
                 let offline = self
                     .log
                     .iter()
@@ -1566,7 +1564,6 @@ impl App {
                 if let Job::Consensus(_) = &job {
                     // What it appended stays in the cache, and shows.
                     self.refresh_consensus();
-                    self.refresh_order_texts();
                     self.status = "stopped: the proposals made so far stay in the cache".into();
                     return;
                 }
@@ -2725,7 +2722,9 @@ impl App {
             }
             Focus::Order => match code {
                 KeyCode::Char('T') => self.toggle_order(false),
-                KeyCode::Char('L') => self.start_order_texts(),
+                KeyCode::Char('L') => {
+                    self.status = "the order's texts are written from the run's outputs: no model to run here (L in the clusters runs it on the round)".into();
+                }
                 // `t` restyles the figures' labels (taken above when shown).
                 KeyCode::Char('t') => self.status = "v figures · T back to the tree".into(),
                 KeyCode::Char(' ') => self.toggle_tree_mark(),
@@ -4220,12 +4219,10 @@ impl App {
         }
     }
 
-    /// Run what `lupin describe` without `-o` asks for: the trajectory's
-    /// description in the order view, else the round's consensus.
+    /// Run what `lupin describe` without `-o` asks for: the round's
+    /// consensus.
     pub(super) fn start_describing(&mut self) {
-        if self.in_order() {
-            self.start_order_texts();
-        } else if self.round.is_some() {
+        if self.round.is_some() {
             self.start_consensus();
         } else {
             self.status = "no round to propose labels for: r runs a pass, then L".into();
@@ -4269,19 +4266,8 @@ impl App {
     }
 
     /// A consensus job ended well: its last lines in, said.
-    fn consensus_done(&mut self, manifest: &Path, secs: u64) {
+    fn consensus_done(&mut self, secs: u64) {
         self.refresh_consensus();
-        self.refresh_order_texts();
-        if self
-            .order_texts
-            .as_ref()
-            .is_some_and(|t| t.manifest == manifest)
-        {
-            self.status = format!(
-                "trajectory described in {secs}s: the line under the table follows the selected type"
-            );
-            return;
-        }
         let n = self.round.as_ref().map_or(0, |r| r.proposals.len());
         self.status = format!(
             "consensus done in {secs}s: a suggested label with a sentence for {n} cluster(s), under the candidates (P opens the choices on it; you decide)"
@@ -4319,61 +4305,30 @@ impl App {
     }
 
     /// The texts of the trajectory shown: polled when they are followed
-    /// already and nothing `force`s a new read; else read again from its
-    /// cache, else its templates when they were followed (`L`), else none.
+    /// already and nothing `force`s a new read; else read from its facts.
     pub(super) fn load_order_texts(&mut self, force: bool) {
-        let candidates = self.trajectory_candidates();
-        let shown = shown_among(candidates.iter().cloned());
-        self.order_texts_for = Some(candidates);
+        let shown = self.shown_trajectory();
+        self.order_texts_for = Some(self.trajectory_candidates());
         if !force
             && shown.is_some()
             && self.order_texts.as_ref().map(|t| &t.manifest) == shown.as_ref()
         {
             return self.refresh_order_texts();
         }
-        let followed = self.order_texts.take().map(|t| t.manifest);
+        self.order_texts = None;
         let Some(m) = shown else {
             return;
         };
-        let cached = cache_path(&derive_out_prefix(&m.to_string_lossy())).is_file();
-        if cached || followed.as_ref() == Some(&m) {
-            if let Err(e) = self.follow_order_texts(&m) {
-                self.push_log(format!("[WARN] no trajectory texts: {e:#}"));
-            }
+        match super::consensus::OrderTexts::of(&m) {
+            Ok(t) => self.order_texts = Some(t),
+            Err(e) => self.push_log(format!("[WARN] no trajectory texts: {e:#}")),
         }
-    }
-
-    /// Follow trajectory `m`'s texts in its cache.
-    pub(super) fn follow_order_texts(&mut self, m: &Path) -> anyhow::Result<()> {
-        self.order_texts = Some(super::consensus::OrderTexts::of(m)?);
-        Ok(())
     }
 
     pub(super) fn refresh_order_texts(&mut self) {
         if let Some(t) = &mut self.order_texts {
             t.poll();
         }
-    }
-
-    /// `L` in the order view: describe the trajectory shown.
-    fn start_order_texts(&mut self) {
-        if self.child.is_some() {
-            self.status =
-                "wait for the running job (x stops it), then L describes the trajectory".into();
-            return;
-        }
-        let Some(m) = self.shown_trajectory() else {
-            self.status = "no trajectory run to describe yet: r runs one, then L".into();
-            return;
-        };
-        if let Err(e) = self.follow_order_texts(&m) {
-            self.status = format!("cannot describe {}: {e:#}", file_name(&m));
-            return;
-        }
-        self.spawn_describe(
-            &m,
-            "describing the trajectory: the run's paragraph and a line per type (its first run fetches the model)",
-        );
     }
 
     /// The order view's strip: the selected type's line while the table has

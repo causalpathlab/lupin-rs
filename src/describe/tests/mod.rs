@@ -299,39 +299,32 @@ fn a_round_made_from_a_trajectory_is_described_as_a_round() {
 }
 
 #[test]
-fn cache_only_writes_the_models_texts_and_leaves_the_description() {
+fn a_trajectory_is_described_by_code_and_cache_only_leaves_its_description() {
     use super::trajectory::{self, tests::fixture_trajectory, OrderFacts};
-    use crate::describe::consensus::tests::Stub;
     let dir = tempfile::tempdir().unwrap();
     let t = fixture_trajectory(dir.path());
     let out = dir.path().join("t").to_string_lossy().into_owned();
+    let from = t.to_string_lossy().into_owned();
+    // With --lm too, no model is needed: an offline machine writes it.
+    let args = describe_args(&["-f", &from, "-o", &out, "--lm", "--lm-dir", "/nowhere"]);
+    run_describe(&args).unwrap();
     let md = trajectory::md_path(&out);
+    let loaded = crate::manifest::run::load(&from).unwrap();
+    let want = trajectory::markdown(
+        &from,
+        &trajectory::texts(&OrderFacts::read(&loaded).unwrap()),
+    );
+    assert_eq!(std::fs::read_to_string(&md).unwrap(), want);
     std::fs::write(&md, "mine\n").unwrap();
-    // The texts already cached, so no model is loaded.
-    let loaded = crate::manifest::run::load(&t.to_string_lossy()).unwrap();
-    let f = OrderFacts::read(&loaded).unwrap();
-    let words: Vec<String> = std::iter::once("The order runs from HSC like.".to_string())
-        .chain(f.types().iter().map(|t| format!("{t} sits here.")))
-        .collect();
-    let args = describe_args(&[
+    run_describe(&describe_args(&[
         "-f",
-        &t.to_string_lossy(),
+        &from,
         "-o",
         &out,
         "--lm",
-        "--lm-model",
-        "qwen3-0.6b",
-        "--device",
-        "cpu",
         "--cache-only",
-    ]);
-    let cache = consensus::cache_path(&out);
-    trajectory::describe(&f, Some(&args.lm.spec()), &cache, || {
-        let refs: Vec<&str> = words.iter().map(String::as_str).collect();
-        Ok(Box::new(Stub::new(&[], &refs)) as Box<dyn lm::Lm>)
-    })
+    ]))
     .unwrap();
-    run_describe(&args).unwrap();
     assert_eq!(std::fs::read_to_string(&md).unwrap(), "mine\n");
-    assert!(cache.is_file());
+    assert!(!consensus::cache_path(&out).exists(), "nothing to cache");
 }

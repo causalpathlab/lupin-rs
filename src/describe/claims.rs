@@ -1,36 +1,16 @@
-//! What a model's text says of its evidence, checked against it. The
-//! citation check ([`super::citation_check`]) polices which names a text
-//! uses; this polices the claims it makes of them, in the words its prompt
-//! states the facts in: a method ranking a type first or second, a type
-//! sitting between two others or before one, an edge's verdict, a root,
-//! branch point or end. A claim is read from the clause it is in, split at
-//! commas, semicolons, colons and the joins `and`, `but`, `while`,
-//! `whereas`, `with`, `which` and `where` (as whole words, `and` inside
-//! `between A and B` none). Whom it is about:
-//!
-//! - an order word (`before`, `after`, `gives rise to`, `between`, …): the
-//!   last type its clause names before it; else, in a relative clause (led
-//!   by `which` or `where`), the last its sentence names before it; else
-//!   the sentence's subject, the last type named before its first order
-//!   word (`A comes after B, whereas it comes before C` says `before` of
-//!   A); else the text's subject;
-//! - a verdict or a role: the types its clause names; else, in a clause a
-//!   join and a verb open (`… and is a root`, `… while it has an
-//!   unsupported edge`), the first type named in the nearest clause before
-//!   it that names one, relative clauses passed over; else the text's
-//!   subject;
-//! - a method's rank: the nearest rank word of its clause (a relative
-//!   clause right after the method included); else, listed after another
-//!   method, that one's, unless its clause has a predicate of its own; of
-//!   the type its clause names, else the one the sentence proposes.
-//!
-//! A claim no word of the vocabulary makes is not checked.
+//! What a model's sentence on a cluster says of its methods' ranks,
+//! checked against the evidence. The citation check
+//! ([`super::citation_check`]) polices which names a text uses; this
+//! polices the ranks it claims of them: a method's rank is the nearest rank
+//! word of its clause (a relative clause right after the method included);
+//! else, listed after another method, that one's, unless its clause has a
+//! predicate of its own; of the type its clause names, else the one the
+//! sentence proposes. A claim no word of the vocabulary makes is not
+//! checked.
 
 use super::consensus::ClusterInput;
 use super::norm;
-use super::trajectory::OrderFacts;
 use crate::annotate::rounds::Method;
-use crate::trajectory::edges::Verdict;
 use std::collections::BTreeMap;
 
 /// Ok, or the claim the facts do not bear out, in words.
@@ -40,119 +20,6 @@ pub type Claim = Result<(), String>;
 const JOINS: [&str; 5] = ["and", "but", "while", "whereas", "with"];
 /// Words that join a relative clause, one of the type named before it.
 const RELATIVE: [&str; 2] = ["which", "where"];
-/// Verbs a clause opens with after a join, its subject the clause
-/// before's (`CT1 comes after B and is a root`).
-const PREDICATE: [&str; 33] = [
-    "is",
-    "are",
-    "was",
-    "were",
-    "has",
-    "have",
-    "had",
-    "sits",
-    "lies",
-    "stands",
-    "remains",
-    "comes",
-    "ends",
-    "branches",
-    "splits",
-    "diverges",
-    "bifurcates",
-    "starts",
-    "begins",
-    "terminates",
-    "originates",
-    "leads",
-    "gives",
-    "precedes",
-    "follows",
-    "becomes",
-    "develops",
-    "differentiates",
-    "derives",
-    "arises",
-    "stems",
-    "forms",
-    "carries",
-];
-/// Words for the place a type holds: a lineage's root, a branch point or
-/// an end.
-const ROOT: [&str; 11] = [
-    "root",
-    "roots",
-    "rooted",
-    "start",
-    "starts",
-    "starting",
-    "begin",
-    "begins",
-    "base",
-    "origin",
-    "originates",
-];
-const BRANCH: [&str; 9] = [
-    "branch",
-    "branches",
-    "branching",
-    "branched",
-    "split",
-    "splits",
-    "diverge",
-    "diverges",
-    "bifurcates",
-];
-const END: [&str; 9] = [
-    "end",
-    "ends",
-    "ending",
-    "ended",
-    "terminal",
-    "terminates",
-    "terminate",
-    "endpoint",
-    "final",
-];
-/// Words putting the type before them earlier than the one after.
-const FORWARD: [&str; 18] = [
-    "gives rise to",
-    "give rise to",
-    "giving rise to",
-    "gave rise to",
-    "leads to",
-    "lead to",
-    "leading to",
-    "precedes",
-    "precede",
-    "preceding",
-    "before",
-    "upstream of",
-    "differentiates into",
-    "differentiate into",
-    "develops into",
-    "develop into",
-    "becomes",
-    "become",
-];
-/// Words putting it later.
-const BACKWARD: [&str; 15] = [
-    "after",
-    "follows",
-    "follow",
-    "following",
-    "downstream of",
-    "derived from",
-    "derives from",
-    "arises from",
-    "arise from",
-    "comes from",
-    "come from",
-    "develops from",
-    "develop from",
-    "stems from",
-    "stem from",
-];
 /// Words for a method's first.
 const FIRST: [&str; 8] = [
     "first",
@@ -366,70 +233,10 @@ impl Text {
             .find(|w| self.t[i..].starts_with(w) && whole(&self.t, i, i + w.len()))
     }
 
-    /// Whose a clause naming no type is when a join and a verb open it, an
-    /// `it` between them or not (`… and is a root`, `… while it has an
-    /// unsupported edge`): the first type named in the nearest clause
-    /// before it in its sentence that names one, relative clauses passed
-    /// over.
-    fn carried(&self, (a, b): (usize, usize)) -> Option<&str> {
-        let join = self.opener(a, &JOINS)?;
-        let rest = self.t.get(a - 1 + join.len()..b)?;
-        let mut words = (rest.split(|c: char| !c.is_alphanumeric())).filter(|w| !w.is_empty());
-        let verb = words
-            .next()
-            .filter(|&w| w != "it")
-            .or_else(|| words.next())?;
-        if !PREDICATE.contains(&verb) {
-            return None;
-        }
-        let (s, _) = self.sentence(a);
-        // The break before each clause in turn, from the join back.
-        let mut q = a - 1;
-        while q > s {
-            let (pa, pb) = self.clause(q - 1);
-            if self.opener(pa, &RELATIVE).is_none() {
-                if let Some(t) = self.named((pa, pb)).first() {
-                    return Some(t);
-                }
-            }
-            q = pa.checked_sub(1)?;
-        }
-        None
-    }
-
-    /// Who the text speaks of at `p`, among the order words at `said`: the
-    /// last type `p`'s clause names before it; else, in a clause led by
-    /// `which` or `where`, the last its sentence names before it; else the
-    /// sentence's subject, the last type it names before its first order
-    /// word (`A comes after B and before C` says `before` of A).
-    fn speaker(&self, p: usize, said: &[usize]) -> Option<&str> {
-        let (a, _) = self.clause(p);
-        let (s, _) = self.sentence(p);
-        let relative = self.opener(a, &RELATIVE).is_some();
-        let lead = said.iter().copied().filter(|&q| q >= s).min().unwrap_or(p);
-        let last = |a: usize, b: usize| self.named((a, b)).last().copied();
-        last(a, p)
-            .or_else(|| relative.then(|| last(s, p)).flatten())
-            .or_else(|| last(s, lead.min(p)))
-    }
-
     /// The first named from `p` on in its sentence.
     fn after(&self, p: usize) -> Option<&Span> {
         let (_, b) = self.sentence(p);
         self.spans.iter().find(|s| s.start >= p && s.end <= b)
-    }
-
-    /// Where the text has any of `words`, with the word.
-    fn words<'w>(&self, words: &[&'w str]) -> Vec<(usize, &'w str)> {
-        let mut out: Vec<(usize, &str)> = (words.iter())
-            .flat_map(|w| {
-                find(&self.t, w, false)
-                    .into_iter()
-                    .map(move |(i, _)| (i, *w))
-            })
-            .collect();
-        out.sort_unstable();
-        out
     }
 
     /// Each `between A and B`: where `between` is, the two entities, and
@@ -448,129 +255,6 @@ impl Text {
         }
         out
     }
-}
-
-/// Whether `a` comes before `b` on a lineage.
-fn earlier(f: &OrderFacts, a: &str, b: &str) -> bool {
-    f.lineages.iter().any(|l| {
-        let at = |t: &str| l.path.iter().position(|p| p == t);
-        matches!((at(a), at(b)), (Some(i), Some(j)) if i < j)
-    })
-}
-
-/// The verdicts of the edges between `a` and `b`, or of `a`'s edges.
-fn verdicts<'f>(
-    f: &'f OrderFacts,
-    a: &'f str,
-    b: Option<&'f str>,
-) -> impl Iterator<Item = Verdict> + 'f {
-    f.edges
-        .iter()
-        .filter(move |e| match b {
-            Some(b) => e.is_pair(a, b),
-            None => e.a.as_ref() == a || e.b.as_ref() == a,
-        })
-        .filter_map(|e| e.verdict)
-}
-
-/// The claims a trajectory text (its run paragraph, `subject` none, or a
-/// type's line) makes of the order `f`.
-pub fn order_claims(text: &str, f: &OrderFacts, subject: Option<&str>) -> Claim {
-    let x = Text::new(text, &f.types());
-    let betweens = x.betweens();
-    let (forward, backward) = (x.words(&FORWARD), x.words(&BACKWARD));
-    let mut said: Vec<usize> = betweens.iter().map(|b| b.0).collect();
-    said.extend(forward.iter().chain(&backward).map(|(p, _)| *p));
-    // Who the text speaks of at `p`, else the subject.
-    let who = |p: usize| x.speaker(p, &said).or(subject);
-    for (p, a, b, _) in &betweens {
-        let Some(t) = who(*p) else { continue };
-        let fits = |u: &str, v: &str| earlier(f, u, t) && earlier(f, t, v);
-        if !(fits(a, b) || fits(b, a)) {
-            return Err(format!("{t} is not between {a} and {b}"));
-        }
-    }
-    for (said, forward) in [(&forward, true), (&backward, false)] {
-        for &(p, w) in said {
-            let (Some(l), Some(r)) = (who(p), x.after(p + w.len())) else {
-                continue;
-            };
-            let (u, v) = if forward {
-                (l, &*r.entity)
-            } else {
-                (&*r.entity, l)
-            };
-            if u != v && !earlier(f, u, v) {
-                return Err(format!("{u} is not before {v}"));
-            }
-        }
-    }
-    for (p, _) in find(&x.t, "from", false) {
-        let Some(a) = x.after(p) else { continue };
-        let Some(b) = x.after(a.end) else { continue };
-        let gap = x.t[a.end..b.start].trim();
-        let to = ["to", "to the", "to a", "to an"].contains(&gap);
-        let edge = f
-            .edges
-            .iter()
-            .any(|e| *e.a == *a.entity && *e.b == *b.entity);
-        if to && !earlier(f, &a.entity, &b.entity) && !edge {
-            return Err(format!("{} does not lead to {}", a.entity, b.entity));
-        }
-    }
-    let verdict_words = [
-        Verdict::Supported,
-        Verdict::Unsupported,
-        Verdict::Candidate,
-        Verdict::Inferred,
-    ]
-    .map(|v| (v.as_str(), v));
-    let verdict_words = verdict_words
-        .iter()
-        .chain(&[("not supported", Verdict::Unsupported)]);
-    for &(word, v) in verdict_words {
-        for (p, _) in find(&x.t, word, false) {
-            // `not supported` is read as one word.
-            if word == "supported" && x.t[..p].ends_with("not ") {
-                continue;
-            }
-            let clause = x.clause(p);
-            let named = x.named(clause);
-            let (a, b) = match (named.as_slice(), subject) {
-                ([a, b, ..], _) => (*a, Some(*b)),
-                ([a], Some(s)) if *a != s => (s, Some(*a)),
-                ([a], _) => (*a, None),
-                ([], s) => match x.carried(clause).or(s) {
-                    Some(s) => (s, None),
-                    None => continue,
-                },
-            };
-            if !verdicts(f, a, b).any(|e| e == v) {
-                let of = b.map_or_else(|| format!("{a}'s edges"), |b| format!("{a} – {b}"));
-                return Err(format!("no {word} edge in {of}"));
-            }
-        }
-    }
-    let roles: [(&[&str], Vec<String>, &str); 3] = [
-        (&ROOT, f.roots(), "a root"),
-        (&BRANCH, f.branch_points(), "a branch point"),
-        (&END, f.ends(), "an end"),
-    ];
-    for (words, holders, role) in &roles {
-        for (p, _) in x.words(words) {
-            let clause = x.clause(p);
-            let named = x.named(clause);
-            let named = if named.is_empty() {
-                x.carried(clause).or(subject).into_iter().collect()
-            } else {
-                named
-            };
-            if !named.is_empty() && !named.iter().any(|t| holders.iter().any(|h| h == t)) {
-                return Err(format!("{} is not {role}", named.join(" or ")));
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Where `method` ranks `label` among cluster `c`'s evidence: first by its

@@ -493,7 +493,6 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "> precedes",
             "u unrelated",
             "r run",
-            "L describe",
             "v figures",
             "tab ontology",
             "T tree",
