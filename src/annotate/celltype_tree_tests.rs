@@ -1128,3 +1128,13 @@ fn a_type_under_a_term_is_placed_on_that_term_not_its_group_s() {
     );
     assert_eq!(at("CT6"), Some(("CL:6".into(), "CT6".into(), Via::Label)));
 }
+
+#[test]
+fn only_a_taxon_after_a_comma_is_a_qualifier() {
+    let obo = "[Term]\nid: CL:1\nname: CT6 cell, human\n\n\
+               [Term]\nid: CL:2\nname: CTQ cell, glycinergic\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels(["CT6", "CTQ"]);
+    assert_eq!(mapped["CT6"], "CL:1");
+    assert_eq!(unmapped, ["CTQ"], "a kind is no qualifier");
+}

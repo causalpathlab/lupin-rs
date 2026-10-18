@@ -89,15 +89,18 @@ pub struct MatchRules {
     pub part: PartRules,
 }
 
-/// The trailing qualifiers a term is also known without: a taxon
-/// (`neuron (sensu Vertebrata)`, `cell (Mmus)`) or one plain word after a
-/// comma (`cell, human`). A text that then names a term and its own
-/// specialisations takes the most general of them.
+/// The trailing qualifiers a term is also known without: a taxon in
+/// parentheses (`neuron (sensu Vertebrata)`, `cell (Mmus)`), or one of
+/// `comma_words` after a comma (`cell, human`); no other word after a comma
+/// is a qualifier (`amacrine cell, GABAergic` is a kind of amacrine cell).
+/// A text that then names a term and its own specialisations takes the
+/// most general of them.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct QualifierRules {
     pub parenthetical: bool,
-    pub comma_word: bool,
+    /// The taxa a comma may qualify a name by, compared ignoring case.
+    pub comma_words: Vec<String>,
 }
 
 /// A label whose words a term's own name (not a synonym) spells out, in any order and among

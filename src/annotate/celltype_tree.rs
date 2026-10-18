@@ -206,8 +206,8 @@ fn marker_words(normalised: &str) -> BTreeSet<String> {
 }
 
 /// `name` without the trailing qualifier the rules drop
-/// ([`crate::annotate::cl_rules::QualifierRules`]): a parenthesis, or one
-/// word of letters after a comma.
+/// ([`crate::annotate::cl_rules::QualifierRules`]): a parenthesis, or a
+/// taxon the rules name after a comma.
 fn unqualified<'a>(rules: &MatchRules, name: &'a str) -> Option<&'a str> {
     let name = name.trim_end();
     let stem = if rules.qualifiers.parenthetical && name.ends_with(')') {
@@ -217,7 +217,10 @@ fn unqualified<'a>(rules: &MatchRules, name: &'a str) -> Option<&'a str> {
     };
     stem.or_else(|| {
         let (stem, word) = name.rsplit_once(", ")?;
-        (rules.qualifiers.comma_word && word.chars().all(char::is_alphabetic)).then_some(stem)
+        let taxa = &rules.qualifiers.comma_words;
+        taxa.iter()
+            .any(|t| t.eq_ignore_ascii_case(word))
+            .then_some(stem)
     })
     .map(str::trim_end)
     .filter(|s| !s.is_empty())

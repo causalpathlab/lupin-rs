@@ -26,9 +26,9 @@
   },
   "any_word_order": true,
   "qualifiers": {
-    "_doc": "A term is also known without a trailing taxon in parentheses ('(Mmus)', '(sensu Vertebrata)') or one plain word after a comma (', human'); a text that then names a term and its specialisations takes the most general.",
+    "_doc": "A term is also known without a trailing taxon in parentheses ('(Mmus)', '(sensu Vertebrata)') or one of comma_words after a comma (', human'); any other word after a comma is part of the name (', GABAergic'). A text that then names a term and its specialisations takes the most general.",
     "parenthetical": true,
-    "comma_word": true
+    "comma_words": ["human", "mouse", "mammalian"]
   },
   "_compact": "As a last resort, compare without spaces (Pro-Erythroblast -> proerythroblast); a hyphen that is a sign, as in CD34-, stays.",
   "compact": true,
