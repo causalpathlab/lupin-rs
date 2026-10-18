@@ -329,7 +329,7 @@ fn the_shown_run_notices_a_rewrite_of_the_same_size() {
     let dir = tempfile::tempdir().unwrap();
     let t = fixture_trajectory(dir.path());
     relineage(&t, &["HSC_like > MPP_like > ERY"]);
-    let mut shown = ShownRun::find(std::slice::from_ref(&t), None).unwrap();
+    let mut shown = ShownRun::find(std::slice::from_ref(&t), None).0.unwrap();
     assert!(!shown.poll(), "nothing changed");
     relineage(&t, &["HSC_like > MPP_like > MON"]);
     assert!(shown.poll());
@@ -344,8 +344,16 @@ fn a_trajectory_found_nowhere_is_looked_for_again() {
     let away = t.with_file_name("away.parquet");
     std::fs::rename(&edges, &away).unwrap();
     let among = vec![t.clone()];
-    let mut shown = Shown::new(among.clone(), ShownRun::find(&among, None));
+    let mut shown = Shown::find(among, None);
     assert!(shown.run.is_none(), "no edges yet");
+    std::thread::sleep(POLL_EVERY);
+    assert!(!shown.poll(), "nothing changed: not looked for again");
+    let watched: Vec<&Path> = shown.watched.iter().map(|(f, _)| f.as_path()).collect();
+    assert_eq!(
+        watched,
+        [t.as_path(), edges.as_path()],
+        "what a look depends on"
+    );
     std::fs::rename(&away, &edges).unwrap();
     std::thread::sleep(POLL_EVERY);
     assert!(shown.poll(), "written since");

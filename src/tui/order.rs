@@ -348,21 +348,37 @@ impl ShownRun {
     /// The first of `manifests` whose `trajectory` section records an edge
     /// table that can be read (its own or one a round borrowed from the run
     /// it was made on). `known` are edges already read from one of them
-    /// (the figures'), taken rather than read again.
-    pub fn find(manifests: &[PathBuf], known: Option<(&Path, &[EdgeRow])>) -> Option<Self> {
-        manifests.iter().find_map(|m| {
+    /// (the figures'), taken rather than read again. When it finds none,
+    /// the files that told so: each manifest, and the edge table one
+    /// records.
+    pub fn find(
+        manifests: &[PathBuf],
+        known: Option<(&Path, &[EdgeRow])>,
+    ) -> (Option<Self>, Vec<PathBuf>) {
+        let mut looked = Vec::new();
+        for m in manifests {
             let known = known.filter(|(at, _)| at == m).map(|(_, e)| e);
-            Self::read(m, known)
-        })
+            match Self::read(m, known) {
+                Ok(run) => return (Some(run), Vec::new()),
+                Err(files) => looked.extend(files),
+            }
+        }
+        (None, looked)
     }
 
-    fn read(manifest: &Path, known: Option<&[EdgeRow]>) -> Option<Self> {
-        let loaded = load(&manifest.to_string_lossy()).ok()?;
+    /// The run `manifest` records, else the files that told it has none.
+    fn read(manifest: &Path, known: Option<&[EdgeRow]>) -> Result<Self, Vec<PathBuf>> {
+        let none = |more: Option<&str>| {
+            let mut files = vec![manifest.to_path_buf()];
+            files.extend(more.map(PathBuf::from));
+            files
+        };
+        let loaded = load(&manifest.to_string_lossy()).map_err(|_| none(None))?;
         let [lineages_file, edges] = OrderFacts::files(&loaded);
-        let edges_file = edges?;
+        let edges_file = edges.ok_or_else(|| none(None))?;
         let edges = match known {
             Some(e) => e.to_vec(),
-            None => edges::read(&edges_file).ok()?,
+            None => edges::read(&edges_file).map_err(|_| none(Some(&edges_file)))?,
         };
         let lineages = match &lineages_file {
             Some(p) => lineages::read(p).unwrap_or_else(|e| {
@@ -379,16 +395,12 @@ impl ShownRun {
         ]
         .into_iter()
         .flatten()
-        .map(|f| {
-            let s = stamp(&f);
-            (f, s)
-        })
         .collect();
-        Some(Self {
+        Ok(Self {
             manifest: manifest.to_path_buf(),
             texts: trajectory::texts(&facts),
             edges: facts.edges,
-            files,
+            files: stamped(files),
         })
     }
 
@@ -399,8 +411,8 @@ impl ShownRun {
             return false;
         }
         match Self::read(&self.manifest, None) {
-            Some(again) => *self = again,
-            None => {
+            Ok(again) => *self = again,
+            Err(_) => {
                 for (f, s) in &mut self.files {
                     *s = stamp(f);
                 }
@@ -430,34 +442,54 @@ pub const POLL_EVERY: Duration = Duration::from_secs(1);
 pub struct Shown {
     pub among: Vec<PathBuf>,
     pub run: Option<ShownRun>,
+    /// With no run found, the files that told so, with their stamps then.
+    watched: Vec<(PathBuf, Stamp)>,
     polled: Instant,
 }
 
 impl Shown {
+    /// The run found among `among` ([`ShownRun::find`]).
     #[must_use]
-    pub fn new(among: Vec<PathBuf>, run: Option<ShownRun>) -> Self {
+    pub fn find(among: Vec<PathBuf>, known: Option<(&Path, &[EdgeRow])>) -> Self {
+        let (run, looked) = ShownRun::find(&among, known);
         Self {
             among,
             run,
+            watched: stamped(looked),
             polled: Instant::now(),
         }
     }
 
     /// [`ShownRun::poll`], at most every [`POLL_EVERY`], or with no run
-    /// found yet a look among the candidates again; whether it changed.
+    /// found yet a look among the candidates again once a file that told so
+    /// changed; whether it changed.
     pub fn poll(&mut self) -> bool {
         if self.polled.elapsed() < POLL_EVERY {
             return false;
         }
         self.polled = Instant::now();
-        match &mut self.run {
-            Some(run) => run.poll(),
-            None => {
-                self.run = ShownRun::find(&self.among, None);
-                self.run.is_some()
-            }
+        if let Some(run) = &mut self.run {
+            return run.poll();
         }
+        if self.watched.iter().all(|(f, s)| stamp(f) == *s) {
+            return false;
+        }
+        let (run, looked) = ShownRun::find(&self.among, None);
+        self.run = run;
+        self.watched = stamped(looked);
+        self.run.is_some()
     }
+}
+
+/// `files` with their stamps now.
+fn stamped(files: Vec<PathBuf>) -> Vec<(PathBuf, Stamp)> {
+    files
+        .into_iter()
+        .map(|f| {
+            let s = stamp(&f);
+            (f, s)
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -4068,9 +4068,11 @@ impl App {
     fn show_trajectory(&mut self) {
         let among = self.trajectory_candidates();
         let known = (self.figures.as_ref()).map(|f| (f.data.manifest.as_path(), &f.data.edges[..]));
-        let run = super::order::ShownRun::find(&among, known);
-        let edges = run.as_ref().map(|r| r.edges.clone()).unwrap_or_default();
-        self.order_shown = Some(super::order::Shown::new(among, run));
+        let shown = super::order::Shown::find(among, known);
+        let edges = (shown.run.as_ref())
+            .map(|r| r.edges.clone())
+            .unwrap_or_default();
+        self.order_shown = Some(shown);
         self.rebuild_order(Some(edges));
     }
 
