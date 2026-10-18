@@ -13,8 +13,8 @@
 use crate::gene_text::cli::ComputeDevice;
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor, D};
-use candle_nn::{Linear, Module, VarBuilder};
-use candle_transformers::models::qwen3;
+use candle_nn::VarBuilder;
+use candle_transformers::models::{gemma2, phi3, qwen3};
 use log::info;
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
@@ -52,7 +52,7 @@ pub struct Bans {
 /// reached.
 pub const OFFLINE: &str = "consensus needs the model: run once online or give --lm-dir";
 
-/// The models `--lm-model` offers, each at a pinned revision (all Apache-2.0).
+/// The models `--lm-model` offers, each at a pinned revision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum LmModel {
     #[default]
@@ -61,6 +61,21 @@ pub enum LmModel {
     /// A third the size, the same architecture and tokenizer: for a CPU.
     #[value(name = "qwen3-0.6b")]
     Qwen3_0_6b,
+    #[value(name = "qwen3-4b")]
+    Qwen3_4b,
+    #[value(name = "phi-4-mini")]
+    Phi4Mini,
+    /// Gemma 2 2B tuned on cells written as ranked gene lists (Cell2Sentence).
+    #[value(name = "c2s-gemma2-2b")]
+    C2sGemma2_2b,
+}
+
+/// A model's architecture, as candle builds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arch {
+    Qwen3,
+    Phi3,
+    Gemma2,
 }
 
 impl LmModel {
@@ -69,6 +84,9 @@ impl LmModel {
         match self {
             Self::Qwen3_1_7b => "Qwen/Qwen3-1.7B",
             Self::Qwen3_0_6b => "Qwen/Qwen3-0.6B",
+            Self::Qwen3_4b => "Qwen/Qwen3-4B",
+            Self::Phi4Mini => "microsoft/Phi-4-mini-instruct",
+            Self::C2sGemma2_2b => "vandijklab/C2S-Scale-Gemma-2-2B",
         }
     }
 
@@ -77,6 +95,9 @@ impl LmModel {
         match self {
             Self::Qwen3_1_7b => "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
             Self::Qwen3_0_6b => "c1899de289a04d12100db370d81485cdf75e47ca",
+            Self::Qwen3_4b => "1cfa9a7208912126459214e8b04321603b3df60c",
+            Self::Phi4Mini => "cfbefacb99257ffa30c83adab238a50856ac3083",
+            Self::C2sGemma2_2b => "5ddf28b8f1c81b7ab7a9be192924da82b6c5d512",
         }
     }
 
@@ -86,6 +107,38 @@ impl LmModel {
         match self {
             Self::Qwen3_1_7b => "qwen3-1.7b",
             Self::Qwen3_0_6b => "qwen3-0.6b",
+            Self::Qwen3_4b => "qwen3-4b",
+            Self::Phi4Mini => "phi-4-mini",
+            Self::C2sGemma2_2b => "c2s-gemma2-2b",
+        }
+    }
+
+    #[must_use]
+    pub fn arch(self) -> Arch {
+        match self {
+            Self::Qwen3_1_7b | Self::Qwen3_0_6b | Self::Qwen3_4b => Arch::Qwen3,
+            Self::Phi4Mini => Arch::Phi3,
+            Self::C2sGemma2_2b => Arch::Gemma2,
+        }
+    }
+
+    /// Its chat: `system`, `user`, and the assistant's answer begun with
+    /// `answer`, as the model was tuned to read them.
+    #[must_use]
+    pub fn chat(self, system: &str, user: &str, answer: &str) -> String {
+        match self.arch() {
+            // Thinking switched off.
+            Arch::Qwen3 => format!(
+                "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n\
+                 <|im_start|>assistant\n<think>\n\n</think>\n\n{answer}"
+            ),
+            Arch::Phi3 => format!(
+                "<|system|>{system}<|end|><|user|>{user}<|end|><|assistant|>{answer}"
+            ),
+            // Gemma has no system turn: it opens the user's.
+            Arch::Gemma2 => format!(
+                "<bos><start_of_turn>user\n{system}\n\n{user}<end_of_turn>\n<start_of_turn>model\n{answer}"
+            ),
         }
     }
 }
@@ -211,17 +264,35 @@ fn resolve_files(spec: &LmSpec) -> Result<ModelFiles> {
     fetch().map_err(|e| anyhow::anyhow!("{OFFLINE} ({e:#})"))
 }
 
-/// Qwen3 for causal decoding: the base model (whose KV cache a prompt
-/// leaves behind is kept and cloned per continuation) and its head.
-pub struct Qwen3 {
+/// A model's layers and head, with the KV cache its last run left.
+#[derive(Clone)]
+enum Base {
+    Qwen3(qwen3::ModelForCausalLM),
+    Phi3(phi3::Model),
+    Gemma2(gemma2::Model),
+}
+
+impl Base {
+    /// The logits after `input` ([1, n]) run from `offset`: [1, 1, vocab].
+    fn forward(&mut self, input: &Tensor, offset: usize) -> candle_core::Result<Tensor> {
+        match self {
+            Self::Qwen3(m) => m.forward(input, offset),
+            Self::Phi3(m) => m.forward(input, offset),
+            Self::Gemma2(m) => m.forward(input, offset),
+        }
+    }
+}
+
+/// A causal language model ([`Arch`]) for decoding: the model (whose KV
+/// cache a prompt leaves behind is kept and cloned per continuation).
+pub struct CausalLm {
     /// With an empty cache.
-    model: qwen3::Model,
-    head: Linear,
+    model: Base,
     tokenizer: Tokenizer,
     device: Device,
     /// The last prompt run: its tokens, the model after them and the next
     /// token's log-probabilities.
-    last: Option<(Vec<u32>, qwen3::Model, Vec<f32>)>,
+    last: Option<(Vec<u32>, Base, Vec<f32>)>,
     stops: Vec<u32>,
     /// [`numeric_ids`], once found.
     numeric: Option<Vec<u32>>,
@@ -229,10 +300,16 @@ pub struct Qwen3 {
 
 /// The tokens that end a turn.
 fn stop_ids(tokenizer: &Tokenizer) -> Vec<u32> {
-    ["<|im_end|>", "<|endoftext|>"]
-        .iter()
-        .filter_map(|t| tokenizer.token_to_id(t))
-        .collect()
+    [
+        "<|im_end|>",
+        "<|endoftext|>",
+        "<|end|>",
+        "<end_of_turn>",
+        "<eos>",
+    ]
+    .iter()
+    .filter_map(|t| tokenizer.token_to_id(t))
+    .collect()
 }
 
 /// Every token whose text has a digit or a [`MARKUP`] sign.
@@ -276,7 +353,14 @@ fn banned(tokenizer: &Tokenizer, numeric: &[u32], stops: &[u32], bans: &Bans) ->
     Ok(ban)
 }
 
-impl Qwen3 {
+fn config<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+    serde_json::from_str(
+        &std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?,
+    )
+    .context("parsing the model config")
+}
+
+impl CausalLm {
     pub fn load(spec: &LmSpec) -> Result<Self> {
         let files = resolve_files(spec)?;
         let device = match spec.device {
@@ -290,22 +374,15 @@ impl Qwen3 {
         } else {
             DType::F32
         };
-        let config: qwen3::Config = serde_json::from_str(
-            &std::fs::read_to_string(&files.config)
-                .with_context(|| format!("reading {}", files.config.display()))?,
-        )
-        .context("parsing the model config")?;
         let tokenizer = Tokenizer::from_file(&files.tokenizer)
             .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
         // SAFETY: the safetensors files are memory-mapped read-only for the
         // lifetime of the loaded weights; they are not modified while mapped.
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&files.weights, dtype, &device)? };
-        let model = qwen3::Model::new(&config, vb.clone()).context("loading the Qwen3 weights")?;
-        let shape = (config.vocab_size, config.hidden_size);
-        let head = if config.tie_word_embeddings {
-            vb.pp("model.embed_tokens").get(shape, "weight")?
-        } else {
-            vb.pp("lm_head").get(shape, "weight")?
+        let model = match spec.model.arch() {
+            Arch::Qwen3 => Base::Qwen3(qwen3::ModelForCausalLM::new(&config(&files.config)?, vb)?),
+            Arch::Phi3 => Base::Phi3(phi3::Model::new(&config(&files.config)?, vb)?),
+            Arch::Gemma2 => Base::Gemma2(gemma2::Model::new(false, &config(&files.config)?, vb)?),
         };
         let stops = stop_ids(&tokenizer);
         info!(
@@ -316,7 +393,6 @@ impl Qwen3 {
         );
         Ok(Self {
             model,
-            head: Linear::new(head, None),
             tokenizer,
             device,
             last: None,
@@ -325,26 +401,18 @@ impl Qwen3 {
         })
     }
 
-    /// Log-probabilities over the vocabulary from `hidden` ([1, n, h]) at
-    /// every position, as rows.
-    fn log_probs(&self, hidden: &Tensor) -> Result<Vec<Vec<f32>>> {
-        let logits = self.head.forward(hidden)?.to_dtype(DType::F32)?;
-        let lp = candle_nn::ops::log_softmax(&logits, D::Minus1)?;
-        Ok(lp.squeeze(0)?.to_vec2::<f32>()?)
-    }
-
     /// `tokens` run through `model` from `offset`: the next token's
     /// log-probabilities.
-    fn feed(&self, model: &mut qwen3::Model, tokens: &[u32], offset: usize) -> Result<Vec<f32>> {
+    fn feed(&self, model: &mut Base, tokens: &[u32], offset: usize) -> Result<Vec<f32>> {
         let input = Tensor::new(tokens, &self.device)?.unsqueeze(0)?;
-        let hidden = model.forward(&input, offset)?;
-        let last = hidden.narrow(1, tokens.len() - 1, 1)?;
-        Ok(self.log_probs(&last)?.remove(0))
+        let logits = model.forward(&input, offset)?.to_dtype(DType::F32)?;
+        let lp = candle_nn::ops::log_softmax(&logits, D::Minus1)?;
+        Ok(lp.flatten_all()?.to_vec1::<f32>()?)
     }
 
     /// The model after `tokens`, and the next token's log-probabilities:
     /// from the last prompt when it starts `tokens`.
-    fn prefill(&mut self, tokens: &[u32]) -> Result<(qwen3::Model, Vec<f32>)> {
+    fn prefill(&mut self, tokens: &[u32]) -> Result<(Base, Vec<f32>)> {
         anyhow::ensure!(!tokens.is_empty(), "an empty prompt");
         let reuse = self
             .last
@@ -374,7 +442,7 @@ fn argmax(v: &[f32]) -> usize {
     best
 }
 
-impl Lm for Qwen3 {
+impl Lm for CausalLm {
     fn score(&mut self, prompt: &str, continuations: &[String]) -> Result<Vec<f32>> {
         let tokens = encode(&self.tokenizer, prompt)?;
         let (model, first) = self.prefill(&tokens)?;
@@ -384,13 +452,9 @@ impl Lm for Qwen3 {
                 let ids = encode(&self.tokenizer, c)?;
                 anyhow::ensure!(!ids.is_empty(), "an empty continuation");
                 let mut total = first[ids[0] as usize];
-                if ids.len() > 1 {
-                    let mut m = model.clone();
-                    let input = Tensor::new(&ids[..ids.len() - 1], &self.device)?.unsqueeze(0)?;
-                    let hidden = m.forward(&input, tokens.len())?;
-                    for (row, &next) in self.log_probs(&hidden)?.iter().zip(&ids[1..]) {
-                        total += row[next as usize];
-                    }
+                let mut m = model.clone();
+                for (i, w) in ids.windows(2).enumerate() {
+                    total += self.feed(&mut m, &w[..1], tokens.len() + i)?[w[1] as usize];
                 }
                 Ok(total)
             })

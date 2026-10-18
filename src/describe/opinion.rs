@@ -454,7 +454,7 @@ const MAX_NAMED: usize = 5;
 
 /// How a biology sentence on `label` begins: the type's cells, so it reads
 /// as a sentence about them.
-fn lead(label: &str) -> String {
+pub(crate) fn lead(label: &str) -> String {
     let shown = shown(label);
     let last = shown.rsplit(' ').next().unwrap_or_default().to_lowercase();
     if last == "cell" || last == "cells" {
@@ -468,7 +468,7 @@ fn lead(label: &str) -> String {
 /// `bans` and checked by `check`; retried once with the offending word's
 /// first token banned (or, after a number, the names' digits too), `None`
 /// when it fails again or names no one word to ban.
-fn checked(
+pub(crate) fn checked(
     lm: &mut dyn Lm,
     prompt: &str,
     lead: &str,
@@ -504,7 +504,7 @@ fn checked(
 }
 
 /// The first sentence of `text`: the model was asked for one.
-fn first_sentence(text: &str) -> String {
+pub(crate) fn first_sentence(text: &str) -> String {
     match text.find(". ") {
         Some(i) => text[..=i].to_string(),
         None => text.to_string(),

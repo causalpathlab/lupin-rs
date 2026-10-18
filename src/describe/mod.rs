@@ -10,6 +10,7 @@
 //! sentence, template or model's, is citation-checked against the entities its evidence
 //! allows ([`citation_check`]).
 
+pub mod critique;
 pub mod lm;
 pub mod opinion;
 pub mod trajectory;
@@ -118,6 +119,15 @@ pub struct LmArgs {
 
     #[arg(long, value_enum, default_value_t = lm::default_device(), help = "Compute device for the model")]
     pub device: crate::gene_text::cli::ComputeDevice,
+
+    #[arg(long, default_value_t = opinion::TOP_GENES, hide = true)]
+    pub lm_genes: usize,
+
+    #[arg(long, hide = true)]
+    pub lm_shuffle: Option<u64>,
+
+    #[arg(long, hide = true)]
+    pub lm_context: Option<String>,
 }
 
 impl Default for LmArgs {
@@ -127,6 +137,9 @@ impl Default for LmArgs {
             lm_model: lm::LmModel::default(),
             lm_dir: None,
             device: lm::default_device(),
+            lm_genes: opinion::TOP_GENES,
+            lm_shuffle: None,
+            lm_context: None,
         }
     }
 }
@@ -162,7 +175,7 @@ impl LmArgs {
     /// The model loader, run only when a text is not cached.
     fn loader(&self) -> impl FnOnce() -> Result<Box<dyn lm::Lm>> {
         let spec = self.spec();
-        move || Ok(Box::new(lm::Qwen3::load(&spec)?) as Box<dyn lm::Lm>)
+        move || Ok(Box::new(lm::CausalLm::load(&spec)?) as Box<dyn lm::Lm>)
     }
 }
 
@@ -263,17 +276,30 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     }
     // The model's opinions come first: they need only the round. Its cache
     // is the round's, beside it, which its review and the TUI read.
-    let opinions: Vec<(opinion::Opinion, String)> = if args.lm.lm {
+    let opinions: Vec<(opinion::Opinion, String)> = Vec::new();
+    let critiques: Vec<critique::Critique> = if args.lm.lm {
         let loaded = loaded
             .as_ref()
-            .context("--lm gives the model's opinion of an annotated round: give its manifest")?;
-        let round = opinion::inputs(loaded)?;
-        let cache = opinion::cache_of(loaded);
-        let made = opinion::opine_round(&round, &args.lm.spec(), &cache, args.lm.loader())?;
+            .context("--lm critiques an annotated round: give its manifest")?;
+        let ask = critique::Ask {
+            genes: args.lm.lm_genes,
+            shuffle: args.lm.lm_shuffle,
+            context: args.lm.lm_context.clone(),
+        };
+        let (round, inputs) = critique::inputs(loaded, &ask)?;
+        let cache = critique::cache_of(loaded);
+        let made = critique::critique_round(
+            &round,
+            &inputs,
+            &args.lm.spec(),
+            &ask,
+            &cache,
+            args.lm.loader(),
+        )?;
         if args.cache_only {
             return Ok(());
         }
-        opinion_texts(loaded, made)?
+        made
     } else {
         Vec::new()
     };
@@ -285,7 +311,7 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     let mut enriched = match load_evidence(&files, args.fdr_alpha) {
         Ok(e) => e,
         // With the model's opinions, the template sentences are extra.
-        Err(e) if !opinions.is_empty() => {
+        Err(e) if !opinions.is_empty() || !critiques.is_empty() => {
             log::warn!("describe: no template sentences ({e:#})");
             Vec::new()
         }
@@ -344,6 +370,14 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     if args.lm.lm {
         let spec = args.lm.spec();
         evidence["lm"] = json!({"model": spec.name(), "revision": spec.revision()});
+        evidence["critiques"] = json!(critiques
+            .iter()
+            .map(|c| {
+                let mut v = json!(c);
+                v["text"] = json!(c.text());
+                v
+            })
+            .collect::<Vec<_>>());
         evidence["opinions"] = json!(opinions
             .iter()
             .map(|(o, text)| {
