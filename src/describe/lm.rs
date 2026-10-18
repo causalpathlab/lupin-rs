@@ -325,10 +325,6 @@ impl Qwen3 {
         })
     }
 
-    fn encode(&self, text: &str) -> Result<Vec<u32>> {
-        encode(&self.tokenizer, text)
-    }
-
     /// Log-probabilities over the vocabulary from `hidden` ([1, n, h]) at
     /// every position, as rows.
     fn log_probs(&self, hidden: &Tensor) -> Result<Vec<Vec<f32>>> {
@@ -380,12 +376,12 @@ fn argmax(v: &[f32]) -> usize {
 
 impl Lm for Qwen3 {
     fn score(&mut self, prompt: &str, continuations: &[String]) -> Result<Vec<f32>> {
-        let tokens = self.encode(prompt)?;
+        let tokens = encode(&self.tokenizer, prompt)?;
         let (model, first) = self.prefill(&tokens)?;
         continuations
             .iter()
             .map(|c| {
-                let ids = self.encode(c)?;
+                let ids = encode(&self.tokenizer, c)?;
                 anyhow::ensure!(!ids.is_empty(), "an empty continuation");
                 let mut total = first[ids[0] as usize];
                 if ids.len() > 1 {
@@ -402,12 +398,12 @@ impl Lm for Qwen3 {
     }
 
     fn generate(&mut self, prompt: &str, max_tokens: usize, bans: &Bans) -> Result<String> {
-        let tokens = self.encode(prompt)?;
+        let tokens = encode(&self.tokenizer, prompt)?;
         let (mut model, mut lp) = self.prefill(&tokens)?;
-        let numeric = (self.numeric)
-            .get_or_insert_with(|| numeric_ids(&self.tokenizer))
-            .clone();
-        let ban = banned(&self.tokenizer, &numeric, &self.stops, bans)?;
+        let numeric = self
+            .numeric
+            .get_or_insert_with(|| numeric_ids(&self.tokenizer));
+        let ban = banned(&self.tokenizer, numeric, &self.stops, bans)?;
         let mut out: Vec<u32> = Vec::new();
         for step in 0..max_tokens {
             for &b in &ban {
