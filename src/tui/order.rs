@@ -321,17 +321,16 @@ impl OrderView {
     }
 }
 
-/// The edge table of the first of `manifests` whose `trajectory` section
-/// records one that can be read; empty otherwise.
-pub fn run_edges(manifests: &[&Path]) -> Vec<EdgeRow> {
-    manifests
-        .iter()
-        .find_map(|m| {
-            let loaded = load(&m.to_string_lossy()).ok()?;
-            let rel = loaded.manifest.trajectory.edges.as_deref()?;
-            edges::read(&resolve(&loaded.dir, rel)).ok()
-        })
-        .unwrap_or_default()
+/// The trajectory the order view shows among `manifests`: the first whose
+/// `trajectory` section records an edge table that can be read (its own or
+/// one a round borrowed from the run it was made on), with that table.
+pub fn shown_run(manifests: impl IntoIterator<Item = PathBuf>) -> Option<(PathBuf, Vec<EdgeRow>)> {
+    manifests.into_iter().find_map(|m| {
+        let loaded = load(&m.to_string_lossy()).ok()?;
+        let rel = loaded.manifest.trajectory.edges.as_deref()?;
+        let edges = edges::read(&resolve(&loaded.dir, rel)).ok()?;
+        Some((m, edges))
+    })
 }
 
 #[cfg(test)]

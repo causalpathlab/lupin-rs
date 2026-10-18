@@ -3605,10 +3605,7 @@ impl App {
                 None
             }
         };
-        let edges = match &self.figures {
-            Some(f) => f.data.edges.clone(),
-            None => super::order::run_edges(&[manifest]),
-        };
+        let edges = self.shown_edges();
         if let TreeMode::Order(v) = &mut self.tree_mode {
             v.edges = edges;
         }
@@ -3687,16 +3684,11 @@ impl App {
         self.rebuild_order(false);
     }
 
-    /// The edges of the trajectory shown: the figures', else the manifests'.
+    /// The edges of [`Self::shown_trajectory`]; none without one.
     fn shown_edges(&self) -> Vec<crate::trajectory::edges::EdgeRow> {
-        match &self.figures {
-            Some(f) => f.data.edges.clone(),
-            None => {
-                let manifests = self.manifests();
-                let refs: Vec<&Path> = manifests.iter().map(PathBuf::as_path).collect();
-                super::order::run_edges(&refs)
-            }
-        }
+        super::order::shown_run(self.trajectory_candidates())
+            .map(|(_, e)| e)
+            .unwrap_or_default()
     }
 
     /// [`Self::reload_order`]; with `new_edges` (the manifest shown changed)
@@ -4281,10 +4273,11 @@ impl App {
         figures.into_iter().chain(self.manifests()).collect()
     }
 
-    /// The trajectory shown: the first of [`Self::trajectory_candidates`]
-    /// that records a trajectory run of its own.
+    /// The trajectory shown, whose edges the order table and whose facts
+    /// its texts are: [`super::order::shown_run`] among
+    /// [`Self::trajectory_candidates`].
     fn shown_trajectory(&self) -> Option<PathBuf> {
-        shown_among(self.trajectory_candidates())
+        super::order::shown_run(self.trajectory_candidates()).map(|(m, _)| m)
     }
 
     /// In the order view, keep the table and the strip on the trajectory
@@ -4469,15 +4462,6 @@ const NOT_STARTED: &str = "no trajectory run started";
 pub(super) fn recorded_labels(loaded: &crate::manifest::run::Loaded) -> Option<String> {
     let settings = loaded.manifest.trajectory.settings.as_ref()?;
     loaded.recorded(settings.get("labels")?.as_str()?)
-}
-
-/// The first of `candidates` that records a trajectory run of its own.
-fn shown_among(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
-    candidates.into_iter().find(|m| {
-        m.is_file()
-            && crate::manifest::run::load(&m.to_string_lossy())
-                .is_ok_and(|l| crate::manifest::family::is_trajectory(&l.manifest, &l.file))
-    })
 }
 
 /// `X.decisions.jsonl` for round `X.senna.json`: what a save hands relabel.

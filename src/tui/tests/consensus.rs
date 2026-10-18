@@ -518,3 +518,43 @@ fn a_trajectory_run_again_on_its_output_leaves_no_stale_texts() {
         Some(&texts_of(&a))
     );
 }
+
+#[test]
+fn the_order_views_edges_and_texts_come_from_one_trajectory() {
+    use crate::trajectory::edges;
+    let dir = tempfile::tempdir().unwrap();
+    let a = fixture_trajectory(&dir.path().join("a").tap_mkdir());
+    let b = fixture_trajectory(&dir.path().join("b").tap_mkdir());
+    let b_edges = b.with_file_name("t.trajectory_edges.parquet");
+    let b_edges = b_edges.to_string_lossy();
+    edges::write(&b_edges, &edges::read(&b_edges).unwrap()[..2]).unwrap();
+    relineage(&b, &["HSC_like > MPP_like"]);
+    // A round made on A carries A's trajectory, borrowed; it is looked at
+    // before B.
+    let loaded = crate::manifest::run::load(&a.to_string_lossy()).unwrap();
+    let borrowed = dir.path().join("r2").tap_mkdir().join("t.L1.senna.json");
+    let copy = loaded.copy_to(borrowed.clone()).unwrap();
+    copy.manifest.save(&copy.file).unwrap();
+    let mut app = app_on(&fixture_round(&dir.path().join("r").tap_mkdir()));
+    app.target = borrowed.clone();
+    app.source = b;
+    app.trajectory_tui = true;
+    app.figures = None;
+    app.toggle_order(false);
+    app.figures = None;
+    app.tick();
+    let a_edges = pairs(
+        &edges::read(
+            &a.with_file_name("t.trajectory_edges.parquet")
+                .to_string_lossy(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(order_edges(&app), a_edges);
+    assert_eq!(
+        app.order_texts.as_ref().map(|t| &t.manifest),
+        Some(&borrowed)
+    );
+    app.focus = Focus::Clusters;
+    assert_eq!(app.order_line(), Some(paragraph_of(&a)));
+}
