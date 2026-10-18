@@ -21,7 +21,11 @@ use crate::annotate::cl_rules::{shipped, Aliases};
 ///       │                      └─ CS2 cell (also under CTS)
 ///       ├─ CTS cell (class: a state of several lineages)
 ///       ├─ CT8 precursor cell ── CT8 cell, human
-///       └─ CT9 cell, mouse; CT9 cell, human
+///       ├─ CT9 cell, mouse; CT9 cell, human
+///       ├─ TISA K1 cell ("TISA omega cell"), TISA K2 cell ("TISA sigma cell"), TISA tau cell
+///       ├─ omega CTG cell ("omega cell")
+///       ├─ CT11/CT12/CT13 cell, each with "mature …" under it; CT14 cell, and "pre CT14 cell" not under it
+///       └─ (under CTH lineage) CT16 cell, CT17 cell
 const OBO: &str = "format-version: 1.2
 data-version: corpus/2026-01-01
 
@@ -147,6 +151,79 @@ is_a: CL:9100000
 id: CL:9100061
 name: CT10, human
 is_a: CL:9100060
+
+[Term]
+id: CL:9100070
+name: TISA K1 cell
+synonym: \"TISA omega cell\" EXACT []
+is_a: CL:9100000
+
+[Term]
+id: CL:9100071
+name: TISA K2 cell
+synonym: \"TISA sigma cell\" EXACT []
+is_a: CL:9100000
+
+[Term]
+id: CL:9100072
+name: TISA tau cell
+is_a: CL:9100000
+
+[Term]
+id: CL:9100073
+name: omega CTG cell
+synonym: \"omega cell\" EXACT []
+is_a: CL:9100000
+
+[Term]
+id: CL:9100080
+name: CT11 cell
+is_a: CL:9100000
+
+[Term]
+id: CL:9100081
+name: mature CT11 cell
+is_a: CL:9100080
+
+[Term]
+id: CL:9100082
+name: CT12 cell
+is_a: CL:9100000
+
+[Term]
+id: CL:9100083
+name: mature CT12 cell
+is_a: CL:9100082
+
+[Term]
+id: CL:9100084
+name: CT13 cell
+is_a: CL:9100000
+
+[Term]
+id: CL:9100085
+name: mature CT13 cell
+is_a: CL:9100084
+
+[Term]
+id: CL:9100086
+name: CT14 cell
+is_a: CL:9100000
+
+[Term]
+id: CL:9100087
+name: pre CT14 cell
+is_a: CL:9100000
+
+[Term]
+id: CL:9100088
+name: CT16 cell
+is_a: CL:9100001
+
+[Term]
+id: CL:9100089
+name: CT17 cell
+is_a: CL:9100001
 
 [Term]
 id: CL:9100050
@@ -444,5 +521,68 @@ fn a_state_class_does_not_group_types_of_two_lineages() {
         alone.group_of("CS1X"),
         alone.group_of("CS2X"),
         "not even when nothing else shares a class with them"
+    );
+}
+
+#[test]
+fn a_word_the_panel_leaves_off_completes_its_labels() {
+    let t = terms();
+    let (mapped, unmapped) = t.map_labels(["Omega", "Sigma", "Tau", "CT1 cell"]);
+    assert!(unmapped.is_empty(), "{unmapped:?}");
+    let name = |l: &str| t.name(&mapped[l]);
+    assert_eq!(name("Omega"), Some("TISA K1 cell"), "through a synonym");
+    assert_eq!(name("Sigma"), Some("TISA K2 cell"));
+    assert_eq!(name("Tau"), Some("TISA tau cell"));
+    let (_, unmapped) = t.map_labels(["Omega", "Sigma"]);
+    assert_eq!(
+        unmapped,
+        ["Omega", "Sigma"],
+        "too few labels to tell the word"
+    );
+}
+
+/// A panel whose types each have their own marker, and `shared` markers.
+fn tree_of(types: &[&str], shared: &[(&str, &str)]) -> TypeTree {
+    let mut panel: Vec<(String, String)> = (types.iter().enumerate())
+        .map(|(i, t)| (format!("GENE{i}"), (*t).to_string()))
+        .collect();
+    panel.extend(
+        shared
+            .iter()
+            .map(|(g, t)| ((*g).to_string(), (*t).to_string())),
+    );
+    TypeTree::from_ontology(&terms(), &panel).expect("the types match terms")
+}
+
+#[test]
+fn a_label_nothing_matches_goes_under_the_term_its_longest_run_names() {
+    let t = tree_of(&["Mature CT16", "CT17 cell", "CT2 cell", "CT7 cell"], &[]);
+    assert_eq!(
+        t.group_of("Mature CT16"),
+        t.group_of("CT17 cell"),
+        "`mature` is a word the ontology uses for kinds of a term"
+    );
+    assert!(
+        !t.label_cl.contains_key("Mature CT16"),
+        "placed, not matched"
+    );
+}
+
+#[test]
+fn a_run_with_other_words_left_keeps_the_label_to_its_lineage() {
+    // `Pre CT16` shares more markers with CT7 (another lineage) than with CT17.
+    let shared = [
+        ("GENEA", "Pre CT16"),
+        ("GENEA", "CT7 cell"),
+        ("GENEB", "Pre CT16"),
+        ("GENEB", "CT7 cell"),
+        ("GENEC", "Pre CT16"),
+        ("GENEC", "CT17 cell"),
+    ];
+    let t = tree_of(&["Pre CT16", "CT17 cell", "CT2 cell", "CT7 cell"], &shared);
+    assert_eq!(
+        t.group_of("Pre CT16"),
+        t.group_of("CT17 cell"),
+        "`pre` is no kind word, but CT16 keeps the label in its lineage"
     );
 }

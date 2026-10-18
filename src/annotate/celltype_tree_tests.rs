@@ -170,7 +170,7 @@ fn an_unmatched_type_joins_the_group_holding_its_specific_markers() {
         group("b", &["B1", "B2"]),
         group("c", &["C1"]),
     ];
-    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs, |_, _| true);
     assert_eq!(groups[0].members, ["A1", "X"]);
 }
 
@@ -189,7 +189,7 @@ fn a_broad_group_does_not_outbid_a_near_copy() {
         ("x2", "X"),
     ]);
     let mut groups = vec![group("a", &["A1"]), group("b", &["B1", "B2"])];
-    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs, |_, _| true);
     assert_eq!(groups[0].members, ["A1", "X"]);
 }
 
@@ -286,7 +286,7 @@ fn a_dilute_broad_group_still_takes_a_near_copy_of_its_member() {
     let mut members = vec!["T1"];
     members.extend(others);
     let mut groups = vec![group("t", &members), group("n", &["N1"])];
-    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs, |_, _| true);
     assert!(groups[0].members.iter().any(|m| m == "X"), "{groups:?}");
 }
 
@@ -318,7 +318,7 @@ fn the_original_overlap_case_still_joins_its_specific_group() {
         group("b", &["B1", "B2"]),
         group("c", &["C1"]),
     ];
-    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs);
+    attach_by_sharing(&mut groups, vec!["X".to_string()], &pairs, |_, _| true);
     assert_eq!(groups[0].members, ["A1", "X"]);
 }
 #[test]

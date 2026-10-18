@@ -78,6 +78,33 @@ pub struct MatchRules {
     /// general of the terms whose names it is but for these words, when
     /// one is above all the others.
     pub qualifiers: Vec<String>,
+    pub context: ContextRules,
+    pub part: PartRules,
+}
+
+/// A word a whole panel leaves off its labels (a tissue word).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct ContextRules {
+    /// The one word that, with at most an implied one, completes a term's
+    /// name or counted synonym for at least this many of a panel's labels no
+    /// name matched, and for more than any other word, completes them;
+    /// `None` turns it off.
+    pub min_labels: Option<usize>,
+}
+
+/// Labels nothing matches, placed by the longest run of their words that
+/// one term names.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct PartRules {
+    /// A label goes under its run's term when every word left off is one
+    /// the ontology uses for kinds of a term: over the pairs of own names
+    /// `X` and `X` with that word more, the longer a kind of `X` (`is_a`) in
+    /// at least `min_pairs` pairs and in `min_share` of them. Otherwise the
+    /// term only keeps the label to its lineage. `None` turns it off.
+    pub min_pairs: Option<usize>,
+    pub min_share: f64,
 }
 
 /// Words a label may leave off its end.
@@ -104,6 +131,8 @@ impl Default for MatchRules {
             any_word_order: false,
             marker_signs: BTreeMap::new(),
             qualifiers: Vec::new(),
+            context: ContextRules::default(),
+            part: PartRules::default(),
         }
     }
 }
@@ -229,7 +258,8 @@ impl MatchRules {
     }
 
     /// Whether `w` is a marker with its sign (`x-positive`).
-    fn has_sign(&self, w: &str) -> bool {
+    #[must_use]
+    pub fn has_sign(&self, w: &str) -> bool {
         (self.marker_signs.keys())
             .any(|s| (w.strip_suffix(s.as_str())).is_some_and(|m| m.len() > 1 && m.ends_with('-')))
     }
