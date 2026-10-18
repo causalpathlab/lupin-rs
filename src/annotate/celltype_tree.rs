@@ -842,7 +842,6 @@ impl ClTerms {
 }
 
 /// Labels with the terms they map to, and the labels left unmapped.
-/// Labels with their terms, and the labels left.
 pub type Mapped = (BTreeMap<String, String>, Vec<String>);
 
 /// `matched` with the labels of `completed` mapped to their terms, and the
