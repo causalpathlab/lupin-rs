@@ -127,7 +127,7 @@ fn whole(t: &str, i: usize, j: usize) -> bool {
 
 /// Where `t` has `w` as whole words, a plural `s` after it allowed when
 /// `plural`; each occurrence's start and end.
-fn find(t: &str, w: &str, plural: bool) -> Vec<(usize, usize)> {
+pub(crate) fn find(t: &str, w: &str, plural: bool) -> Vec<(usize, usize)> {
     t.match_indices(w)
         .filter_map(|(i, _)| {
             let j = i + w.len();
@@ -376,17 +376,17 @@ pub fn order_claims(text: &str, f: &OrderFacts, subject: Option<&str>) -> Claim 
             return Err(format!("{} does not lead to {}", a.entity, b.entity));
         }
     }
-    let verdict_words: Vec<(String, Verdict)> = [
+    let verdict_words = [
         Verdict::Supported,
         Verdict::Unsupported,
         Verdict::Candidate,
         Verdict::Inferred,
     ]
-    .into_iter()
-    .map(|v| (v.as_str().to_string(), v))
-    .chain([("not supported".to_string(), Verdict::Unsupported)])
-    .collect();
-    for (word, v) in &verdict_words {
+    .map(|v| (v.as_str(), v));
+    let verdict_words = verdict_words
+        .iter()
+        .chain(&[("not supported", Verdict::Unsupported)]);
+    for &(word, v) in verdict_words {
         for (p, _) in find(&x.t, word, false) {
             // `not supported` is read as one word.
             if word == "supported" && x.t[..p].ends_with("not ") {
@@ -400,7 +400,7 @@ pub fn order_claims(text: &str, f: &OrderFacts, subject: Option<&str>) -> Claim 
                 ([], Some(s)) => (s, None),
                 ([], None) => continue,
             };
-            if !verdicts(f, a, b).any(|e| e == *v) {
+            if !verdicts(f, a, b).any(|e| e == v) {
                 let of = b.map_or_else(|| format!("{a}'s edges"), |b| format!("{a} – {b}"));
                 return Err(format!("no {word} edge in {of}"));
             }

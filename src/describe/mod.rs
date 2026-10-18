@@ -969,6 +969,12 @@ fn runner_up_clause(c: &ClusterEvidence) -> String {
 }
 
 fn template_sentence(c: &ClusterEvidence) -> String {
+    template_led(c, None)
+}
+
+/// [`template_sentence`] with `lead` in place of its opening `{id} is
+/// annotated as {label}.`, for a label the cluster does not have yet.
+fn template_led(c: &ClusterEvidence, lead: Option<&str>) -> String {
     let words = if c.incidence_words.is_empty() {
         String::new()
     } else {
@@ -985,10 +991,11 @@ fn template_sentence(c: &ClusterEvidence) -> String {
     let runner = runner_up_clause(c);
     if c.has_significant_call() {
         let markers = marker_sentence(c, false);
-        format!(
-            "{} is annotated as {}.{}{}{}",
-            c.id, c.coarse_label, markers, runner, words
-        )
+        let lead = lead.map_or_else(
+            || format!("{} is annotated as {}.", c.id, c.coarse_label),
+            str::to_string,
+        );
+        format!("{lead}{markers}{runner}{words}")
     } else if c.best_label != UNASSIGNED_LABEL {
         let q = c
             .best_q
@@ -1050,16 +1057,7 @@ pub(crate) fn norm(s: &str) -> String {
 /// `text` names `entity` (both [`norm`]ed) as a whole word or words, or
 /// their plural (`cells`).
 pub(crate) fn mentions(text: &str, entity: &str) -> bool {
-    if entity.is_empty() {
-        return false;
-    }
-    let edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
-    text.match_indices(entity).any(|(i, m)| {
-        let mut after = text[i + m.len()..].chars();
-        let next = after.next();
-        edge(text[..i].chars().next_back())
-            && (edge(next) || next == Some('s') && edge(after.next()))
-    })
+    !entity.is_empty() && !claims::find(text, entity, true).is_empty()
 }
 
 /// Check `draft` against what it may say: it names at least one of `named`

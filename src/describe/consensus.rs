@@ -13,14 +13,14 @@
 //! evidence stated in words (a small model copies the numbers it is shown),
 //! it continues `WHY: {label}` greedily, and the sentence passes the citation check and
 //! the check of what it claims of the methods' ranks ([`super::claims`]) or is replaced by
-//! the template ([`super::template_sentence`]).
+//! the template ([`super::template_led`]).
 //!
 //! Prior art for language-model cell typing: Hou & Ji, *Assessing GPT-4 for
 //! cell type annotation in single-cell RNA-seq analysis*, Nat Methods
 //! 21:1462 (2024; GPTCelltype).
 
 use super::lm::{Bans, Lm, LmSpec, MARKUP};
-use super::{citation_check, mentions, template_sentence, CitationError, ClusterEvidence};
+use super::{citation_check, mentions, template_led, CitationError, ClusterEvidence};
 use crate::annotate::markers::label_key;
 use crate::annotate::rounds::{Call, ClPlacement, ClusterId, Method, Term, TypeEvidence};
 use crate::manifest::run::Loaded;
@@ -607,27 +607,25 @@ fn template(c: &ClusterInput, label: &str, p: &BTreeMap<String, f32>) -> String 
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(x, _, q)| (x.label().to_string(), q));
     let id = format!("K{}", c.cluster);
-    let text = template_sentence(&ClusterEvidence {
-        id: id.clone(),
-        coarse_label: label.to_string(),
-        best_label: label.to_string(),
-        best_q: q,
-        coarse_q: None,
-        label_support: p.get(label).copied(),
-        best_significant: label != UNASSIGNED_LABEL,
-        second,
-        markers: ch.map(|x| x.markers.clone()).unwrap_or_default(),
-        neighbour_genes: Vec::new(),
-        incidence_words: Vec::new(),
-    });
     // The cluster is annotated so only when the label is already its own.
-    let lead = format!("{id} is annotated as {label}.");
-    match text.strip_prefix(&lead) {
-        Some(rest) if c.label.as_deref() != Some(label) => {
-            format!("The consensus suggests {label} for {id}.{rest}")
-        }
-        _ => text,
-    }
+    let lead = (c.label.as_deref() != Some(label))
+        .then(|| format!("The consensus suggests {label} for {id}."));
+    template_led(
+        &ClusterEvidence {
+            id,
+            coarse_label: label.to_string(),
+            best_label: label.to_string(),
+            best_q: q,
+            coarse_q: None,
+            label_support: p.get(label).copied(),
+            best_significant: label != UNASSIGNED_LABEL,
+            second,
+            markers: ch.map(|x| x.markers.clone()).unwrap_or_default(),
+            neighbour_genes: Vec::new(),
+            incidence_words: Vec::new(),
+        },
+        lead.as_deref(),
+    )
 }
 
 /// The proposal for cluster `c` of a round whose types and terms are

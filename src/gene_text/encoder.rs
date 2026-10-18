@@ -51,10 +51,10 @@ fn resolve_files(spec: &ModelSpec) -> Result<ModelFiles> {
         });
     }
     let model = crate::hub::Model::new(&spec.model_id, &spec.revision);
-    let names = ["config.json", "tokenizer.json", "model.safetensors"];
-    let [config, tokenizer, weights] =
-        <[PathBuf; 3]>::try_from(model.files(&names, !crate::progress::enabled())?)
-            .map_err(|_| anyhow::anyhow!("{}: expected {names:?}", spec.model_id))?;
+    let [config, tokenizer, weights] = model.files(
+        ["config.json", "tokenizer.json", "model.safetensors"],
+        !crate::progress::enabled(),
+    )?;
     Ok(ModelFiles {
         config,
         tokenizer,

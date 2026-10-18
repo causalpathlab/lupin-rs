@@ -39,7 +39,7 @@ fn cached_files_are_read_offline() {
     let (_root, cache) = cache_with(&["config.json", "model.safetensors"]);
     let m = Model::in_cache("org/model", REV, cache, Some(HF_OFFLINE_ENV));
     let got = m
-        .files(&["config.json", "model.safetensors"], false)
+        .files(["config.json", "model.safetensors"], false)
         .unwrap();
     assert!(got[1].ends_with("model.safetensors"));
     assert!(m.cached("tokenizer.json").is_none());
@@ -50,7 +50,7 @@ fn offline_a_file_the_cache_lacks_is_an_error_naming_the_switch() {
     let (root, cache) = cache_with(&["config.json"]);
     let m = Model::in_cache("org/model", REV, cache, Some(HF_OFFLINE_ENV));
     let e = m
-        .files(&["config.json", "model.safetensors"], false)
+        .files(["config.json", "model.safetensors"], false)
         .unwrap_err()
         .to_string();
     assert!(e.contains("org/model") && e.contains(HF_OFFLINE_ENV), "{e}");

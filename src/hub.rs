@@ -91,18 +91,21 @@ impl Model {
 
     /// Files `names`: from the cache when it has every one, else from the
     /// Hub ([`Self::online`]).
-    pub fn files(&self, names: &[&str], progress: bool) -> Result<Vec<PathBuf>> {
-        if let Some(all) = names.iter().map(|n| self.cached(n)).collect() {
-            return Ok(all);
-        }
-        let hub = self.online(progress)?;
-        names
-            .iter()
-            .map(|n| {
-                hub.get(n)
-                    .with_context(|| format!("fetching {n} of {}", self.id))
-            })
-            .collect()
+    pub fn files<const N: usize>(&self, names: [&str; N], progress: bool) -> Result<[PathBuf; N]> {
+        let all = match names.iter().map(|n| self.cached(n)).collect() {
+            Some(all) => all,
+            None => {
+                let hub = self.online(progress)?;
+                (names.iter())
+                    .map(|n| {
+                        hub.get(n)
+                            .with_context(|| format!("fetching {n} of {}", self.id))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            }
+        };
+        // One path per name, by construction.
+        Ok(<[PathBuf; N]>::try_from(all).unwrap_or_else(|_| unreachable!()))
     }
 }
 
