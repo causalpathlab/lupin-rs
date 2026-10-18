@@ -234,3 +234,34 @@ fn an_output_prefix_finds_its_labels_as_parquet_or_as_an_older_tsv() {
     assert_eq!(files.argmax.as_deref(), Some(parquet.as_str()));
     assert_eq!(load_evidence(&files, 0.1).unwrap()[0].coarse_label, "CT_B");
 }
+
+/// `describe`'s arguments as the command line gives them.
+fn describe_args(argv: &[&str]) -> DescribeArgs {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: DescribeArgs,
+    }
+    Cli::try_parse_from(std::iter::once("describe").chain(argv.iter().copied()))
+        .unwrap()
+        .args
+}
+
+#[test]
+fn a_round_made_from_a_trajectory_is_described_as_a_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = super::trajectory::tests::fixture_trajectory(dir.path());
+    let loaded = crate::manifest::run::load(&t.to_string_lossy()).unwrap();
+    let round = dir.path().join("t.L1.senna.json");
+    let copy = loaded.copy_to(round.clone()).unwrap();
+    copy.manifest.save(&copy.file).unwrap();
+    let out = dir.path().join("t.L1").to_string_lossy().into_owned();
+    let from = round.to_string_lossy().into_owned();
+    // A round with no evidence of its own: nothing to describe.
+    assert!(run_describe(&describe_args(&["-f", &from, "-o", &out])).is_err());
+    assert!(
+        !super::trajectory::md_path(&out).exists(),
+        "not the trajectory it was made from"
+    );
+}
