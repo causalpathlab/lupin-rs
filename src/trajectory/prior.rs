@@ -218,14 +218,24 @@ pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Resu
     Ok(out)
 }
 
+/// The terms, with every type of `all` mapped to its term as
+/// [`ClTerms::map_labels`] reads a panel's labels, together: what
+/// [`standing_layers`] reads the types by.
+pub(crate) fn on_terms<'t>(
+    terms: Option<&'t ClTerms>,
+    all: &[&str],
+) -> Option<(&'t ClTerms, BTreeMap<String, String>)> {
+    terms.map(|t| (t, t.map_labels(all.iter().copied()).0))
+}
+
 /// The standing statements about `names`: the Cell Ontology's (when `cl`
-/// gives it, with every type there is mapped to its term as
-/// [`ClTerms::map_labels`] reads them, so `names` read as the rest do), then
-/// the user's and the project's `precedence.tsv` along `search`. A
-/// precedence file that cannot be read is returned beside the layers that
-/// could, for the caller to stop on or to show.
+/// gives it, every type there is mapped to its term by [`on_terms`], so
+/// `names` read as the rest do), then the user's and the project's
+/// `precedence.tsv` along `search`. A precedence file that cannot be read
+/// is returned beside the layers that could, for the caller to stop on or
+/// to show.
 pub(crate) fn standing_layers(
-    cl: Option<(&ClTerms, &BTreeMap<String, String>)>,
+    cl: Option<&(&ClTerms, BTreeMap<String, String>)>,
     names: &[&str],
     search: &SearchPath,
 ) -> (Vec<Vec<Statement>>, Vec<anyhow::Error>) {
