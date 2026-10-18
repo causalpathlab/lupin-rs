@@ -256,8 +256,7 @@ fn app_on(dir: &Path) -> App {
     let argv = ["lupin", "-o", "x", "-m", panel.to_str().unwrap()];
     let args = <Cli as clap::Parser>::parse_from(argv).annotate;
     let types = crate::annotate::markers::read_panel(panel.to_str().unwrap()).unwrap();
-    let tree = crate::manifest::ontology::panel_tree_on(None, &types);
-    let mut app = App::new(args, PathBuf::new(), PathBuf::new(), tree);
+    let mut app = App::new(args, PathBuf::new(), PathBuf::new(), types, None);
     app.focus = Focus::Clusters;
     app
 }

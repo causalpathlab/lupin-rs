@@ -38,9 +38,8 @@ fn app_with_terms(terms: bool) -> App {
     use super::super::round::{ClusterView, RoundView};
     use crate::annotate::rounds::Term;
     let args = cli(&[]);
-    let panel = [("GENE1".to_string(), "CT1".to_string())];
-    let tree = crate::manifest::ontology::panel_tree_on(None, &panel);
-    let mut app = App::new(args, PathBuf::new(), PathBuf::new(), tree);
+    let panel = vec![("GENE1".to_string(), "CT1".to_string())];
+    let mut app = App::new(args, PathBuf::new(), PathBuf::new(), panel, None);
     let term = |t: &str| Term {
         source: "go".into(),
         term: t.into(),
@@ -2274,9 +2273,8 @@ fn the_cluster_list_shows_a_susie_calls_share_not_its_pip() {
 /// The app on a four-cell round of two clusters, with a UMAP when `layout`.
 fn map_app(dir: &std::path::Path, layout: bool) -> App {
     let l = crate::figures::tests::round(dir, layout);
-    let panel = [("GENE1".to_string(), "A".to_string())];
-    let tree = crate::manifest::ontology::panel_tree_on(None, &panel);
-    let mut app = App::new(cli(&[]), PathBuf::new(), PathBuf::new(), tree);
+    let panel = vec![("GENE1".to_string(), "A".to_string())];
+    let mut app = App::new(cli(&[]), PathBuf::new(), PathBuf::new(), panel, None);
     app.open(&l.file);
     app
 }

@@ -11,6 +11,7 @@ use super::ontology::ViewKey;
 use super::round::{decisions, Edit, RoundView};
 use super::runner;
 use crate::annotate::args::ProjectionMethod;
+use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::markers::label_key;
 use crate::annotate::panel_tree::PanelTree;
 use crate::annotate::rounds::ClusterId;
@@ -506,7 +507,7 @@ pub struct App {
     pub tree: PanelTree,
     pub tree_mode: TreeMode,
     /// The Cell Ontology, when there is one.
-    pub cl: Option<crate::annotate::celltype_tree::ClTerms>,
+    pub cl: Option<ClTerms>,
     /// Each panel type on a CL term with every term above it.
     pub panel_ancestry: Vec<(String, std::collections::BTreeSet<String>)>,
     /// Where the run's data files are found, and aliases remembered.
@@ -627,18 +628,27 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(args: AnnotateCliArgs, source: PathBuf, target: PathBuf, tree: PanelTree) -> Self {
+    /// The app on marker panel `panel` (gene, type rows), its tree placed
+    /// on the ontology `cl` when there is one.
+    pub fn new(
+        args: AnnotateCliArgs,
+        source: PathBuf,
+        target: PathBuf,
+        panel: Vec<(String, String)>,
+        cl: Option<ClTerms>,
+    ) -> Self {
         let (log_tx, log_rx) = channel();
-        Self {
+        let mut app = Self {
             args,
             source,
             target,
             fixed_clusters: false,
-            tree,
+            // Built below, from `panel`.
+            tree: crate::manifest::ontology::panel_tree_on(None, &[]),
             tree_mode: TreeMode::Panel,
-            cl: None,
+            cl,
             panel_ancestry: Vec::new(),
-            panel: Vec::new(),
+            panel,
             terms_of: Default::default(),
             data_search: crate::manifest::data_files::SearchPath::new(None),
             original: std::collections::BTreeMap::new(),
@@ -698,7 +708,9 @@ impl App {
             frame_behind: Default::default(),
             progress_hidden: false,
             failed: None,
-        }
+        };
+        app.rebuild_tree();
+        app
     }
 
     pub fn push_log(&mut self, line: String) {
@@ -4095,10 +4107,6 @@ impl App {
     fn learn_alias(&mut self, label: &str, id: &str, file: &Path) {
         let Some(cl) = &mut self.cl else { return };
         cl.add_aliases(&format!("{label}\t{id}\n"), &file.display().to_string());
-        self.terms_of.borrow_mut().clear();
-        if self.panel.is_empty() {
-            return;
-        }
         self.rebuild_tree_keeping(Some(label));
     }
 
@@ -4125,9 +4133,12 @@ impl App {
     }
 
     /// Build the panel's tree again from [`Self::panel`], with each type's
-    /// terms.
+    /// terms; the selection stays on a row of the new tree.
     pub(super) fn rebuild_tree(&mut self) {
         self.tree = crate::manifest::ontology::panel_tree_on(self.cl.as_ref(), &self.panel);
+        self.tree_sel = self
+            .tree_sel
+            .min(self.tree.visible().len().saturating_sub(1));
         self.terms_of.borrow_mut().clear();
         if let Some(cl) = &self.cl {
             self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);

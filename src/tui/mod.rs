@@ -189,21 +189,14 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     )?;
     let search = data.search.clone();
     let terms = data.into_terms()?;
-    let tree = crate::manifest::ontology::panel_tree_on(terms.as_ref(), &panel);
-
     let target = annotated_path(&loaded.file, &args.out);
-    let mut app = App::new(args, loaded.file.clone(), target.clone(), tree);
-    app.panel = panel;
+    let mut app = App::new(args, loaded.file.clone(), target.clone(), panel, terms);
     app.fixed_clusters = loaded.manifest.cluster.clusters.is_some();
     (app.out_chosen, app.out_typed) = (out_chosen, out_chosen);
     app.trajectory = trajectory.unwrap_or_default();
     if !app.args.markers.is_empty() {
         app.original = round::panel_sets(&app.args.markers)?;
     }
-    if let Some(cl) = &terms {
-        app.panel_ancestry = ontology::type_ancestry(cl, &app.tree);
-    }
-    app.cl = terms;
     app.hidden = genes::GeneFilter::load(&search)?;
     app.mixed = ontology::Mixed::load(&search)?;
     app.data_search = search;

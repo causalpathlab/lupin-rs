@@ -85,10 +85,7 @@ fn app(dir: &Path) -> App {
     let args = <Cli as clap::Parser>::parse_from(argv).annotate;
     let cl = ClTerms::parse(OBO, &crate::annotate::cl_rules::shipped());
     let types = crate::annotate::markers::read_panel(panel.to_str().unwrap()).unwrap();
-    let tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &types);
-    let mut app = App::new(args, PathBuf::new(), PathBuf::new(), tree);
-    app.panel = types;
-    app.cl = Some(cl);
+    let mut app = App::new(args, PathBuf::new(), PathBuf::new(), types, Some(cl));
     app.data_search = SearchPath {
         user: Some(dir.join("config")),
         ..SearchPath::new(None)
@@ -323,4 +320,20 @@ fn a_rebuild_on_a_label_no_longer_on_the_tree_keeps_the_selection_it_had() {
     assert_ne!(before, after, "{before:?}");
     let at = app.tree.visible()[app.tree_sel];
     assert_eq!(app.tree.label(at), "XQ", "{after:?}");
+}
+
+#[test]
+fn a_rebuild_leaves_the_selection_on_a_row_of_the_new_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    let last = app.tree.visible().len() - 1;
+    app.tree_sel = last;
+    app.panel.truncate(1);
+    app.rebuild_tree();
+    assert!(
+        app.tree_sel < app.tree.visible().len(),
+        "{} of {}",
+        app.tree_sel,
+        app.tree.visible().len()
+    );
 }
