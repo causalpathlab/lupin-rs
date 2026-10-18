@@ -377,3 +377,15 @@ fn another_trajectory_shown_does_not_keep_the_last_ones_texts() {
     assert!(app.order_texts.is_none());
     assert!(app.order_line().is_none());
 }
+
+#[test]
+fn the_tuis_describe_job_writes_its_cache_and_no_description() {
+    let lm = crate::describe::LmArgs::default();
+    let argv = super::super::runner::describe_argv(Path::new("d/r.senna.json"), "d/r", &lm);
+    assert_eq!(argv[..5], ["describe", "-f", "d/r.senna.json", "-o", "d/r"]);
+    assert!(argv.iter().any(|a| a == "--lm"));
+    assert!(
+        argv.iter().any(|a| a == "--cache-only"),
+        "never writes over a description the user made: {argv:?}"
+    );
+}
