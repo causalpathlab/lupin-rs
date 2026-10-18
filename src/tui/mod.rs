@@ -8,7 +8,6 @@
 //! round, as `lupin relabel --next` does.
 
 mod app;
-mod describe;
 mod export;
 mod figure_pane;
 mod gallery;
@@ -21,6 +20,10 @@ mod round;
 mod runner;
 mod suggest;
 mod ui;
+
+#[cfg(test)]
+#[path = "tests/drive.rs"]
+mod drive;
 
 use crate::annotate::gene_rows::GeneRows;
 use crate::annotate_cmd::AnnotateCliArgs;

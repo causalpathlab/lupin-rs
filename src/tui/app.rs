@@ -539,13 +539,9 @@ pub struct App {
     /// The files jobs hand to their child: a folder only the user can
     /// open, made on first use and removed with the app.
     jobs_dir: Option<tempfile::TempDir>,
-    /// The trajectory's texts: in the order view always those of
-    /// [`Self::shown_trajectory`], as [`Self::keep_order_current`] keeps
-    /// them, or none.
-    pub order_texts: Option<super::describe::OrderTexts>,
-    /// The manifests [`Self::order_texts`] and the order view's edges were
-    /// last read among.
-    order_texts_for: Option<Vec<PathBuf>>,
+    /// The trajectory the order view shows, whose edges its table and whose
+    /// texts its strip are, as [`Self::keep_order_current`] keeps it.
+    pub order_shown: Option<super::order::Shown>,
     pub tree_sel: usize,
     /// The order view's types on the Cell Ontology, drawn beside the
     /// precedence table as the tree pane draws the panel.
@@ -654,8 +650,7 @@ impl App {
             suggestions: None,
             suggest_for: None,
             jobs_dir: None,
-            order_texts: None,
-            order_texts_for: None,
+            order_shown: None,
             tree_sel: 0,
             form: None,
             help_open: false,
@@ -2800,8 +2795,7 @@ impl App {
                 v.shown = show_figures;
             }
         }
-        self.reload_order();
-        self.load_order_texts(false);
+        self.show_trajectory();
         self.status = "order view: space marks a type, then > states the first precedes the second, u that they are unrelated".into();
     }
 
@@ -3291,8 +3285,7 @@ impl App {
         }
         if self.in_order() {
             // The order view's edges and texts follow the trajectory now shown.
-            self.rebuild_order(true);
-            self.load_order_texts(false);
+            self.show_trajectory();
         }
         self.status = match (&self.round, trajectory) {
             (Some(r), true) => format!(
@@ -3527,18 +3520,13 @@ impl App {
                 None
             }
         };
-        let edges = self.shown_edges();
-        if let TreeMode::Order(v) = &mut self.tree_mode {
-            v.edges = edges;
-        }
         if let Some(f) = &mut self.figures {
             f.shown = true;
         }
         if self.in_order() {
-            self.reload_order();
             // Its manifest is written anew, maybe over the one shown: its
-            // texts are read again, on its new facts.
-            self.load_order_texts(true);
+            // edges and texts are read again.
+            self.show_trajectory();
         }
         // The header names the manifest whose figures are up.
         self.status = if self.figures.is_some() && self.trajectory_tui {
@@ -3600,27 +3588,25 @@ impl App {
     }
 
     /// (Re)build the order view from the labels on screen and the data files.
-    /// The trajectory run's edges are kept from the view on screen (or the
-    /// figures), so only the precedence files are read again.
+    /// The trajectory run's edges are kept from the view on screen, so only
+    /// the precedence files are read again.
     fn reload_order(&mut self) {
-        self.rebuild_order(false);
+        self.rebuild_order(None);
     }
 
-    /// The edges of [`Self::shown_trajectory`]; none without one.
-    fn shown_edges(&self) -> Vec<crate::trajectory::edges::EdgeRow> {
-        super::order::shown_run(self.trajectory_candidates())
-            .map(|(_, e)| e)
-            .unwrap_or_default()
-    }
-
-    /// [`Self::reload_order`]; with `new_edges` (the manifest shown changed)
-    /// the edges are those of the trajectory now shown, not the view's.
-    fn rebuild_order(&mut self, new_edges: bool) {
-        let (sel, edges, ontology) = match std::mem::replace(&mut self.tree_mode, TreeMode::Panel) {
-            TreeMode::Order(v) if !new_edges => (v.sel, v.edges, v.ontology),
-            TreeMode::Order(v) => (v.sel, self.shown_edges(), v.ontology),
-            _ => (0, self.shown_edges(), None),
+    /// [`Self::reload_order`]; with `edges` (the trajectory shown was read
+    /// again) those, not the view's.
+    fn rebuild_order(&mut self, edges: Option<Vec<crate::trajectory::edges::EdgeRow>>) {
+        let (sel, kept, ontology) = match std::mem::replace(&mut self.tree_mode, TreeMode::Panel) {
+            TreeMode::Order(v) => (v.sel, Some(v.edges), v.ontology),
+            _ => (0, None, None),
         };
+        let edges = edges.or(kept).unwrap_or_else(|| {
+            (self.order_shown.as_ref())
+                .and_then(|s| s.run.as_ref())
+                .map(|r| r.edges.clone())
+                .unwrap_or_default()
+        });
         let mut v = super::order::OrderView::load(
             self.order_types(),
             self.cl.as_ref(),
@@ -4079,55 +4065,36 @@ impl App {
         figures.into_iter().chain(self.manifests()).collect()
     }
 
-    /// The trajectory shown, whose edges the order table and whose facts
-    /// its texts are: [`super::order::shown_run`] among
-    /// [`Self::trajectory_candidates`].
-    fn shown_trajectory(&self) -> Option<PathBuf> {
-        super::order::shown_run(self.trajectory_candidates()).map(|(m, _)| m)
+    /// Show in the order view the trajectory found now among
+    /// [`Self::trajectory_candidates`]: its edges in the table, its texts in
+    /// the strip, read together. The figures' edges are taken, not read
+    /// again.
+    fn show_trajectory(&mut self) {
+        let among = self.trajectory_candidates();
+        let known = (self.figures.as_ref()).map(|f| (f.data.manifest.as_path(), &f.data.edges[..]));
+        let run = super::order::ShownRun::find(&among, known);
+        let edges = run.as_ref().map(|r| r.edges.clone()).unwrap_or_default();
+        self.order_shown = Some(super::order::Shown::new(among, run));
+        self.rebuild_order(Some(edges));
     }
 
     /// In the order view, keep the table and the strip on the trajectory
     /// shown, whatever changed it: when where it is looked for has changed,
-    /// its edges and texts are read again together; else the texts are
-    /// polled, a change of their files' size or time read again. A run done
-    /// reads them anew itself (`force`, [`Self::load_order_texts`]): its
-    /// facts changed.
+    /// it is found again; else its files are polled, and read again together
+    /// when they changed.
     fn keep_order_current(&mut self) {
         if !self.in_order() {
             return;
         }
-        if self.order_texts_for != Some(self.trajectory_candidates()) {
-            self.rebuild_order(true);
-            self.load_order_texts(false);
-        } else {
-            self.refresh_order_texts();
-        }
-    }
-
-    /// The texts of the trajectory shown: polled when they are followed
-    /// already and nothing `force`s a new read; else read from its facts.
-    pub(super) fn load_order_texts(&mut self, force: bool) {
-        let shown = self.shown_trajectory();
-        self.order_texts_for = Some(self.trajectory_candidates());
-        if !force
-            && shown.is_some()
-            && self.order_texts.as_ref().map(|t| &t.manifest) == shown.as_ref()
-        {
-            return self.refresh_order_texts();
-        }
-        self.order_texts = None;
-        let Some(m) = shown else {
-            return;
-        };
-        match super::describe::OrderTexts::of(&m) {
-            Ok(t) => self.order_texts = Some(t),
-            Err(e) => self.push_log(format!("[WARN] no trajectory texts: {e:#}")),
-        }
-    }
-
-    pub(super) fn refresh_order_texts(&mut self) {
-        if let Some(t) = &mut self.order_texts {
-            t.poll();
+        let among = self.trajectory_candidates();
+        match &mut self.order_shown {
+            Some(s) if s.among == among => {
+                if s.poll() {
+                    let edges = s.run.as_ref().map(|r| r.edges.clone());
+                    self.rebuild_order(Some(edges.unwrap_or_default()));
+                }
+            }
+            _ => self.show_trajectory(),
         }
     }
 
@@ -4136,7 +4103,7 @@ impl App {
     /// paragraph.
     #[must_use]
     pub fn order_line(&self) -> Option<String> {
-        let t = self.order_texts.as_ref()?;
+        let t = self.order_shown.as_ref()?.run.as_ref()?;
         let ty = match &self.tree_mode {
             TreeMode::Order(v) if self.focus == Focus::Order => {
                 v.types.get(v.sel).map(|(t, _)| t.as_str())

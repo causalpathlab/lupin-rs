@@ -5,11 +5,14 @@
 
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::panel_tree::PanelTree;
+use crate::describe::trajectory::{self, OrderFacts, OrderText};
 use crate::manifest::data_files::{append_row, SearchPath, PRECEDENCE};
-use crate::manifest::run::{load, resolve};
+use crate::manifest::run::load;
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
+use crate::trajectory::lineages;
 use crate::trajectory::prior::{self, Prior, Relation, Source, Statement};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// How the order view runs `lupin trajectory`: the options it carries over
 /// and the output prefix last used.
@@ -321,16 +324,138 @@ impl OrderView {
     }
 }
 
-/// The trajectory the order view shows among `manifests`: the first whose
-/// `trajectory` section records an edge table that can be read (its own or
-/// one a round borrowed from the run it was made on), with that table.
-pub fn shown_run(manifests: impl IntoIterator<Item = PathBuf>) -> Option<(PathBuf, Vec<EdgeRow>)> {
-    manifests.into_iter().find_map(|m| {
-        let loaded = load(&m.to_string_lossy()).ok()?;
-        let rel = loaded.manifest.trajectory.edges.as_deref()?;
-        let edges = edges::read(&resolve(&loaded.dir, rel)).ok()?;
-        Some((m, edges))
-    })
+/// A file's size and last change, to tell when it changed; `None` when it
+/// is missing.
+type Stamp = Option<(u64, Option<std::time::SystemTime>)>;
+
+fn stamp(file: &Path) -> Stamp {
+    let m = std::fs::metadata(file).ok()?;
+    Some((m.len(), m.modified().ok()))
+}
+
+/// The trajectory the order view shows: its edges for the table and the
+/// texts code writes from its outputs for the strip, read together and
+/// read again together when the manifest or an output changes.
+pub struct ShownRun {
+    pub manifest: PathBuf,
+    pub edges: Vec<EdgeRow>,
+    pub texts: Vec<OrderText>,
+    /// The manifest and its outputs, with their stamps as last read.
+    files: Vec<(PathBuf, Stamp)>,
+}
+
+impl ShownRun {
+    /// The first of `manifests` whose `trajectory` section records an edge
+    /// table that can be read (its own or one a round borrowed from the run
+    /// it was made on). `known` are edges already read from one of them
+    /// (the figures'), taken rather than read again.
+    pub fn find(manifests: &[PathBuf], known: Option<(&Path, &[EdgeRow])>) -> Option<Self> {
+        manifests.iter().find_map(|m| {
+            let known = known.filter(|(at, _)| at == m).map(|(_, e)| e);
+            Self::read(m, known)
+        })
+    }
+
+    fn read(manifest: &Path, known: Option<&[EdgeRow]>) -> Option<Self> {
+        let loaded = load(&manifest.to_string_lossy()).ok()?;
+        let [lineages, edges] = OrderFacts::files(&loaded);
+        let edges_file = edges?;
+        let edges = match known {
+            Some(e) => e.to_vec(),
+            None => edges::read(&edges_file).ok()?,
+        };
+        let lineages = match &lineages {
+            Some(p) => lineages::read(p).unwrap_or_else(|e| {
+                log::warn!("no trajectory texts: {e:#}");
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
+        let facts = OrderFacts { lineages, edges };
+        let files = [
+            Some(manifest.to_path_buf()),
+            lineages_path(&loaded),
+            Some(edges_file.into()),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|f| {
+            let s = stamp(&f);
+            (f, s)
+        })
+        .collect();
+        Some(Self {
+            manifest: manifest.to_path_buf(),
+            texts: trajectory::texts(&facts),
+            edges: facts.edges,
+            files,
+        })
+    }
+
+    /// Read it again when its files changed; whether they did. A manifest
+    /// or edges that no longer read keep it as it was.
+    pub fn poll(&mut self) -> bool {
+        if self.files.iter().all(|(f, s)| stamp(f) == *s) {
+            return false;
+        }
+        match Self::read(&self.manifest, None) {
+            Some(again) => *self = again,
+            None => {
+                for (f, s) in &mut self.files {
+                    *s = stamp(f);
+                }
+            }
+        }
+        true
+    }
+
+    /// Type `ty`'s line, or the run's paragraph without one.
+    #[must_use]
+    pub fn line(&self, ty: Option<&str>) -> Option<&str> {
+        let of = |s: Option<&str>| {
+            self.texts
+                .iter()
+                .find(|d| d.subject.as_deref() == s)
+                .map(|d| d.text.as_str())
+        };
+        ty.and_then(|t| of(Some(t))).or_else(|| of(None))
+    }
+}
+
+/// The lineages file `loaded` records.
+fn lineages_path(loaded: &crate::manifest::run::Loaded) -> Option<PathBuf> {
+    OrderFacts::files(loaded)[0].as_ref().map(PathBuf::from)
+}
+
+/// How often the order view looks at its trajectory's files for a change.
+pub const POLL_EVERY: Duration = Duration::from_secs(1);
+
+/// The trajectory the order view shows and where it was looked for, and
+/// when its files were last looked at.
+pub struct Shown {
+    pub among: Vec<PathBuf>,
+    pub run: Option<ShownRun>,
+    polled: Instant,
+}
+
+impl Shown {
+    #[must_use]
+    pub fn new(among: Vec<PathBuf>, run: Option<ShownRun>) -> Self {
+        Self {
+            among,
+            run,
+            polled: Instant::now(),
+        }
+    }
+
+    /// [`ShownRun::poll`], at most every [`POLL_EVERY`]; whether it changed.
+    pub fn poll(&mut self) -> bool {
+        if self.polled.elapsed() < POLL_EVERY {
+            return false;
+        }
+        self.polled = Instant::now();
+        self.run.as_mut().is_some_and(ShownRun::poll)
+    }
 }
 
 #[cfg(test)]

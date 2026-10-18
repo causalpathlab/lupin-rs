@@ -3,13 +3,14 @@
 //! confirmed, and the tree rebuilt with the alias.
 
 use super::super::app::{App, Focus, Job, Pending, Running};
+use super::super::drive::{finish, press};
 use super::*;
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::cl_rules::Aliases;
 use crate::annotate::term_match::{Suggested, Suggestion};
 use crate::annotate_cmd::AnnotateCliArgs;
 use crate::manifest::data_files::SearchPath;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
 use std::path::{Path, PathBuf};
 
 /// root ─┬─ group1 (class) ─┬─ CT1 cell
@@ -45,10 +46,6 @@ is_a: CL:0
 
 /// The panel: two types on terms and `XQ`, which matches none.
 const PANEL: &str = "G1\tCT1 cells\nG2\tCT2 cells\nG3\tXQ\n";
-
-fn press(app: &mut App, code: KeyCode) {
-    app.key(KeyEvent::new(code, KeyModifiers::NONE));
-}
 
 /// `XQ`'s suggestions as `lupin data suggest-cl` writes them, in `dir`.
 fn suggested(dir: &Path) -> PathBuf {
@@ -215,18 +212,6 @@ fn c_waits_for_a_running_job_before_ranking() {
         let _ = r.child.kill();
         let _ = r.child.wait();
     }
-}
-
-/// Tick until the job is taken in.
-fn finish(app: &mut App) {
-    for _ in 0..200 {
-        app.tick();
-        if app.child.is_none() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    panic!("the job never ended");
 }
 
 #[test]

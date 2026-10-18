@@ -1,6 +1,7 @@
 //! Remembering an alias picked in the TUI; the GO pane and setting;
 //! the keys.
 
+use super::super::drive::press;
 use super::*;
 use crate::annotate::cl_rules::Aliases;
 
@@ -148,10 +149,6 @@ fn the_go_setting_toggles_go_unless_gene_sets_are_named() {
     Setting::Go.adjust(&mut b, true);
     assert!(!b.go);
     assert_eq!(Setting::Go.value(&b), "--gaf");
-}
-
-fn press(app: &mut App, code: KeyCode) {
-    app.key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
 fn ctrl_c(app: &mut App) {
