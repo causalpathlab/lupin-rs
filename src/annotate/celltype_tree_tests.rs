@@ -1042,3 +1042,16 @@ fn a_lineage_over_another_group_merges_nothing() {
     assert_eq!(members(&tree, "reg_T_cell"), ["Reg T"], "on its own");
     assert_eq!(tree.groups.len(), 3, "one level: {:?}", tree.groups);
 }
+
+#[test]
+fn a_negative_marker_s_word_is_no_panel_context() {
+    let obo = "[Term]\nid: CL:1\nname: CD2-negative ya cell\n\n\
+               [Term]\nid: CL:2\nname: CD3-negative za cell\n\n\
+               [Term]\nid: CL:3\nname: CD5-negative wa cell\n";
+    let mut t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let labels = ["CD2 ya", "CD3 za", "CD5 wa"];
+    let (mapped, _) = t.map_labels(labels);
+    assert!(mapped.is_empty(), "{mapped:?}");
+    t.set_panel(&panel(&[("G1", "CD2 ya"), ("G2", "CD3 za"), ("G3", "CD5 wa")]));
+    assert_eq!(t.panel_context, Some(None));
+}
