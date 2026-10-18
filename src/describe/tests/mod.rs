@@ -1,5 +1,10 @@
 use super::*;
 
+/// [`EvidenceFiles::locate`] on `from`, its manifest loaded when it is one.
+fn located(from: &str) -> EvidenceFiles {
+    EvidenceFiles::locate(from, crate::manifest::run::load(from).ok().as_ref())
+}
+
 fn sample_sig() -> ClusterEvidence {
     ClusterEvidence {
         id: "K0".into(),
@@ -159,7 +164,7 @@ fn enrichment_q_table_calls_each_cluster_by_its_lowest_q() {
     q.to_parquet_with_names(&path, (Some(&rows), Some("cluster")), Some(&cols))
         .unwrap();
 
-    let files = EvidenceFiles::locate(&prefix);
+    let files = located(&prefix);
     assert_eq!(files.enrichment_q.as_deref(), Some(path.as_str()));
     let mut ev = load_evidence(&files, 0.1).unwrap();
     assert_eq!(ev[0].coarse_label, "CT_A");
@@ -188,7 +193,7 @@ fn a_manifest_points_describe_at_the_latest_pass_not_stale_files() {
     m.save(std::path::Path::new(&format!("{prefix}.senna.json")))
         .unwrap();
 
-    let files = EvidenceFiles::locate(&format!("{prefix}.senna.json"));
+    let files = located(&format!("{prefix}.senna.json"));
     assert!(
         files.annot.is_none(),
         "stale projection table must be ignored"
@@ -206,11 +211,8 @@ fn an_output_prefix_finds_its_labels_as_parquet_or_as_an_older_tsv() {
     let prefix = dir.path().join("run").to_string_lossy().into_owned();
     let tsv = format!("{prefix}.argmax.tsv");
     std::fs::write(&tsv, "cell\tcell_type\nc0\tCT_A\n").unwrap();
-    assert_eq!(
-        EvidenceFiles::locate(&prefix).argmax.as_deref(),
-        Some(tsv.as_str())
-    );
-    let ev = load_evidence(&EvidenceFiles::locate(&prefix), 0.1).unwrap();
+    assert_eq!(located(&prefix).argmax.as_deref(), Some(tsv.as_str()));
+    let ev = load_evidence(&located(&prefix), 0.1).unwrap();
     assert_eq!(ev[0].coarse_label, "CT_A");
 
     let cells: Vec<Box<str>> = vec!["c0".into()];
@@ -222,7 +224,57 @@ fn an_output_prefix_finds_its_labels_as_parquet_or_as_an_older_tsv() {
     )
     .unwrap();
     let parquet = format!("{prefix}.argmax.parquet");
-    let files = EvidenceFiles::locate(&prefix);
+    let files = located(&prefix);
     assert_eq!(files.argmax.as_deref(), Some(parquet.as_str()));
     assert_eq!(load_evidence(&files, 0.1).unwrap()[0].coarse_label, "CT_B");
+}
+
+/// `describe`'s arguments as the command line gives them.
+fn describe_args(argv: &[&str]) -> DescribeArgs {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: DescribeArgs,
+    }
+    Cli::try_parse_from(std::iter::once("describe").chain(argv.iter().copied()))
+        .unwrap()
+        .args
+}
+
+#[test]
+fn a_round_made_from_a_trajectory_is_described_as_a_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = super::trajectory::tests::fixture_trajectory(dir.path());
+    let loaded = crate::manifest::run::load(&t.to_string_lossy()).unwrap();
+    let round = dir.path().join("t.L1.senna.json");
+    let copy = loaded.copy_to(round.clone()).unwrap();
+    copy.manifest.save(&copy.file).unwrap();
+    let out = dir.path().join("t.L1").to_string_lossy().into_owned();
+    let from = round.to_string_lossy().into_owned();
+    // A round with no evidence of its own: nothing to describe.
+    assert!(run_describe(&describe_args(&["-f", &from, "-o", &out])).is_err());
+    assert!(
+        !super::trajectory::md_path(&out).exists(),
+        "not the trajectory it was made from"
+    );
+}
+
+#[test]
+fn a_trajectory_is_described_by_code_from_its_outputs() {
+    use super::trajectory::{self, tests::fixture_trajectory, OrderFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let t = fixture_trajectory(dir.path());
+    let out = dir.path().join("t").to_string_lossy().into_owned();
+    let from = t.to_string_lossy().into_owned();
+    run_describe(&describe_args(&["-f", &from, "-o", &out])).unwrap();
+    let loaded = crate::manifest::run::load(&from).unwrap();
+    let want = trajectory::markdown(
+        &from,
+        &trajectory::texts(&OrderFacts::read(&loaded).unwrap()),
+    );
+    assert_eq!(
+        std::fs::read_to_string(trajectory::md_path(&out)).unwrap(),
+        want
+    );
 }

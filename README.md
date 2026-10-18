@@ -41,6 +41,7 @@ lupin annotate -f run.senna.json -m markers.tsv -o out   # writes out.senna.json
 lupin trajectory -f out.senna.json -o out.T1           # prior, check, pseudotime
 lupin trajectory                                       # the TUI: pick a run, state the order, run
 lupin describe -f run.senna.json --text-prefix run -o out
+lupin describe -f out.T1.senna.json -o out.T1          # a trajectory's order in words
 ```
 
 ## Cell-type labels
