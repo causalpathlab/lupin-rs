@@ -4126,7 +4126,7 @@ impl App {
 
     /// [`Self::rebuild_tree`], keeping what was folded, and the selection
     /// on node `on`, else on the one selected before, shown.
-    fn rebuild_tree_keeping(&mut self, on: Option<&str>) {
+    pub(super) fn rebuild_tree_keeping(&mut self, on: Option<&str>) {
         let tree = &self.tree;
         let folded: Vec<String> = (0..tree.nodes.len())
             .filter(|&i| tree.is_folded(i))
@@ -4139,10 +4139,8 @@ impl App {
                 self.tree.fold(i, true);
             }
         }
-        if let Some(i) = on
-            .or(selected.as_deref())
-            .and_then(|l| self.tree.node_of(l))
-        {
+        let node = |l: Option<&str>| l.and_then(|l| self.tree.node_of(l));
+        if let Some(i) = node(on).or_else(|| node(selected.as_deref())) {
             self.tree.reveal(i);
             self.select_node(i);
         }

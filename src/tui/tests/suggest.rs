@@ -308,3 +308,22 @@ fn a_label_cl_file_taken_in_the_tui_rebuilds_the_tree_on_it() {
     let at = app.tree.visible()[app.tree_sel];
     assert_eq!(app.tree.label(at), "XQ", "the selection stays on its node");
 }
+
+#[test]
+fn a_rebuild_on_a_label_no_longer_on_the_tree_keeps_the_selection_it_had() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    let before: Vec<String> = (app.tree.visible().iter())
+        .map(|&i| app.tree.label(i).to_string())
+        .collect();
+    select(&mut app, "XQ");
+    // A type gone from the panel moves the rows from where they were.
+    app.panel.retain(|(_, t)| t != "CT1_cells");
+    app.rebuild_tree_keeping(Some("gone"));
+    let after: Vec<String> = (app.tree.visible().iter())
+        .map(|&i| app.tree.label(i).to_string())
+        .collect();
+    assert_ne!(before, after, "{before:?}");
+    let at = app.tree.visible()[app.tree_sel];
+    assert_eq!(app.tree.label(at), "XQ", "{after:?}");
+}
