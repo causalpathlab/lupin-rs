@@ -1,5 +1,13 @@
 use super::*;
 
+fn check(
+    s: &str,
+    allowed: &BTreeSet<String>,
+    c: &ClusterEvidence,
+) -> Result<String, CitationError> {
+    citation_check(s, allowed, &cluster_entities(c), &own_entities(c))
+}
+
 fn sample_sig() -> ClusterEvidence {
     ClusterEvidence {
         id: "K0".into(),
@@ -33,7 +41,7 @@ fn citation_accepts_template_with_best_label() {
     };
     let allowed = allowed_entities(std::slice::from_ref(&c));
     let s = template_sentence(&c);
-    assert!(citation_check(&s, &allowed, &c).is_ok());
+    assert!(check(&s, &allowed, &c).is_ok());
     assert!(s.contains("CT_B"));
     assert!(s.contains("no significant"));
     assert!(s.contains("GENE4"));
@@ -46,7 +54,7 @@ fn significant_call_names_markers_and_q() {
     let c = sample_sig();
     let allowed = allowed_entities(std::slice::from_ref(&c));
     let s = template_sentence(&c);
-    assert!(citation_check(&s, &allowed, &c).is_ok());
+    assert!(check(&s, &allowed, &c).is_ok());
     assert!(s.contains("annotated as CT_A"));
     assert!(s.contains("supported by markers GENE1, GENE2, GENE3"));
     assert!(s.contains("best q=0.010"));
@@ -58,7 +66,7 @@ fn runner_up_only_when_significant() {
     c.second = Some(("CT_B".into(), 0.04));
     let allowed = allowed_entities(std::slice::from_ref(&c));
     let s = template_sentence(&c);
-    assert!(citation_check(&s, &allowed, &c).is_ok());
+    assert!(check(&s, &allowed, &c).is_ok());
     assert!(s.contains("second significant contender is CT_B (q=0.040)"));
 
     c.best_significant = false;
@@ -74,7 +82,7 @@ fn citation_rejects_foreign_panel_type() {
     let mut allowed = allowed_entities(std::slice::from_ref(&c));
     allowed.insert("CT_C".into());
     let bad = "K0 is annotated as CT_C.";
-    assert!(citation_check(bad, &allowed, &c).is_err());
+    assert!(check(bad, &allowed, &c).is_err());
 }
 
 #[test]
