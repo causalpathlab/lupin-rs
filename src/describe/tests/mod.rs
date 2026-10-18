@@ -249,6 +249,13 @@ fn describe_args(argv: &[&str]) -> DescribeArgs {
 }
 
 #[test]
+fn the_flags_only_o_acts_on_are_named_without_it() {
+    assert!(ignored_without_out(&describe_args(&["-f", "x"])).is_empty());
+    let args = describe_args(&["-f", "x", "--markers", "m", "--lm", "--cache-only"]);
+    assert_eq!(ignored_without_out(&args), ["--markers", "--cache-only"]);
+}
+
+#[test]
 fn a_round_made_from_a_trajectory_is_described_as_a_round() {
     let dir = tempfile::tempdir().unwrap();
     let t = super::trajectory::tests::fixture_trajectory(dir.path());

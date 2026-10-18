@@ -203,14 +203,29 @@ fn describe_trajectory(
     Ok(())
 }
 
+/// The flags given that act only on what `-o` writes: the description
+/// files, or (`--cache-only`) the model's cache alone.
+fn ignored_without_out(args: &DescribeArgs) -> Vec<&'static str> {
+    [
+        ("--text-prefix", args.text_prefix.is_some()),
+        ("--markers", args.markers.is_some()),
+        ("--feature-embedding", args.feature_embedding.is_some()),
+        ("--cache-only", args.cache_only),
+    ]
+    .into_iter()
+    .filter_map(|(flag, given)| given.then_some(flag))
+    .collect()
+}
+
 pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     let Some(out) = args.out.as_deref() else {
         // The TUI writes the model's cache alone (`--cache-only`).
-        if args.text_prefix.is_some() || args.markers.is_some() || args.feature_embedding.is_some()
-        {
+        let ignored = ignored_without_out(args);
+        if !ignored.is_empty() {
             log::warn!(
-                "--text-prefix, --markers and --feature-embedding go into the description files, \
-                 which only -o writes; the TUI shows the model's suggestions"
+                "{} act only on the files -o writes, so are ignored; the TUI shows the model's \
+                 suggestions",
+                ignored.join(", ")
             );
         }
         return crate::tui::run_describe(&args.from, &args.lm);
