@@ -56,3 +56,22 @@ fn offline_a_file_the_cache_lacks_is_an_error_naming_the_switch() {
     assert!(e.contains("org/model") && e.contains(HF_OFFLINE_ENV), "{e}");
     assert!(e.contains(&root.path().display().to_string()), "{e}");
 }
+
+#[test]
+fn a_commits_snapshot_is_read_without_a_ref_to_it() {
+    // The Hub's Python tools write no `refs/<commit>` for a commit revision.
+    let (root, cache) = cache_with(&["config.json"]);
+    let repo = root.path().join("models--org--model");
+    std::fs::remove_file(repo.join("refs").join(REV)).unwrap();
+    let m = Model::in_cache("org/model", REV, cache.clone(), Some(HF_OFFLINE_ENV));
+    assert!(m
+        .cached("config.json")
+        .is_some_and(|p| p.ends_with("config.json")));
+    assert!(m.cached("tokenizer.json").is_none());
+    // A branch is no commit: only its ref says which snapshot it is.
+    let main = repo.join("snapshots").join("main");
+    std::fs::create_dir_all(&main).unwrap();
+    std::fs::write(main.join("config.json"), "x").unwrap();
+    let m = Model::in_cache("org/model", "main", cache, Some(HF_OFFLINE_ENV));
+    assert!(m.cached("config.json").is_none());
+}
