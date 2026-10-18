@@ -1,9 +1,9 @@
-//! The Hugging Face Hub, as every model lupin loads reaches it: each file is
-//! read from the cache `HF_HOME` names (else `~/.cache/huggingface`) when it
-//! is there, or from `~/.cache/huggingface`, where an earlier lupin fetched
-//! models whatever `HF_HOME` said; it is downloaded, into the first, only
-//! when neither `LUPIN_OFFLINE` nor `HF_HUB_OFFLINE` (read as the Hub's own
-//! clients read it) is set.
+//! The Hugging Face Hub, as every model lupin loads reaches it: a model's
+//! files are read from the cache `HF_HOME` names (else `~/.cache/huggingface`)
+//! when it holds them all, or from `~/.cache/huggingface`, where an earlier
+//! lupin fetched models whatever `HF_HOME` said, when that one does; they are
+//! downloaded, into the first, only when neither `LUPIN_OFFLINE` nor
+//! `HF_HUB_OFFLINE` (read as the Hub's own clients read it) is set.
 
 use crate::manifest::data_files::OFFLINE_ENV;
 use anyhow::{Context, Result};
@@ -28,6 +28,14 @@ fn offline_switch(lupin: Option<OsString>, hf: Option<String>) -> Option<&'stati
     }
 }
 
+/// The cache an earlier lupin fetched into whatever `HF_HOME` said,
+/// `~/.cache/huggingface/hub` under `home`, when that is not `now`'s; none
+/// with no home folder (where the Hub's own default would panic).
+fn older_cache(home: Option<PathBuf>, now: &Cache) -> Option<Cache> {
+    let path = home?.join(".cache").join("huggingface").join("hub");
+    (&path != now.path()).then(|| Cache::new(path))
+}
+
 /// A model repository at a pinned revision, in the environment's cache.
 pub struct Model {
     id: String,
@@ -47,8 +55,8 @@ impl Model {
             std::env::var_os(OFFLINE_ENV),
             std::env::var(HF_OFFLINE_ENV).ok(),
         );
-        let (now, default) = (Cache::from_env(), Cache::default());
-        let older = (default.path() != now.path()).then_some(default);
+        let now = Cache::from_env();
+        let older = older_cache(dirs::home_dir(), &now);
         let m = Self::in_cache(id, revision, now, offline);
         match older {
             Some(c) => m.reading_too(c),
@@ -78,10 +86,12 @@ impl Model {
         Repo::with_revision(self.id.clone(), RepoType::Model, self.revision.clone())
     }
 
-    /// File `name`, when its cache or the older one has it.
+    /// Files `names`, all from one cache, its own or else the older one: a
+    /// set put together from both could mix two snapshots.
     #[must_use]
-    fn cached(&self, name: &str) -> Option<PathBuf> {
-        (std::iter::once(&self.cache).chain(&self.older)).find_map(|c| self.cached_in(c, name))
+    fn cached(&self, names: &[&str]) -> Option<Vec<PathBuf>> {
+        (std::iter::once(&self.cache).chain(&self.older))
+            .find_map(|c| names.iter().map(|n| self.cached_in(c, n)).collect())
     }
 
     /// File `name`, when `cache` has it: under the snapshot the revision's
@@ -128,10 +138,10 @@ impl Model {
             .repo(self.repo()))
     }
 
-    /// Files `names`: from the cache when it has every one, else from the
-    /// Hub ([`Self::online`]).
+    /// Files `names`: from a cache that has every one, else from the Hub
+    /// ([`Self::online`]).
     pub fn files<const N: usize>(&self, names: [&str; N]) -> Result<[PathBuf; N]> {
-        let all = match names.iter().map(|n| self.cached(n)).collect() {
+        let all = match self.cached(&names) {
             Some(all) => all,
             None => {
                 let hub = self.online()?;

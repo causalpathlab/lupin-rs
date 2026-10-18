@@ -40,7 +40,7 @@ fn cached_files_are_read_offline() {
     let m = Model::in_cache("org/model", REV, cache, Some(HF_OFFLINE_ENV));
     let got = m.files(["config.json", "model.safetensors"]).unwrap();
     assert!(got[1].ends_with("model.safetensors"));
-    assert!(m.cached("tokenizer.json").is_none());
+    assert!(m.cached(&["tokenizer.json"]).is_none());
 }
 
 #[test]
@@ -63,15 +63,15 @@ fn a_commits_snapshot_is_read_without_a_ref_to_it() {
     std::fs::remove_file(repo.join("refs").join(REV)).unwrap();
     let m = Model::in_cache("org/model", REV, cache.clone(), Some(HF_OFFLINE_ENV));
     assert!(m
-        .cached("config.json")
-        .is_some_and(|p| p.ends_with("config.json")));
-    assert!(m.cached("tokenizer.json").is_none());
+        .cached(&["config.json"])
+        .is_some_and(|p| p[0].ends_with("config.json")));
+    assert!(m.cached(&["tokenizer.json"]).is_none());
     // A branch is no commit: only its ref says which snapshot it is.
     let main = repo.join("snapshots").join("main");
     std::fs::create_dir_all(&main).unwrap();
     std::fs::write(main.join("config.json"), "x").unwrap();
     let m = Model::in_cache("org/model", "main", cache, Some(HF_OFFLINE_ENV));
-    assert!(m.cached("config.json").is_none());
+    assert!(m.cached(&["config.json"]).is_none());
 }
 
 #[test]
@@ -83,4 +83,31 @@ fn files_fetched_into_the_default_cache_before_are_found_when_hf_home_names_anot
     let m = Model::in_cache("org/model", REV, empty, Some(HF_OFFLINE_ENV)).reading_too(default);
     let [got] = m.files(["config.json"]).unwrap();
     assert!(got.ends_with("config.json"));
+}
+
+#[test]
+fn a_set_split_across_the_caches_is_not_taken_from_both() {
+    // HF_HOME's cache has two of the files, the older one the third: they
+    // may be of different snapshots, so the set is fetched whole (offline,
+    // an error) rather than mixed.
+    let (_now, now) = cache_with(&["config.json", "model.safetensors"]);
+    let (_before, older) = cache_with(&["tokenizer.json"]);
+    let m = Model::in_cache("org/model", REV, now, Some(HF_OFFLINE_ENV)).reading_too(older);
+    let got = m.files(["config.json", "model.safetensors", "tokenizer.json"]);
+    assert!(got.is_err(), "{got:?}");
+}
+
+#[test]
+fn the_older_cache_is_under_the_home_folder_only_when_there_is_one() {
+    let (_now, now) = cache_with(&[]);
+    assert!(
+        older_cache(None, &now).is_none(),
+        "no home folder: no panic"
+    );
+    let home = tempfile::tempdir().unwrap();
+    let older = older_cache(Some(home.path().to_path_buf()), &now).unwrap();
+    assert_eq!(older.path(), &home.path().join(".cache/huggingface/hub"));
+    // The same folder as HF_HOME's is no other cache.
+    let same = Cache::new(home.path().join(".cache/huggingface/hub"));
+    assert!(older_cache(Some(home.path().to_path_buf()), &same).is_none());
 }
