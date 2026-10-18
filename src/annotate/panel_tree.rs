@@ -53,7 +53,7 @@ pub struct PanelTree {
     /// Each panel type's ([`label_key`]) node.
     of_label: HashMap<String, usize>,
     folded: BTreeSet<usize>,
-    /// The word the panel leaves off its labels ([`ClTerms::context_word`]).
+    /// The word the panel leaves off its labels ([`ClTerms::map_labels`]).
     context: Option<String>,
 }
 

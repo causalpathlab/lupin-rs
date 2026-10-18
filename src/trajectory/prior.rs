@@ -218,21 +218,25 @@ pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Resu
     Ok(out)
 }
 
-/// The standing statements about `names`: the Cell Ontology's (when `terms`
-/// is given, `names` read with the `context` word of every type there is,
-/// [`ClTerms::context_word`]), then the user's and the project's
-/// `precedence.tsv` along `search`. A precedence file that cannot be read is
-/// returned beside the layers that could, for the caller to stop on or to
-/// show.
+/// The standing statements about `names`: the Cell Ontology's (when `cl`
+/// gives it, with every type there is mapped to its term as
+/// [`ClTerms::map_labels`] reads them, so `names` read as the rest do), then
+/// the user's and the project's `precedence.tsv` along `search`. A
+/// precedence file that cannot be read is returned beside the layers that
+/// could, for the caller to stop on or to show.
 pub(crate) fn standing_layers(
-    terms: Option<&ClTerms>,
+    cl: Option<(&ClTerms, &BTreeMap<String, String>)>,
     names: &[&str],
-    context: Option<&str>,
     search: &SearchPath,
 ) -> (Vec<Vec<Statement>>, Vec<anyhow::Error>) {
     let mut layers = Vec::new();
-    if let Some(terms) = terms {
-        let (mapped, unmapped) = terms.map_labels_in(names.iter().copied(), context);
+    if let Some((terms, all)) = cl {
+        let mapped: BTreeMap<String, String> = (names.iter())
+            .filter_map(|&n| Some((n.to_string(), all.get(n)?.clone())))
+            .collect();
+        let unmapped: Vec<&str> = (names.iter().copied())
+            .filter(|n| !all.contains_key(*n))
+            .collect();
         if !unmapped.is_empty() {
             log::info!(
                 "{} type(s) match no Cell Ontology term (add them to --label-cl): {}",

@@ -3051,7 +3051,7 @@ impl App {
         let names: Vec<&str> = v.types.iter().map(|(t, _)| t.as_str()).collect();
         let why = match &self.cl {
             Some(cl) => {
-                let (mapped, _) = cl.map_labels(names.iter().copied());
+                let (mapped, ..) = cl.map_labels(names.iter().copied());
                 match mapped.len() {
                     0 => format!("none of the {} labels map to Cell Ontology terms", names.len()),
                     n => format!(
