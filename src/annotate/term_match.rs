@@ -59,9 +59,12 @@ impl TextEncoder for Encoder {
 /// Texts per encoder call; sorted by length, so padding stays small.
 const BATCH: usize = 64;
 
-/// Every counted term name, encoded.
+/// Every counted term name, encoded, the names of a term together.
 pub struct TermIndex {
-    ids: Vec<String>,
+    /// Each term, by id.
+    terms: Vec<String>,
+    /// Where each term's names end in [`Self::vecs`].
+    ends: Vec<usize>,
     vecs: Vec<Vec<f32>>,
 }
 
@@ -92,7 +95,34 @@ impl TermIndex {
             progress(vecs.len(), named.len());
         }
         let ids = named.iter().map(|(_, id)| id.to_string()).collect();
-        Ok(Self { ids, vecs })
+        Ok(Self::of_rows(ids, vecs))
+    }
+
+    /// One name's vector per row, `ids[i]` its term: the names of a term
+    /// put together, terms by id.
+    fn of_rows(ids: Vec<String>, vecs: Vec<Vec<f32>>) -> Self {
+        let mut rows: Vec<(String, Vec<f32>)> = ids.into_iter().zip(vecs).collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        let (mut terms, mut ends, mut vecs) = (Vec::new(), Vec::new(), Vec::new());
+        for (id, v) in rows {
+            if terms.last() != Some(&id) {
+                if !vecs.is_empty() {
+                    ends.push(vecs.len());
+                }
+                terms.push(id);
+            }
+            vecs.push(v);
+        }
+        if !vecs.is_empty() {
+            ends.push(vecs.len());
+        }
+        Self { terms, ends, vecs }
+    }
+
+    /// Each term's names' rows in [`Self::vecs`], with the term.
+    fn spans(&self) -> impl Iterator<Item = (&str, std::ops::Range<usize>)> {
+        let starts = std::iter::once(0).chain(self.ends.iter().copied());
+        (self.terms.iter().zip(starts.zip(&self.ends))).map(|(t, (a, &b))| (t.as_str(), a..b))
     }
 
     /// The cache file's name for the index of an ontology at `release`
@@ -139,7 +169,9 @@ impl TermIndex {
         let dim = self.vecs.first().map_or(0, Vec::len);
         let m =
             DMatrix::from_row_iterator(self.vecs.len(), dim, self.vecs.iter().flatten().copied());
-        let rows: Vec<Box<str>> = self.ids.iter().map(|s| s.as_str().into()).collect();
+        let rows: Vec<Box<str>> = (self.spans())
+            .flat_map(|(t, r)| std::iter::repeat_n(Box::<str>::from(t), r.len()))
+            .collect();
         let partial = tempfile::Builder::new()
             .suffix(".partial")
             .tempfile_in(dir)
@@ -159,32 +191,33 @@ impl TermIndex {
     pub fn load(file: &Path) -> Result<Self> {
         let m = DMatrix::<f32>::from_parquet(&file.to_string_lossy())
             .with_context(|| format!("reading {}", file.display()))?;
-        Ok(Self {
-            ids: m.rows.into_iter().map(String::from).collect(),
-            vecs: m
-                .mat
+        Ok(Self::of_rows(
+            m.rows.into_iter().map(String::from).collect(),
+            m.mat
                 .row_iter()
                 .map(|r| r.iter().copied().collect())
                 .collect(),
-        })
+        ))
     }
 
     /// The `k` terms nearest `v`, each scored by its nearest name, best
     /// first, ties by id.
     #[must_use]
     pub fn rank(&self, v: &[f32], k: usize) -> Vec<(String, f32)> {
-        let mut best: BTreeMap<&str, f32> = BTreeMap::new();
-        for (id, u) in self.ids.iter().zip(&self.vecs) {
-            let cos: f32 = u.iter().zip(v).map(|(a, b)| a * b).sum();
-            let e = best.entry(id.as_str()).or_insert(f32::NEG_INFINITY);
-            *e = e.max(cos);
-        }
+        let cos = |u: &Vec<f32>| -> f32 { u.iter().zip(v).map(|(a, b)| a * b).sum() };
         // `max` passes over a NaN cosine, so no score is NaN.
-        let terms: Vec<(&str, f32)> = best.into_iter().collect();
-        let scores = terms.iter().map(|&(_, s)| s).enumerate();
+        let scores = (self.spans().enumerate()).map(|(t, (_, r))| {
+            (
+                t,
+                self.vecs[r]
+                    .iter()
+                    .map(cos)
+                    .fold(f32::NEG_INFINITY, f32::max),
+            )
+        });
         crate::gene_text::edges::top_k(scores, k)
             .into_iter()
-            .map(|(i, s)| (terms[i].0.to_string(), s))
+            .map(|(t, s)| (self.terms[t].clone(), s))
             .collect()
     }
 }
