@@ -547,7 +547,7 @@ pub struct App {
     jobs_dir: Option<tempfile::TempDir>,
     /// How `L` runs `lupin describe --lm`: the model, from where, on what.
     pub lm: crate::describe::LmArgs,
-    /// The round's proposals, followed in its cache.
+    /// The round's opinions by the model, followed in its cache.
     following: Option<super::describe::Following>,
     /// The trajectory's texts: in the order view always those of
     /// [`Self::shown_trajectory`], as [`Self::keep_order_current`] keeps
@@ -889,7 +889,7 @@ impl App {
                         .into();
                 self.push_log(format!("[WARN] {}", self.status));
             }
-            // So is the consensus: without the model the rest goes on.
+            // So is the model's job: without the model the rest goes on.
             Ok(Some(_)) if matches!(job, Job::Llm(_)) => {
                 self.child = None;
                 self.refresh_opinions();
@@ -4206,7 +4206,7 @@ impl App {
         }
     }
 
-    /// Follow the round on screen's cache: its proposals now, and as a job
+    /// Follow the round on screen's cache: its opinions now, and as a job
     /// appends them.
     pub(super) fn follow_opinions(&mut self) -> anyhow::Result<()> {
         let r = self.round.as_ref().context("no round on screen")?;
@@ -4503,7 +4503,7 @@ fn remember_alias(file: &Path, label: &str, id: &str, note: &str) -> anyhow::Res
     )
 }
 
-/// A proposal in the label choices' detail.
+/// The model's suggestion in the label choices' detail.
 fn proposed_detail(o: &Opinion, text: &str) -> String {
     format!(
         "◆ suggested by the model ({:.2}), a suggestion, not a call: {text}",

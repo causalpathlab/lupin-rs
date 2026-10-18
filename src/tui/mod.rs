@@ -82,7 +82,7 @@ pub fn run_trajectory(t: &crate::trajectory::run::TrajectoryArgs) -> Result<()> 
 }
 
 /// `lupin describe -f <manifest>` without `-o`: the TUI on the round,
-/// running the consensus with `lm`'s model at once; or, for a trajectory
+/// running the model `lm` names on it at once; or, for a trajectory
 /// run, on its order view, whose texts are the run's own.
 pub fn run_describe(from: &str, lm: &crate::describe::LmArgs) -> Result<()> {
     use clap::Parser;
@@ -142,8 +142,8 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     run_with(args, trajectory, None)
 }
 
-/// [`run`]; with `lm`, the consensus runs with that model as soon as a
-/// round is up (not on the order view, whose texts need none).
+/// [`run`]; with `lm`, that model runs on the round as soon as it
+/// is up (not on the order view, whose texts need none).
 fn run_with(
     args: &AnnotateCliArgs,
     trajectory: Option<order::TrajectoryRun>,
