@@ -260,3 +260,31 @@ fn without_the_model_the_tui_says_so_and_goes_on() {
     assert!(app.status.contains("suggestions"), "{}", app.status);
     assert!(app.status.contains("offline"), "{}", app.status);
 }
+
+#[test]
+fn a_jobs_file_is_in_a_private_folder_of_the_apps_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = app(dir.path());
+    let mut b = app(dir.path());
+    let fa = a.job_file("suggest.json").unwrap();
+    let fb = b.job_file("suggest.json").unwrap();
+    let folder = fa.parent().unwrap().to_path_buf();
+    assert_ne!(
+        folder,
+        std::env::temp_dir(),
+        "no name others can guess in the shared folder"
+    );
+    assert_ne!(fa, fb);
+    assert_eq!(
+        a.job_file("rescore.jsonl").unwrap().parent(),
+        Some(folder.as_path())
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&folder).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "only the user reads or writes in it");
+    }
+    drop(a);
+    assert!(!folder.exists(), "gone with the app");
+}
