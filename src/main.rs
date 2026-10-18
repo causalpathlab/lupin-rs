@@ -7,6 +7,7 @@ mod describe;
 mod docs;
 mod figures;
 mod gene_text;
+mod hub;
 mod manifest;
 mod marker_embedding;
 mod progress;

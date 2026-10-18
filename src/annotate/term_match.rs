@@ -26,7 +26,7 @@
 
 use crate::annotate::celltype_tree::ClTerms;
 use crate::gene_text::encoder::{Encoder, ModelSpec, Pooling};
-use crate::manifest::data_files::{ClData, Fetch, SearchPath, OFFLINE_ENV};
+use crate::manifest::data_files::{ClData, Fetch, SearchPath};
 use crate::progress::Stages;
 use anyhow::{Context, Result};
 use legume_numeric::matrix::traits::IoOps;
@@ -236,27 +236,16 @@ static STAGES: Stages = Stages::new(&[
     ("ranking the labels", 5.0),
 ]);
 
-/// The pinned model, from the Hub or its cache; offline (`LUPIN_OFFLINE`),
-/// from the cache only.
+/// The pinned model, from the Hub's cache, else the Hub unless offline
+/// ([`crate::hub`]).
 fn load_encoder() -> Result<Encoder> {
-    if std::env::var_os(OFFLINE_ENV).is_some() {
-        let repo =
-            hf_hub::Repo::with_revision(MODEL.into(), hf_hub::RepoType::Model, REVISION.into());
-        anyhow::ensure!(
-            hf_hub::Cache::default()
-                .repo(repo)
-                .get("model.safetensors")
-                .is_some(),
-            "the text model {MODEL} is not cached and {OFFLINE_ENV} is set: run `lupin data suggest-cl` once online to fetch it"
-        );
-    }
     let spec = ModelSpec {
         model_id: MODEL.into(),
         revision: REVISION.into(),
         local_dir: None,
     };
     Encoder::load(&spec, MAX_TOKENS, Pooling::Mean, candle_core::Device::Cpu)
-        .with_context(|| format!("loading the text model {MODEL} (offline?)"))
+        .with_context(|| format!("loading the text model {MODEL}"))
 }
 
 /// `lupin data suggest-cl`: the nearest terms of each of `labels` on the

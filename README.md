@@ -166,8 +166,9 @@ lupin describe -f out.T1.senna.json -o out.T1 --lm   # a trajectory: out.T1.traj
 
 `--lm` runs Qwen3 (Qwen Team, *Qwen3 Technical Report*, arXiv:2505.09388)
 through candle at a pinned revision: `--lm-model qwen3-1.7b` (the default)
-or `qwen3-0.6b`, fetched once into the Hugging Face cache, or local files
-with `--lm-dir`; `--device` defaults to `cuda` in a CUDA build. Nothing is
+or `qwen3-0.6b`, fetched once into the Hugging Face cache (`HF_HOME`, else
+`~/.cache/huggingface`; `LUPIN_OFFLINE` or `HF_HUB_OFFLINE=1` rules the
+download out), or local files with `--lm-dir`; `--device` defaults to `cuda` in a CUDA build. Nothing is
 sent anywhere. For each cluster it scores the TUI's label choices (each
 method's top three, and `unassigned`) as continuations of the prompt, so
 its label is always one of them, and writes one sentence on why that must
@@ -270,7 +271,7 @@ sidecar (else the project's `lupin/cl_aliases.tsv`). `?` lists every key.
 For a panel type with no term at all, `c` in the tree pane suggests the
 three terms nearest it by text embedding, with their scores
 (`lupin data suggest-cl`, PubMedBERT sentence embeddings at a pinned
-revision). A suggestion is never taken on its own: the one you confirm is
+revision, fetched and cached as `--lm`'s model is). A suggestion is never taken on its own: the one you confirm is
 written to your `~/.config/lupin/cl_aliases.tsv` and the tree is built again
 with it. The first ranking fetches the model and encodes the ontology, which
 takes a minute or two on a CPU; the index is cached under lupin's cache

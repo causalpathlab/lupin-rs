@@ -154,7 +154,7 @@ fn shards(index: Option<&Path>) -> Result<Vec<String>> {
 }
 
 /// The model's files: from the local directory, else the Hub's cache
-/// (no network), else the Hub.
+/// (no network), else the Hub unless offline ([`crate::hub`]).
 fn resolve_files(spec: &LmSpec) -> Result<ModelFiles> {
     if let Some(dir) = &spec.local_dir {
         let f = |name: &str| -> Result<PathBuf> {
@@ -175,41 +175,25 @@ fn resolve_files(spec: &LmSpec) -> Result<ModelFiles> {
             weights,
         });
     }
-    use hf_hub::{Repo, RepoType};
-    let repo = || {
-        Repo::with_revision(
-            spec.model.id().to_string(),
-            RepoType::Model,
-            spec.model.revision().to_string(),
-        )
-    };
-    let cache = hf_hub::Cache::from_env().repo(repo());
+    let model = crate::hub::Model::new(spec.model.id(), spec.model.revision());
     let cached = (|| {
-        let index = cache.get("model.safetensors.index.json");
+        let index = model.cached("model.safetensors.index.json");
         let weights = shards(index.as_deref())
             .ok()?
             .iter()
-            .map(|f| cache.get(f))
+            .map(|f| model.cached(f))
             .collect::<Option<Vec<_>>>()?;
         Some(ModelFiles {
-            config: cache.get("config.json")?,
-            tokenizer: cache.get("tokenizer.json")?,
+            config: model.cached("config.json")?,
+            tokenizer: model.cached("tokenizer.json")?,
             weights,
         })
     })();
     if let Some(files) = cached {
         return Ok(files);
     }
-    info!(
-        "fetching {}@{} from the Hub (cached under ~/.cache/huggingface)",
-        spec.model.id(),
-        spec.model.revision()
-    );
     let fetch = || -> Result<ModelFiles> {
-        let api = hf_hub::api::sync::ApiBuilder::from_env()
-            .with_progress(!crate::progress::enabled())
-            .build()?;
-        let hub = api.repo(repo());
+        let hub = model.online(!crate::progress::enabled())?;
         let index = hub.get("model.safetensors.index.json").ok();
         let weights = shards(index.as_deref())?
             .iter()

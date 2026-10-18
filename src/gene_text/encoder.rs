@@ -35,6 +35,8 @@ struct ModelFiles {
     weights: PathBuf,
 }
 
+/// The model's files: from the local directory, else the Hub's cache, else
+/// the Hub unless offline ([`crate::hub`]).
 fn resolve_files(spec: &ModelSpec) -> Result<ModelFiles> {
     if let Some(dir) = &spec.local_dir {
         let f = |name: &str| -> Result<PathBuf> {
@@ -48,21 +50,15 @@ fn resolve_files(spec: &ModelSpec) -> Result<ModelFiles> {
             weights: f("model.safetensors")?,
         });
     }
-    use hf_hub::{api::sync::Api, Repo, RepoType};
-    let api = Api::new().context("Hugging Face Hub client")?;
-    let repo = api.repo(Repo::with_revision(
-        spec.model_id.clone(),
-        RepoType::Model,
-        spec.revision.clone(),
-    ));
-    info!(
-        "fetching {}@{} from the Hub (cached under ~/.cache/huggingface)",
-        spec.model_id, spec.revision
-    );
+    let model = crate::hub::Model::new(&spec.model_id, &spec.revision);
+    let names = ["config.json", "tokenizer.json", "model.safetensors"];
+    let [config, tokenizer, weights] =
+        <[PathBuf; 3]>::try_from(model.files(&names, !crate::progress::enabled())?)
+            .map_err(|_| anyhow::anyhow!("{}: expected {names:?}", spec.model_id))?;
     Ok(ModelFiles {
-        config: repo.get("config.json")?,
-        tokenizer: repo.get("tokenizer.json")?,
-        weights: repo.get("model.safetensors")?,
+        config,
+        tokenizer,
+        weights,
     })
 }
 
