@@ -41,6 +41,7 @@ lupin annotate -f run.senna.json -m markers.tsv -o out   # writes out.senna.json
 lupin trajectory -f out.senna.json -o out.T1           # prior, check, pseudotime
 lupin trajectory                                       # the TUI: pick a run, state the order, run
 lupin describe -f run.senna.json --text-prefix run -o out
+lupin describe -f out.senna.json -o out --lm             # a suggested label per cluster
 ```
 
 ## Cell-type labels
@@ -154,6 +155,36 @@ name a cell type (`label`) and `features`. The round then writes its own
 and `{out}.marker_history.json` keeps each cell type's edits with their
 rationale. `lupin annotate -f <round>` without `-m` re-annotates from that
 panel.
+
+## Suggested labels and descriptions by a small local model
+
+```sh
+lupin describe -f r0.senna.json -o r0 --lm   # batch: r0.describe.json, .md, r0.consensus.jsonl
+lupin describe -f r0.senna.json              # the TUI on the round, running it (L reruns it)
+lupin describe -f out.T1.senna.json -o out.T1 --lm   # a trajectory: out.T1.trajectory.describe.md
+```
+
+`--lm` runs Qwen3 (Qwen Team, *Qwen3 Technical Report*, arXiv:2505.09388)
+through candle at a pinned revision: `--lm-model qwen3-1.7b` (the default)
+or `qwen3-0.6b`, fetched once into the Hugging Face cache, or local files
+with `--lm-dir`; `--device` defaults to `cuda` in a CUDA build. Nothing is
+sent anywhere. For each cluster it scores the TUI's label choices (each
+method's top three, and `unassigned`) as continuations of the prompt, so
+its label is always one of them, and writes one sentence on why that must
+name only the cluster's own choices, terms and markers, with no numbers;
+a sentence that fails the check twice is replaced by the template. Results
+are appended to `{out}.consensus.jsonl`, keyed by the prompt, model and
+revision, so only clusters whose evidence changed are asked again.
+
+In the annotate TUI the suggestion shows under the candidates and, marked
+◆, among the label choices (`P` opens them on it). It is a suggestion, not
+a call: it flags no cluster and is taken only when you confirm it; the
+decision then records `agent_proposed_user_accepted` with the model, its
+revision and probabilities, or `user_override` with the suggestion among
+the alternatives. On a trajectory, `L` in the order view writes a
+paragraph on its roots, branches and ends and a line per type, shown under
+the order table. Without the model (offline, never fetched) the TUI says
+so and the rest works.
 
 ## GO terms
 
