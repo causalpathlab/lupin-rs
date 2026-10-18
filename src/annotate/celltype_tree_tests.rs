@@ -567,6 +567,7 @@ fn a_label_is_placed_on_its_own_term_else_its_groups() {
         source: TreeSource::CellOntology,
         release: None,
         label_cl: [("CT1".to_string(), "CL:9000001".to_string())].into(),
+        label_under: BTreeMap::new(),
         groups: vec![TypeGroup {
             name: "group_a".into(),
             cl_id: Some("CL:9000009".into()),
@@ -1112,4 +1113,18 @@ fn the_panel_s_word_completes_labels_with_word_order_kept() {
     assert_eq!(mapped["Alpha"], "CL:1");
     assert_eq!(mapped.len(), 3);
     assert_eq!(unmapped, ["Blue cell"], "no other word order");
+}
+
+#[test]
+fn a_type_under_a_term_is_placed_on_that_term_not_its_group_s() {
+    let t = ClTerms::parse(MODIFIED, &crate::annotate::cl_rules::shipped());
+    let p = panel(&[("G1", "CT5"), ("G2", "CT6"), ("G3", "Early CT5")]);
+    let tree = TypeTree::from_ontology(&t, &p).unwrap();
+    assert_eq!(members(&tree, "lin_B_cell"), ["CT5", "CT6", "Early CT5"]);
+    let at = |l: &str| tree.placement(l).map(|p| (p.id, p.name, p.via));
+    assert_eq!(
+        at("Early CT5"),
+        Some(("CL:5".into(), "Early CT5".into(), Via::Under))
+    );
+    assert_eq!(at("CT6"), Some(("CL:6".into(), "CT6".into(), Via::Label)));
 }

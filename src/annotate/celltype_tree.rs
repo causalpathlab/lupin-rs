@@ -920,6 +920,10 @@ pub struct TypeTree {
     /// Panel labels matched to CL terms.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub label_cl: BTreeMap<String, String>,
+    /// Panel labels placed under a CL term, as kinds of it
+    /// ([`ClTerms::place_labels`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub label_under: BTreeMap<String, String>,
     pub groups: Vec<TypeGroup>,
 }
 
@@ -932,26 +936,35 @@ pub struct TreePlacement {
     pub via: Via,
 }
 
-/// What placed a label: its own term, or its group's.
+/// What placed a label: its own term, the term it is a kind of, or its
+/// group's.
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Via {
     Label,
+    Under,
     Group,
 }
 
 impl TypeTree {
     /// `label`'s place on the Cell Ontology: the term it matched, else the
-    /// term of the group it is (a coarse label) or belongs to.
+    /// one it is placed under, else the term of the group it is (a coarse
+    /// label) or belongs to.
     #[must_use]
     pub fn placement(&self, label: &str) -> Option<TreePlacement> {
         let key = label_key(label);
-        if let Some((name, id)) = self.label_cl.iter().find(|(l, _)| label_key(l) == key) {
-            return Some(TreePlacement {
-                id: id.clone(),
-                name: name.clone(),
-                via: Via::Label,
-            });
+        let own = [
+            (&self.label_cl, Via::Label),
+            (&self.label_under, Via::Under),
+        ];
+        for (terms, via) in own {
+            if let Some((name, id)) = terms.iter().find(|(l, _)| label_key(l) == key) {
+                return Some(TreePlacement {
+                    id: id.clone(),
+                    name: name.clone(),
+                    via,
+                });
+            }
         }
         let group = self
             .groups
@@ -1162,6 +1175,7 @@ impl TypeTree {
             source: TreeSource::CellOntology,
             release: terms.release.clone(),
             label_cl: placed.on.clone(),
+            label_under: placed.under.clone(),
             groups,
         })
     }
@@ -1205,6 +1219,7 @@ impl TypeTree {
             source: TreeSource::MarkerSharing,
             release: None,
             label_cl: BTreeMap::new(),
+            label_under: BTreeMap::new(),
             groups: members
                 .into_iter()
                 .map(|m| TypeGroup {

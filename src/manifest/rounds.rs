@@ -1856,6 +1856,7 @@ fn render(
         (None, Some(p)) => {
             let of = match p.via {
                 Via::Group if p.name != label => format!(" (the group of {label})"),
+                Via::Under => " (a kind of it)".to_string(),
                 _ => String::new(),
             };
             let _ = writeln!(s, "  CL    {} {}{of}", p.id, p.name);

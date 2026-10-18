@@ -12,6 +12,7 @@ fn tree() -> PanelTree {
         source: TreeSource::MarkerSharing,
         release: None,
         label_cl: BTreeMap::new(),
+        label_under: BTreeMap::new(),
         groups: vec![TypeGroup {
             name: "group1".into(),
             cl_id: None,
