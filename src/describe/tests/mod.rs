@@ -253,6 +253,31 @@ fn the_flags_only_o_acts_on_are_named_without_it() {
     assert!(ignored_without_out(&describe_args(&["-f", "x"])).is_empty());
     let args = describe_args(&["-f", "x", "--markers", "m", "--lm", "--cache-only"]);
     assert_eq!(ignored_without_out(&args), ["--markers", "--cache-only"]);
+    // Defaults given are none; others are.
+    let given = |argv: &[&str]| ignored_without_out(&describe_args(argv));
+    assert!(given(&["-f", "x", "--neighbour-k", "5", "--fdr-alpha", "0.1"]).is_empty());
+    assert!(given(&["-f", "x", "--neighbour-k=5", "--fdr-alpha=0.10"]).is_empty());
+    assert_eq!(given(&["-f", "x", "--neighbour-k", "8"]), ["--neighbour-k"]);
+    assert_eq!(given(&["-f", "x", "--fdr-alpha", "0.05"]), ["--fdr-alpha"]);
+}
+
+#[test]
+fn the_warning_for_ignored_flags_agrees_with_their_number() {
+    assert_eq!(ignored_warning(&[]), None);
+    assert_eq!(
+        ignored_warning(&["--markers"]).as_deref(),
+        Some(
+            "--markers acts only on the files -o writes, so is ignored; the TUI shows the \
+             model's suggestions"
+        )
+    );
+    assert_eq!(
+        ignored_warning(&["--markers", "--fdr-alpha"]).as_deref(),
+        Some(
+            "--markers, --fdr-alpha act only on the files -o writes, so are ignored; the TUI \
+             shows the model's suggestions"
+        )
+    );
 }
 
 #[test]

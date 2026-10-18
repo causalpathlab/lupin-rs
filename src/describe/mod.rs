@@ -30,6 +30,11 @@ use legume_numeric::matrix::parquet::peek_parquet_field_names;
 use log::info;
 use serde_json::json;
 
+/// `--neighbour-k`'s default.
+const NEIGHBOUR_K: usize = 5;
+/// `--fdr-alpha`'s default.
+const FDR_ALPHA: f32 = 0.1;
+
 #[derive(Args, Debug)]
 pub struct DescribeArgs {
     #[arg(
@@ -59,14 +64,14 @@ pub struct DescribeArgs {
 
     #[arg(
         long = "neighbour-k",
-        default_value_t = 5,
+        default_value_t = NEIGHBOUR_K,
         help = "How many embedding neighbours to add per cluster when `--feature-embedding` is set"
     )]
     pub neighbour_k: usize,
 
     #[arg(
         long = "fdr-alpha",
-        default_value_t = 0.1,
+        default_value_t = FDR_ALPHA,
         help = "FDR gate for calling a runner-up significant (must match annotate --fdr-alpha)"
     )]
     pub fdr_alpha: f32,
@@ -203,13 +208,16 @@ fn describe_trajectory(
     Ok(())
 }
 
-/// The flags given that act only on what `-o` writes: the description
-/// files, or (`--cache-only`) the model's cache alone.
+/// The flags given, or set off their defaults, that act only on what `-o`
+/// writes: the description files, or (`--cache-only`) the model's cache
+/// alone.
 fn ignored_without_out(args: &DescribeArgs) -> Vec<&'static str> {
     [
         ("--text-prefix", args.text_prefix.is_some()),
         ("--markers", args.markers.is_some()),
         ("--feature-embedding", args.feature_embedding.is_some()),
+        ("--neighbour-k", args.neighbour_k != NEIGHBOUR_K),
+        ("--fdr-alpha", args.fdr_alpha != FDR_ALPHA),
         ("--cache-only", args.cache_only),
     ]
     .into_iter()
@@ -217,16 +225,25 @@ fn ignored_without_out(args: &DescribeArgs) -> Vec<&'static str> {
     .collect()
 }
 
+/// The warning that `ignored` ([`ignored_without_out`]) go unused, if any.
+fn ignored_warning(ignored: &[&str]) -> Option<String> {
+    let (acts, is) = match ignored {
+        [] => return None,
+        [_] => ("acts", "is"),
+        _ => ("act", "are"),
+    };
+    Some(format!(
+        "{} {acts} only on the files -o writes, so {is} ignored; the TUI shows the model's \
+         suggestions",
+        ignored.join(", ")
+    ))
+}
+
 pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     let Some(out) = args.out.as_deref() else {
         // The TUI writes the model's cache alone (`--cache-only`).
-        let ignored = ignored_without_out(args);
-        if !ignored.is_empty() {
-            log::warn!(
-                "{} act only on the files -o writes, so are ignored; the TUI shows the model's \
-                 suggestions",
-                ignored.join(", ")
-            );
+        if let Some(warning) = ignored_warning(&ignored_without_out(args)) {
+            log::warn!("{warning}");
         }
         return crate::tui::run_describe(&args.from, &args.lm);
     };
