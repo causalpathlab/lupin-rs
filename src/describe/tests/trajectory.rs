@@ -19,7 +19,7 @@ fn edge(a: &str, b: &str, verdict: Option<Verdict>) -> EdgeRow {
 /// component of its own; NK_cells pairs with MONO as a candidate only.
 fn facts() -> OrderFacts {
     OrderFacts {
-        lineages: parse_lineages(
+        lineages: lineages::parse(
             "# lineage\tcomponent\tpath\n\
              L0\t0\tHSC_like > MPP_like > ERY\n\
              L1\t0\tHSC_like > MPP_like > MONO\n\
@@ -50,9 +50,9 @@ fn the_facts_give_roots_branch_points_and_ends() {
 }
 
 #[test]
-fn the_templates_say_the_order_and_each_types_place() {
+fn the_texts_say_the_order_and_each_types_place() {
     let f = facts();
-    let run = run_template(&f);
+    let run = run_text(&f);
     assert!(
         run.contains("The order starts at HSC_like and DC."),
         "{run}"
@@ -60,13 +60,13 @@ fn the_templates_say_the_order_and_each_types_place() {
     assert!(run.contains("It branches after MPP_like."), "{run}");
     assert!(run.contains("end at ERY, MONO and DC."), "{run}");
     assert!(run.contains("L0: HSC_like > MPP_like > ERY"), "{run}");
-    let mpp = type_template(&f, "MPP_like");
+    let mpp = type_text(&f, "MPP_like");
     assert!(
         mpp.starts_with("MPP_like is on L0 and L1, after HSC_like and before ERY and MONO."),
         "{mpp}"
     );
     assert!(mpp.contains("MPP_like → MONO unsupported"), "{mpp}");
-    let nk = type_template(&f, "NK_cells");
+    let nk = type_text(&f, "NK_cells");
     assert!(nk.starts_with("NK_cells is on no lineage."), "{nk}");
     assert!(nk.contains("MONO → NK_cells candidate"), "{nk}");
 }
@@ -80,14 +80,14 @@ fn the_texts_are_the_runs_paragraph_then_each_types_line_and_read_as_markdown() 
         t[0],
         OrderText {
             subject: None,
-            text: run_template(&f)
+            text: run_text(&f)
         }
     );
     let mpp = t
         .iter()
         .find(|t| t.subject.as_deref() == Some("MPP_like"))
         .unwrap();
-    assert_eq!(mpp.text, type_template(&f, "MPP_like"));
+    assert_eq!(mpp.text, type_text(&f, "MPP_like"));
     let md = markdown("t.senna.json", &t);
     assert!(md.starts_with("# Trajectory description\n\nFrom `t.senna.json`.\n\n"));
     assert!(

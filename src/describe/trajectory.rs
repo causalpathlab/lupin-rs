@@ -7,40 +7,15 @@
 
 use crate::manifest::run::{resolve, Loaded};
 use crate::trajectory::edges::{self, EdgeRow};
-use anyhow::{Context, Result};
+use crate::trajectory::lineages::{self, Lineage};
+use anyhow::Result;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-/// One root-to-leaf path.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Lineage {
-    pub name: String,
-    pub component: String,
-    pub path: Vec<String>,
-}
-
 /// What a trajectory run found, as its outputs record it.
-#[derive(Clone, Debug, Default)]
 pub struct OrderFacts {
     pub lineages: Vec<Lineage>,
     pub edges: Vec<EdgeRow>,
-}
-
-/// The lineages of `trajectory_lineages.tsv`'s `text`.
-#[must_use]
-pub fn parse_lineages(text: &str) -> Vec<Lineage> {
-    text.lines()
-        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-        .filter_map(|l| {
-            let mut it = l.split('\t');
-            let (name, component, path) = (it.next()?, it.next()?, it.next()?);
-            Some(Lineage {
-                name: name.to_string(),
-                component: component.to_string(),
-                path: path.split(" > ").map(str::to_string).collect(),
-            })
-        })
-        .collect()
 }
 
 impl OrderFacts {
@@ -52,9 +27,7 @@ impl OrderFacts {
             None => Vec::new(),
         };
         let lineages = match lineages {
-            Some(p) => parse_lineages(
-                &std::fs::read_to_string(&p).with_context(|| format!("reading {p}"))?,
-            ),
+            Some(p) => lineages::read(&p)?,
             None => Vec::new(),
         };
         Ok(Self { lineages, edges })
@@ -177,7 +150,7 @@ fn edge_text(e: &EdgeRow) -> String {
 
 /// The run paragraph.
 #[must_use]
-pub fn run_template(f: &OrderFacts) -> String {
+pub fn run_text(f: &OrderFacts) -> String {
     if f.lineages.is_empty() {
         return "The run ordered no lineage: no root reaches its types.".into();
     }
@@ -202,7 +175,7 @@ pub fn run_template(f: &OrderFacts) -> String {
 
 /// Type `t`'s line.
 #[must_use]
-pub fn type_template(f: &OrderFacts, t: &str) -> String {
+pub fn type_text(f: &OrderFacts, t: &str) -> String {
     let on: Vec<String> = f.lineages_of(t).iter().map(|l| l.name.clone()).collect();
     let mut s = if on.is_empty() {
         format!("{t} is on no lineage.")
@@ -242,10 +215,10 @@ pub struct OrderText {
 pub fn texts(f: &OrderFacts) -> Vec<OrderText> {
     let run = OrderText {
         subject: None,
-        text: run_template(f),
+        text: run_text(f),
     };
     let types = f.types().into_iter().map(|t| OrderText {
-        text: type_template(f, &t),
+        text: type_text(f, &t),
         subject: Some(t),
     });
     std::iter::once(run).chain(types).collect()
