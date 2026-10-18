@@ -313,3 +313,25 @@ fn data_where_lists_the_precedence_files_of_the_user_and_project_layers() {
     assert!(report.contains(PRECEDENCE), "{report}");
     assert!(report.contains(&project.display().to_string()), "{report}");
 }
+
+#[test]
+fn the_user_layer_follows_lupin_s_variable_then_xdg_then_home() {
+    let home = Some(PathBuf::from("/home/u"));
+    let os = |s: &str| Some(std::ffi::OsString::from(s));
+    assert_eq!(
+        user_dir(os("/lupin"), os("/xdg"), home.clone()),
+        Some(PathBuf::from("/lupin"))
+    );
+    assert_eq!(
+        user_dir(None, os("/xdg"), home.clone()),
+        Some(PathBuf::from("/xdg/lupin"))
+    );
+    // The XDG spec ignores an empty or relative value.
+    for xdg in ["", "rel"] {
+        assert_eq!(
+            user_dir(None, os(xdg), home.clone()),
+            Some(PathBuf::from("/home/u/.config/lupin"))
+        );
+    }
+    assert_eq!(user_dir(None, None, None), None);
+}

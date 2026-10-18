@@ -8,7 +8,8 @@
 //!    the user cache, filled by download (the rules from this release's tag
 //!    of the repository, the ontology from the rules' `ontology_url`) unless
 //!    `LUPIN_OFFLINE` is set;
-//! 2. **user**: `~/.config/lupin/` (`LUPIN_CONFIG_DIR` overrides);
+//! 2. **user**: `~/.config/lupin/` (`$XDG_CONFIG_HOME/lupin/` when that is
+//!    set; `LUPIN_CONFIG_DIR` overrides both);
 //! 3. **project**: `lupin/` beside the run manifest;
 //! 4. **run**: a file named on the command line (`--label-cl`, `--obo`).
 //!
@@ -69,6 +70,21 @@ pub struct SearchPath {
     pub panel: Option<PathBuf>,
 }
 
+/// The user layer: `lupin` (`LUPIN_CONFIG_DIR`) as given, else `lupin/`
+/// in `xdg` (`XDG_CONFIG_HOME`, when absolute, as the XDG spec reads it),
+/// else in `home`'s `.config/`.
+fn user_dir(
+    lupin: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let xdg = xdg.map(PathBuf::from).filter(|d| d.is_absolute());
+    lupin.map(PathBuf::from).or_else(|| {
+        xdg.or_else(|| home.map(|h| h.join(".config")))
+            .map(|d| d.join("lupin"))
+    })
+}
+
 /// The alias sidecar of marker panel `panel`: its table extensions
 /// (`.gz`, then `.tsv`, `.txt` or `.csv`) replaced by `.cl.tsv`, beside it.
 #[must_use]
@@ -108,8 +124,11 @@ impl SearchPath {
         let source =
             Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("data")).filter(|d| d.is_dir());
         let cache = dirs::cache_dir().map(|d| d.join("lupin"));
-        let user = env_dir(CONFIG_DIR_ENV)
-            .or_else(|| dirs::home_dir().map(|h| h.join(".config").join("lupin")));
+        let user = user_dir(
+            std::env::var_os(CONFIG_DIR_ENV),
+            std::env::var_os("XDG_CONFIG_HOME"),
+            dirs::home_dir(),
+        );
         Self {
             install,
             source,

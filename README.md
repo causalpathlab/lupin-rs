@@ -231,7 +231,8 @@ of the binary so they can be updated and amended without rebuilding:
 
 Each is looked up in layers, later ones winning (rules key by key): the
 install's `share/lupin/` (or `LUPIN_DATA_DIR`) or the source's `data/`, else a
-cache filled by download; your `~/.config/lupin/` (`LUPIN_CONFIG_DIR`); a
+cache filled by download; your `~/.config/lupin/` (`$XDG_CONFIG_HOME/lupin/`
+when that is set, `LUPIN_CONFIG_DIR` over both); a
 project `lupin/` folder beside the run manifest; and `--obo` for one run.
 Without a rules file, matching is literal (names and exact synonyms).
 
