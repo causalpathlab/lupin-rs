@@ -894,3 +894,28 @@ fn groups_below_one_curated_lineage_are_one_group() {
     assert_eq!(members(&tree, "lin_B_cell"), ["CT5", "CT6"]);
     assert_eq!(tree.groups.len(), 2);
 }
+
+#[test]
+fn a_lone_type_s_group_that_takes_another_is_named_for_its_term() {
+    // Early CT4 stands alone under CT4, named for itself; Stray matches no
+    // term and shares its markers. Together they are CT4's group, not one of
+    // them: a group named for a member reads as that member's type.
+    let t = ClTerms::parse(MODIFIED, &crate::annotate::cl_rules::shipped());
+    let p = panel(&[
+        ("G1", "CT1"),
+        ("G2", "CT2"),
+        ("G8", "Early CT4"),
+        ("G9", "Early CT4"),
+        ("G8", "Stray"),
+        ("G9", "Stray"),
+    ]);
+    let tree = TypeTree::from_ontology(&t, &p).unwrap();
+    let both = (tree.groups.iter())
+        .find(|g| g.members.iter().any(|m| m == "Stray"))
+        .unwrap();
+    assert_eq!(both.members, ["Early CT4", "Stray"]);
+    assert_eq!(
+        (both.name.as_str(), both.cl_id.as_deref()),
+        ("CT4_cell", Some("CL:4"))
+    );
+}

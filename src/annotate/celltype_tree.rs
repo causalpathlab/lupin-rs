@@ -979,11 +979,7 @@ impl TypeTree {
                 }
             })
             .map(|(id, members)| TypeGroup {
-                // A lone type under a term is no more that term than it was.
-                name: match &members[..] {
-                    [m] if placed.under.contains_key(m) => label_key(m),
-                    _ => label_key(terms.name(&id).unwrap_or(&id)),
-                },
+                name: String::new(),
                 cl_id: Some(id),
                 members,
             })
@@ -998,6 +994,16 @@ impl TypeTree {
                 || terms.ancestors_or_self(class).contains(hint)
         };
         attach_by_sharing(&mut groups, placed.loose(), panel, fits);
+        // Named once every type is in: a lone type under a term is no more
+        // that term than it was, but a group it shares is the term's.
+        for g in &mut groups {
+            if let Some(id) = &g.cl_id {
+                g.name = match &g.members[..] {
+                    [m] if placed.under.contains_key(m) => label_key(m),
+                    _ => label_key(terms.name(id).unwrap_or(id)),
+                };
+            }
+        }
         Some(TypeTree {
             source: TreeSource::CellOntology,
             release: terms.release.clone(),
