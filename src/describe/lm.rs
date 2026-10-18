@@ -416,3 +416,7 @@ impl Lm for Qwen3 {
         Ok(line.trim_end_matches(['\u{FFFD}', ' ']).to_string())
     }
 }
+
+#[cfg(test)]
+#[path = "tests/lm.rs"]
+mod tests;
