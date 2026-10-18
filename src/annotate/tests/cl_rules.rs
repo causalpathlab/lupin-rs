@@ -99,3 +99,21 @@ fn aliases_layer_and_compare_as_labels() {
         "a note after the id is not part of it"
     );
 }
+
+#[test]
+fn a_negative_markers_hyphen_is_kept_in_an_alias() {
+    let mut a = Aliases::default();
+    a.add_tsv(
+        "CD34\tCL:1\nCD34-\tCL:2\nCD4 T\tCL:3\nCD4- T\tCL:4\nPro-B\tCL:5\n",
+        "project",
+    );
+    assert_eq!(a.get("cd34"), Some("CL:1"));
+    assert_eq!(a.get("CD34-"), Some("CL:2"), "not CD34's");
+    assert_eq!(a.get("CD4_T"), Some("CL:3"));
+    assert_eq!(a.get("CD4-_T"), Some("CL:4"), "not CD4 T's");
+    assert_eq!(
+        a.get("pro b"),
+        Some("CL:5"),
+        "a hyphen between two words parts them"
+    );
+}
