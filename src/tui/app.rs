@@ -3353,11 +3353,7 @@ impl App {
         match terms {
             Ok(t) => {
                 self.cl = t;
-                self.terms_of.borrow_mut().clear();
-                if let Some(cl) = &mut self.cl {
-                    cl.set_panel(&self.panel);
-                    self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
-                }
+                self.rebuild_tree();
                 self.args.label_cl = Some(p.clone().into());
                 // One --label-cl: the new file replaces one given before.
                 let argv = std::mem::take(&mut self.trajectory.argv);

@@ -273,3 +273,14 @@ fn a_jobs_file_is_in_a_private_folder_of_the_apps_own() {
     drop(a);
     assert!(!folder.exists(), "gone with the app");
 }
+
+#[test]
+fn a_label_cl_file_taken_in_the_tui_rebuilds_the_tree_on_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    let file = dir.path().join("labels.tsv");
+    std::fs::write(&file, "XQ\tCL:2\n").unwrap();
+    app.set_label_cl(Some(&file));
+    assert_eq!(app.tree.cl_of("XQ"), Some("CL:2"));
+    assert_eq!(app.term_of("XQ").as_deref(), Some("CL:2"));
+}
