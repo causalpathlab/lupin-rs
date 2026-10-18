@@ -43,6 +43,9 @@ use std::time::Duration;
 
 pub const RULES: &str = "cl_matching.json";
 pub const ALIASES: &str = "cl_aliases.tsv";
+/// The user's answers on types left alone (`label<TAB>join|alone`), in the
+/// user's and the project's layers.
+pub const GROUPS: &str = "cl_groups.tsv";
 /// Which cell types precede which, for `lupin trajectory` and the TUI's order view.
 pub const PRECEDENCE: &str = "precedence.tsv";
 pub const ONTOLOGY: &str = "cl-basic.obo";
@@ -484,7 +487,12 @@ impl ClData {
             .map(|p| {
                 let text =
                     fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
-                Ok(ClTerms::parse(&text, &self.rules).with_aliases(self.aliases.clone()))
+                let mut terms =
+                    ClTerms::parse(&text, &self.rules).with_aliases(self.aliases.clone());
+                for answers in self.search.user_and_project(GROUPS)? {
+                    terms.add_joins(&answers);
+                }
+                Ok(terms)
             })
             .transpose()
     }
