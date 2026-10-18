@@ -347,12 +347,12 @@ impl ShownRun {
     /// table that can be read (its own or one a round borrowed from the run
     /// it was made on). `known` are edges already read from one of them
     /// (the figures'), taken rather than read again. When it finds none,
-    /// the files that told so: each manifest, and the edge table one
-    /// records.
+    /// the files that told so, each stamped before it was read: each
+    /// manifest, and the edge table one records.
     pub fn find(
         manifests: &[PathBuf],
         known: Option<(&Path, &[EdgeRow])>,
-    ) -> (Option<Self>, Vec<PathBuf>) {
+    ) -> (Option<Self>, Vec<(PathBuf, Stamp)>) {
         let mut looked = Vec::new();
         for m in manifests {
             let known = known.filter(|(at, _)| at == m).map(|(_, e)| e);
@@ -365,40 +365,49 @@ impl ShownRun {
     }
 
     /// The run `manifest` records, else the files that told it has none.
-    fn read(manifest: &Path, known: Option<&[EdgeRow]>) -> Result<Self, Vec<PathBuf>> {
-        let none = |more: Option<&str>| {
-            let mut files = vec![manifest.to_path_buf()];
-            files.extend(more.map(PathBuf::from));
-            files
+    /// Each file is stamped before it is read, so a write that lands while
+    /// it is read shows as a change on the next poll.
+    fn read(manifest: &Path, known: Option<&[EdgeRow]>) -> Result<Self, Vec<(PathBuf, Stamp)>> {
+        let (loaded, at) = read_stamped(manifest, |m| load(&m.to_string_lossy()));
+        let mut files = vec![at];
+        let Ok(loaded) = loaded else {
+            return Err(files);
         };
-        let loaded = load(&manifest.to_string_lossy()).map_err(|_| none(None))?;
         let [lineages_file, edges] = OrderFacts::files(&loaded);
-        let edges_file = edges.ok_or_else(|| none(None))?;
-        let edges = match known {
-            Some(e) => e.to_vec(),
-            None => edges::read(&edges_file).map_err(|_| none(Some(&edges_file)))?,
+        let Some(edges_file) = edges.map(PathBuf::from) else {
+            return Err(files);
         };
-        let lineages = match &lineages_file {
-            Some(p) => lineages::read(p).unwrap_or_else(|e| {
-                log::warn!("no trajectory texts: {e:#}");
-                Vec::new()
-            }),
+        let edges = match known {
+            Some(e) => {
+                files.push((edges_file.clone(), stamp(&edges_file)));
+                e.to_vec()
+            }
+            None => {
+                let (read, at) = read_stamped(&edges_file, |f| edges::read(&f.to_string_lossy()));
+                files.push(at);
+                match read {
+                    Ok(e) => e,
+                    Err(_) => return Err(files),
+                }
+            }
+        };
+        let lineages = match lineages_file.map(PathBuf::from) {
+            Some(p) => {
+                let (read, at) = read_stamped(&p, |f| lineages::read(&f.to_string_lossy()));
+                files.insert(1, at);
+                read.unwrap_or_else(|e| {
+                    log::warn!("no trajectory texts: {e:#}");
+                    Vec::new()
+                })
+            }
             None => Vec::new(),
         };
         let facts = OrderFacts { lineages, edges };
-        let files = [
-            Some(manifest.to_path_buf()),
-            lineages_file.map(PathBuf::from),
-            Some(edges_file.into()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
         Ok(Self {
             manifest: manifest.to_path_buf(),
             texts: trajectory::texts(&facts),
             edges: facts.edges,
-            files: stamped(files),
+            files,
         })
     }
 
@@ -410,9 +419,10 @@ impl ShownRun {
         }
         match Self::read(&self.manifest, None) {
             Ok(again) => *self = again,
-            Err(_) => {
+            // The files read keep their stamps from before the read.
+            Err(read) => {
                 for (f, s) in &mut self.files {
-                    *s = stamp(f);
+                    *s = (read.iter().find(|(r, _)| r == f)).map_or_else(|| stamp(f), |(_, s)| *s);
                 }
             }
         }
@@ -449,11 +459,11 @@ impl Shown {
     /// The run found among `among` ([`ShownRun::find`]).
     #[must_use]
     pub fn find(among: Vec<PathBuf>, known: Option<(&Path, &[EdgeRow])>) -> Self {
-        let (run, looked) = ShownRun::find(&among, known);
+        let (run, watched) = ShownRun::find(&among, known);
         Self {
             among,
             run,
-            watched: stamped(looked),
+            watched,
             polled: Instant::now(),
         }
     }
@@ -472,22 +482,17 @@ impl Shown {
         if self.watched.iter().all(|(f, s)| stamp(f) == *s) {
             return false;
         }
-        let (run, looked) = ShownRun::find(&self.among, None);
+        let (run, watched) = ShownRun::find(&self.among, None);
         self.run = run;
-        self.watched = stamped(looked);
+        self.watched = watched;
         self.run.is_some()
     }
 }
 
-/// `files` with their stamps now.
-fn stamped(files: Vec<PathBuf>) -> Vec<(PathBuf, Stamp)> {
-    files
-        .into_iter()
-        .map(|f| {
-            let s = stamp(&f);
-            (f, s)
-        })
-        .collect()
+/// `read` of `file`, with `file`'s stamp taken before it.
+fn read_stamped<T>(file: &Path, read: impl FnOnce(&Path) -> T) -> (T, (PathBuf, Stamp)) {
+    let s = stamp(file);
+    (read(file), (file.to_path_buf(), s))
 }
 
 #[cfg(test)]

@@ -317,6 +317,17 @@ fn the_shown_run_notices_a_rewrite_of_the_same_size() {
 }
 
 #[test]
+fn a_write_while_a_file_is_read_shows_as_a_change_on_the_next_poll() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("a");
+    std::fs::write(&f, "a").unwrap();
+    // The run writes the file between its read and its stamp.
+    let ((), (at, s)) = read_stamped(&f, |p| std::fs::write(p, "longer").unwrap());
+    assert_eq!(at, f);
+    assert_ne!(s, stamp(&f), "the stamp is the one before the read");
+}
+
+#[test]
 fn a_trajectory_found_nowhere_is_looked_for_again() {
     let dir = tempfile::tempdir().unwrap();
     let t = fixture_trajectory(dir.path());
