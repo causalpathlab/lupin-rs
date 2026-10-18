@@ -1201,3 +1201,19 @@ fn an_alias_elsewhere_counts_for_no_panel_word() {
         "a tie tells no word: {mapped:?}"
     );
 }
+
+#[test]
+fn a_run_of_words_a_name_matches_comes_before_one_the_panel_s_word_completes() {
+    let obo = "[Term]\nid: CL:1\nname: organx alpha cell\n\n\
+               [Term]\nid: CL:2\nname: organx beta cell\n\n\
+               [Term]\nid: CL:3\nname: organx gamma cell\n\n\
+               [Term]\nid: CL:4\nname: foo cell\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let placed = t.place_labels(["Alpha", "Beta", "Gamma", "Beta Foo"]);
+    assert_eq!(placed.on["Beta"], "CL:2");
+    assert_eq!(
+        placed.hint.get("Beta Foo").map(String::as_str),
+        Some("CL:4"),
+        "{placed:?}"
+    );
+}

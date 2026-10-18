@@ -416,7 +416,7 @@ impl ClTerms {
     }
 
     /// `read` with the labels it left completed by the panel's word
-    /// `context` ([`Self::match_label`]'s last tier).
+    /// `context` ([`Self::complete`]).
     fn complete_read(&self, read: Read, context: Option<&str>) -> Mapped {
         let Read {
             mut mapped,
@@ -485,40 +485,41 @@ impl ClTerms {
         placed
     }
 
-    /// The term the longest run of `label`'s words matches
-    /// ([`Self::match_label`], with the panel's word `context`), when one
-    /// run of that length matches one term, and whether every word left off
-    /// is a modifier.
+    /// The term the longest run of `label`'s words matches, when one run
+    /// of that length matches one term, and whether every word left off is
+    /// a modifier. At each length, the runs a name or alias matches
+    /// ([`Self::match_plain`]) come first; only when none does are runs
+    /// completed by the panel's word `context`.
     fn by_part(&self, label: &str, context: Option<&str>) -> Option<(String, bool)> {
         self.rules.part.min_pairs?;
-        let single = self.rules.singular(&self.rules.normalise(label));
-        let w = words(&single);
+        let w = self.label_words(label);
         for len in (1..w.len()).rev() {
-            let mut found: BTreeMap<String, bool> = BTreeMap::new();
-            for start in 0..=w.len() - len {
-                let run = w[start..start + len].join(" ");
-                if let Some(id) = self.match_label(&run, context) {
-                    let left = w[..start].iter().chain(&w[start + len..]);
-                    let modifiers = self.modifiers.get_or_init(|| self.modifier_words());
-                    let kind = left.clone().all(|d| modifiers.contains(d));
-                    *found.entry(id).or_default() |= kind;
+            let runs = || (0..=w.len() - len).map(|start| (start, w[start..start + len].join(" ")));
+            let found = |term: &dyn Fn(&str) -> Option<String>| {
+                let mut found: BTreeMap<String, bool> = BTreeMap::new();
+                for (start, run) in runs() {
+                    if let Some(id) = term(&run) {
+                        let left = w[..start].iter().chain(&w[start + len..]);
+                        let modifiers = self.modifiers.get_or_init(|| self.modifier_words());
+                        let kind = left.clone().all(|d| modifiers.contains(d));
+                        *found.entry(id).or_default() |= kind;
+                    }
+                }
+                found
+            };
+            let mut at = found(&|run| self.match_plain(run));
+            if at.is_empty() {
+                if let Some(c) = context {
+                    at = found(&|run| self.complete(run, c));
                 }
             }
-            match found.len() {
+            match at.len() {
                 0 => {}
-                1 => return found.into_iter().next(),
+                1 => return at.into_iter().next(),
                 _ => return None,
             }
         }
         None
-    }
-
-    /// One label's term by every tier: a curated alias or the names
-    /// ([`Self::match_plain`]), else, when the panel leaves word `context`
-    /// off its labels, the label's words with it ([`Self::complete`]).
-    fn match_label(&self, label: &str, context: Option<&str>) -> Option<String> {
-        self.match_plain(label)
-            .or_else(|| self.complete(label, context?))
     }
 
     /// One label's term by every tier but the panel's word: a curated alias

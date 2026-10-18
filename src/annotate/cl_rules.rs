@@ -124,7 +124,9 @@ pub struct ContainedRules {
 /// `min_pairs` pairs, and in at least `min_share` of all such pairs:
 /// `early`, `mature`, `cycling`; not `pre`, `progenitor`); else the term is
 /// only a hint of its lineage, which a type joining a group by its markers
-/// keeps to (`Pre-cDC` joins no group of another lineage).
+/// keeps to (`Pre-cDC` joins no group of another lineage). The panel's word
+/// ([`ContextRules`]) completes a run only when no run of that length
+/// matches as written.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct PartRules {
