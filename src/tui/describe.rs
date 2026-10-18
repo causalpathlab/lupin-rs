@@ -34,7 +34,7 @@ fn stamp(file: &Path) -> Stamp {
 pub struct Following {
     pub round: PathBuf,
     prompts: BTreeMap<ClusterId, String>,
-    pub cache: PathBuf,
+    cache: PathBuf,
     /// The cache's [`Stamp`] when last read.
     read: Stamp,
 }
