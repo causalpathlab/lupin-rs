@@ -2,8 +2,8 @@
 //! their scores on `c`, written to the user's alias table only once
 //! confirmed, and the tree rebuilt with the alias.
 
-use super::super::app::{App, Focus, Job, Pending, Running};
-use super::super::drive::{finish, press};
+use super::super::app::{App, Focus, Pending, Ranking};
+use super::super::drive::press;
 use super::*;
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::cl_rules::Aliases;
@@ -223,22 +223,45 @@ fn c_on_a_type_with_a_term_or_with_no_ontology_says_why_not() {
     assert!(app.status.contains("no Cell Ontology"), "{}", app.status);
 }
 
+/// A ranking for `XQ` by `cmd`, writing `file`, in `app`'s own slot.
+fn ranking(app: &mut App, cmd: &mut std::process::Command, file: PathBuf) {
+    let (_, rx) = std::sync::mpsc::channel();
+    let child = cmd.spawn().unwrap();
+    app.ranking = Some(Ranking::new(child, rx, file, "XQ".into()));
+}
+
+/// Tick `app` until its ranking has ended.
+fn finish_ranking(app: &mut App) {
+    for _ in 0..200 {
+        app.tick();
+        if app.ranking.is_none() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("the ranking never ended");
+}
+
 #[test]
-fn c_waits_for_a_running_job_before_ranking() {
+fn a_ranking_runs_beside_the_other_jobs_and_x_stops_it() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app(dir.path());
-    let child = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .unwrap();
-    app.child = Some(Running::new(child, Job::Pass));
+    let mut sleep = std::process::Command::new("sleep");
+    sleep.arg("30");
+    ranking(&mut app, &mut sleep, dir.path().join("s.json"));
+    // Nothing else waits for it.
+    app.set_output(dir.path().join("y").to_str().unwrap());
+    assert!(!app.status.contains("wait"), "{}", app.status);
+    // c while it runs says so, and starts no second one.
     press(&mut app, KeyCode::Char('c'));
     assert!(app.menu.is_none());
-    assert!(app.status.contains("wait"), "{}", app.status);
-    if let Some(mut r) = app.child.take() {
-        let _ = r.child.kill();
-        let _ = r.child.wait();
-    }
+    assert!(app.status.contains("being ranked"), "{}", app.status);
+    // x, asked twice, stops it.
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.ranking.is_some());
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.ranking.is_none());
+    assert!(app.status.contains("stopped"), "{}", app.status);
 }
 
 #[test]
@@ -246,15 +269,8 @@ fn a_ranking_job_that_ends_opens_the_suggestions_for_the_type_asked() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app(dir.path());
     let file = suggested(dir.path());
-    let child = std::process::Command::new("true").spawn().unwrap();
-    app.child = Some(Running::new(
-        child,
-        Job::Suggest {
-            file: file.clone(),
-            label: "XQ".into(),
-        },
-    ));
-    finish(&mut app);
+    ranking(&mut app, &mut std::process::Command::new("true"), file);
+    finish_ranking(&mut app);
     assert!(app.suggestions.as_ref().and_then(|s| s.of("XQ")).is_some());
     let m = app.menu.as_ref().expect("XQ's suggestions");
     assert!(m.choices[0].label.contains("CT3 cell"));
@@ -262,15 +278,8 @@ fn a_ranking_job_that_ends_opens_the_suggestions_for_the_type_asked() {
 
 /// A ranking job for `XQ`, done, in `app`.
 fn ranked(app: &mut App, dir: &Path) {
-    let child = std::process::Command::new("true").spawn().unwrap();
-    app.child = Some(Running::new(
-        child,
-        Job::Suggest {
-            file: suggested(dir),
-            label: "XQ".into(),
-        },
-    ));
-    finish(app);
+    ranking(app, &mut std::process::Command::new("true"), suggested(dir));
+    finish_ranking(app);
 }
 
 #[test]
@@ -291,7 +300,10 @@ fn a_ranking_that_ends_while_the_user_types_waits_for_c() {
     // Back on the tree, c opens them.
     app.focus = Focus::Tree;
     press(&mut app, KeyCode::Char('c'));
-    assert!(app.menu.as_ref().is_some_and(|m| m.choices[0].label.contains("CT3 cell")));
+    assert!(app
+        .menu
+        .as_ref()
+        .is_some_and(|m| m.choices[0].label.contains("CT3 cell")));
 }
 
 #[test]
@@ -305,7 +317,7 @@ fn suggestions_are_dropped_when_the_terms_change_and_never_offered_for_a_type_wi
     app.set_label_cl(Some(&file));
     assert!(app.suggestions.is_none());
     app.menu = None; // what the labels file goes on to ask
-    // A ranking started before, ending after: nothing offered for XQ.
+                     // A ranking started before, ending after: nothing offered for XQ.
     ranked(&mut app, dir.path());
     assert!(app.menu.is_none(), "XQ has a term now");
 }
@@ -314,15 +326,9 @@ fn suggestions_are_dropped_when_the_terms_change_and_never_offered_for_a_type_wi
 fn without_the_model_the_tui_says_so_and_goes_on() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app(dir.path());
-    let child = std::process::Command::new("false").spawn().unwrap();
-    app.child = Some(Running::new(
-        child,
-        Job::Suggest {
-            file: dir.path().join("none.json"),
-            label: "XQ".into(),
-        },
-    ));
-    finish(&mut app);
+    let file = dir.path().join("none.json");
+    ranking(&mut app, &mut std::process::Command::new("false"), file);
+    finish_ranking(&mut app);
     assert!(app.failed.is_none(), "no failure popup: the rest works");
     assert!(app.menu.is_none());
     assert!(app.status.contains("suggestions"), "{}", app.status);

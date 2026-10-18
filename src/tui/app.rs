@@ -416,12 +416,6 @@ pub enum Job {
     Save(usize),
     /// `lupin trajectory`, writing this manifest.
     Trajectory(PathBuf),
-    /// `lupin data suggest-cl`, writing the suggestions to `file`; `label`'s
-    /// open when it is done.
-    Suggest {
-        file: PathBuf,
-        label: String,
-    },
 }
 
 impl Job {
@@ -431,7 +425,6 @@ impl Job {
             Self::Pass => "pass",
             Self::Save(_) => "save",
             Self::Trajectory(_) => "trajectory",
-            Self::Suggest { .. } => "term ranking",
         }
     }
 
@@ -455,6 +448,39 @@ impl Rescoring {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_file(&self.file);
+    }
+}
+
+/// `lupin data suggest-cl` ranking Cell Ontology terms for the panel types
+/// without one. It runs beside the other jobs, in a slot of its own: the
+/// first ranking (the text model fetched, the ontology encoded) takes
+/// minutes, and passes, saves and rescoring go on meanwhile.
+pub struct Ranking {
+    child: Child,
+    /// Its log lines, apart from the other jobs'.
+    log: Receiver<String>,
+    started: Instant,
+    /// Where it writes the suggestions.
+    file: PathBuf,
+    /// The type `c` was pressed on, whose suggestions open when it is done.
+    label: String,
+}
+
+impl Ranking {
+    #[must_use]
+    pub fn new(child: Child, log: Receiver<String>, file: PathBuf, label: String) -> Self {
+        Self {
+            child,
+            log,
+            started: Instant::now(),
+            file,
+            label,
+        }
+    }
+
+    fn stop(mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -544,6 +570,8 @@ pub struct App {
     /// Cell Ontology terms suggested for the panel types without one, once
     /// ranked (`c` in the tree pane).
     pub suggestions: Option<super::suggest::Suggestions>,
+    /// The ranking those come from, while it runs.
+    pub ranking: Option<Ranking>,
     /// The files jobs hand to their child: a folder only the user can
     /// open, made on first use and removed with the app.
     jobs_dir: Option<tempfile::TempDir>,
@@ -667,6 +695,7 @@ impl App {
             tree_marked: Vec::new(),
             mixed: super::ontology::Mixed::default(),
             suggestions: None,
+            ranking: None,
             jobs_dir: None,
             order_shown: None,
             tree_sel: 0,
@@ -738,6 +767,7 @@ impl App {
         }
         self.keep_scores_current();
         self.keep_order_current();
+        self.keep_ranking();
         // A question asked again lapses, and the status with it unless
         // something has said more since.
         if let Some((_, _, asked)) = self
@@ -780,10 +810,6 @@ impl App {
                 self.child = None;
                 if let Job::Trajectory(m) = job {
                     self.trajectory_done(&m, secs);
-                    return;
-                }
-                if let Job::Suggest { file, label } = job {
-                    self.suggestions_done(&file, &label, secs);
                     return;
                 }
                 let after = std::mem::take(&mut self.after_pass);
@@ -872,15 +898,6 @@ impl App {
                     _ => {}
                 }
             }
-            // Suggestions are extra: without them (offline, no model) the
-            // rest goes on, so no failure popup.
-            Ok(Some(_)) if matches!(job, Job::Suggest { .. }) => {
-                self.child = None;
-                self.status =
-                    "no Cell Ontology suggestions (offline, or no text model): see the log; the rest works"
-                        .into();
-                self.push_log(format!("[WARN] {}", self.status));
-            }
             Ok(Some(st)) => {
                 self.child = None;
                 self.after_pass = AfterPass::Nothing;
@@ -896,6 +913,51 @@ impl App {
         }
     }
 
+    /// Take in the ranking's log, and its suggestions once it has ended.
+    /// Suggestions are extra: without them (offline, no model) the rest goes
+    /// on, so a failed ranking raises no failure popup.
+    fn keep_ranking(&mut self) {
+        let Some(r) = &mut self.ranking else { return };
+        let lines: Vec<String> = std::iter::from_fn(|| r.log.try_recv().ok())
+            .filter(|l| crate::progress::parse(l).is_none())
+            .collect();
+        let secs = r.started.elapsed().as_secs();
+        let ended = r.child.try_wait();
+        for line in lines {
+            self.push_log(line);
+        }
+        match ended {
+            Ok(None) => {
+                // The other job's progress, or a key's reply, says more.
+                let quiet = self.child.is_none()
+                    && self.armed.is_none()
+                    && self.replied.is_none_or(|t| t.elapsed() >= KEY_REPLY_HOLD);
+                if quiet {
+                    self.status = format!("ranking Cell Ontology terms… {secs}s (x: stop)");
+                }
+            }
+            Ok(Some(st)) if st.success() => {
+                let Some(r) = self.ranking.take() else { return };
+                self.suggestions_done(&r.file, &r.label, secs);
+            }
+            _ => {
+                self.ranking = None;
+                self.status =
+                    "no Cell Ontology suggestions (offline, or no text model): see the log; the rest works"
+                        .into();
+                self.push_log(format!("[WARN] {}", self.status));
+            }
+        }
+    }
+
+    /// Stop the ranking.
+    fn stop_ranking(&mut self) {
+        if let Some(r) = self.ranking.take() {
+            r.stop();
+            self.status = "stopped the term ranking".into();
+        }
+    }
+
     /// The job has ended and the next tick reads what it wrote: keys wait
     /// for that.
     #[must_use]
@@ -907,7 +969,7 @@ impl App {
     /// else changed: a running job's elapsed time and ETA move on the clock.
     #[must_use]
     pub fn redraw_due(&self, since: Duration) -> bool {
-        self.child.is_some() && since >= Duration::from_secs(1)
+        (self.child.is_some() || self.ranking.is_some()) && since >= Duration::from_secs(1)
     }
 
     /// The running job for its popup: what it is and how long it has run.
@@ -917,7 +979,6 @@ impl App {
             Job::Pass => format!("pass → {}", file_name(&self.target)),
             Job::Save(n) => format!("saving {n} edit(s)"),
             Job::Trajectory(m) => format!("trajectory → {}", file_name(m)),
-            Job::Suggest { .. } => "Cell Ontology terms for the types without one".into(),
         };
         Some((what, started.elapsed()))
     }
@@ -1536,7 +1597,7 @@ impl App {
     /// which could leave a round half-written: it finishes on its own.
     fn stop(&mut self) {
         match self.child.as_ref().map(|r| r.job.clone()) {
-            Some(job @ (Job::Pass | Job::Trajectory(_) | Job::Suggest { .. })) => {
+            Some(job @ (Job::Pass | Job::Trajectory(_))) => {
                 self.after_pass = AfterPass::Nothing;
                 let Some(mut r) = self.child.take() else {
                     return;
@@ -2368,7 +2429,10 @@ impl App {
                 Some(false) => self.stop(),
                 Some(true) if armed == Some(Armed::Stop) => self.stop(),
                 Some(true) => self.ask_again(Armed::Stop, "x again stops it".into()),
-                None => {}
+                // With no other job, x is the ranking's.
+                None if self.ranking.is_none() => {}
+                None if armed == Some(Armed::Stop) => self.stop_ranking(),
+                None => self.ask_again(Armed::Stop, "x again stops the term ranking".into()),
             }
             return;
         }
@@ -4015,14 +4079,15 @@ impl App {
         if self.offer_suggestions(&label) {
             return;
         }
-        if self.child.is_some() {
-            self.status = "wait for the running job (x stops it), then c ranks the terms".into();
+        if self.ranking.is_some() {
+            self.status =
+                "the terms are being ranked: c offers them once they are (x stops it)".into();
             return;
         }
+        let (tx, rx) = channel();
         let started = self.job_file("suggest.json").and_then(|file| {
             let obo = self.args.obo.as_deref();
-            runner::spawn_suggest(&self.source, obo, &labels, &file, self.log_tx.clone())
-                .map(|c| (c, file))
+            runner::spawn_suggest(&self.source, obo, &labels, &file, tx).map(|c| (c, file))
         });
         match started {
             Ok((c, file)) => {
@@ -4030,7 +4095,7 @@ impl App {
                     "── suggestions: lupin data suggest-cl for {} type(s) without a term",
                     labels.len()
                 ));
-                self.child = Some(Running::new(c, Job::Suggest { file, label }));
+                self.ranking = Some(Ranking::new(c, rx, file, label));
                 self.status = "ranking Cell Ontology terms (the first time fetches the text model and encodes the ontology: a minute or two)".into();
             }
             Err(e) => self.status = format!("{e:#}"),
@@ -4251,6 +4316,9 @@ impl Drop for App {
                 let _ = r.child.kill();
             }
             let _ = r.child.wait();
+        }
+        if let Some(r) = self.ranking.take() {
+            r.stop();
         }
         self.stop_rescoring();
     }
