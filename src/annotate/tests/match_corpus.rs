@@ -586,3 +586,70 @@ fn a_run_with_other_words_left_keeps_the_label_to_its_lineage() {
         "`pre` is no kind word, but CT16 keeps the label in its lineage"
     );
 }
+
+#[test]
+fn a_word_left_off_may_be_the_implied_one_in_any_place() {
+    let t = tree_of(&["CT16 mature cells", "CT17 cell", "CT2 cell"], &[]);
+    assert_eq!(
+        t.group_of("CT16 mature cells"),
+        t.group_of("CT17 cell"),
+        "`cell` left off is no word against placing"
+    );
+    let obo = "[Term]\nid: CL:1\nname: cell\n\n[Term]\nid: CL:2\nname: CT1 cell\nis_a: CL:1\n";
+    let t = ClTerms::parse(obo, &shipped());
+    assert_eq!(
+        t.place("CT1 odd cells").map(|(id, _)| id).as_deref(),
+        Some("CL:2"),
+        "a run of implied words alone names nothing"
+    );
+}
+
+#[test]
+fn the_panel_word_completes_runs_too() {
+    let t = tree_of(&["Omega", "Sigma", "Tau", "Mature Omega", "CT2 cell"], &[]);
+    assert_eq!(t.group_of("Mature Omega"), t.group_of("Omega"));
+}
+
+#[test]
+fn placed_labels_count_toward_a_tree() {
+    let t = tree_of(&["CT2 cell", "Mature CT16", "Mature CT17"], &[]);
+    assert_eq!(t.group_of("Mature CT16"), t.group_of("Mature CT17"));
+}
+
+#[test]
+fn a_label_kept_to_a_lineage_and_alone_keeps_its_term() {
+    let shared = [("GENEA", "Pre CT16"), ("GENEA", "CT7 cell")];
+    let t = tree_of(&["Pre CT16", "CT17 cell", "CT2 cell", "CT7 cell"], &shared);
+    let own = t.groups.iter().find(|g| g.members == ["Pre CT16"]);
+    assert_eq!(
+        own.and_then(|g| g.cl_id.as_deref()),
+        Some("CL:9100088"),
+        "{:?}",
+        t.groups
+    );
+}
+
+#[test]
+fn the_panel_tree_puts_a_placed_label_with_its_lineage() {
+    let panel: Vec<(String, String)> = ["Mature CT16", "CT17 cell", "CT7 cell", "CT10 cell"]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (format!("GENE{i}"), (*t).to_string()))
+        .collect();
+    let p = crate::annotate::panel_tree::PanelTree::from_ontology(&terms(), &panel).unwrap();
+    let parent = |i: usize| p.nodes[i].parent;
+    let up = |l: &str| {
+        let mut at = p.node_of(l);
+        std::iter::from_fn(move || {
+            at = at.and_then(parent);
+            at
+        })
+        .collect::<Vec<_>>()
+    };
+    let lineage = parent(p.node_of("CT17 cell").unwrap()).expect("CT17 under its lineage");
+    assert!(
+        up("Mature CT16").contains(&lineage),
+        "under its term, in the lineage it shares with CT17: {:?}",
+        up("Mature CT16")
+    );
+}

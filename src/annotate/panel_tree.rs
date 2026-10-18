@@ -60,12 +60,14 @@ impl PanelTree {
     #[must_use]
     pub fn from_ontology(terms: &ClTerms, panel: &[(String, String)]) -> Option<Self> {
         let types = panel_types(panel);
-        let (mapped, unmapped) = terms.map_labels(types.iter().map(String::as_str));
-        if mapped.len() < 2 {
+        let placed = terms.place_labels(types.iter().map(String::as_str));
+        if placed.on().count() < 2 {
             return None;
         }
-        let ancestry: BTreeMap<&str, BTreeSet<String>> = mapped
-            .values()
+        // A label under a term hangs as a leaf under that term's node.
+        let ancestry: BTreeMap<&str, BTreeSet<String>> = placed
+            .on()
+            .map(|(_, id)| id)
             .map(|id| (id.as_str(), terms.ancestors_or_self(id)))
             .collect();
         // The nodes: every matched term, and every analysis class above two
@@ -109,18 +111,22 @@ impl PanelTree {
                 })
                 .map(|(_, j)| j);
         }
-        for (label, id) in &mapped {
+        for (label, id) in &placed.mapped {
             let i = index[id.as_str()];
             let key = label_key(label);
             tree.nodes[i].labels.push(key.clone());
             tree.of_label.insert(key, i);
         }
+        for (label, id) in &placed.under {
+            tree.push_leaf(label, Some(index[id.as_str()]));
+        }
         // A type the ontology does not have goes where the first round's grouping puts it
         // ([`TypeTree::from_ontology`]): under the class whose types share most of its markers,
         // with the types it shares them with, or on its own when it shares none. Standing alone
         // is a family of its own at the top, which costs every test there.
-        let unmapped: BTreeSet<String> = unmapped.iter().map(|l| label_key(l)).collect();
-        let groups = TypeTree::from_ontology(terms, panel).map_or_else(Vec::new, |t| t.groups);
+        let unmapped: BTreeSet<String> = placed.loose().iter().map(|l| label_key(l)).collect();
+        let groups =
+            TypeTree::from_placed(terms, panel, &placed).map_or_else(Vec::new, |t| t.groups);
         for g in groups {
             let loose: Vec<&String> = g
                 .members
@@ -130,8 +136,17 @@ impl PanelTree {
             if loose.is_empty() {
                 continue;
             }
-            let parent = match g.cl_id.as_deref().and_then(|id| index.get(id)) {
-                Some(&i) => Some(i),
+            // The group's term's node, else its nearest node above.
+            let nearest = |id: &str| {
+                (terms.ancestors_or_self(id).iter())
+                    .filter_map(|t| index.get(t.as_str()).map(|&j| (t.clone(), j)))
+                    .max_by(|(x, _), (y, _)| {
+                        terms.depth(x).cmp(&terms.depth(y)).then_with(|| y.cmp(x))
+                    })
+                    .map(|(_, j)| j)
+            };
+            let parent = match g.cl_id.as_deref().and_then(nearest) {
+                Some(i) => Some(i),
                 None if g.members.len() > 1 => {
                     tree.nodes.push(PanelNode::new(None, label_key(&g.name)));
                     Some(tree.nodes.len() - 1)
