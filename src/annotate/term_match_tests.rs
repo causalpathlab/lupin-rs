@@ -139,8 +139,9 @@ fn the_cache_is_keyed_by_the_ontology_release_and_the_model_revision() {
     let rules = crate::annotate::cl_rules::shipped();
     let v1 = ClTerms::parse(&format!("data-version: r1\n\n{OBO}"), &rules);
     let v2 = ClTerms::parse(&format!("data-version: r2\n\n{OBO}"), &rules);
-    let key =
-        |t: &ClTerms, rev: &str| TermIndex::cache_name(t, &TermIndex::named(t), "org/model", rev);
+    let key = |t: &ClTerms, rev: &str| {
+        TermIndex::cache_name(t.release.as_deref(), &TermIndex::named(t), "org/model", rev)
+    };
     assert_eq!(key(&v1, "abc"), key(&v1, "abc"));
     assert!(key(&v1, "abc").starts_with("r1-"));
     assert_ne!(key(&v1, "abc"), key(&v2, "abc"), "another release");

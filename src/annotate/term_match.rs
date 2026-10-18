@@ -34,7 +34,7 @@ use log::{info, warn};
 use nalgebra::DMatrix;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The text model suggestions are ranked by, and its pinned revision.
@@ -95,13 +95,13 @@ impl TermIndex {
         Ok(Self { ids, vecs })
     }
 
-    /// The cache file's name for the index of `terms` (its counted names
-    /// `named`) by `model` at `revision`: the ontology's release and the
-    /// revision, then a digest of both with every counted name, so other
+    /// The cache file's name for the index of an ontology at `release`
+    /// (its counted names `named`) by `model` at `revision`: the release and
+    /// the revision, then a digest of both with every counted name, so other
     /// matching rules (which count other synonyms) make another index.
     #[must_use]
     pub fn cache_name(
-        terms: &ClTerms,
+        release: Option<&str>,
         named: &[(&str, &str)],
         model: &str,
         revision: &str,
@@ -124,7 +124,7 @@ impl TermIndex {
                 .collect::<Vec<_>>()
                 .join("_")
         };
-        let release = terms.release.as_deref().map_or("unreleased".into(), safe);
+        let release = release.map_or("unreleased".into(), safe);
         let rev: String = safe(revision).chars().take(12).collect();
         format!("{release}-{rev}-{digest}.parquet")
     }
@@ -162,26 +162,22 @@ impl TermIndex {
         })
     }
 
-    /// The `k` terms nearest `v`, each scored by its nearest name, best first.
+    /// The `k` terms nearest `v`, each scored by its nearest name, best
+    /// first, ties by id.
     #[must_use]
     pub fn rank(&self, v: &[f32], k: usize) -> Vec<(String, f32)> {
-        let mut best: HashMap<&str, f32> = HashMap::new();
+        let mut best: BTreeMap<&str, f32> = BTreeMap::new();
         for (id, u) in self.ids.iter().zip(&self.vecs) {
             let cos: f32 = u.iter().zip(v).map(|(a, b)| a * b).sum();
             let e = best.entry(id.as_str()).or_insert(f32::NEG_INFINITY);
             *e = e.max(cos);
         }
-        let mut ranked: Vec<(&str, f32)> = best.into_iter().collect();
-        let order =
-            |a: &(&str, f32), b: &(&str, f32)| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0));
-        if k < ranked.len() {
-            ranked.select_nth_unstable_by(k, order);
-            ranked.truncate(k);
-        }
-        ranked.sort_by(order);
-        ranked
+        // `max` passes over a NaN cosine, so no score is NaN.
+        let terms: Vec<(&str, f32)> = best.into_iter().collect();
+        let scores = terms.iter().map(|&(_, s)| s).enumerate();
+        crate::gene_text::edges::top_k(scores, k)
             .into_iter()
-            .map(|(id, s)| (id.to_string(), s))
+            .map(|(i, s)| (terms[i].0.to_string(), s))
             .collect()
     }
 }
@@ -270,8 +266,12 @@ pub fn run(
     let encoder = load_encoder()?;
     let named = TermIndex::named(&terms);
     let file = cache.map(|c| {
-        c.join("cl-index")
-            .join(TermIndex::cache_name(&terms, &named, MODEL, REVISION))
+        c.join("cl-index").join(TermIndex::cache_name(
+            terms.release.as_deref(),
+            &named,
+            MODEL,
+            REVISION,
+        ))
     });
     let cached = file
         .as_deref()
