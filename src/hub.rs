@@ -58,10 +58,21 @@ impl Model {
         Repo::with_revision(self.id.clone(), RepoType::Model, self.revision.clone())
     }
 
-    /// File `name`, when the cache has it.
+    /// File `name`, when the cache has it: under the snapshot the revision's
+    /// ref names, or, for a commit, under its own snapshot, which the Hub's
+    /// Python tools write with no ref to it.
     #[must_use]
     pub fn cached(&self, name: &str) -> Option<PathBuf> {
-        self.cache.repo(self.repo()).get(name)
+        let repo = self.repo();
+        self.cache.repo(repo.clone()).get(name).or_else(|| {
+            let commit =
+                self.revision.len() == 40 && self.revision.bytes().all(|b| b.is_ascii_hexdigit());
+            let path = (self.cache.path().join(repo.folder_name()))
+                .join("snapshots")
+                .join(&self.revision)
+                .join(name);
+            (commit && path.exists()).then_some(path)
+        })
     }
 
     /// The Hub, to fetch what the cache lacks (`progress`: draw its bars);
