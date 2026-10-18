@@ -117,3 +117,27 @@ fn a_negative_markers_hyphen_is_kept_in_an_alias() {
         "a hyphen between two words parts them"
     );
 }
+
+#[test]
+fn a_negative_markers_hyphen_before_the_next_marker_is_kept() {
+    let mut a = Aliases::default();
+    a.add_tsv(
+        "CD34 CD38-\tCL:1\nCD34-CD38-\tCL:2\nCD4 CD8-\tCL:3\nCD4-CD8-\tCL:4\n\
+         CD45RA-CD38-\tCL:5\npre B\tCL:6\n",
+        "project",
+    );
+    assert_eq!(a.get("CD34 CD38-"), Some("CL:1"));
+    assert_eq!(a.get("CD34-CD38-"), Some("CL:2"), "not CD34 CD38-'s");
+    assert_eq!(a.get("CD4 CD8-"), Some("CL:3"));
+    assert_eq!(a.get("CD4-CD8-"), Some("CL:4"), "not CD4 CD8-'s");
+    assert_eq!(
+        a.get("CD45RA CD38-"),
+        None,
+        "a marker with letters after its digits"
+    );
+    assert_eq!(
+        a.get("pre-B"),
+        Some("CL:6"),
+        "a word without digits is no marker"
+    );
+}

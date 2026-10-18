@@ -317,20 +317,31 @@ impl Aliases {
 
 /// How aliases compare labels: as lupin labels, ignoring case, a hyphen
 /// between two words parting them as a space does (`Pro-B` is `pro B`).
-/// One ending a word is a negative marker's (`CD34-` is not `CD34`).
+/// One after a marker, a word of letters and digits both (`CD34`,
+/// `CD45RA`), is its negative sign and is kept, at a word's end or before
+/// the next marker alike (`CD34-` is not `CD34`, `CD34-CD38-` not `CD34
+/// CD38-`).
 fn key(label: &str) -> String {
     let lower = label.to_lowercase();
     let mut chars = lower.chars().peekable();
     let mut parted = String::with_capacity(lower.len());
-    let mut after_word = false;
+    // The kinds of character in the word just read: a letter, a digit.
+    let (mut letter, mut digit) = (false, false);
     while let Some(c) = chars.next() {
+        let after_word = letter || digit;
         let before_word = chars.peek().is_some_and(|n| n.is_alphanumeric());
-        parted.push(if c == '-' && after_word && before_word {
+        let marker = letter && digit;
+        parted.push(if c == '-' && after_word && before_word && !marker {
             ' '
         } else {
             c
         });
-        after_word = c.is_alphanumeric();
+        if c.is_alphanumeric() {
+            letter |= c.is_alphabetic();
+            digit |= c.is_numeric();
+        } else {
+            (letter, digit) = (false, false);
+        }
     }
     label_key(&parted)
 }
