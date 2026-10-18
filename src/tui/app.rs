@@ -4241,14 +4241,14 @@ impl App {
         );
     }
 
-    /// Run `lupin describe --lm` on `manifest` into its own stem, saying
-    /// `status`.
+    /// Run `lupin describe --lm --cache-only` on `manifest` into its own
+    /// stem's cache, saying `status`.
     fn spawn_describe(&mut self, manifest: &Path, status: &str) {
         let stem = derive_out_prefix(&manifest.to_string_lossy());
         match runner::spawn_describe(manifest, &stem, &self.lm, self.log_tx.clone()) {
             Ok(c) => {
                 self.push_log(format!(
-                    "── describe: lupin describe -f {} -o {stem} --lm",
+                    "── describe: lupin describe -f {} -o {stem} --lm --cache-only",
                     manifest.display()
                 ));
                 self.child = Some(Running::new(c, Job::Consensus(manifest.to_path_buf())));

@@ -78,6 +78,13 @@ pub struct DescribeArgs {
     )]
     pub out: Option<Box<str>>,
 
+    #[arg(
+        long,
+        requires = "lm",
+        help = "With --lm: write only the model's cache (`{out}.consensus.jsonl`), not the description files; what the TUI runs"
+    )]
+    pub cache_only: bool,
+
     #[command(flatten)]
     pub lm: LmArgs,
 }
@@ -185,6 +192,9 @@ fn describe_trajectory(
     let spec = args.lm.lm.then(|| args.lm.spec());
     let cache = consensus::cache_path(out);
     let texts = trajectory::describe(&facts, spec.as_ref(), &cache, args.lm.loader())?;
+    if args.cache_only {
+        return Ok(());
+    }
     let md = trajectory::md_path(out);
     std::fs::write(&md, trajectory::markdown(&args.from, &texts))
         .with_context(|| format!("writing {}", md.display()))?;
@@ -194,6 +204,14 @@ fn describe_trajectory(
 
 pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     let Some(out) = args.out.as_deref() else {
+        // The TUI writes the model's cache alone (`--cache-only`).
+        if args.text_prefix.is_some() || args.markers.is_some() || args.feature_embedding.is_some()
+        {
+            log::warn!(
+                "--text-prefix, --markers and --feature-embedding go into the description files, \
+                 which only -o writes; the TUI shows the model's suggestions"
+            );
+        }
         return crate::tui::run_describe(&args.from, &args.lm);
     };
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
@@ -216,6 +234,9 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     } else {
         Vec::new()
     };
+    if args.cache_only {
+        return Ok(());
+    }
 
     let files = EvidenceFiles::locate(&args.from);
     let mut enriched = match load_evidence(&files, args.fdr_alpha) {

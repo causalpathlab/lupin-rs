@@ -56,14 +56,22 @@ pub fn spawn_suggest(
     spawn(&argv, log)
 }
 
-/// Start `lupin describe -f <manifest> -o <out> --lm` as a child, with
-/// `lm`'s model, directory and device.
+/// Start `lupin describe -f <manifest> -o <out> --lm --cache-only` as a
+/// child ([`describe_argv`]).
 pub fn spawn_describe(
     manifest: &Path,
     out: &str,
     lm: &crate::describe::LmArgs,
     log: Sender<String>,
 ) -> Result<Child> {
+    spawn(&describe_argv(manifest, out, lm), log)
+}
+
+/// `describe -f <manifest> -o <out> --lm --cache-only`, with `lm`'s model,
+/// directory and device: the model's cache at `out`, which the TUI follows,
+/// and no description files, so none the user wrote is written over.
+#[must_use]
+pub fn describe_argv(manifest: &Path, out: &str, lm: &crate::describe::LmArgs) -> Vec<String> {
     let mut argv = vec![
         "describe".to_string(),
         "-f".into(),
@@ -72,7 +80,8 @@ pub fn spawn_describe(
         out.to_string(),
     ];
     argv.extend(lm.to_argv());
-    spawn(&argv, log)
+    argv.push("--cache-only".into());
+    argv
 }
 
 /// Start `lupin relabel -f <round> -d <decisions> --next` as a child.
