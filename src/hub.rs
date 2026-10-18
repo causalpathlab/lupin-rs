@@ -62,7 +62,7 @@ impl Model {
     /// ref names, or, for a commit, under its own snapshot, which the Hub's
     /// Python tools write with no ref to it.
     #[must_use]
-    pub fn cached(&self, name: &str) -> Option<PathBuf> {
+    fn cached(&self, name: &str) -> Option<PathBuf> {
         let repo = self.repo();
         self.cache.repo(repo.clone()).get(name).or_else(|| {
             let commit =
@@ -75,9 +75,10 @@ impl Model {
         })
     }
 
-    /// The Hub, to fetch what the cache lacks (`progress`: draw its bars);
-    /// offline, an error naming the switch.
-    pub fn online(&self, progress: bool) -> Result<ApiRepo> {
+    /// The Hub, to fetch what the cache lacks, drawing its bars unless the
+    /// TUI reads this command's progress; offline, an error naming the
+    /// switch.
+    fn online(&self) -> Result<ApiRepo> {
         let at = self.cache.path().display();
         if let Some(switch) = self.offline {
             anyhow::bail!(
@@ -90,7 +91,9 @@ impl Model {
             "fetching {}@{} from the Hub (cached under {at})",
             self.id, self.revision
         );
-        let mut api = ApiBuilder::from_cache(self.cache.clone()).with_progress(progress);
+        // Not `ApiBuilder::from_env`, which would replace the cache (a test's).
+        let mut api =
+            ApiBuilder::from_cache(self.cache.clone()).with_progress(!crate::progress::enabled());
         if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
             api = api.with_endpoint(endpoint);
         }
@@ -102,11 +105,11 @@ impl Model {
 
     /// Files `names`: from the cache when it has every one, else from the
     /// Hub ([`Self::online`]).
-    pub fn files<const N: usize>(&self, names: [&str; N], progress: bool) -> Result<[PathBuf; N]> {
+    pub fn files<const N: usize>(&self, names: [&str; N]) -> Result<[PathBuf; N]> {
         let all = match names.iter().map(|n| self.cached(n)).collect() {
             Some(all) => all,
             None => {
-                let hub = self.online(progress)?;
+                let hub = self.online()?;
                 (names.iter())
                     .map(|n| {
                         hub.get(n)

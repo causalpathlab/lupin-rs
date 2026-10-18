@@ -72,7 +72,8 @@ pub struct SearchPath {
 
 /// The user layer: `lupin` (`LUPIN_CONFIG_DIR`) as given, else `lupin/`
 /// in `xdg` (`XDG_CONFIG_HOME`, when absolute, as the XDG spec reads it),
-/// else in `home`'s `.config/`.
+/// else in `home`'s `.config/`. Not `dirs::config_dir`: on macOS that is
+/// `Library/Application Support`, and lupin keeps `.config/` everywhere.
 fn user_dir(
     lupin: Option<std::ffi::OsString>,
     xdg: Option<std::ffi::OsString>,

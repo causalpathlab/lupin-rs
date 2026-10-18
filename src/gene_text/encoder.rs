@@ -51,10 +51,8 @@ fn resolve_files(spec: &ModelSpec) -> Result<ModelFiles> {
         });
     }
     let model = crate::hub::Model::new(&spec.model_id, &spec.revision);
-    let [config, tokenizer, weights] = model.files(
-        ["config.json", "tokenizer.json", "model.safetensors"],
-        !crate::progress::enabled(),
-    )?;
+    let [config, tokenizer, weights] =
+        model.files(["config.json", "tokenizer.json", "model.safetensors"])?;
     Ok(ModelFiles {
         config,
         tokenizer,
