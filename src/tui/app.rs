@@ -4290,9 +4290,18 @@ impl App {
         figures.into_iter().chain(self.manifests()).find(|m| has(m))
     }
 
-    /// The texts of the trajectory shown, when its cache has some.
-    fn load_order_texts(&mut self) {
-        let Some(m) = self.shown_trajectory() else {
+    /// The texts of the trajectory shown, when its cache has some; another
+    /// trajectory's are let go.
+    pub(super) fn load_order_texts(&mut self) {
+        let shown = self.shown_trajectory();
+        if self
+            .order_texts
+            .as_ref()
+            .is_some_and(|t| Some(&t.manifest) != shown.as_ref())
+        {
+            self.order_texts = None;
+        }
+        let Some(m) = shown else {
             return;
         };
         if cache_path(&derive_out_prefix(&m.to_string_lossy())).is_file() {
