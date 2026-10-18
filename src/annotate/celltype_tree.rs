@@ -66,8 +66,9 @@ pub struct ClTerms {
 struct NameIndex {
     /// Normalised name or counted synonym → term ids.
     by_name: HashMap<String, BTreeSet<String>>,
-    /// The same names by [`word_bag`], for labels whose words come in
-    /// another order (`CT1 cells memory` for `memory CT1 cell`).
+    /// The same names by [`word_bag`]: for labels whose words come in
+    /// another order (`CT1 cells memory` for `memory CT1 cell`) when the
+    /// rules allow it, and for the panel's word in any case.
     by_words: HashMap<String, BTreeSet<String>>,
     /// Each term's own name (no synonyms) by [`ClTerms::name_key`]: what an
     /// implied trailing word may complete.
@@ -89,9 +90,7 @@ impl NameIndex {
         };
         let n = rules.normalise(name);
         let single = rules.singular(&n);
-        if rules.any_word_order {
-            add(&mut self.by_words, word_bag(&single));
-        }
+        add(&mut self.by_words, word_bag(&single));
         if rules.compact {
             add(&mut self.by_compact, compact(&single));
             if own {
@@ -550,7 +549,10 @@ impl ClTerms {
         if let Some(ids) = ix.by_name.get(single) {
             return Some(one(ids, single));
         }
-        if let Some(ids) = ix.by_words.get(&word_bag(single)) {
+        if let Some(ids) = (self.rules.any_word_order)
+            .then(|| ix.by_words.get(&word_bag(single)))
+            .flatten()
+        {
             return Some(one(ids, single));
         }
         // An implied trailing word completing a term's own name (see

@@ -1098,3 +1098,18 @@ fn a_kind_of_a_type_the_panel_s_word_completes_is_placed_under_it() {
         "read with the panel's word"
     );
 }
+
+#[test]
+fn the_panel_s_word_completes_labels_with_word_order_kept() {
+    let obo = "[Term]\nid: CL:1\nname: organx alpha cell\n\n\
+               [Term]\nid: CL:2\nname: organx beta cell\n\n\
+               [Term]\nid: CL:3\nname: organx gamma cell\n\n\
+               [Term]\nid: CL:4\nname: cell blue\n";
+    let mut rules = crate::annotate::cl_rules::shipped();
+    rules.any_word_order = false;
+    let t = ClTerms::parse(obo, &rules);
+    let (mapped, unmapped) = t.map_labels(["Alpha", "Beta", "Gamma", "Blue cell"]);
+    assert_eq!(mapped["Alpha"], "CL:1");
+    assert_eq!(mapped.len(), 3);
+    assert_eq!(unmapped, ["Blue cell"], "no other word order");
+}
