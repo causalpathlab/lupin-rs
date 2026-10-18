@@ -97,14 +97,10 @@ impl ClusterEvidence {
 /// `describe` on a trajectory run: the run's paragraph and each type's line
 /// to `{out}.trajectory.describe.md`, written by code from its outputs
 /// ([`trajectory`]).
-fn describe_trajectory(
-    loaded: &crate::manifest::run::Loaded,
-    args: &DescribeArgs,
-    out: &str,
-) -> Result<()> {
+fn describe_trajectory(loaded: &crate::manifest::run::Loaded, from: &str, out: &str) -> Result<()> {
     let texts = trajectory::texts(&trajectory::OrderFacts::read(loaded)?);
     let md = trajectory::md_path(out);
-    std::fs::write(&md, trajectory::markdown(&args.from, &texts))
+    std::fs::write(&md, trajectory::markdown(from, &texts))
         .with_context(|| format!("writing {}", md.display()))?;
     info!("wrote {} ({} text(s))", md.display(), texts.len());
     Ok(())
@@ -113,14 +109,14 @@ fn describe_trajectory(
 pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     let out: &str = &args.out;
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
+    let loaded = crate::manifest::run::load(&args.from).ok();
     // A trajectory run: its order is what is described.
-    if let Some(l) = crate::manifest::run::load(&args.from)
-        .ok()
-        .filter(|l| crate::manifest::family::is_trajectory(&l.manifest, &l.file))
+    if let Some(l) =
+        (loaded.as_ref()).filter(|l| crate::manifest::family::is_trajectory(&l.manifest, &l.file))
     {
-        return describe_trajectory(&l, args, out);
+        return describe_trajectory(l, &args.from, out);
     }
-    let files = EvidenceFiles::locate(&args.from);
+    let files = EvidenceFiles::locate(&args.from, loaded.as_ref());
 
     let mut enriched = load_evidence(&files, args.fdr_alpha)?;
     attach_second_best(&mut enriched, &files, args.fdr_alpha)?;
@@ -203,46 +199,53 @@ impl EvidenceFiles {
     /// manifest (or its prefix) — those point at the latest pass, whatever its
     /// `-o` was. Otherwise `--from` is an annotate output prefix and
     /// the files are looked for by name.
-    fn locate(from: &str) -> Self {
-        match crate::manifest::run::load(from) {
-            Ok(loaded) => {
-                let a = &loaded.manifest.annotate;
-                let at = |slot: &Option<String>| {
-                    slot.as_deref()
-                        .map(|rel| crate::manifest::run::resolve(&loaded.dir, rel))
-                };
-                let term_q = at(&a.cluster_term_q);
-                Self {
-                    // `annotation` holds projection's per-cell table only on a projection pass.
-                    annot: term_q.is_some().then(|| at(&a.annotation)).flatten(),
-                    enrichment_q: at(&a.cluster_celltype_q_values),
-                    term_q,
-                    argmax: at(&a.argmax),
-                    marker_embedding: at(&a.marker_embedding),
-                    // Manifest-relative; older manifests recorded the path as
-                    // typed on the command line, so fall back to it as given.
-                    markers_tsv: a
-                        .markers
-                        .as_deref()
-                        .filter(|m| !m.is_empty())
-                        .map(|m| loaded.recorded(m).unwrap_or_else(|| m.to_string())),
-                }
-            }
-            Err(_) => {
-                let found = |suffix: &str| {
-                    let p = format!("{from}{suffix}");
-                    Path::new(&p).exists().then_some(p)
-                };
-                Self {
-                    annot: found(ANNOT_PARQUET),
-                    enrichment_q: found(CLUSTER_CELLTYPE_Q_VALUES),
-                    term_q: found(CLUSTER_TERM_Q),
-                    // The parquet, else the TSV of an older pass.
-                    argmax: found(CELL_LABELS_SUFFIX).or_else(|| found(ARGMAX_TSV)),
-                    marker_embedding: found(".marker_embedding.parquet"),
-                    markers_tsv: None,
-                }
-            }
+    /// `loaded` is `--from`'s manifest, when it is one.
+    fn locate(from: &str, loaded: Option<&crate::manifest::run::Loaded>) -> Self {
+        match loaded {
+            Some(l) => Self::locate_in(l),
+            None => Self::by_name(from),
+        }
+    }
+
+    /// From the `annotate.*` slots of the manifest `loaded`.
+    fn locate_in(loaded: &crate::manifest::run::Loaded) -> Self {
+        let a = &loaded.manifest.annotate;
+        let at = |slot: &Option<String>| {
+            slot.as_deref()
+                .map(|rel| crate::manifest::run::resolve(&loaded.dir, rel))
+        };
+        let term_q = at(&a.cluster_term_q);
+        Self {
+            // `annotation` holds projection's per-cell table only on a projection pass.
+            annot: term_q.is_some().then(|| at(&a.annotation)).flatten(),
+            enrichment_q: at(&a.cluster_celltype_q_values),
+            term_q,
+            argmax: at(&a.argmax),
+            marker_embedding: at(&a.marker_embedding),
+            // Manifest-relative; older manifests recorded the path as
+            // typed on the command line, so fall back to it as given.
+            markers_tsv: a
+                .markers
+                .as_deref()
+                .filter(|m| !m.is_empty())
+                .map(|m| loaded.recorded(m).unwrap_or_else(|| m.to_string())),
+        }
+    }
+
+    /// Looked for by name beside annotate output prefix `from`.
+    fn by_name(from: &str) -> Self {
+        let found = |suffix: &str| {
+            let p = format!("{from}{suffix}");
+            Path::new(&p).exists().then_some(p)
+        };
+        Self {
+            annot: found(ANNOT_PARQUET),
+            enrichment_q: found(CLUSTER_CELLTYPE_Q_VALUES),
+            term_q: found(CLUSTER_TERM_Q),
+            // The parquet, else the TSV of an older pass.
+            argmax: found(CELL_LABELS_SUFFIX).or_else(|| found(ARGMAX_TSV)),
+            marker_embedding: found(".marker_embedding.parquet"),
+            markers_tsv: None,
         }
     }
 }
