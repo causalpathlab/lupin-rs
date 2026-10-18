@@ -2215,10 +2215,16 @@ impl App {
                     }
                     Pending::Remember { label, id, file } => {
                         self.status = match remember_alias(&file, &label, &id, &reason) {
-                            Ok(()) => {
-                                self.learn_alias(&label, &id, &file);
-                                format!("remembered {label} → {id} in {}", file.display())
-                            }
+                            Ok(()) => match self.learn_alias(&label, &id, &file) {
+                                None => {
+                                    format!("remembered {label} → {id} in {}", file.display())
+                                }
+                                Some(later) => format!(
+                                    "wrote {label} → {id} to {}, but {} maps {label} too and is read after it: that reading stays (edit it there)",
+                                    file.display(),
+                                    later.display()
+                                ),
+                            },
                             Err(e) => format!("could not remember the alias: {e:#}"),
                         };
                     }
@@ -4126,11 +4132,27 @@ impl App {
 
     /// Take alias `label → id`, just written to `file`, in this session:
     /// the ontology matches by it and the panel's tree is built again, the
-    /// cursor on `label`.
-    fn learn_alias(&mut self, label: &str, id: &str, file: &Path) {
-        let Some(cl) = &mut self.cl else { return };
+    /// cursor on `label`. Unless a table read after `file` (a later layer,
+    /// or `--label-cl`) maps `label` too: it wins on every start, so the
+    /// session keeps its reading, and that table comes back.
+    fn learn_alias(&mut self, label: &str, id: &str, file: &Path) -> Option<PathBuf> {
+        let run = self.args.label_cl.as_deref().map(PathBuf::from);
+        let later = (self.data_search.alias_layers_after(file).into_iter())
+            .chain(run)
+            .filter(|p| p.as_path() != file)
+            .find(|p| {
+                let mut a = crate::annotate::cl_rules::Aliases::default();
+                let text = std::fs::read_to_string(p).unwrap_or_default();
+                a.add_tsv(&text, &p.display().to_string());
+                a.get(label).is_some()
+            });
+        if later.is_some() {
+            return later;
+        }
+        let cl = self.cl.as_mut()?;
         cl.add_aliases(&format!("{label}\t{id}\n"), &file.display().to_string());
         self.rebuild_tree_keeping(Some(label));
+        None
     }
 
     /// [`Self::rebuild_tree`], keeping what was folded, and the selection

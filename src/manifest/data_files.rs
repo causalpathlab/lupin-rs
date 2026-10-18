@@ -203,6 +203,16 @@ impl SearchPath {
             .collect()
     }
 
+    /// The alias tables read after `file` (and so winning over it, key by
+    /// key), in the order they are read; every layer when `file` is none of
+    /// them.
+    #[must_use]
+    pub fn alias_layers_after(&self, file: &Path) -> Vec<PathBuf> {
+        let layers = self.alias_layers(false);
+        let from = layers.iter().position(|p| p == file).map_or(0, |i| i + 1);
+        layers[from..].to_vec()
+    }
+
     /// The user's own alias table, where a term suggested in the TUI is
     /// written once confirmed: the user layer's `cl_aliases.tsv`, else the
     /// project's.

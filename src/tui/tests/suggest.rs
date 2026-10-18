@@ -426,3 +426,28 @@ fn a_rebuild_that_folds_again_leaves_the_selection_on_a_row_shown() {
         app.tree.visible().len()
     );
 }
+
+#[test]
+fn a_confirmed_term_a_later_alias_table_overrides_says_so_and_shows_what_a_restart_will() {
+    // The project's table maps XQ to a term this release no longer has: it
+    // is read after the user's, so it keeps XQ without a term on restart.
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let later = project.join("cl_aliases.tsv");
+    std::fs::write(&later, "XQ\tCL:999\n").unwrap();
+    let mut app = app(dir.path());
+    app.data_search.project = Some(project);
+    app.suggestions = Some(Suggestions::read(&suggested(dir.path())).unwrap());
+    press(&mut app, KeyCode::Char('c'));
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let mine = dir.path().join("config").join("cl_aliases.tsv");
+    assert!(mine.exists(), "written where asked");
+    assert!(app.tree.cl_of("XQ").is_none(), "as a restart reads it");
+    assert!(
+        app.status.contains(&later.display().to_string()),
+        "{}",
+        app.status
+    );
+}
