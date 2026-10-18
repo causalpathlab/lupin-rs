@@ -72,6 +72,7 @@ fn app_with_terms(terms: bool) -> App {
         rescorable: false,
         by: Default::default(),
         figures: Default::default(),
+        proposals: Default::default(),
     });
     app.focus = Focus::Genes;
     app
