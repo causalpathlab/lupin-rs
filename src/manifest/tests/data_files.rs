@@ -335,3 +335,26 @@ fn the_user_layer_follows_lupin_s_variable_then_xdg_then_home() {
     }
     assert_eq!(user_dir(None, None, None), None);
 }
+
+#[test]
+fn the_terms_for_a_panel_read_a_few_of_its_types_as_the_whole_panel() {
+    offline();
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path().join("share").join(RULES),
+        include_str!("../../../data/cl_matching.json"),
+    );
+    write(
+        root.path().join("cache").join(ONTOLOGY),
+        "[Term]\nid: CL:1\nname: organx alpha cell\n\n\
+         [Term]\nid: CL:2\nname: organx beta cell\n\n\
+         [Term]\nid: CL:3\nname: organx gamma cell\n",
+    );
+    let d = ClData::load(search(root.path()), None, None, Fetch::Never).unwrap();
+    let panel: Vec<(String, String)> = ["Alpha", "Beta", "Gamma"]
+        .map(|t| ("G".to_string(), t.to_string()))
+        .into();
+    let terms = d.panel_terms(&panel).unwrap().unwrap();
+    let (mapped, _) = terms.map_labels(["Alpha", "Beta"]);
+    assert_eq!(mapped.len(), 2, "two of the panel's types read by its word");
+}

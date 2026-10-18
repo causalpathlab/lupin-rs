@@ -188,10 +188,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         crate::manifest::data_files::Fetch::Allowed,
     )?;
     let search = data.search.clone();
-    let mut terms = data.into_terms()?;
-    if let Some(t) = &mut terms {
-        t.set_panel(&panel);
-    }
+    let terms = data.panel_terms(&panel)?;
     let tree = crate::manifest::ontology::panel_tree_on(terms.as_ref(), &panel);
 
     let target = annotated_path(&loaded.file, &args.out);

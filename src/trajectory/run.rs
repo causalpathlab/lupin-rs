@@ -448,14 +448,17 @@ fn gather_statements(
             .filter(|&g| inputs.is_node[g])
             .map(|g| inputs.names[g].as_ref())
             .collect();
-        let terms = data.terms()?;
+        let search = data.search.clone();
+        // The panel's word read from the panel, and the nodes read as every
+        // type is: as the order view reads them.
+        let pairs = crate::annotate::markers::read_panel(&panel).unwrap_or_default();
+        let terms = data.panel_terms(&pairs)?;
         if terms.is_none() {
             warn!("no Cell Ontology at hand; the prior comes from precedence files alone");
         }
-        // The nodes are read as every type is, as the order view reads them.
         let all: Vec<&str> = inputs.names.iter().map(AsRef::as_ref).collect();
-        let on = terms.map(|t| prior::OnTerms::new(t, &all));
-        let (standing, problems) = prior::standing_layers(on.as_ref(), &node_names, &data.search);
+        let on = terms.as_ref().map(|t| prior::OnTerms::new(t, &all));
+        let (standing, problems) = prior::standing_layers(on.as_ref(), &node_names, &search);
         if let Some(e) = problems.into_iter().next() {
             return Err(e);
         }
