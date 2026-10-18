@@ -141,3 +141,35 @@ fn a_negative_markers_hyphen_before_the_next_marker_is_kept() {
         "a word without digits is no marker"
     );
 }
+
+#[test]
+fn a_hyphen_into_a_plain_word_parts_it_from_the_marker() {
+    let mut a = Aliases::default();
+    a.add_tsv(include_str!("../../../data/cl_aliases.tsv"), "built-in");
+    for (hyphened, spaced) in [
+        ("CD8-T", "CD8 T"),
+        ("CD14-Mono", "CD14 Mono"),
+        ("CD4-Naive", "CD4 Naive"),
+    ] {
+        assert!(a.get(spaced).is_some(), "{spaced} is shipped");
+        assert_eq!(a.get(hyphened), a.get(spaced), "{hyphened}");
+    }
+    let same = |x: &str, y: &str| assert_eq!(key(x), key(y), "{x} is {y}");
+    let differ = |x: &str, y: &str| assert_ne!(key(x), key(y), "{x} is not {y}");
+    same("CD4-positive T cell", "CD4 positive T cell");
+    same("CD56-bright NK", "CD56 bright NK");
+    same("Pro-B", "Pro B");
+    same("CD34-CD38-", "CD34- CD38-");
+    differ("CD34-CD38-", "CD34 CD38-");
+    differ("CD4-CD8-", "CD4 CD8");
+    differ("CD34-", "CD34");
+    differ("CD4- T", "CD4 T");
+    // Near misses: other joins and spacings.
+    same("CD34-_CD38-", "CD34- CD38-");
+    same("CD45RA-CD38-", "CD45RA- CD38-");
+    same("Lin-CD34+", "Lin- CD34+");
+    differ("Lin-CD34+", "Lin CD34+");
+    differ("CD4-CD8", "CD4 CD8");
+    same("T-cell", "T cell");
+    same("alpha-beta T cell", "alpha beta T cell");
+}

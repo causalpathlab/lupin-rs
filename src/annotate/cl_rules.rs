@@ -315,33 +315,32 @@ impl Aliases {
     }
 }
 
-/// How aliases compare labels: as lupin labels, ignoring case, a hyphen
-/// between two words parting them as a space does (`Pro-B` is `pro B`).
-/// One after a marker, a word of letters and digits both (`CD34`,
-/// `CD45RA`), is its negative sign and is kept, at a word's end or before
-/// the next marker alike (`CD34-` is not `CD34`, `CD34-CD38-` not `CD34
-/// CD38-`).
+/// How aliases compare labels: as lupin labels, ignoring case. A hyphen
+/// that ends a word, before a space, the end or a marker (a word of
+/// letters and digits both, `CD34`, `CD45RA`), is a negative sign and is
+/// kept, parted from the marker after it (`CD34-` is not `CD34`,
+/// `CD34-CD38-` is `CD34- CD38-` and not `CD34 CD38-`); one before any
+/// other word parts the two as a space does (`Pro-B` is `Pro B`, `CD8-T` is
+/// `CD8 T`, `CD4-positive` is `CD4 positive`).
 fn key(label: &str) -> String {
-    let lower = label.to_lowercase();
-    let mut chars = lower.chars().peekable();
-    let mut parted = String::with_capacity(lower.len());
-    // The kinds of character in the word just read: a letter, a digit.
-    let (mut letter, mut digit) = (false, false);
-    while let Some(c) = chars.next() {
-        let after_word = letter || digit;
-        let before_word = chars.peek().is_some_and(|n| n.is_alphanumeric());
-        let marker = letter && digit;
-        parted.push(if c == '-' && after_word && before_word && !marker {
-            ' '
-        } else {
-            c
-        });
-        if c.is_alphanumeric() {
-            letter |= c.is_alphabetic();
-            digit |= c.is_numeric();
-        } else {
-            (letter, digit) = (false, false);
+    let chars: Vec<char> = label.to_lowercase().chars().collect();
+    let mut parted = String::with_capacity(chars.len() + 1);
+    for (i, &c) in chars.iter().enumerate() {
+        let after_word = i > 0 && chars[i - 1].is_alphanumeric();
+        if c != '-' || !after_word {
+            parted.push(c);
+            continue;
         }
+        let next: Vec<char> = (chars[i + 1..].iter())
+            .take_while(|n| n.is_alphanumeric())
+            .copied()
+            .collect();
+        let marker = next.iter().any(|n| n.is_alphabetic()) && next.iter().any(|n| n.is_numeric());
+        parted.push_str(match (next.is_empty(), marker) {
+            (true, _) => "-",
+            (false, true) => "- ",
+            (false, false) => " ",
+        });
     }
     label_key(&parted)
 }
