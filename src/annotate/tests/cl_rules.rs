@@ -151,6 +151,10 @@ fn a_hyphen_parts_two_words_of_letters_only() {
     same("T-cell", "T cell");
     same("alpha-beta T cell", "alpha beta T cell");
     same("Pre-Pro-B", "Pre Pro B");
+    // A marker's own words for its sign, as the ontology writes them.
+    same("CD4-positive T cell", "CD4 positive T cell");
+    same("CD16-negative monocyte", "CD16 negative monocyte");
+    same("CD4-CD8-negative", "CD4-CD8 negative");
     // A side with a digit, a sign at a word's end: kept as written.
     for literal in [
         "CD34-",
@@ -160,7 +164,6 @@ fn a_hyphen_parts_two_words_of_letters_only() {
         "CD27-IgD-",
         "B-1a",
         "CD8-T",
-        "CD4-positive T cell",
     ] {
         assert_eq!(
             key(literal),
@@ -175,4 +178,6 @@ fn a_hyphen_parts_two_words_of_letters_only() {
     differ("CD4-CD8", "CD4 CD8");
     differ("NK-CD56bright", "NK CD56bright");
     differ("B-1a", "B 1a");
+    differ("CD16- monocyte", "CD16 monocyte");
+    differ("CD4-positive T cell", "CD4 T cell");
 }

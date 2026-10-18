@@ -328,18 +328,25 @@ fn key(label: &str) -> String {
 
 /// `text` with each hyphen between two words of letters alone read as a
 /// space (`Pro-B` is `Pro B`, `T-cell` is `T cell`, `alpha-beta` is `alpha
-/// beta`); every other hyphen is kept as written, so a negative marker or a
-/// name with digits stays its literal text (`CD34-` is not `CD34`,
-/// `CD34-CD38-` is not `CD34 CD38-`, `CD4- T` is not `CD4 T`,
-/// `NK-CD56bright` and `B-1a` are as written). Aliases and term names are
-/// compared under this one rule.
+/// beta`), and so each before a marker's sign written out as the ontology
+/// writes it ([`SIGN_WORDS`]: `CD4-positive` is `CD4 positive`); every other
+/// hyphen is kept as written, so a negative marker or a name with digits
+/// stays its literal text (`CD34-` is not `CD34`, `CD34-CD38-` is not
+/// `CD34 CD38-`, `CD4- T` is not `CD4 T`, `NK-CD56bright` and `B-1a` are as
+/// written). Aliases and term names are compared under this one rule.
 pub(crate) fn part_hyphens(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     (chars.iter().enumerate())
         .map(|(i, &c)| {
-            let before = chars[..i].iter().rev().copied();
-            let after = chars[i + 1..].iter().copied();
-            if c == '-' && letters_only(before) && letters_only(after) {
+            if c != '-' {
+                return c;
+            }
+            let before = word(chars[..i].iter().rev().copied());
+            let after = word(chars[i + 1..].iter().copied());
+            let letters = |w: &str| !w.is_empty() && w.chars().all(char::is_alphabetic);
+            let parts = (letters(&before) && letters(&after))
+                || (!before.is_empty() && SIGN_WORDS.contains(&after.as_str()));
+            if parts {
                 ' '
             } else {
                 c
@@ -348,11 +355,14 @@ pub(crate) fn part_hyphens(text: &str) -> String {
         .collect()
 }
 
-/// Whether the word `chars` start with (up to the first character that is
-/// neither a letter nor a digit) is there and has letters alone.
-fn letters_only(chars: impl Iterator<Item = char>) -> bool {
-    let mut word = chars.take_while(|c| c.is_alphanumeric()).peekable();
-    word.peek().is_some() && word.all(char::is_alphabetic)
+/// The words the Cell Ontology writes a marker's sign with
+/// (`CD4-positive`, `CD16-negative`), which a label may write with a space.
+pub(crate) const SIGN_WORDS: [&str; 2] = ["positive", "negative"];
+
+/// The word `chars` start with: up to the first character that is neither a
+/// letter nor a digit.
+fn word(chars: impl Iterator<Item = char>) -> String {
+    chars.take_while(|c| c.is_alphanumeric()).collect()
 }
 
 /// The rules the repository ships (`data/cl_matching.json`), for tests.

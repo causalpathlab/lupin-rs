@@ -22,7 +22,7 @@
 //!
 //! Pure: [`crate::manifest`] finds the ontology and the evidence.
 
-use crate::annotate::cl_rules::{part_hyphens, Aliases, MatchRules};
+use crate::annotate::cl_rules::{part_hyphens, Aliases, MatchRules, SIGN_WORDS};
 use crate::annotate::markers::label_key;
 use data_beans::alg::union_find::UnionFind;
 use serde::{Deserialize, Serialize};
@@ -151,8 +151,8 @@ impl Stanza {
 }
 
 /// A normalised name's words: spaces part them, and so does a hyphen
-/// between two words of letters alone; any other hyphen is a sign kept
-/// ([`part_hyphens`]).
+/// between two words of letters alone or before a marker's written-out sign
+/// (`CD4-positive`); any other hyphen is kept ([`part_hyphens`]).
 fn words(normalised: &str) -> Vec<String> {
     (part_hyphens(normalised).split(' '))
         .filter(|w| !w.is_empty())
@@ -653,10 +653,12 @@ impl ClTerms {
 
     /// The labels of `labels` word `w` completes, with their terms: each
     /// label's words with `w`, or with `w` and an implied word, looked up
-    /// among the names, the most general term they name.
+    /// among the names, the most general term they name. An implied word or
+    /// a marker's sign ([`SIGN_WORDS`]) completes nothing: a label leaving
+    /// off `negative` is no negative marker's.
     fn completed_by(&self, labels: &[String], w: &str) -> BTreeMap<String, String> {
         let implied = &self.rules.implied.suffixes;
-        if implied.iter().any(|s| s == w) {
+        if implied.iter().any(|s| s == w) || SIGN_WORDS.contains(&w) {
             return BTreeMap::new();
         }
         let mut completed = BTreeMap::new();

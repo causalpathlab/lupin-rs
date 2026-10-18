@@ -1138,3 +1138,32 @@ fn only_a_taxon_after_a_comma_is_a_qualifier() {
     assert_eq!(mapped["CT6"], "CL:1");
     assert_eq!(unmapped, ["CTQ"], "a kind is no qualifier");
 }
+
+#[test]
+fn a_marker_s_positive_or_negative_word_reads_as_a_word() {
+    let obo = "[Term]\nid: CL:1\nname: CD4-positive helper T cell\n\n\
+               [Term]\nid: CL:2\nname: CD14-positive monocyte\n\n\
+               [Term]\nid: CL:3\nname: CD16-negative monocyte\nsynonym: \"CD16- monocyte\" EXACT []\n\n\
+               [Term]\nid: CL:4\nname: proCT9blast\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let (mapped, unmapped) = t.map_labels([
+        "CD4 positive helper T cells",
+        "CD4-positive helper T cells",
+        "CD14positive monocyte",
+        "CD16 negative monocytes",
+        "CD16 Monocytes",
+        "Pro-CT9blast",
+    ]);
+    assert_eq!(mapped["CD4 positive helper T cells"], "CL:1");
+    assert_eq!(mapped["CD4-positive helper T cells"], "CL:1");
+    assert_eq!(
+        mapped["CD14positive monocyte"], "CL:2",
+        "run together as a last resort"
+    );
+    assert_eq!(mapped["CD16 negative monocytes"], "CL:3");
+    assert_eq!(
+        unmapped,
+        ["CD16 Monocytes", "Pro-CT9blast"],
+        "the marker is not its negative; a hyphen beside a digit is kept, as in CD4-T"
+    );
+}
