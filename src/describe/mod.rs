@@ -109,16 +109,20 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     let out: &str = &args.out;
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
     let loaded = crate::manifest::run::load(&args.from).ok();
-    // A trajectory run: its order is what is described.
-    if let Some(l) =
-        (loaded.as_ref()).filter(|l| crate::manifest::family::is_trajectory(&l.manifest, &l.file))
-    {
-        return describe_trajectory(l, &args.from, out);
-    }
     let files = loaded.as_ref().map_or_else(
         || EvidenceFiles::by_name(&args.from),
         EvidenceFiles::locate_in,
     );
+    // A trajectory run: its order in words, and its clusters as on any
+    // round when it carries the round's evidence.
+    if let Some(l) =
+        (loaded.as_ref()).filter(|l| crate::manifest::family::is_trajectory(&l.manifest, &l.file))
+    {
+        describe_trajectory(l, &args.from, out)?;
+        if !files.has_evidence() {
+            return Ok(());
+        }
+    }
 
     let mut enriched = load_evidence(&files, args.fdr_alpha)?;
     attach_second_best(&mut enriched, &files, args.fdr_alpha)?;
@@ -197,6 +201,11 @@ struct EvidenceFiles {
 }
 
 impl EvidenceFiles {
+    /// Whether any table [`load_evidence`] reads a round's calls from is at hand.
+    fn has_evidence(&self) -> bool {
+        self.annot.is_some() || self.enrichment_q.is_some() || self.argmax.is_some()
+    }
+
     /// From the `annotate.*` slots of the manifest `loaded`, when `--from`
     /// is a run manifest (or its prefix): those point at the latest pass,
     /// whatever its `-o` was. Otherwise `--from` is an annotate output

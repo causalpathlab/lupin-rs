@@ -265,6 +265,29 @@ fn a_round_made_from_a_trajectory_is_described_as_a_round() {
 }
 
 #[test]
+fn a_trajectory_with_annotate_evidence_gets_both_descriptions() {
+    // A trajectory manifest is a copy of its annotated round: it keeps the
+    // round's slots, so its clusters are described as on any round, its
+    // order beside them.
+    let dir = tempfile::tempdir().unwrap();
+    let t = super::trajectory::tests::fixture_trajectory(dir.path());
+    let mut loaded = crate::manifest::run::load(&t.to_string_lossy()).unwrap();
+    std::fs::write(
+        dir.path().join("t.argmax.tsv"),
+        "cell\tcell_type\nc0\tCT_A\n",
+    )
+    .unwrap();
+    loaded.manifest.annotate.argmax = Some("t.argmax.tsv".into());
+    loaded.manifest.save(&loaded.file).unwrap();
+    let out = dir.path().join("t").to_string_lossy().into_owned();
+    let from = t.to_string_lossy().into_owned();
+    run_describe(&describe_args(&["-f", &from, "-o", &out])).unwrap();
+    assert!(Path::new(&format!("{out}.describe.json")).exists());
+    assert!(Path::new(&format!("{out}.describe.md")).exists());
+    assert!(super::trajectory::md_path(&out).exists());
+}
+
+#[test]
 fn a_trajectory_is_described_by_code_from_its_outputs() {
     use super::trajectory::{self, tests::fixture_trajectory, OrderFacts};
     let dir = tempfile::tempdir().unwrap();

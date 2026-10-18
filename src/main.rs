@@ -107,8 +107,9 @@ enum Commands {
                       When `{from}.cluster_term_q.parquet` is present,\n\
                       a second FDR-significant contender is named if one exists.\n\
                       Writes `{out}.describe.json` and `{out}.describe.md`. On a trajectory\n\
-                      run, code writes its order in words from the run's outputs,\n\
-                      `{out}.trajectory.describe.md`.\n\
+                      run, code also writes its order in words from the run's outputs,\n\
+                      `{out}.trajectory.describe.md`; its clusters are described as above\n\
+                      when it carries a round's evidence, and only its order otherwise.\n\
                       \n\
                       The composer never invents labels: sentences are citation-checked\n\
                       templates; no language model writes them."
