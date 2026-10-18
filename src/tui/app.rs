@@ -549,7 +549,9 @@ pub struct App {
     pub lm: crate::describe::LmArgs,
     /// The round's proposals, followed in its cache.
     following: Option<super::consensus::Following>,
-    /// The trajectory's texts, once described (`L` in the order view).
+    /// The trajectory's texts, once described (`L` in the order view):
+    /// always those of [`Self::shown_trajectory`], as
+    /// [`Self::load_order_texts`] keeps them, or none.
     pub order_texts: Option<super::consensus::OrderTexts>,
     pub tree_sel: usize,
     /// The order view's types on the Cell Ontology, drawn beside the
@@ -3361,6 +3363,8 @@ impl App {
                 Err(e) => self.push_log(format!("[WARN] trajectory figures: {e:#}")),
             }
         }
+        // Nor do its texts: those of the trajectory now shown, or none.
+        self.load_order_texts();
         if self.in_order() {
             // The order view's edges follow the trajectory now shown.
             self.rebuild_order(true);
@@ -4351,14 +4355,6 @@ impl App {
     #[must_use]
     pub fn order_line(&self) -> Option<String> {
         let t = self.order_texts.as_ref()?;
-        // Another trajectory's figures are up: its texts are not these.
-        if self
-            .figures
-            .as_ref()
-            .is_some_and(|f| f.data.manifest != t.manifest)
-        {
-            return None;
-        }
         let ty = match &self.tree_mode {
             TreeMode::Order(v) if self.focus == Focus::Order => {
                 v.types.get(v.sel).map(|(t, _)| t.as_str())

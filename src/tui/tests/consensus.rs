@@ -379,6 +379,28 @@ fn another_trajectory_shown_does_not_keep_the_last_ones_texts() {
 }
 
 #[test]
+fn opening_another_trajectory_lets_the_last_ones_texts_go() {
+    use crate::describe::trajectory::tests::fixture_trajectory;
+    use crate::manifest::family::{Kind, Pick};
+    let dir = tempfile::tempdir().unwrap();
+    let a = fixture_trajectory(&dir.path().join("a").tap_mkdir());
+    let b = fixture_trajectory(&dir.path().join("b").tap_mkdir());
+    let mut app = app_on(&fixture_round(&dir.path().join("r").tap_mkdir()));
+    app.source = a.clone();
+    app.trajectory_tui = true;
+    app.toggle_order(false);
+    app.follow_order_texts().unwrap();
+    assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&a));
+    let pick = Pick {
+        path: b,
+        kind: Kind::Trajectory,
+        labelled: false,
+    };
+    app.open_run(pick, true);
+    assert!(app.order_texts.is_none(), "B's are not cached yet");
+}
+
+#[test]
 fn the_tuis_describe_job_writes_its_cache_and_no_description() {
     let lm = crate::describe::LmArgs::default();
     let argv = super::super::runner::describe_argv(Path::new("d/r.senna.json"), "d/r", &lm);
