@@ -266,4 +266,13 @@ fn a_rank_word_runs_over_a_list_of_methods_but_not_past_another_claim() {
         ),
         Ok(())
     );
+    assert_eq!(
+        check(
+            "CT A is ranked first by enrichment, and all methods support it",
+            "CT_A"
+        ),
+        Ok(()),
+        "a clause saying more than the methods takes no rank from the list before it"
+    );
+    assert!(check("CT A has the top enrichment, or SuSiE ranking", "CT_A").is_err());
 }

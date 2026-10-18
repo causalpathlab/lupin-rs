@@ -479,9 +479,10 @@ fn ranks(t: &str) -> Vec<(usize, usize)> {
 
 /// The claims a cluster's sentence makes of cluster `c`'s methods: each
 /// method named takes the nearest rank word of its clause, else, when it
-/// is listed with the method before it (`the highest enrichment and SuSiE
-/// ranking`), that one's; the claim is about the choice its clause names,
-/// else `label` (the one the sentence proposes).
+/// is listed with the method before it and its clause says no more
+/// (`the highest enrichment and SuSiE ranking`, not `first by enrichment,
+/// and all methods support it`), that one's; the claim is about the choice
+/// its clause names, else `label` (the one the sentence proposes).
 pub fn rank_claims(text: &str, c: &ClusterInput, label: &str) -> Claim {
     let mut entities: Vec<String> = c.choices.iter().map(|ch| ch.label().to_string()).collect();
     entities.extend(c.calls.iter().map(|k| k.label.clone()));
@@ -514,10 +515,10 @@ pub fn rank_claims(text: &str, c: &ClusterInput, label: &str) -> Claim {
     // Words a list of methods may have between them.
     let listed = |gap: &str| {
         gap.split(|ch: char| ch == ',' || ch.is_whitespace())
-            .all(|w| ["", "and", "the", "ranking", "rankings", "'s"].contains(&w))
+            .all(|w| ["", "and", "or", "the", "ranking", "rankings", "'s"].contains(&w))
     };
     let mut taken: Vec<Option<usize>> = Vec::new();
-    for (i, &(p, _, m)) in named.iter().enumerate() {
+    for (i, &(p, e, m)) in named.iter().enumerate() {
         let clause = x.clause(p);
         let own = (said.iter())
             .filter(|(q, _)| (clause.0..clause.1).contains(q))
@@ -526,7 +527,10 @@ pub fn rank_claims(text: &str, c: &ClusterInput, label: &str) -> Claim {
         let rank = own.or_else(|| {
             // The methods of `all methods` share its place, and so its rank.
             let (q, prev_end, _) = *named.get(i.checked_sub(1)?)?;
-            let joined = q == p || x.t.get(prev_end..p).is_some_and(listed);
+            // Else a method in a list, its clause saying no more than it.
+            let joined = q == p
+                || (x.t.get(prev_end..p).is_some_and(listed)
+                    && x.t.get(e..clause.1).is_some_and(listed));
             joined.then(|| taken[i - 1]).flatten()
         });
         taken.push(rank);
