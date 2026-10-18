@@ -3,6 +3,7 @@
 //! view read it.
 
 use anyhow::{Context, Result};
+use legume_numeric::matrix::common_io::{read_lines_of_words_delim, ReadLinesOut};
 
 /// One root-to-leaf path.
 #[derive(Clone, Debug, PartialEq)]
@@ -24,24 +25,23 @@ pub(crate) fn write(path: &str, lineages: &[Lineage]) -> Result<()> {
 }
 
 pub(crate) fn read(path: &str) -> Result<Vec<Lineage>> {
-    Ok(parse(
-        &std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?,
-    ))
-}
-
-/// The lineages of the file's `text`.
-#[must_use]
-pub(crate) fn parse(text: &str) -> Vec<Lineage> {
-    text.lines()
-        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-        .filter_map(|l| {
-            let mut it = l.split('\t');
-            let (name, component, path) = (it.next()?, it.next()?, it.next()?);
+    let ReadLinesOut { lines, .. } =
+        read_lines_of_words_delim(path, "\t", -1).with_context(|| format!("reading {path}"))?;
+    Ok(lines
+        .into_iter()
+        .filter(|w| {
+            w.first()
+                .is_some_and(|f| !f.is_empty() && !f.starts_with('#'))
+        })
+        .filter_map(|w| {
+            let [name, component, path, ..] = &w[..] else {
+                return None;
+            };
             Some(Lineage {
                 name: name.to_string(),
                 component: component.to_string(),
                 path: path.split(STEP).map(str::to_string).collect(),
             })
         })
-        .collect()
+        .collect())
 }

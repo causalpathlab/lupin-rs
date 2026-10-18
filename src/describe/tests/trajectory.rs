@@ -15,16 +15,23 @@ fn edge(a: &str, b: &str, verdict: Option<Verdict>) -> EdgeRow {
     }
 }
 
+fn lineage(name: &str, component: &str, path: &[&str]) -> lineages::Lineage {
+    lineages::Lineage {
+        name: name.into(),
+        component: component.into(),
+        path: path.iter().map(|t| t.to_string()).collect(),
+    }
+}
+
 /// HSC_like → MPP_like, which parts toward ERY and toward MONO; DC is a
 /// component of its own; NK_cells pairs with MONO as a candidate only.
 fn facts() -> OrderFacts {
     OrderFacts {
-        lineages: lineages::parse(
-            "# lineage\tcomponent\tpath\n\
-             L0\t0\tHSC_like > MPP_like > ERY\n\
-             L1\t0\tHSC_like > MPP_like > MONO\n\
-             L2\t1\tDC\n",
-        ),
+        lineages: vec![
+            lineage("L0", "0", &["HSC_like", "MPP_like", "ERY"]),
+            lineage("L1", "0", &["HSC_like", "MPP_like", "MONO"]),
+            lineage("L2", "1", &["DC"]),
+        ],
         edges: vec![
             edge("HSC_like", "MPP_like", Some(Verdict::Supported)),
             edge("MPP_like", "ERY", Some(Verdict::Supported)),
@@ -103,11 +110,7 @@ pub(crate) fn fixture_trajectory(dir: &Path) -> PathBuf {
     use legume_numeric::matrix::parquet::{write_named_table, Column};
     let f = facts();
     let at = |name: &str| dir.join(name).to_string_lossy().into_owned();
-    std::fs::write(
-        dir.join("t.trajectory_lineages.tsv"),
-        "# lineage\tcomponent\tpath\nL0\t0\tHSC_like > MPP_like > ERY\nL1\t0\tHSC_like > MPP_like > MONO\nL2\t1\tDC\n",
-    )
-    .unwrap();
+    lineages::write(&at("t.trajectory_lineages.tsv"), &f.lineages).unwrap();
     edges::write(&at("t.trajectory_edges.parquet"), &f.edges).unwrap();
     let cells: Vec<Box<str>> = (0..6).map(|i| format!("c{i}").into()).collect();
     let types: Vec<Box<str>> = ["HSC_like", "HSC_like", "MPP_like", "ERY", "ERY", "MONO"]
