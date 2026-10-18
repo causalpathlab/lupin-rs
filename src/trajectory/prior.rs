@@ -219,17 +219,20 @@ pub(crate) fn parse_statements(text: &str, source: Source, origin: &str) -> Resu
 }
 
 /// The standing statements about `names`: the Cell Ontology's (when `terms`
-/// is given), then the user's and the project's `precedence.tsv` along
-/// `search`. A precedence file that cannot be read is returned beside the
-/// layers that could, for the caller to stop on or to show.
+/// is given, `names` read with the `context` word of every type there is,
+/// [`ClTerms::context_word`]), then the user's and the project's
+/// `precedence.tsv` along `search`. A precedence file that cannot be read is
+/// returned beside the layers that could, for the caller to stop on or to
+/// show.
 pub(crate) fn standing_layers(
     terms: Option<&ClTerms>,
     names: &[&str],
+    context: Option<&str>,
     search: &SearchPath,
 ) -> (Vec<Vec<Statement>>, Vec<anyhow::Error>) {
     let mut layers = Vec::new();
     if let Some(terms) = terms {
-        let (mapped, unmapped) = terms.map_labels(names.iter().copied());
+        let (mapped, unmapped) = terms.map_labels_in(names.iter().copied(), context);
         if !unmapped.is_empty() {
             log::info!(
                 "{} type(s) match no Cell Ontology term (add them to --label-cl): {}",

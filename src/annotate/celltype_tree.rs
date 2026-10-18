@@ -366,11 +366,67 @@ impl ClTerms {
     /// terms, a term's own name wins over another's synonym, and a term
     /// every other is a kind of wins over its specialisations; a label still
     /// matching several, or none, stays unmapped rather than guessed.
+    ///
+    /// The word the panel leaves off is told from `labels`: a caller with
+    /// some of a panel's labels, or one, gives the panel's word to
+    /// [`Self::map_labels_in`] instead, so they read as the panel's do.
     #[must_use]
     pub fn map_labels<'a>(
         &self,
         labels: impl IntoIterator<Item = &'a str>,
     ) -> (BTreeMap<String, String>, Vec<String>) {
+        self.map_in_context(labels).0
+    }
+
+    /// The word a panel of `labels` leaves off them (see `ContextRules`),
+    /// as [`Self::map_labels`] tells it.
+    #[must_use]
+    pub fn context_word<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> Option<String> {
+        self.map_in_context(labels).1
+    }
+
+    /// [`Self::map_labels`] with the panel's context word given (from
+    /// [`Self::context_word`]): it completes each label the other tiers
+    /// leave, however few the labels are.
+    #[must_use]
+    pub fn map_labels_in<'a>(
+        &self,
+        labels: impl IntoIterator<Item = &'a str>,
+        context: Option<&str>,
+    ) -> (BTreeMap<String, String>, Vec<String>) {
+        let (mut mapped, mut unmapped) = self.match_labels(labels);
+        if let Some(w) = context {
+            let completed = self.completions(&unmapped).remove(w).unwrap_or_default();
+            unmapped.retain(|l| !completed.contains_key(l));
+            mapped.extend(completed);
+        }
+        (mapped, unmapped)
+    }
+
+    /// [`Self::map_labels`], and the context word it read the labels with.
+    fn map_in_context<'a>(
+        &self,
+        labels: impl IntoIterator<Item = &'a str>,
+    ) -> (Mapped, Option<String>) {
+        let (mut mapped, mut unmapped) = self.match_labels(labels);
+        // Too few labels left tell no word.
+        let min = self.rules.context.min_labels;
+        let mut by_word = if min.is_some_and(|m| unmapped.len() >= m.max(1)) {
+            self.completions(&unmapped)
+        } else {
+            BTreeMap::new()
+        };
+        let word = self.context_of(&by_word).map(str::to_string);
+        if let Some(completed) = word.as_deref().and_then(|w| by_word.remove(w)) {
+            unmapped.retain(|l| !completed.contains_key(l));
+            mapped.extend(completed);
+        }
+        ((mapped, unmapped), word)
+    }
+
+    /// Each label's term by every tier but the panel's context, and the
+    /// labels left.
+    fn match_labels<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> Mapped {
         let mut mapped = BTreeMap::new();
         let mut unmapped = Vec::new();
         for label in labels {
@@ -381,9 +437,6 @@ impl ClTerms {
                 None => unmapped.push(label.to_string()),
             }
         }
-        let completed = self.by_context(&unmapped);
-        unmapped.retain(|l| !completed.contains_key(l));
-        mapped.extend(completed);
         (mapped, unmapped)
     }
 
@@ -392,9 +445,10 @@ impl ClTerms {
     /// only as a hint of its lineage.
     #[must_use]
     pub fn place_labels<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> Placed {
-        let (on, unmapped) = self.map_labels(labels);
+        let ((on, unmapped), context) = self.map_in_context(labels);
         let mut placed = Placed {
             on,
+            context,
             ..Placed::default()
         };
         for label in unmapped {
@@ -529,15 +583,11 @@ impl ClTerms {
         (!ids.is_empty()).then(|| self.most_general(&ids).or_else(tightest))
     }
 
-    /// The labels the panel's context word completes (see `ContextRules`),
-    /// with their terms: the one word that, with at most an implied one,
-    /// turns most of `labels` into a term's name or counted synonym, when
-    /// it does so for enough of them and more than any other word.
-    fn by_context(&self, labels: &[String]) -> BTreeMap<String, String> {
-        let Some(min) = self.rules.context.min_labels else {
-            return BTreeMap::new();
-        };
-        if labels.len() < min.max(1) {
+    /// Per word that, with at most an implied one, turns labels of `labels`
+    /// into a term's name or counted synonym: those labels, with their
+    /// terms (see `ContextRules`). None when the rules leave context off.
+    fn completions(&self, labels: &[String]) -> BTreeMap<&str, BTreeMap<String, String>> {
+        if self.rules.context.min_labels.is_none() {
             return BTreeMap::new();
         }
         let implied = &self.rules.implied.suffixes;
@@ -578,15 +628,24 @@ impl ClTerms {
                 }
             }
         }
-        let mut ranked: Vec<BTreeMap<String, String>> = by_word.into_values().collect();
-        ranked.sort_by_key(|m| std::cmp::Reverse(m.len()));
+        by_word
+    }
+
+    /// The panel's context word among `by_word` ([`Self::completions`]):
+    /// the one that completes the most labels, when it completes enough of
+    /// them and more than any other word.
+    fn context_of<'w>(
+        &self,
+        by_word: &BTreeMap<&'w str, BTreeMap<String, String>>,
+    ) -> Option<&'w str> {
+        let min = self.rules.context.min_labels?;
+        let mut ranked: Vec<(&str, usize)> = by_word.iter().map(|(w, m)| (*w, m.len())).collect();
+        ranked.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
         match &ranked[..] {
-            [best, rest @ ..]
-                if best.len() >= min && rest.first().is_none_or(|r| r.len() < best.len()) =>
-            {
-                ranked.swap_remove(0)
+            [(w, n), rest @ ..] if *n >= min.max(1) && rest.first().is_none_or(|r| r.1 < *n) => {
+                Some(w)
             }
-            _ => BTreeMap::new(),
+            _ => None,
         }
     }
 
@@ -734,9 +793,14 @@ impl ClTerms {
     }
 }
 
+/// Labels with the terms they map to, and the labels left unmapped.
+type Mapped = (BTreeMap<String, String>, Vec<String>);
+
 /// Where [`ClTerms::place_labels`] put a panel's labels.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Placed {
+    /// The word the panel leaves off its labels ([`ClTerms::context_word`]).
+    pub context: Option<String>,
     /// Label → the term it matched.
     pub on: BTreeMap<String, String>,
     /// Label → the term it is a kind of.

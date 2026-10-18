@@ -451,7 +451,11 @@ fn gather_statements(
         if terms.is_none() {
             warn!("no Cell Ontology at hand; the prior comes from precedence files alone");
         }
-        let (standing, problems) = prior::standing_layers(terms, &node_names, &data.search);
+        // The nodes are read as every type is, as the order view reads them.
+        let all: Vec<&str> = inputs.names.iter().map(AsRef::as_ref).collect();
+        let context = terms.and_then(|t| t.context_word(all.iter().copied()));
+        let (standing, problems) =
+            prior::standing_layers(terms, &node_names, context.as_deref(), &data.search);
         if let Some(e) = problems.into_iter().next() {
             return Err(e);
         }

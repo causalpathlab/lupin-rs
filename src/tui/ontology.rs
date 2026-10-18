@@ -516,13 +516,13 @@ pub fn term_label(cl: &ClTerms, tree: &PanelTree, id: &str) -> String {
 }
 
 /// The CL term a label names: a panel type's, else the term it matches
-/// by name, synonym or abbreviation.
+/// by name, synonym or abbreviation, read with the panel's context word.
 #[must_use]
 pub fn term_of(cl: &ClTerms, tree: &PanelTree, label: &str) -> Option<String> {
     if let Some(id) = tree.cl_of(label) {
         return Some(id.to_string());
     }
-    let (mapped, _) = cl.map_labels([label]);
+    let (mapped, _) = cl.map_labels_in([label], tree.context());
     mapped.into_values().next()
 }
 

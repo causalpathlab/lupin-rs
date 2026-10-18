@@ -127,7 +127,9 @@ impl OrderView {
         let (nodes, small): (Vec<_>, Vec<_>) = refs.iter().zip(&is_node).partition(|(_, &n)| n);
         let nodes: Vec<&str> = nodes.into_iter().map(|(t, _)| *t).collect();
         let small: std::collections::HashSet<&str> = small.into_iter().map(|(t, _)| *t).collect();
-        let (layers, problems) = prior::standing_layers(cl, &nodes, search);
+        // The nodes are read as every type on screen is, so as the tree is.
+        let context = cl.and_then(|cl| cl.context_word(refs.iter().copied()));
+        let (layers, problems) = prior::standing_layers(cl, &nodes, context.as_deref(), search);
         let problems: Vec<String> = problems.iter().map(|e| format!("{e:#}")).collect();
         let statements = prior::combine(&layers);
         let (prior, error) = match prior::build(&names, &is_node, statements.clone()) {
@@ -158,7 +160,11 @@ impl OrderView {
             .iter()
             .map(|(t, _)| (String::new(), t.clone()))
             .collect();
-        let mapped = cl.map_or(0, |cl| cl.map_labels(refs.iter().copied()).0.len());
+        let mapped = cl.map_or(0, |cl| {
+            cl.map_labels_in(refs.iter().copied(), context.as_deref())
+                .0
+                .len()
+        });
         let links = statements
             .iter()
             .filter(|s| {
