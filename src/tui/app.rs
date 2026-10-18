@@ -550,9 +550,12 @@ pub struct App {
     /// The round's proposals, followed in its cache.
     following: Option<super::consensus::Following>,
     /// The trajectory's texts, once described (`L` in the order view):
-    /// always those of [`Self::shown_trajectory`], as
-    /// [`Self::load_order_texts`] keeps them, or none.
+    /// in the order view always those of [`Self::shown_trajectory`], as
+    /// [`Self::keep_order_texts_current`] keeps them, or none.
     pub order_texts: Option<super::consensus::OrderTexts>,
+    /// The manifests [`Self::order_texts`] were last read among, or none
+    /// to read them again.
+    order_texts_for: Option<Vec<PathBuf>>,
     pub tree_sel: usize,
     /// The order view's types on the Cell Ontology, drawn beside the
     /// precedence table as the tree pane draws the panel.
@@ -664,6 +667,7 @@ impl App {
             lm: crate::describe::LmArgs::default(),
             following: None,
             order_texts: None,
+            order_texts_for: None,
             tree_sel: 0,
             form: None,
             help_open: false,
@@ -730,6 +734,7 @@ impl App {
             self.push_log(line);
         }
         self.keep_scores_current();
+        self.keep_order_texts_current();
         // A question asked again lapses, and the status with it unless
         // something has said more since.
         if let Some((_, _, asked)) = self
@@ -2869,7 +2874,6 @@ impl App {
             }
         }
         self.reload_order();
-        self.load_order_texts();
         self.status = "order view: space marks a type, then > states the first precedes the second, u that they are unrelated".into();
     }
 
@@ -2897,7 +2901,7 @@ impl App {
 
     /// Take `out` as the output prefix of passes; its latest round, when it
     /// has one, is opened.
-    fn set_output(&mut self, out: &str) {
+    pub(super) fn set_output(&mut self, out: &str) {
         if self.child.is_some() {
             self.status = "wait for the running job before changing the output".into();
             return;
@@ -3363,8 +3367,6 @@ impl App {
                 Err(e) => self.push_log(format!("[WARN] trajectory figures: {e:#}")),
             }
         }
-        // Nor do its texts: those of the trajectory now shown, or none.
-        self.load_order_texts();
         if self.in_order() {
             // The order view's edges follow the trajectory now shown.
             self.rebuild_order(true);
@@ -3615,7 +3617,9 @@ impl App {
         if self.in_order() {
             self.reload_order();
         }
-        self.load_order_texts();
+        // Its manifest is written anew: its texts are read again.
+        self.order_texts_for = None;
+        self.keep_order_texts_current();
         // The header names the manifest whose figures are up.
         self.status = if self.figures.is_some() && self.trajectory_tui {
             format!("trajectory done in {secs}s: its figures (g lists the runs)")
@@ -4282,22 +4286,35 @@ impl App {
         );
     }
 
-    /// The trajectory shown: the figures', else the first of the order
-    /// view's manifests that records a trajectory run of its own.
-    fn shown_trajectory(&self) -> Option<PathBuf> {
-        let has = |m: &Path| {
-            m.is_file()
-                && crate::manifest::run::load(&m.to_string_lossy())
-                    .is_ok_and(|l| crate::manifest::family::is_trajectory(&l.manifest, &l.file))
-        };
+    /// Where the trajectory shown is looked for: the figures' manifest,
+    /// then the order view's.
+    fn trajectory_candidates(&self) -> Vec<PathBuf> {
         let figures = self.figures.as_ref().map(|f| f.data.manifest.clone());
-        figures.into_iter().chain(self.manifests()).find(|m| has(m))
+        figures.into_iter().chain(self.manifests()).collect()
+    }
+
+    /// The trajectory shown: the first of [`Self::trajectory_candidates`]
+    /// that records a trajectory run of its own.
+    fn shown_trajectory(&self) -> Option<PathBuf> {
+        shown_among(self.trajectory_candidates())
+    }
+
+    /// In the order view, whose strip alone shows them, read the texts
+    /// again whenever where the trajectory shown is looked for has changed,
+    /// whatever changed it: the one place [`Self::order_texts`] is kept
+    /// the shown trajectory's.
+    fn keep_order_texts_current(&mut self) {
+        if self.in_order() && self.order_texts_for != Some(self.trajectory_candidates()) {
+            self.load_order_texts();
+        }
     }
 
     /// The texts of the trajectory shown, when its cache has some; another
     /// trajectory's are let go.
     pub(super) fn load_order_texts(&mut self) {
-        let shown = self.shown_trajectory();
+        let candidates = self.trajectory_candidates();
+        let shown = shown_among(candidates.iter().cloned());
+        self.order_texts_for = Some(candidates);
         if self
             .order_texts
             .as_ref()
@@ -4309,16 +4326,15 @@ impl App {
             return;
         };
         if cache_path(&derive_out_prefix(&m.to_string_lossy())).is_file() {
-            if let Err(e) = self.follow_order_texts() {
+            if let Err(e) = self.follow_order_texts(&m) {
                 self.push_log(format!("[WARN] no trajectory texts: {e:#}"));
             }
         }
     }
 
-    /// Follow the trajectory shown's texts in its cache.
-    pub(super) fn follow_order_texts(&mut self) -> anyhow::Result<()> {
-        let m = self.shown_trajectory().context("no trajectory run")?;
-        self.order_texts = Some(super::consensus::OrderTexts::of(&m)?);
+    /// Follow trajectory `m`'s texts in its cache.
+    pub(super) fn follow_order_texts(&mut self, m: &Path) -> anyhow::Result<()> {
+        self.order_texts = Some(super::consensus::OrderTexts::of(m)?);
         Ok(())
     }
 
@@ -4339,7 +4355,7 @@ impl App {
             self.status = "no trajectory run to describe yet: r runs one, then L".into();
             return;
         };
-        if let Err(e) = self.follow_order_texts() {
+        if let Err(e) = self.follow_order_texts(&m) {
             self.status = format!("cannot describe {}: {e:#}", file_name(&m));
             return;
         }
@@ -4487,6 +4503,15 @@ const NOT_STARTED: &str = "no trajectory run started";
 pub(super) fn recorded_labels(loaded: &crate::manifest::run::Loaded) -> Option<String> {
     let settings = loaded.manifest.trajectory.settings.as_ref()?;
     loaded.recorded(settings.get("labels")?.as_str()?)
+}
+
+/// The first of `candidates` that records a trajectory run of its own.
+fn shown_among(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    candidates.into_iter().find(|m| {
+        m.is_file()
+            && crate::manifest::run::load(&m.to_string_lossy())
+                .is_ok_and(|l| crate::manifest::family::is_trajectory(&l.manifest, &l.file))
+    })
 }
 
 /// `X.decisions.jsonl` for round `X.senna.json`: what a save hands relabel.

@@ -305,7 +305,7 @@ fn the_order_view_shows_the_selected_types_line_or_the_runs_paragraph() {
     assert!(app.order_line().is_none(), "nothing described yet");
     // L describes the trajectory shown, once a run exists; its texts fill
     // in from the cache as the job writes them.
-    app.follow_order_texts().unwrap();
+    app.follow_order_texts(&t).unwrap();
     let loaded = crate::manifest::run::load(&t.to_string_lossy()).unwrap();
     let f = OrderFacts::read(&loaded).unwrap();
     let cache = cache_path(&derive_out_prefix(&t.to_string_lossy()));
@@ -368,7 +368,7 @@ fn another_trajectory_shown_does_not_keep_the_last_ones_texts() {
     app.source = a.clone();
     app.trajectory_tui = true;
     app.toggle_order(false);
-    app.follow_order_texts().unwrap();
+    app.follow_order_texts(&a).unwrap();
     assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&a));
     // B, with no figures up and no texts cached yet: none show, not A's.
     app.source = b;
@@ -389,7 +389,7 @@ fn opening_another_trajectory_lets_the_last_ones_texts_go() {
     app.source = a.clone();
     app.trajectory_tui = true;
     app.toggle_order(false);
-    app.follow_order_texts().unwrap();
+    app.follow_order_texts(&a).unwrap();
     assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&a));
     let pick = Pick {
         path: b,
@@ -397,6 +397,28 @@ fn opening_another_trajectory_lets_the_last_ones_texts_go() {
         labelled: false,
     };
     app.open_run(pick, true);
+    app.tick();
+    assert!(app.order_texts.is_none(), "B's are not cached yet");
+}
+
+#[test]
+fn a_new_output_lets_the_last_trajectorys_texts_go() {
+    use crate::describe::trajectory::tests::fixture_trajectory;
+    let dir = tempfile::tempdir().unwrap();
+    let a = fixture_trajectory(&dir.path().join("a").tap_mkdir());
+    let b = fixture_trajectory(&dir.path().join("b").tap_mkdir());
+    let mut app = app_on(&fixture_round(&dir.path().join("r").tap_mkdir()));
+    app.source = a.clone();
+    app.trajectory_tui = true;
+    app.toggle_order(false);
+    app.figures = None;
+    app.follow_order_texts(&a).unwrap();
+    app.tick();
+    assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&a));
+    // The output now names B, the first trajectory the order view shows.
+    let out = b.to_string_lossy().replace(".senna.json", "");
+    app.set_output(&out);
+    app.tick();
     assert!(app.order_texts.is_none(), "B's are not cached yet");
 }
 
