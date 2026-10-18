@@ -39,16 +39,37 @@ impl Suggestions {
     }
 }
 
+/// Whether panel type `label` has no Cell Ontology term: what `c` asks
+/// before ranking, and [`unmatched`] of every type.
+#[must_use]
+pub fn termless(tree: &PanelTree, label: &str) -> bool {
+    tree.cl_of(label).is_none()
+}
+
 /// The panel types with no Cell Ontology term.
 #[must_use]
 pub fn unmatched(tree: &PanelTree) -> Vec<String> {
     let mut out: Vec<String> = (tree.nodes.iter())
         .flat_map(|n| &n.labels)
-        .filter(|l| tree.cl_of(l).is_none())
+        .filter(|l| termless(tree, l))
         .cloned()
         .collect();
     out.sort();
     out.dedup();
+    out
+}
+
+/// The labels one ranking job is asked for when `c` is pressed on `label`:
+/// every type without a term, and `label` among them whatever the tree
+/// says, so its suggestions come back and the job never has none to rank.
+#[must_use]
+pub fn to_rank(tree: &PanelTree, label: &str) -> Vec<String> {
+    let mut out = unmatched(tree);
+    let key = label_key(label);
+    if !out.contains(&key) {
+        out.push(key);
+        out.sort();
+    }
     out
 }
 

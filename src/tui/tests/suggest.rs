@@ -122,6 +122,23 @@ fn the_types_without_a_term_are_the_ones_to_suggest_for() {
     let dir = tempfile::tempdir().unwrap();
     let app = app(dir.path());
     assert_eq!(unmatched(&app.tree), ["XQ"]);
+    for t in ["CT1 cells", "CT2 cells", "XQ"] {
+        assert_eq!(
+            termless(&app.tree, t),
+            unmatched(&app.tree).contains(&label_key(t)),
+            "{t}: c and the job ask one question"
+        );
+    }
+}
+
+#[test]
+fn the_ranking_always_holds_the_type_c_was_pressed_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = app(dir.path());
+    assert_eq!(to_rank(&app.tree, "XQ"), ["XQ"]);
+    // A type the tree no longer lists among its termless ones is still
+    // ranked, so the job is never asked for no labels.
+    assert_eq!(to_rank(&app.tree, "Another"), ["Another", "XQ"]);
 }
 
 #[test]

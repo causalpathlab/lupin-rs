@@ -3980,7 +3980,7 @@ impl App {
             self.status = "no Cell Ontology at hand: nothing to suggest terms from".into();
             return;
         }
-        if !self.tree.is_type(&label) || self.tree.cl_of(&label).is_some() {
+        if !self.tree.is_type(&label) || !super::suggest::termless(&self.tree, &label) {
             let what = if self.tree.is_type(&label) {
                 "has its own Cell Ontology term"
             } else {
@@ -3996,7 +3996,7 @@ impl App {
             self.status = "wait for the running job (x stops it), then c ranks the terms".into();
             return;
         }
-        let labels = super::suggest::unmatched(&self.tree);
+        let labels = super::suggest::to_rank(&self.tree, &label);
         let started = self.job_file("suggest.json").and_then(|file| {
             let obo = self.args.obo.as_deref();
             runner::spawn_suggest(&self.source, obo, &labels, &file, self.log_tx.clone())
