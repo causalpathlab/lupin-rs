@@ -268,10 +268,29 @@ impl Text {
             .collect()
     }
 
-    /// The last entity named before `p` in its sentence.
-    fn before(&self, p: usize) -> Option<&Span> {
-        let (a, _) = self.sentence(p);
-        self.spans.iter().rev().find(|s| s.end <= p && s.start >= a)
+    /// The last entity named from `a` on before `p`.
+    fn last_named(&self, a: usize, p: usize) -> Option<&str> {
+        (self.spans.iter().rev())
+            .find(|s| s.end <= p && s.start >= a)
+            .map(|s| s.entity.as_str())
+    }
+
+    /// Who the text speaks of at `p`, among the order words at `said`: the
+    /// last type `p`'s clause names before it; else, in a clause led by
+    /// `which` or `where`, the last its sentence names before it; else the
+    /// sentence's subject, the last type it names before its first order
+    /// word (`A comes after B and before C` says `before` of A).
+    fn speaker(&self, p: usize, said: &[usize]) -> Option<&str> {
+        let (a, _) = self.clause(p);
+        let (s, _) = self.sentence(p);
+        let relative = a > 0
+            && ["which", "where"]
+                .iter()
+                .any(|w| self.t[a - 1..].starts_with(w));
+        let lead = said.iter().copied().filter(|&q| q >= s).min().unwrap_or(p);
+        self.last_named(a, p)
+            .or_else(|| relative.then(|| self.last_named(s, p)).flatten())
+            .or_else(|| self.last_named(s, lead.min(p)))
     }
 
     /// The first named from `p` on in its sentence.
@@ -338,9 +357,10 @@ fn verdicts<'f>(
 /// type's line) makes of the order `f`.
 pub fn order_claims(text: &str, f: &OrderFacts, subject: Option<&str>) -> Claim {
     let x = Text::new(text, &f.types());
-    // Who the text speaks of at `p`: the last type its sentence names
-    // before it, else the subject.
-    let who = |p: usize| x.before(p).map(|s| s.entity.as_str()).or(subject);
+    let mut said: Vec<usize> = x.betweens().iter().map(|b| b.0).collect();
+    said.extend((x.words(&FORWARD).iter().chain(&x.words(&BACKWARD))).map(|(p, _)| *p));
+    // Who the text speaks of at `p`, else the subject.
+    let who = |p: usize| x.speaker(p, &said).or(subject);
     for (p, a, b, _) in x.betweens() {
         let Some(t) = who(p) else { continue };
         let fits = |u: &str, v: &str| earlier(f, u, t) && earlier(f, t, v);
