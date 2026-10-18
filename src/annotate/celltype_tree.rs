@@ -959,9 +959,18 @@ impl TypeTree {
         }
         // A type under a term groups as that term would.
         let mapped = placed.anchored();
-        let ancestry: BTreeMap<&str, BTreeSet<String>> = mapped
+        // Each term's terms above it, and so its depth, walked once.
+        let walked: std::cell::RefCell<HashMap<String, std::rc::Rc<BTreeSet<String>>>> =
+            Default::default();
+        let above = |id: &str| {
+            (walked.borrow_mut().entry(id.to_string()))
+                .or_insert_with(|| std::rc::Rc::new(terms.ancestors_or_self(id)))
+                .clone()
+        };
+        let depth_of = |id: &str| above(id).len();
+        let ancestry: BTreeMap<&str, std::rc::Rc<BTreeSet<String>>> = mapped
             .iter()
-            .map(|(label, id)| (*label, terms.ancestors_or_self(id)))
+            .map(|(label, id)| (*label, above(id)))
             .collect();
         // Each type goes under its nearest ancestor (or itself) among the
         // ontology's analysis classes that it shares with another panel type.
@@ -973,7 +982,7 @@ impl TypeTree {
                 *sharers.entry(t.as_str()).or_default() += 1;
             }
         }
-        let depth: HashMap<&str, usize> = sharers.keys().map(|t| (*t, terms.depth(t))).collect();
+        let depth: HashMap<&str, usize> = sharers.keys().map(|t| (*t, depth_of(t))).collect();
         // A class that is one panel type's own term groups only types on it:
         // over a kind of it, it would make that kind look like the type.
         let mut on: HashMap<&str, usize> = HashMap::new();
@@ -1003,13 +1012,13 @@ impl TypeTree {
         // (Two types on one term outside every class group by that term.)
         let mut shared: Vec<(usize, String)> = (groups.iter())
             .filter(|(_, m)| m.len() >= 2)
-            .map(|(id, _)| (terms.depth(id), id.clone()))
+            .map(|(id, _)| (depth_of(id), id.clone()))
             .collect();
         shared.sort_by_key(|(d, _)| std::cmp::Reverse(*d));
         for (_, inner) in &shared {
-            let above = terms.ancestors_or_self(inner);
+            let over = above(inner);
             let outer = (shared.iter())
-                .filter(|(_, o)| o != inner && above.contains(o) && groups.contains_key(o))
+                .filter(|(_, o)| o != inner && over.contains(o) && groups.contains_key(o))
                 .max_by_key(|(d, _)| *d)
                 .map(|(_, o)| o);
             if let Some(outer) = outer {
@@ -1027,9 +1036,10 @@ impl TypeTree {
                 [m] => mapped[m.as_str()],
                 _ => id.as_str(),
             };
-            let lineage = (terms.ancestors_or_self(class).into_iter())
-                .filter(|t| terms.lineages.contains(t))
-                .max_by_key(|t| terms.depth(t));
+            let lineage = (above(class).iter())
+                .filter(|t| terms.lineages.contains(*t))
+                .max_by_key(|t| depth_of(t))
+                .cloned();
             if let Some(l) = lineage {
                 by_lineage.entry(l).or_default().push(id.clone());
             }
@@ -1073,8 +1083,7 @@ impl TypeTree {
             let (Some(hint), Some(class)) = (placed.hint.get(t), g.cl_id.as_deref()) else {
                 return true;
             };
-            terms.ancestors_or_self(hint).contains(class)
-                || terms.ancestors_or_self(class).contains(hint)
+            above(hint).contains(class) || above(class).contains(hint)
         };
         attach_by_sharing(&mut groups, placed.loose(), panel, fits);
         // Named once every type is in: a lone type under a term is no more
