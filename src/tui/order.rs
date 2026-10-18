@@ -358,13 +358,13 @@ impl ShownRun {
 
     fn read(manifest: &Path, known: Option<&[EdgeRow]>) -> Option<Self> {
         let loaded = load(&manifest.to_string_lossy()).ok()?;
-        let [lineages, edges] = OrderFacts::files(&loaded);
+        let [lineages_file, edges] = OrderFacts::files(&loaded);
         let edges_file = edges?;
         let edges = match known {
             Some(e) => e.to_vec(),
             None => edges::read(&edges_file).ok()?,
         };
-        let lineages = match &lineages {
+        let lineages = match &lineages_file {
             Some(p) => lineages::read(p).unwrap_or_else(|e| {
                 log::warn!("no trajectory texts: {e:#}");
                 Vec::new()
@@ -374,7 +374,7 @@ impl ShownRun {
         let facts = OrderFacts { lineages, edges };
         let files = [
             Some(manifest.to_path_buf()),
-            lineages_path(&loaded),
+            lineages_file.map(PathBuf::from),
             Some(edges_file.into()),
         ]
         .into_iter()
@@ -422,11 +422,6 @@ impl ShownRun {
     }
 }
 
-/// The lineages file `loaded` records.
-fn lineages_path(loaded: &crate::manifest::run::Loaded) -> Option<PathBuf> {
-    OrderFacts::files(loaded)[0].as_ref().map(PathBuf::from)
-}
-
 /// How often the order view looks at its trajectory's files for a change.
 pub const POLL_EVERY: Duration = Duration::from_secs(1);
 
@@ -448,13 +443,20 @@ impl Shown {
         }
     }
 
-    /// [`ShownRun::poll`], at most every [`POLL_EVERY`]; whether it changed.
+    /// [`ShownRun::poll`], at most every [`POLL_EVERY`], or with no run
+    /// found yet a look among the candidates again; whether it changed.
     pub fn poll(&mut self) -> bool {
         if self.polled.elapsed() < POLL_EVERY {
             return false;
         }
         self.polled = Instant::now();
-        self.run.as_mut().is_some_and(ShownRun::poll)
+        match &mut self.run {
+            Some(run) => run.poll(),
+            None => {
+                self.run = ShownRun::find(&self.among, None);
+                self.run.is_some()
+            }
+        }
     }
 }
 

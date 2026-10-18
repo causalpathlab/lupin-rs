@@ -336,6 +336,22 @@ fn the_shown_run_notices_a_rewrite_of_the_same_size() {
     assert_eq!(shown.texts, texts_of(&t));
 }
 
+#[test]
+fn a_trajectory_found_nowhere_is_looked_for_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = fixture_trajectory(dir.path());
+    let edges = t.with_file_name("t.trajectory_edges.parquet");
+    let away = t.with_file_name("away.parquet");
+    std::fs::rename(&edges, &away).unwrap();
+    let among = vec![t.clone()];
+    let mut shown = Shown::new(among.clone(), ShownRun::find(&among, None));
+    assert!(shown.run.is_none(), "no edges yet");
+    std::fs::rename(&away, &edges).unwrap();
+    std::thread::sleep(POLL_EVERY);
+    assert!(shown.poll(), "written since");
+    assert_eq!(shown.run.as_ref().map(|r| &r.manifest), Some(&t));
+}
+
 /// An app on a panel in `dir`, the order view up on trajectory `t`.
 fn order_on(dir: &Path, t: &Path) -> App {
     let mut app = app_on(dir);
