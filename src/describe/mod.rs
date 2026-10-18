@@ -21,7 +21,7 @@ use anyhow::{bail, Context, Result};
 use clap::Args;
 use legume_numeric::matrix::common_io::open_buf_reader;
 use legume_numeric::matrix::parquet::peek_parquet_field_names;
-use log::info;
+use log::{info, warn};
 use serde_json::json;
 
 #[derive(Args, Debug)]
@@ -122,6 +122,11 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
         if !files.has_evidence() {
             return Ok(());
         }
+        // A slot whose file has gone leaves the order its own description.
+        if let Some(gone) = files.missing().first() {
+            warn!("{gone} is gone: the clusters are not described, only the order");
+            return Ok(());
+        }
     }
 
     let mut enriched = load_evidence(&files, args.fdr_alpha)?;
@@ -204,6 +209,22 @@ impl EvidenceFiles {
     /// Whether any table [`load_evidence`] reads a round's calls from is at hand.
     fn has_evidence(&self) -> bool {
         self.annot.is_some() || self.enrichment_q.is_some() || self.argmax.is_some()
+    }
+
+    /// The files recorded here that are not on disk.
+    fn missing(&self) -> Vec<&str> {
+        [
+            &self.annot,
+            &self.enrichment_q,
+            &self.term_q,
+            &self.argmax,
+            &self.marker_embedding,
+        ]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .filter(|p| !Path::new(p).exists())
+        .collect()
     }
 
     /// From the `annotate.*` slots of the manifest `loaded`, when `--from`

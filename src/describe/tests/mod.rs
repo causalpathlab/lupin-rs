@@ -288,6 +288,21 @@ fn a_trajectory_with_annotate_evidence_gets_both_descriptions() {
 }
 
 #[test]
+fn a_trajectory_whose_round_evidence_is_gone_is_described_by_its_order_alone() {
+    // The slot still names the round's labels, but the file has moved.
+    let dir = tempfile::tempdir().unwrap();
+    let t = super::trajectory::tests::fixture_trajectory(dir.path());
+    let mut loaded = crate::manifest::run::load(&t.to_string_lossy()).unwrap();
+    loaded.manifest.annotate.argmax = Some("gone.argmax.tsv".into());
+    loaded.manifest.save(&loaded.file).unwrap();
+    let out = dir.path().join("t").to_string_lossy().into_owned();
+    let from = t.to_string_lossy().into_owned();
+    run_describe(&describe_args(&["-f", &from, "-o", &out])).unwrap();
+    assert!(super::trajectory::md_path(&out).exists());
+    assert!(!Path::new(&format!("{out}.describe.json")).exists());
+}
+
+#[test]
 fn a_trajectory_is_described_by_code_from_its_outputs() {
     use super::trajectory::{self, tests::fixture_trajectory, OrderFacts};
     let dir = tempfile::tempdir().unwrap();
