@@ -5,7 +5,8 @@
 //! sitting between two others or before one, an edge's verdict, a root,
 //! branch point or end. A claim is read from the clause it is in (split
 //! at commas and `and`, `but`, `while`, `with`, `which`), about the types
-//! that clause names, else the text's subject; a claim no word of the
+//! that clause names, else, every kind alike, the type a relative clause
+//! speaks of, the sentence's subject or the text's; a claim no word of the
 //! vocabulary makes is not checked.
 
 use super::consensus::ClusterInput;
@@ -20,6 +21,9 @@ pub type Claim = Result<(), String>;
 
 /// Words that join clauses, a claim read in each on its own.
 const JOINS: [&str; 7] = ["and", "but", "while", "whereas", "with", "which", "where"];
+/// Those of [`JOINS`] that lead a relative clause, which speaks of a type
+/// named before it.
+const RELATIVE: [&str; 2] = ["which", "where"];
 /// Words for the place a type holds: a lineage's root, a branch point or
 /// an end.
 const ROOT: [&str; 11] = [
@@ -268,29 +272,20 @@ impl Text {
             .collect()
     }
 
-    /// The last entity named from `a` on before `p`.
-    fn last_named(&self, a: usize, p: usize) -> Option<&str> {
-        (self.spans.iter().rev())
-            .find(|s| s.end <= p && s.start >= a)
-            .map(|s| s.entity.as_str())
-    }
-
     /// Who the text speaks of at `p`, among the order words at `said`: the
-    /// last type `p`'s clause names before it; else, in a clause led by
-    /// `which` or `where`, the last its sentence names before it; else the
-    /// sentence's subject, the last type it names before its first order
-    /// word (`A comes after B and before C` says `before` of A).
-    fn speaker(&self, p: usize, said: &[usize]) -> Option<&str> {
+    /// last type `p`'s clause names before it; else, in a [`RELATIVE`]
+    /// clause, the last its sentence names before it; else the sentence's
+    /// subject, the last type it names before its first order word (`A
+    /// comes after B and before C` says `before` of A).
+    fn subject(&self, p: usize, said: &[usize]) -> Option<&str> {
         let (a, _) = self.clause(p);
         let (s, _) = self.sentence(p);
-        let relative = a > 0
-            && ["which", "where"]
-                .iter()
-                .any(|w| self.t[a - 1..].starts_with(w));
+        let last = |from: usize, to: usize| self.named((from, to)).last().copied();
+        let relative = a > 0 && self.words(&RELATIVE).iter().any(|&(q, _)| q + 1 == a);
         let lead = said.iter().copied().filter(|&q| q >= s).min().unwrap_or(p);
-        self.last_named(a, p)
-            .or_else(|| relative.then(|| self.last_named(s, p)).flatten())
-            .or_else(|| self.last_named(s, lead.min(p)))
+        last(a, p)
+            .or_else(|| last(s, p).filter(|_| relative))
+            .or_else(|| last(s, lead.min(p)))
     }
 
     /// The first named from `p` on in its sentence.
@@ -357,19 +352,22 @@ fn verdicts<'f>(
 /// type's line) makes of the order `f`.
 pub fn order_claims(text: &str, f: &OrderFacts, subject: Option<&str>) -> Claim {
     let x = Text::new(text, &f.types());
-    let mut said: Vec<usize> = x.betweens().iter().map(|b| b.0).collect();
-    said.extend((x.words(&FORWARD).iter().chain(&x.words(&BACKWARD))).map(|(p, _)| *p));
-    // Who the text speaks of at `p`, else the subject.
-    let who = |p: usize| x.speaker(p, &said).or(subject);
-    for (p, a, b, _) in x.betweens() {
+    let betweens = x.betweens();
+    let (forward, backward) = (x.words(&FORWARD), x.words(&BACKWARD));
+    let mut said: Vec<usize> = betweens.iter().map(|b| b.0).collect();
+    said.extend(forward.iter().chain(&backward).map(|(p, _)| *p));
+    // Who a claim at `p` is about, else the subject: the same for every
+    // kind of claim.
+    let who = |p: usize| x.subject(p, &said).or(subject);
+    for (p, a, b, _) in betweens {
         let Some(t) = who(p) else { continue };
         let fits = |u: &str, v: &str| earlier(f, u, t) && earlier(f, t, v);
         if !(fits(&a, &b) || fits(&b, &a)) {
             return Err(format!("{t} is not between {a} and {b}"));
         }
     }
-    for (words, forward) in [(&FORWARD[..], true), (&BACKWARD[..], false)] {
-        for (p, w) in x.words(words) {
+    for (words, forward) in [(forward, true), (backward, false)] {
+        for (p, w) in words {
             let (Some(l), Some(r)) = (who(p), x.after(p + w.len())) else {
                 continue;
             };
@@ -413,7 +411,7 @@ pub fn order_claims(text: &str, f: &OrderFacts, subject: Option<&str>) -> Claim 
                 continue;
             }
             let named = x.named(x.clause(p));
-            let (a, b) = match (named.as_slice(), subject) {
+            let (a, b) = match (named.as_slice(), who(p)) {
                 ([a, b, ..], _) => (*a, Some(*b)),
                 ([a], Some(s)) if *a != s => (s, Some(*a)),
                 ([a], _) => (*a, None),
@@ -435,7 +433,7 @@ pub fn order_claims(text: &str, f: &OrderFacts, subject: Option<&str>) -> Claim 
         for (p, _) in x.words(words) {
             let named = x.named(x.clause(p));
             let named = if named.is_empty() {
-                subject.into_iter().collect()
+                who(p).into_iter().collect()
             } else {
                 named
             };

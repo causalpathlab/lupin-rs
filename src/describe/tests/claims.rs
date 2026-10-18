@@ -150,6 +150,31 @@ fn a_role_is_held_by_a_type_the_clause_names_else_the_subject() {
     wrong("It is where the lineages branch.", Some("CT2_cell"));
 }
 
+#[test]
+fn a_clause_naming_no_type_speaks_of_the_sentences_subject_for_every_claim() {
+    // `is a root` names no type: it is said of CT1 cell, as `before` would be.
+    for subject in [None, Some("stem_cell")] {
+        wrong(
+            "CT1 cell comes after the narrow progenitor cell and is a root.",
+            subject,
+        );
+    }
+    ok(
+        "The stem cell comes before the wide progenitor cell and is a root.",
+        None,
+    );
+    wrong(
+        "CT1 cell comes after the narrow progenitor cell and has an unsupported edge.",
+        None,
+    );
+    // `whereas` leads no relative clause: its clause speaks of the sentence's
+    // subject, not of the last type named before it.
+    ok(
+        "The stem cell comes before CT3 cell, whereas it is a root.",
+        None,
+    );
+}
+
 /// CT_A tops the enrichment and is SuSiE's second; CT_B is SuSiE's first.
 fn cluster() -> ClusterInput {
     let choice = |label: &str, ranks: [Option<usize>; 3]| ChoiceInput {
