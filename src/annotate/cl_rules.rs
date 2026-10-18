@@ -316,9 +316,24 @@ impl Aliases {
 }
 
 /// How aliases compare labels: as lupin labels, ignoring case, a hyphen
-/// parting words as a space does (`Pro-B` is `pro B`).
+/// between two words parting them as a space does (`Pro-B` is `pro B`).
+/// One ending a word is a negative marker's (`CD34-` is not `CD34`).
 fn key(label: &str) -> String {
-    label_key(&label.to_lowercase().replace('-', " "))
+    let lower: Vec<char> = label.to_lowercase().chars().collect();
+    let word = |i: Option<usize>| {
+        i.and_then(|i| lower.get(i))
+            .is_some_and(|c| c.is_alphanumeric())
+    };
+    let parted: String = (lower.iter().enumerate())
+        .map(|(i, &c)| {
+            if c == '-' && word(i.checked_sub(1)) && word(Some(i + 1)) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    label_key(&parted)
 }
 
 /// The rules the repository ships (`data/cl_matching.json`), for tests.
