@@ -415,8 +415,12 @@ pub enum Job {
     Save(usize),
     /// `lupin trajectory`, writing this manifest.
     Trajectory(PathBuf),
-    /// `lupin data suggest-cl`, writing the suggestions to this file.
-    Suggest(PathBuf),
+    /// `lupin data suggest-cl`, writing the suggestions to `file`; `label`'s
+    /// open when it is done.
+    Suggest {
+        file: PathBuf,
+        label: String,
+    },
 }
 
 impl Job {
@@ -426,7 +430,7 @@ impl Job {
             Self::Pass => "pass",
             Self::Save(_) => "save",
             Self::Trajectory(_) => "trajectory",
-            Self::Suggest(_) => "term ranking",
+            Self::Suggest { .. } => "term ranking",
         }
     }
 
@@ -539,8 +543,6 @@ pub struct App {
     /// Cell Ontology terms suggested for the panel types without one, once
     /// ranked (`c` in the tree pane).
     pub suggestions: Option<super::suggest::Suggestions>,
-    /// The type whose suggestions open when the ranking job is done.
-    pub suggest_for: Option<String>,
     /// The files jobs hand to their child: a folder only the user can
     /// open, made on first use and removed with the app.
     jobs_dir: Option<tempfile::TempDir>,
@@ -655,7 +657,6 @@ impl App {
             tree_marked: Vec::new(),
             mixed: super::ontology::Mixed::default(),
             suggestions: None,
-            suggest_for: None,
             jobs_dir: None,
             order_shown: None,
             tree_sel: 0,
@@ -769,8 +770,8 @@ impl App {
                     self.trajectory_done(&m, secs);
                     return;
                 }
-                if let Job::Suggest(file) = job {
-                    self.suggestions_done(&file, secs);
+                if let Job::Suggest { file, label } = job {
+                    self.suggestions_done(&file, &label, secs);
                     return;
                 }
                 let after = std::mem::take(&mut self.after_pass);
@@ -861,9 +862,8 @@ impl App {
             }
             // Suggestions are extra: without them (offline, no model) the
             // rest goes on, so no failure popup.
-            Ok(Some(_)) if matches!(job, Job::Suggest(_)) => {
+            Ok(Some(_)) if matches!(job, Job::Suggest { .. }) => {
                 self.child = None;
-                self.suggest_for = None;
                 self.status =
                     "no Cell Ontology suggestions (offline, or no text model): see the log; the rest works"
                         .into();
@@ -905,7 +905,7 @@ impl App {
             Job::Pass => format!("pass → {}", file_name(&self.target)),
             Job::Save(n) => format!("saving {n} edit(s)"),
             Job::Trajectory(m) => format!("trajectory → {}", file_name(m)),
-            Job::Suggest(_) => "Cell Ontology terms for the types without one".into(),
+            Job::Suggest { .. } => "Cell Ontology terms for the types without one".into(),
         };
         Some((what, started.elapsed()))
     }
@@ -1511,16 +1511,13 @@ impl App {
     /// which could leave a round half-written: it finishes on its own.
     fn stop(&mut self) {
         match self.child.as_ref().map(|r| r.job.clone()) {
-            Some(job @ (Job::Pass | Job::Trajectory(_) | Job::Suggest(_))) => {
+            Some(job @ (Job::Pass | Job::Trajectory(_) | Job::Suggest { .. })) => {
                 self.after_pass = AfterPass::Nothing;
                 let Some(mut r) = self.child.take() else {
                     return;
                 };
                 let _ = r.child.kill();
                 let _ = r.child.wait();
-                if matches!(job, Job::Suggest(_)) {
-                    self.suggest_for = None;
-                }
                 if job != Job::Pass {
                     self.status = "stopped".into();
                     return;
@@ -3971,7 +3968,7 @@ impl App {
             self.status = "no Cell Ontology at hand: nothing to suggest terms from".into();
             return;
         }
-        if !self.tree.is_type(&label) || !super::suggest::termless(&self.tree, &label) {
+        if !super::suggest::needs_term(&self.tree, &label) {
             let what = if self.tree.is_type(&label) {
                 "has its own Cell Ontology term"
             } else {
@@ -3987,7 +3984,7 @@ impl App {
             self.status = "wait for the running job (x stops it), then c ranks the terms".into();
             return;
         }
-        let labels = super::suggest::to_rank(&self.tree, &label);
+        let labels = super::suggest::unmatched(&self.tree);
         let started = self.job_file("suggest.json").and_then(|file| {
             let obo = self.args.obo.as_deref();
             runner::spawn_suggest(&self.source, obo, &labels, &file, self.log_tx.clone())
@@ -3999,8 +3996,7 @@ impl App {
                     "── suggestions: lupin data suggest-cl for {} type(s) without a term",
                     labels.len()
                 ));
-                self.child = Some(Running::new(c, Job::Suggest(file)));
-                self.suggest_for = Some(label);
+                self.child = Some(Running::new(c, Job::Suggest { file, label }));
                 self.status = "ranking Cell Ontology terms (the first time fetches the text model and encodes the ontology: a minute or two)".into();
             }
             Err(e) => self.status = format!("{e:#}"),
@@ -4028,17 +4024,15 @@ impl App {
 
     /// A ranking job wrote `file`: keep its suggestions, and offer those of
     /// the type it was started on.
-    fn suggestions_done(&mut self, file: &Path, secs: u64) {
-        let read = super::suggest::Suggestions::read(file);
-        let asked = self.suggest_for.take();
-        match read {
+    fn suggestions_done(&mut self, file: &Path, label: &str, secs: u64) {
+        match super::suggest::Suggestions::read(file) {
             Ok(s) => {
                 self.suggestions = Some(s);
                 self.status = format!(
                     "Cell Ontology terms ranked in {secs}s: c on a type without a term offers them"
                 );
-                if let Some(label) = asked.filter(|_| !self.asking()) {
-                    self.offer_suggestions(&label);
+                if !self.asking() {
+                    self.offer_suggestions(label);
                 }
             }
             Err(e) => self.status = format!("no suggestions: {e:#}"),

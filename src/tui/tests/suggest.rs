@@ -124,21 +124,11 @@ fn the_types_without_a_term_are_the_ones_to_suggest_for() {
     assert_eq!(unmatched(&app.tree), ["XQ"]);
     for t in ["CT1 cells", "CT2 cells", "XQ"] {
         assert_eq!(
-            termless(&app.tree, t),
+            needs_term(&app.tree, t),
             unmatched(&app.tree).contains(&label_key(t)),
             "{t}: c and the job ask one question"
         );
     }
-}
-
-#[test]
-fn the_ranking_always_holds_the_type_c_was_pressed_on() {
-    let dir = tempfile::tempdir().unwrap();
-    let app = app(dir.path());
-    assert_eq!(to_rank(&app.tree, "XQ"), ["XQ"]);
-    // A type the tree no longer lists among its termless ones is still
-    // ranked, so the job is never asked for no labels.
-    assert_eq!(to_rank(&app.tree, "Another"), ["Another", "XQ"]);
 }
 
 #[test]
@@ -238,8 +228,13 @@ fn a_ranking_job_that_ends_opens_the_suggestions_for_the_type_asked() {
     let mut app = app(dir.path());
     let file = suggested(dir.path());
     let child = std::process::Command::new("true").spawn().unwrap();
-    app.child = Some(Running::new(child, Job::Suggest(file.clone())));
-    app.suggest_for = Some("XQ".into());
+    app.child = Some(Running::new(
+        child,
+        Job::Suggest {
+            file: file.clone(),
+            label: "XQ".into(),
+        },
+    ));
     finish(&mut app);
     assert!(app.suggestions.as_ref().and_then(|s| s.of("XQ")).is_some());
     let m = app.menu.as_ref().expect("XQ's suggestions");
@@ -253,9 +248,11 @@ fn without_the_model_the_tui_says_so_and_goes_on() {
     let child = std::process::Command::new("false").spawn().unwrap();
     app.child = Some(Running::new(
         child,
-        Job::Suggest(dir.path().join("none.json")),
+        Job::Suggest {
+            file: dir.path().join("none.json"),
+            label: "XQ".into(),
+        },
     ));
-    app.suggest_for = Some("XQ".into());
     finish(&mut app);
     assert!(app.failed.is_none(), "no failure popup: the rest works");
     assert!(app.menu.is_none());
