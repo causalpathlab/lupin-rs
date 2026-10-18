@@ -1,6 +1,7 @@
 //! Remembering an alias picked in the TUI; the GO pane and setting;
 //! the keys.
 
+use super::super::drive::press;
 use super::*;
 use crate::annotate::cl_rules::Aliases;
 
@@ -148,10 +149,6 @@ fn the_go_setting_toggles_go_unless_gene_sets_are_named() {
     Setting::Go.adjust(&mut b, true);
     assert!(!b.go);
     assert_eq!(Setting::Go.value(&b), "--gaf");
-}
-
-fn press(app: &mut App, code: KeyCode) {
-    app.key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
 fn ctrl_c(app: &mut App) {
@@ -1990,6 +1987,32 @@ fn a_typed_name_off_the_panel_is_not_said_to_have_failed_fdr() {
     // A panel type with no share was tested and not called.
     label(&mut app, "CT1");
     assert!(drawn(&app).contains("did not pass FDR"));
+}
+
+#[test]
+fn a_group_named_for_a_members_term_is_said_to_be_a_tree_group() {
+    use super::super::round::Edit;
+    // Stray shares CT1's markers, so CT1's term is the group of both.
+    let cl = crate::annotate::celltype_tree::ClTerms::parse(
+        "[Term]\nid: CL:0\nname: top\n\n\
+         [Term]\nid: CL:1\nname: CT1 cell\nis_a: CL:0\n\n\
+         [Term]\nid: CL:2\nname: CT2 cell\nis_a: CL:0\n",
+        &crate::annotate::cl_rules::shipped(),
+    );
+    let mut app = app_with_terms(false);
+    let panel = [
+        ("GENE1".to_string(), "CT1 cells".to_string()),
+        ("GENE2".to_string(), "CT2 cells".to_string()),
+        ("GENE1".to_string(), "Stray".to_string()),
+    ];
+    app.tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &panel);
+    app.edits = vec![Edit::Label {
+        cluster: 0,
+        label: "CT1_cell".into(),
+        reason: "why".into(),
+    }];
+    let screen = drawn(&app);
+    assert!(screen.contains("a tree group"), "{screen}");
 }
 
 #[test]

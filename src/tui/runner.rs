@@ -34,6 +34,28 @@ pub fn spawn_trajectory(argv: &[String], log: Sender<String>) -> Result<Child> {
     spawn(&v, log)
 }
 
+/// Start `lupin data suggest-cl` as a child: the nearest Cell Ontology terms
+/// of `labels` on the ontology run `from` finds (`obo` first), as JSON in
+/// `out`.
+pub fn spawn_suggest(
+    from: &Path,
+    obo: Option<&str>,
+    labels: &[String],
+    out: &Path,
+    log: Sender<String>,
+) -> Result<Child> {
+    let mut argv = vec!["data".to_string(), "suggest-cl".into()];
+    if from.is_file() {
+        argv.extend(["-f".into(), from.to_string_lossy().into_owned()]);
+    }
+    if let Some(obo) = obo {
+        argv.extend(["--obo".into(), obo.to_string()]);
+    }
+    argv.extend(["-o".into(), out.to_string_lossy().into_owned(), "--".into()]);
+    argv.extend_from_slice(labels);
+    spawn(&argv, log)
+}
+
 /// Start `lupin relabel -f <round> -d <decisions> --next` as a child.
 pub fn spawn_relabel(round: &Path, decisions: &Path, log: Sender<String>) -> Result<Child> {
     let argv = [

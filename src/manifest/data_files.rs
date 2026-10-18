@@ -169,6 +169,17 @@ impl SearchPath {
             .collect()
     }
 
+    /// The user's own alias table, where a term suggested in the TUI is
+    /// written once confirmed: the user layer's `cl_aliases.tsv`, else the
+    /// project's.
+    #[must_use]
+    pub fn user_aliases(&self) -> Option<PathBuf> {
+        self.user
+            .as_ref()
+            .or(self.project.as_ref())
+            .map(|d| d.join(ALIASES))
+    }
+
     /// Where a label's alias chosen in the TUI is written: the panel's
     /// sidecar when its directory takes a new file, else the project's
     /// (else the user's) `cl_aliases.tsv`.

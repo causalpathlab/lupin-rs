@@ -18,7 +18,12 @@ mod order;
 mod picker;
 mod round;
 mod runner;
+mod suggest;
 mod ui;
+
+#[cfg(test)]
+#[path = "tests/drive.rs"]
+mod drive;
 
 use crate::annotate::gene_rows::GeneRows;
 use crate::annotate_cmd::AnnotateCliArgs;
@@ -188,6 +193,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
 
     let target = annotated_path(&loaded.file, &args.out);
     let mut app = App::new(args, loaded.file.clone(), target.clone(), tree);
+    app.panel = panel;
     app.fixed_clusters = loaded.manifest.cluster.clusters.is_some();
     (app.out_chosen, app.out_typed) = (out_chosen, out_chosen);
     app.trajectory = trajectory.unwrap_or_default();

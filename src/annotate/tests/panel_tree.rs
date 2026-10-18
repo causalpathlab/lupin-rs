@@ -111,6 +111,12 @@ fn a_node_is_called_by_its_panel_type_else_its_name() {
         Some(group2),
         "a class is found by its label"
     );
+    let ct1_term = t.node_of("CT1_cell");
+    assert_eq!(
+        ct1_term,
+        Some(ct1_cell),
+        "a node holding a type is also found by its term's name"
+    );
     let mut under = t.labels_under(group2);
     under.sort_unstable();
     assert_eq!(under, ["CT0_cells", "CT1_cells", "CT1_helper"]);
@@ -178,4 +184,33 @@ fn a_type_off_the_ontology_joins_the_class_it_shares_markers_with() {
     assert!(parent.is_some(), "Pre CT1 is placed inside the tree");
     assert_ne!(parent, Some("Loner"));
     assert_eq!(t.nodes[t.node_of("Loner").unwrap()].parent, None);
+}
+
+#[test]
+fn a_class_with_no_type_below_or_only_one_way_down_is_left_out() {
+    // A and B are under both mid and other; mid is nearer, so other holds
+    // nothing, and lin has only mid below it.
+    let obo = "[Term]\nid: CL:0\nname: root cell\n\n\
+               [Term]\nid: CL:1\nname: lin\nsubset: cellxgene_subset\nis_a: CL:0\n\n\
+               [Term]\nid: CL:2\nname: mid\nsubset: cellxgene_subset\nis_a: CL:1\n\n\
+               [Term]\nid: CL:3\nname: other\nsubset: cellxgene_subset\nis_a: CL:0\n\n\
+               [Term]\nid: CL:10\nname: A cell\nis_a: CL:2\nis_a: CL:3\n\n\
+               [Term]\nid: CL:11\nname: B cell\nis_a: CL:2\nis_a: CL:3\n";
+    let panel: Vec<(String, String)> = [("G1", "A"), ("G2", "B"), ("G3", "Stray")]
+        .iter()
+        .map(|(g, t)| ((*g).to_string(), (*t).to_string()))
+        .collect();
+    let t = PanelTree::from_ontology(
+        &ClTerms::parse(obo, &crate::annotate::cl_rules::shipped()),
+        &panel,
+    )
+    .unwrap();
+    assert_eq!(
+        names(&t, &t.visible()),
+        ["mid", "A_cell", "B_cell", "Stray"]
+    );
+    assert_eq!(t.nodes.len(), 4);
+    let a = t.node_of("A").unwrap();
+    assert_eq!(t.nodes[a].depth, 1);
+    assert_eq!(names(&t, &t.roots), ["mid", "Stray"]);
 }

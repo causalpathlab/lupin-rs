@@ -237,6 +237,18 @@ to switch between them without restarting. When the cluster's top
 candidate has no term, lupin offers to remember the pick in the panel's
 sidecar (else the project's `lupin/cl_aliases.tsv`). `?` lists every key.
 
+For a panel type with no term at all, `c` in the tree pane suggests the
+three terms nearest it by text embedding, with their scores
+(`lupin data suggest-cl`, PubMedBERT sentence embeddings at a pinned
+revision, fetched once into the Hugging Face cache, `HF_HOME`, else
+`~/.cache/huggingface`; `LUPIN_OFFLINE` or `HF_HUB_OFFLINE=1` rules the
+download out). A suggestion is never taken on its own: the one you confirm is
+written to your `~/.config/lupin/cl_aliases.tsv` and the tree is built again
+with it. The first ranking fetches the model and encodes the ontology, which
+takes a minute or two on a CPU; the index is cached under lupin's cache
+directory per ontology release and model revision. Offline without the
+model there are no suggestions, and the rest works as before.
+
 What you curate in the TUI is kept as plain files in `lupin/` beside the run
 manifest (read after `~/.config/lupin/`, which holds the same names for every
 project): `cl_aliases.tsv` (label → CL term, after the panel's sidecar), `hidden_genes.txt` (genes or `*`
