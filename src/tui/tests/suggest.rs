@@ -280,9 +280,16 @@ fn a_label_cl_file_taken_in_the_tui_rebuilds_the_tree_on_it() {
     let mut app = app(dir.path());
     let file = dir.path().join("labels.tsv");
     std::fs::write(&file, "XQ\tCL:2\n").unwrap();
+    let group = app.tree.node_of("group1").unwrap();
+    app.tree.fold(group, true);
+    select(&mut app, "XQ");
     app.set_label_cl(Some(&file));
     assert_eq!(app.tree.cl_of("XQ"), Some("CL:2"));
     assert_eq!(app.term_of("XQ").as_deref(), Some("CL:2"));
+    let group = app.tree.node_of("group1").unwrap();
+    assert!(app.tree.is_folded(group), "what was folded stays folded");
+    let at = app.tree.visible()[app.tree_sel];
+    assert_eq!(app.tree.label(at), "XQ", "the selection stays on its node");
 }
 
 #[test]

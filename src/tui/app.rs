@@ -3353,7 +3353,7 @@ impl App {
         match terms {
             Ok(t) => {
                 self.cl = t;
-                self.rebuild_tree();
+                self.rebuild_tree_keeping(None);
                 self.args.label_cl = Some(p.clone().into());
                 // One --label-cl: the new file replaces one given before.
                 let argv = std::mem::take(&mut self.trajectory.argv);
@@ -4119,8 +4119,28 @@ impl App {
         if self.panel.is_empty() {
             return;
         }
+        self.rebuild_tree_keeping(Some(label));
+    }
+
+    /// [`Self::rebuild_tree`], keeping what was folded, and the selection
+    /// on node `on`, else on the one selected before, shown.
+    fn rebuild_tree_keeping(&mut self, on: Option<&str>) {
+        let tree = &self.tree;
+        let folded: Vec<String> = (0..tree.nodes.len())
+            .filter(|&i| tree.is_folded(i))
+            .map(|i| tree.label(i).to_string())
+            .collect();
+        let selected = (tree.visible().get(self.tree_sel)).map(|&i| tree.label(i).to_string());
         self.rebuild_tree();
-        if let Some(i) = self.tree.node_of(label) {
+        for l in &folded {
+            if let Some(i) = self.tree.node_of(l) {
+                self.tree.fold(i, true);
+            }
+        }
+        if let Some(i) = on
+            .or(selected.as_deref())
+            .and_then(|l| self.tree.node_of(l))
+        {
             self.tree.reveal(i);
             self.select_node(i);
         }
