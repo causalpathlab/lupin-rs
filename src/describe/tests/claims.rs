@@ -214,6 +214,14 @@ fn a_rank_word_runs_over_a_list_of_methods_but_not_past_another_claim() {
     )
     .is_err());
     assert!(check("CT A is the top result across all methods", "CT_A").is_err());
+    assert!(
+        check(
+            "CT A has the top enrichment and all methods ranking",
+            "CT_A"
+        )
+        .is_err(),
+        "every method of `all methods` takes the rank, SuSiE's second too"
+    );
     assert_eq!(
         check(
             "CT A has the highest enrichment rank and is supported by SuSiE",
