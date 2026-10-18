@@ -227,7 +227,6 @@ fn a_ranking_job_that_ends_opens_the_suggestions_for_the_type_asked() {
     assert!(app.suggestions.as_ref().and_then(|s| s.of("XQ")).is_some());
     let m = app.menu.as_ref().expect("XQ's suggestions");
     assert!(m.choices[0].label.contains("CT3 cell"));
-    assert!(!file.exists(), "the job's file is read and gone");
 }
 
 #[test]

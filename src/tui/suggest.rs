@@ -42,8 +42,8 @@ impl Suggestions {
 /// The panel types with no Cell Ontology term of their own.
 #[must_use]
 pub fn unmatched(tree: &PanelTree) -> Vec<String> {
-    let mut out: Vec<String> = (0..tree.nodes.len())
-        .flat_map(|i| tree.nodes[i].labels.iter())
+    let mut out: Vec<String> = (tree.nodes.iter())
+        .flat_map(|n| &n.labels)
         .filter(|l| tree.cl_of(l).is_none())
         .cloned()
         .collect();
@@ -74,6 +74,7 @@ pub fn menu(label: &str, suggested: &[Suggestion], file: &Path) -> Menu {
                         "suggested by text embedding ({:.2}), confirmed in the lupin TUI",
                         s.score
                     ),
+                    file: file.to_path_buf(),
                 },
             )
         })

@@ -863,9 +863,6 @@ impl App {
             // rest goes on, so no failure popup.
             Ok(Some(_)) if matches!(job, Job::Suggest(_)) => {
                 self.child = None;
-                if let Job::Suggest(file) = &job {
-                    let _ = std::fs::remove_file(file);
-                }
                 self.suggest_for = None;
                 self.status =
                     "no Cell Ontology suggestions (offline, or no text model): see the log; the rest works"
@@ -1521,8 +1518,7 @@ impl App {
                 };
                 let _ = r.child.kill();
                 let _ = r.child.wait();
-                if let Job::Suggest(file) = &job {
-                    let _ = std::fs::remove_file(file);
+                if matches!(job, Job::Suggest(_)) {
                     self.suggest_for = None;
                 }
                 if job != Job::Pass {
@@ -3126,11 +3122,12 @@ impl App {
                 }
             }
             Action::LabelOnTree => self.jump_to_tree(),
-            Action::Suggested { label, id, note } => {
-                let Some(file) = self.data_search.user_aliases() else {
-                    self.status = "no user or project folder to write the alias to".into();
-                    return;
-                };
+            Action::Suggested {
+                label,
+                id,
+                note,
+                file,
+            } => {
                 let name = self.cl.as_ref().and_then(|cl| cl.name(&id)).unwrap_or(&id);
                 self.prompt = Some(Prompt {
                     title: format!(
@@ -4046,7 +4043,6 @@ impl App {
     /// the type it was started on.
     fn suggestions_done(&mut self, file: &Path, secs: u64) {
         let read = super::suggest::Suggestions::read(file);
-        let _ = std::fs::remove_file(file);
         let asked = self.suggest_for.take();
         match read {
             Ok(s) => {
