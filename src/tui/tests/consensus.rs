@@ -357,3 +357,23 @@ fn l_in_the_order_view_without_a_trajectory_run_says_so() {
     assert!(app.child.is_none());
     assert!(app.status.contains("no trajectory run"), "{}", app.status);
 }
+
+#[test]
+fn another_trajectory_shown_does_not_keep_the_last_ones_texts() {
+    use crate::describe::trajectory::tests::fixture_trajectory;
+    let dir = tempfile::tempdir().unwrap();
+    let a = fixture_trajectory(&dir.path().join("a").tap_mkdir());
+    let b = fixture_trajectory(&dir.path().join("b").tap_mkdir());
+    let mut app = app_on(&fixture_round(&dir.path().join("r").tap_mkdir()));
+    app.source = a.clone();
+    app.trajectory_tui = true;
+    app.toggle_order(false);
+    app.follow_order_texts().unwrap();
+    assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&a));
+    // B, with no figures up and no texts cached yet: none show, not A's.
+    app.source = b;
+    app.figures = None;
+    app.load_order_texts();
+    assert!(app.order_texts.is_none());
+    assert!(app.order_line().is_none());
+}
