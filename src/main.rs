@@ -7,6 +7,7 @@ mod describe;
 mod docs;
 mod figures;
 mod gene_text;
+mod hub;
 mod manifest;
 mod marker_embedding;
 mod progress;
@@ -19,6 +20,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use describe::{run_describe, DescribeArgs};
 use trajectory::run::{run_trajectory, TrajectoryArgs};
+
+/// `bytes` as lower-case hex.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 #[derive(Parser)]
 #[command(

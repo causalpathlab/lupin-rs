@@ -200,7 +200,8 @@ of the binary so they can be updated and amended without rebuilding:
 
 Each is looked up in layers, later ones winning (rules key by key): the
 install's `share/lupin/` (or `LUPIN_DATA_DIR`) or the source's `data/`, else a
-cache filled by download; your `~/.config/lupin/` (`LUPIN_CONFIG_DIR`); a
+cache filled by download; your `~/.config/lupin/` (`$XDG_CONFIG_HOME/lupin/`
+when that is set, `LUPIN_CONFIG_DIR` over both); a
 project `lupin/` folder beside the run manifest; and `--obo` for one run.
 Without a rules file, matching is literal (names and exact synonyms).
 
@@ -222,6 +223,7 @@ the files and ontology release it used under
 ```sh
 lupin data where -f run.senna.json   # which file each layer contributes
 lupin data fetch                     # cache everything (GO files too), for offline machines
+lupin data suggest-cl CT1 CT2        # each label's nearest Cell Ontology terms, as JSON
 ```
 
 In the annotate TUI, `o` in the tree pane switches to the Cell Ontology

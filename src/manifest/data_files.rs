@@ -8,7 +8,8 @@
 //!    the user cache, filled by download (the rules from this release's tag
 //!    of the repository, the ontology from the rules' `ontology_url`) unless
 //!    `LUPIN_OFFLINE` is set;
-//! 2. **user**: `~/.config/lupin/` (`LUPIN_CONFIG_DIR` overrides);
+//! 2. **user**: `~/.config/lupin/` (`$XDG_CONFIG_HOME/lupin/` when that is
+//!    set; `LUPIN_CONFIG_DIR` overrides both);
 //! 3. **project**: `lupin/` beside the run manifest;
 //! 4. **run**: a file named on the command line (`--label-cl`, `--obo`).
 //!
@@ -69,6 +70,22 @@ pub struct SearchPath {
     pub panel: Option<PathBuf>,
 }
 
+/// The user layer: `lupin` (`LUPIN_CONFIG_DIR`) as given, else `lupin/`
+/// in `xdg` (`XDG_CONFIG_HOME`, when absolute, as the XDG spec reads it),
+/// else in `home`'s `.config/`. Not `dirs::config_dir`: on macOS that is
+/// `Library/Application Support`, and lupin keeps `.config/` everywhere.
+fn user_dir(
+    lupin: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let xdg = xdg.map(PathBuf::from).filter(|d| d.is_absolute());
+    lupin.map(PathBuf::from).or_else(|| {
+        xdg.or_else(|| home.map(|h| h.join(".config")))
+            .map(|d| d.join("lupin"))
+    })
+}
+
 /// The alias sidecar of marker panel `panel`: its table extensions
 /// (`.gz`, then `.tsv`, `.txt` or `.csv`) replaced by `.cl.tsv`, beside it.
 #[must_use]
@@ -108,8 +125,11 @@ impl SearchPath {
         let source =
             Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("data")).filter(|d| d.is_dir());
         let cache = dirs::cache_dir().map(|d| d.join("lupin"));
-        let user = env_dir(CONFIG_DIR_ENV)
-            .or_else(|| dirs::home_dir().map(|h| h.join(".config").join("lupin")));
+        let user = user_dir(
+            std::env::var_os(CONFIG_DIR_ENV),
+            std::env::var_os("XDG_CONFIG_HOME"),
+            dirs::home_dir(),
+        );
         Self {
             install,
             source,
@@ -585,10 +605,45 @@ pub enum DataCmd {
         #[arg(long)]
         force: bool,
     },
+    /// Suggest Cell Ontology terms for labels by text embedding, as JSON:
+    /// each label's nearest terms with their scores, none taken (the
+    /// annotate TUI's `c` offers them to confirm). The first run fetches the
+    /// text model and caches the ontology's index
+    SuggestCl {
+        /// A run manifest, for the ontology its project finds
+        #[arg(long, short = 'f')]
+        from: Option<Box<str>>,
+        /// The Cell Ontology OBO file, as annotate's --obo
+        #[arg(long)]
+        obo: Option<Box<str>>,
+        /// Write the JSON here instead of stdout
+        #[arg(long, short = 'o')]
+        out: Option<Box<str>>,
+        /// The labels to suggest terms for
+        #[arg(required = true)]
+        labels: Vec<String>,
+    },
 }
 
 pub fn run_data(args: &DataArgs) -> Result<()> {
     match &args.cmd {
+        DataCmd::SuggestCl {
+            from,
+            obo,
+            out,
+            labels,
+        } => {
+            let run_dir = from
+                .as_deref()
+                .map(|f| super::run::load(f).map(|l| l.dir))
+                .transpose()?;
+            crate::annotate::term_match::run(
+                run_dir.as_deref(),
+                obo.as_deref(),
+                out.as_deref(),
+                labels,
+            )
+        }
         DataCmd::Where { from } => {
             let run_dir = from
                 .as_deref()
