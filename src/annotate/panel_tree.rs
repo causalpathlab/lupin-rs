@@ -94,22 +94,23 @@ impl PanelTree {
                 label_key(terms.name(id).unwrap_or(id)),
             ));
         }
+        // The nearest node among `above` (ancestor terms), but `id` itself.
+        let nearest = |above: &BTreeSet<String>, id: Option<&str>| {
+            (above.iter())
+                .filter(|t| Some(t.as_str()) != id)
+                .filter_map(|t| index.get(t.as_str()).map(|&j| (t, j)))
+                .max_by(|(x, _), (y, _)| {
+                    (rank[x.as_str()].cmp(&rank[y.as_str()])).then_with(|| y.cmp(x))
+                })
+                .map(|(_, j)| j)
+        };
         // Each node hangs under its nearest ancestor among the nodes.
         for (i, id) in ids.iter().enumerate() {
             let above = ancestry
                 .get(id)
                 .cloned()
                 .unwrap_or_else(|| terms.ancestors_or_self(id));
-            tree.nodes[i].parent = above
-                .iter()
-                .filter(|t| t.as_str() != *id)
-                .filter_map(|t| index.get(t.as_str()).map(|&j| (t, j)))
-                .max_by(|(x, _), (y, _)| {
-                    rank[x.as_str()]
-                        .cmp(&rank[y.as_str()])
-                        .then_with(|| y.cmp(x))
-                })
-                .map(|(_, j)| j);
+            tree.nodes[i].parent = nearest(&above, Some(id));
         }
         for (label, id) in &placed.mapped {
             let i = index[id.as_str()];
@@ -137,15 +138,8 @@ impl PanelTree {
                 continue;
             }
             // The group's term's node, else its nearest node above.
-            let nearest = |id: &str| {
-                (terms.ancestors_or_self(id).iter())
-                    .filter_map(|t| index.get(t.as_str()).map(|&j| (t.clone(), j)))
-                    .max_by(|(x, _), (y, _)| {
-                        terms.depth(x).cmp(&terms.depth(y)).then_with(|| y.cmp(x))
-                    })
-                    .map(|(_, j)| j)
-            };
-            let parent = match g.cl_id.as_deref().and_then(nearest) {
+            let on_term = |id: &str| nearest(&terms.ancestors_or_self(id), None);
+            let parent = match g.cl_id.as_deref().and_then(on_term) {
                 Some(i) => Some(i),
                 None if g.members.len() > 1 => {
                     tree.nodes.push(PanelNode::new(None, label_key(&g.name)));

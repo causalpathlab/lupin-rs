@@ -256,7 +256,7 @@ impl ClTerms {
 
     /// A panel's labels on the ontology: [`Self::map_labels`], then each
     /// label left placed by the longest run of its words
-    /// ([`Self::place`]), the panel's word completing runs too.
+    /// ([`Self::place_with`]), the panel's word completing runs too.
     #[must_use]
     pub fn place_labels<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> Placed {
         let (mapped, unmapped, context) = self.match_panel(labels);
@@ -409,16 +409,11 @@ impl ClTerms {
     /// left off is a word the ontology uses for kinds of a term (see
     /// `PartRules`); an implied word names nothing alone and is never in
     /// the way.
-    #[cfg(test)]
-    #[must_use]
-    pub fn place(&self, label: &str) -> Option<(String, bool)> {
-        self.place_with(label, None)
-    }
-
-    /// [`Self::place`], a run also completed by the panel's word `context`.
-    fn place_with(&self, label: &str, context: Option<&str>) -> Option<(String, bool)> {
+    /// A run is also completed by the panel's word `context`.
+    pub(crate) fn place_with(&self, label: &str, context: Option<&str>) -> Option<(String, bool)> {
         self.rules.part.min_pairs?;
         let implied = |w: &String| self.rules.implied.suffixes.contains(w);
+        let kinds = self.kind_words.get_or_init(|| self.kind_words());
         let w = self.label_words(label);
         for len in (1..w.len()).rev() {
             let mut found: BTreeMap<String, bool> = BTreeMap::new();
@@ -431,7 +426,6 @@ impl ClTerms {
                 let id = (self.match_one(&text))
                     .or_else(|| context.and_then(|c| self.complete(&text, c)));
                 if let Some(id) = id {
-                    let kinds = self.kind_words.get_or_init(|| self.kind_words());
                     let mut left = w[..start].iter().chain(&w[start + len..]);
                     let kind = left.all(|d| implied(d) || kinds.contains(d));
                     *found.entry(id).or_default() |= kind;
@@ -464,7 +458,7 @@ impl ClTerms {
         // name, and the others.
         let mut pairs: HashMap<&str, (usize, usize)> = HashMap::new();
         for (bag, ids) in &by_bag {
-            let above = OnceLock::new();
+            let mut above = None;
             for (i, word) in bag.iter().enumerate() {
                 // A word twice in a name is one pair.
                 if i > 0 && bag[i - 1] == *word {
@@ -475,8 +469,9 @@ impl ClTerms {
                 let Some(bases) = by_bag.get(&base) else {
                     continue;
                 };
-                let above: &Vec<BTreeSet<String>> =
-                    above.get_or_init(|| ids.iter().map(|id| self.ancestors_or_self(id)).collect());
+                let above: &Vec<BTreeSet<String>> = above.get_or_insert_with(|| {
+                    ids.iter().map(|id| self.ancestors_or_self(id)).collect()
+                });
                 let e = pairs.entry(word).or_default();
                 for a in above {
                     for b in bases {
@@ -516,11 +511,10 @@ impl ClTerms {
     /// A normalised text as the name indexes key it: made singular, and its
     /// words sorted when the rules allow any word order.
     fn key(&self, normalised: &str) -> String {
-        let single = self.rules.singular(normalised);
         if self.rules.any_word_order {
-            self.rules.word_bag(&single)
+            self.bag(normalised)
         } else {
-            single
+            self.rules.singular(normalised)
         }
     }
 
@@ -688,7 +682,7 @@ impl Placed {
         self.mapped.iter().chain(&self.under)
     }
 
-    /// The labels on no term, in the order matched then none.
+    /// The labels on no term: those kept to a lineage, then the others.
     #[must_use]
     pub fn loose(&self) -> Vec<String> {
         self.kept.keys().chain(&self.none).cloned().collect()
@@ -815,13 +809,15 @@ impl TypeTree {
         panel: &[(String, String)],
         placed: &Placed,
     ) -> Option<Self> {
-        if placed.on().count() < 2 {
+        let on: BTreeMap<&str, &str> = (placed.on())
+            .map(|(l, id)| (l.as_str(), id.as_str()))
+            .collect();
+        if on.len() < 2 {
             return None;
         }
-        let on: BTreeMap<&String, &String> = placed.on().collect();
         let ancestry: BTreeMap<&str, BTreeSet<String>> = on
             .iter()
-            .map(|(label, id)| (label.as_str(), terms.ancestors_or_self(id)))
+            .map(|(label, id)| (*label, terms.ancestors_or_self(id)))
             .collect();
         // Each type goes under its nearest ancestor (or itself) among the
         // ontology's analysis classes that it shares with another panel type.
@@ -845,7 +841,7 @@ impl TypeTree {
                         .then_with(|| y.cmp(x))
                 })
                 .cloned()
-                .unwrap_or_else(|| on[&(*label).to_string()].clone());
+                .unwrap_or_else(|| on[*label].to_string());
             groups.entry(node).or_default().push((*label).to_string());
         }
         let mut groups: Vec<TypeGroup> = groups
@@ -854,7 +850,7 @@ impl TypeTree {
                 // A class every sharer left for a nearer one groups nothing:
                 // its lone type is named for itself, not for the broader class.
                 if members.len() == 1 {
-                    (on[&members[0]].clone(), members)
+                    (on[members[0].as_str()].to_string(), members)
                 } else {
                     (id, members)
                 }

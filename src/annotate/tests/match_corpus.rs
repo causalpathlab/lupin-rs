@@ -598,7 +598,9 @@ fn a_word_left_off_may_be_the_implied_one_in_any_place() {
     let obo = "[Term]\nid: CL:1\nname: cell\n\n[Term]\nid: CL:2\nname: CT1 cell\nis_a: CL:1\n";
     let t = ClTerms::parse(obo, &shipped());
     assert_eq!(
-        t.place("CT1 odd cells").map(|(id, _)| id).as_deref(),
+        t.place_with("CT1 odd cells", None)
+            .map(|(id, _)| id)
+            .as_deref(),
         Some("CL:2"),
         "a run of implied words alone names nothing"
     );
