@@ -319,20 +319,19 @@ impl Aliases {
 /// between two words parting them as a space does (`Pro-B` is `pro B`).
 /// One ending a word is a negative marker's (`CD34-` is not `CD34`).
 fn key(label: &str) -> String {
-    let lower: Vec<char> = label.to_lowercase().chars().collect();
-    let word = |i: Option<usize>| {
-        i.and_then(|i| lower.get(i))
-            .is_some_and(|c| c.is_alphanumeric())
-    };
-    let parted: String = (lower.iter().enumerate())
-        .map(|(i, &c)| {
-            if c == '-' && word(i.checked_sub(1)) && word(Some(i + 1)) {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect();
+    let lower = label.to_lowercase();
+    let mut chars = lower.chars().peekable();
+    let mut parted = String::with_capacity(lower.len());
+    let mut after_word = false;
+    while let Some(c) = chars.next() {
+        let before_word = chars.peek().is_some_and(|n| n.is_alphanumeric());
+        parted.push(if c == '-' && after_word && before_word {
+            ' '
+        } else {
+            c
+        });
+        after_word = c.is_alphanumeric();
+    }
     label_key(&parted)
 }
 
