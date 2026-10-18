@@ -216,6 +216,43 @@ fn a_verdict_or_role_whose_clause_names_no_type_is_the_subjects() {
     );
 }
 
+#[test]
+fn a_verb_after_a_join_speaks_of_the_clause_before() {
+    for subject in [None, Some("CT1_cell")] {
+        wrong(
+            "CT1 cell comes after the narrow progenitor cell and is a root.",
+            subject,
+        );
+        wrong(
+            "CT1 cell comes after the narrow progenitor cell and has an unsupported edge.",
+            subject,
+        );
+    }
+    // Other joins, a comma, an `it`, a chain of verbs, a relative clause
+    // passed over.
+    for t in [
+        "CT1 cell comes after the narrow progenitor cell, and is a root.",
+        "CT1 cell comes after the narrow progenitor cell but is a root.",
+        "CT1 cell comes after the narrow progenitor cell while it is a root.",
+        "CT1 cell comes after the narrow progenitor cell and branches.",
+        "CT1 cell comes after the narrow progenitor cell, ends its lineage and is a root.",
+        "CT1 cell, which follows the narrow progenitor cell, ends its lineage and is a root.",
+        "The stem cell gives rise to the wide progenitor cell and branches.",
+    ] {
+        wrong(t, None);
+    }
+    for t in [
+        "CT1 cell comes after the narrow progenitor cell and is an end.",
+        "CT1 cell comes after the narrow progenitor cell and is supported.",
+        "The narrow progenitor cell follows the wide progenitor cell and branches.",
+        "The stem cell comes first, and is a root.",
+        "CT3 cell comes after the narrow progenitor cell and has a supported edge.",
+        "The narrow progenitor cell gives rise to CT1 cell and has a supported edge.",
+    ] {
+        ok(t, None);
+    }
+}
+
 /// CT_A tops the enrichment and is SuSiE's second; CT_B is SuSiE's first.
 fn cluster() -> ClusterInput {
     let choice = |label: &str, ranks: [Option<usize>; 3]| ChoiceInput {

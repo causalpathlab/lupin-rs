@@ -22,6 +22,43 @@ pub type Claim = Result<(), String>;
 const JOINS: [&str; 5] = ["and", "but", "while", "whereas", "with"];
 /// Words that join a relative clause, one of the type named before it.
 const RELATIVE: [&str; 2] = ["which", "where"];
+/// Verbs a clause opens with after a join, its subject the clause
+/// before's (`CT1 comes after B and is a root`).
+const PREDICATE: [&str; 33] = [
+    "is",
+    "are",
+    "was",
+    "were",
+    "has",
+    "have",
+    "had",
+    "sits",
+    "lies",
+    "stands",
+    "remains",
+    "comes",
+    "ends",
+    "branches",
+    "splits",
+    "diverges",
+    "bifurcates",
+    "starts",
+    "begins",
+    "terminates",
+    "originates",
+    "leads",
+    "gives",
+    "precedes",
+    "follows",
+    "becomes",
+    "develops",
+    "differentiates",
+    "derives",
+    "arises",
+    "stems",
+    "forms",
+    "carries",
+];
 /// Words for the place a type holds: a lineage's root, a branch point or
 /// an end.
 const ROOT: [&str; 11] = [
@@ -311,6 +348,37 @@ impl Text {
             .find(|w| self.t[i..].starts_with(w) && whole(&self.t, i, i + w.len()))
     }
 
+    /// Whose a clause naming no type is when a join and a verb open it, an
+    /// `it` between them or not (`… and is a root`, `… while it has an
+    /// unsupported edge`): the first type named in the nearest clause
+    /// before it in its sentence that names one, relative clauses passed
+    /// over.
+    fn carried(&self, (a, b): (usize, usize)) -> Option<&str> {
+        let join = self.opener(a, &JOINS)?;
+        let rest = self.t.get(a - 1 + join.len()..b)?;
+        let mut words = (rest.split(|c: char| !c.is_alphanumeric())).filter(|w| !w.is_empty());
+        let verb = words
+            .next()
+            .filter(|&w| w != "it")
+            .or_else(|| words.next())?;
+        if !PREDICATE.contains(&verb) {
+            return None;
+        }
+        let (s, _) = self.sentence(a);
+        // The break before each clause in turn, from the join back.
+        let mut q = a - 1;
+        while q > s {
+            let (pa, pb) = self.clause(q - 1);
+            if self.opener(pa, &RELATIVE).is_none() {
+                if let Some(t) = self.named((pa, pb)).first() {
+                    return Some(t);
+                }
+            }
+            q = pa.checked_sub(1)?;
+        }
+        None
+    }
+
     /// Who the text speaks of at `p`, among the order words at `said`: the
     /// last type `p`'s clause names before it; else, in a clause led by
     /// `which` or `where`, the last its sentence names before it; else the
@@ -448,13 +516,16 @@ pub fn order_claims(text: &str, f: &OrderFacts, subject: Option<&str>) -> Claim 
             if word == "supported" && x.t[..p].ends_with("not ") {
                 continue;
             }
-            let named = x.named(x.clause(p));
+            let clause = x.clause(p);
+            let named = x.named(clause);
             let (a, b) = match (named.as_slice(), subject) {
                 ([a, b, ..], _) => (*a, Some(*b)),
                 ([a], Some(s)) if *a != s => (s, Some(*a)),
                 ([a], _) => (*a, None),
-                ([], Some(s)) => (s, None),
-                ([], None) => continue,
+                ([], s) => match x.carried(clause).or(s) {
+                    Some(s) => (s, None),
+                    None => continue,
+                },
             };
             if !verdicts(f, a, b).any(|e| e == v) {
                 let of = b.map_or_else(|| format!("{a}'s edges"), |b| format!("{a} – {b}"));
@@ -469,9 +540,10 @@ pub fn order_claims(text: &str, f: &OrderFacts, subject: Option<&str>) -> Claim 
     ];
     for (words, holders, role) in &roles {
         for (p, _) in x.words(words) {
-            let named = x.named(x.clause(p));
+            let clause = x.clause(p);
+            let named = x.named(clause);
             let named = if named.is_empty() {
-                subject.into_iter().collect()
+                x.carried(clause).or(subject).into_iter().collect()
             } else {
                 named
             };
