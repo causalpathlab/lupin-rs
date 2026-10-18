@@ -1145,6 +1145,19 @@ impl App {
         self.prompt.is_some() || self.menu.is_some()
     }
 
+    /// Keys go to the panel tree, and to nothing on top of it: no popup,
+    /// form, help or file picker, and no search being typed (the panel tree
+    /// shows none).
+    fn idle_on_panel_tree(&self) -> bool {
+        self.focus == Focus::Tree
+            && matches!(self.tree_mode, TreeMode::Panel)
+            && !self.asking()
+            && self.failed.is_none()
+            && self.browser.is_none()
+            && self.form.is_none()
+            && !self.help_open
+    }
+
     /// The trajectory's order view is up (the tree pane shows it).
     pub(super) fn in_order(&self) -> bool {
         matches!(self.tree_mode, TreeMode::Order(_))
@@ -3362,6 +3375,8 @@ impl App {
         match terms {
             Ok(t) => {
                 self.cl = t;
+                // Ranked against the terms as they were.
+                self.suggestions = None;
                 self.rebuild_tree_keeping(None);
                 self.args.label_cl = Some(p.clone().into());
                 // One --label-cl: the new file replaces one given before.
@@ -3490,6 +3505,7 @@ impl App {
         match read {
             Ok((panel, sets)) => {
                 self.panel = panel;
+                self.suggestions = None;
                 self.rebuild_tree();
                 self.original = sets;
                 self.status = format!("marker panel: {}", file_name(path));
@@ -4020,9 +4036,13 @@ impl App {
         job_file(&mut self.jobs_dir, name)
     }
 
-    /// Offer `label`'s suggested terms, when they are ranked; `false` when
-    /// they are not.
+    /// Offer `label`'s suggested terms, when they are ranked and it still
+    /// has no term; `false` when they are not.
     fn offer_suggestions(&mut self, label: &str) -> bool {
+        let Some(cl) = &self.cl else { return false };
+        if !super::suggest::needs_term(cl, &self.tree, label) {
+            return false;
+        }
         let Some(s) = self.suggestions.as_ref().and_then(|s| s.of(label)) else {
             return false;
         };
@@ -4035,7 +4055,8 @@ impl App {
     }
 
     /// A ranking job wrote `file`: keep its suggestions, and offer those of
-    /// the type it was started on.
+    /// the type it was started on while the user waits on the panel tree;
+    /// else the next `c` does, so no menu takes keys meant for elsewhere.
     fn suggestions_done(&mut self, file: &Path, label: &str, secs: u64) {
         match super::suggest::Suggestions::read(file) {
             Ok(s) => {
@@ -4043,7 +4064,9 @@ impl App {
                 self.status = format!(
                     "Cell Ontology terms ranked in {secs}s: c on a type without a term offers them"
                 );
-                if !self.asking() {
+                if !self.idle_on_panel_tree() {
+                    self.status = format!("suggestions for {label} ready: press c on it");
+                } else {
                     self.offer_suggestions(label);
                 }
             }

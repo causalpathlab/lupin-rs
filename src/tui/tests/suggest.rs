@@ -260,6 +260,56 @@ fn a_ranking_job_that_ends_opens_the_suggestions_for_the_type_asked() {
     assert!(m.choices[0].label.contains("CT3 cell"));
 }
 
+/// A ranking job for `XQ`, done, in `app`.
+fn ranked(app: &mut App, dir: &Path) {
+    let child = std::process::Command::new("true").spawn().unwrap();
+    app.child = Some(Running::new(
+        child,
+        Job::Suggest {
+            file: suggested(dir),
+            label: "XQ".into(),
+        },
+    ));
+    finish(app);
+}
+
+#[test]
+fn a_ranking_that_ends_while_the_user_types_waits_for_c() {
+    let dir = tempfile::tempdir().unwrap();
+    // Typing a search of the ontology: no menu takes the keys.
+    let mut app = app(dir.path());
+    press(&mut app, KeyCode::Char('/'));
+    ranked(&mut app, dir.path());
+    assert!(app.menu.is_none(), "the menu does not take the typing");
+    assert!(app.status.contains("press c"), "{}", app.status);
+    // Elsewhere than the tree: the same.
+    let mut app = self::app(dir.path());
+    app.focus = Focus::Clusters;
+    ranked(&mut app, dir.path());
+    assert!(app.menu.is_none());
+    assert!(app.status.contains("press c"), "{}", app.status);
+    // Back on the tree, c opens them.
+    app.focus = Focus::Tree;
+    press(&mut app, KeyCode::Char('c'));
+    assert!(app.menu.as_ref().is_some_and(|m| m.choices[0].label.contains("CT3 cell")));
+}
+
+#[test]
+fn suggestions_are_dropped_when_the_terms_change_and_never_offered_for_a_type_with_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    app.suggestions = Some(Suggestions::read(&suggested(dir.path())).unwrap());
+    // XQ gains a term from a labels file: what was ranked for it goes.
+    let file = dir.path().join("labels.tsv");
+    std::fs::write(&file, "XQ\tCL:2\n").unwrap();
+    app.set_label_cl(Some(&file));
+    assert!(app.suggestions.is_none());
+    app.menu = None; // what the labels file goes on to ask
+    // A ranking started before, ending after: nothing offered for XQ.
+    ranked(&mut app, dir.path());
+    assert!(app.menu.is_none(), "XQ has a term now");
+}
+
 #[test]
 fn without_the_model_the_tui_says_so_and_goes_on() {
     let dir = tempfile::tempdir().unwrap();
