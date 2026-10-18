@@ -1013,3 +1013,32 @@ fn a_marker_s_sign_is_kept_however_the_label_is_compared() {
         "a negative marker is not the marker, and the marker is not its negative"
     );
 }
+
+#[test]
+fn a_lineage_over_another_group_merges_nothing() {
+    // lin M holds phagocytes and lin AB's T cells; a lone regulatory type
+    // sits under lin M by another way down, beside lin AB, not in it.
+    let obo = "[Term]\nid: CL:0\nname: root cell\n\n\
+               [Term]\nid: CL:1\nname: lin M cell\nsubset: blood_and_immune_upper_slim\nis_a: CL:0\n\n\
+               [Term]\nid: CL:2\nname: phago cell\nsubset: cellxgene_subset\nis_a: CL:1\n\n\
+               [Term]\nid: CL:3\nname: mono A cell\nis_a: CL:2\n\n\
+               [Term]\nid: CL:4\nname: mono B cell\nis_a: CL:2\n\n\
+               [Term]\nid: CL:5\nname: mature T cell\nsubset: cellxgene_subset\nis_a: CL:1\n\n\
+               [Term]\nid: CL:6\nname: lin AB cell\nsubset: blood_and_immune_upper_slim\nis_a: CL:5\n\n\
+               [Term]\nid: CL:7\nname: ab one cell\nis_a: CL:6\n\n\
+               [Term]\nid: CL:8\nname: ab two cell\nis_a: CL:6\n\n\
+               [Term]\nid: CL:9\nname: reg T cell\nis_a: CL:5\n";
+    let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    let p = panel(&[
+        ("G1", "Mono A"),
+        ("G2", "Mono B"),
+        ("G3", "AB one"),
+        ("G4", "AB two"),
+        ("G5", "Reg T"),
+    ]);
+    let tree = TypeTree::from_ontology(&t, &p).unwrap();
+    assert_eq!(members(&tree, "phago_cell"), ["Mono A", "Mono B"]);
+    assert_eq!(members(&tree, "lin_AB_cell"), ["AB one", "AB two"]);
+    assert_eq!(members(&tree, "reg_T_cell"), ["Reg T"], "on its own");
+    assert_eq!(tree.groups.len(), 3, "one level: {:?}", tree.groups);
+}

@@ -1035,13 +1035,18 @@ impl TypeTree {
             }
         }
         // Groups below one lineage are one group: each group's lineage is the
-        // nearest above its class, or above its lone type's own term.
+        // nearest above its class, or above its lone type's own term. A
+        // lineage over a group it does not take merges nothing, so the
+        // groups stay one level.
+        let class_of = |id: &str, members: &[String]| match members {
+            [m] => mapped[m.as_str()].to_string(),
+            _ => id.to_string(),
+        };
+        let classes: BTreeMap<String, String> = (groups.iter())
+            .map(|(id, members)| (id.clone(), class_of(id, members)))
+            .collect();
         let mut by_lineage: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (id, members) in &groups {
-            let class = match &members[..] {
-                [m] => mapped[m.as_str()],
-                _ => id.as_str(),
-            };
+        for (id, class) in &classes {
             let lineage = (above(class).iter())
                 .filter(|t| terms.lineages.contains(*t))
                 .max_by_key(|t| depth_of(t))
@@ -1053,7 +1058,12 @@ impl TypeTree {
         // Every merging group is taken out before any lineage is put in, as
         // a lineage may be the class of a group merging elsewhere.
         let merged: Vec<(String, Vec<String>)> = (by_lineage.into_iter())
-            .filter(|(_, ids)| ids.len() >= 2)
+            .filter(|(lineage, ids)| {
+                ids.len() >= 2
+                    && (classes.iter())
+                        .filter(|(id, _)| !ids.contains(id))
+                        .all(|(_, class)| !above(class).contains(lineage))
+            })
             .map(|(lineage, ids)| {
                 let members = (ids.iter())
                     .flat_map(|id| groups.remove(id).unwrap_or_default())
