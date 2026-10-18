@@ -524,9 +524,10 @@ pub fn rank_claims(text: &str, c: &ClusterInput, label: &str) -> Claim {
             .min_by_key(|(q, _)| q.abs_diff(p))
             .map(|&(_, r)| r);
         let rank = own.or_else(|| {
+            // The methods of `all methods` share its place, and so its rank.
             let (q, prev_end, _) = *named.get(i.checked_sub(1)?)?;
-            let gap = x.t.get(prev_end..p)?;
-            (q == p || listed(gap)).then(|| taken[i - 1]).flatten()
+            let joined = q == p || x.t.get(prev_end..p).is_some_and(listed);
+            joined.then(|| taken[i - 1]).flatten()
         });
         taken.push(rank);
         let Some(rank) = rank else { continue };
