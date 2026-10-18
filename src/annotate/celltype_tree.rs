@@ -50,8 +50,9 @@ pub struct ClTerms {
     classes: BTreeSet<String>,
     /// Terms in the lineage subsets the rules name (`ClassRules`).
     lineages: BTreeSet<String>,
-    /// The words the ontology uses for kinds of a term (see `PartRules`).
-    modifiers: BTreeSet<String>,
+    /// The words the ontology uses for kinds of a term (see `PartRules`),
+    /// found on first use.
+    modifiers: std::sync::OnceLock<BTreeSet<String>>,
     /// The word a panel leaves off its labels, once [`Self::set_panel`]
     /// has read it from the panel (`Some(None)` for a panel that leaves
     /// none): labels are then completed by it, however few are mapped.
@@ -300,7 +301,6 @@ impl ClTerms {
                 name(a).cmp(&name(b))
             });
         }
-        terms.modifiers = terms.modifier_words();
         terms
     }
 
@@ -315,8 +315,10 @@ impl ClTerms {
         let mut by_bag: HashMap<Vec<String>, Vec<&str>> = HashMap::new();
         for (id, name) in &self.name_of {
             let single = self.rules.singular(&self.rules.normalise(name));
-            let mut bag: Vec<String> = words(&single).map(String::from).collect();
-            bag.sort_unstable();
+            let bag: Vec<String> = (word_bag(&single).split(' '))
+                .filter(|w| !w.is_empty())
+                .map(String::from)
+                .collect();
             by_bag.entry(bag).or_default().push(id);
         }
         // Per added word: pairs where it makes a kind of the shorter name, and not.
@@ -452,7 +454,8 @@ impl ClTerms {
             for start in 0..=w.len() - len {
                 if let Some(id) = self.match_label(&w[start..start + len].join(" ")) {
                     let left = w[..start].iter().chain(&w[start + len..]);
-                    let kind = left.clone().all(|d| self.modifiers.contains(*d));
+                    let modifiers = self.modifiers.get_or_init(|| self.modifier_words());
+                    let kind = left.clone().all(|d| modifiers.contains(*d));
                     *found.entry(id).or_default() |= kind;
                 }
             }
@@ -560,19 +563,18 @@ impl ClTerms {
 
     /// Per word that, with at most an implied one, turns labels of `labels`
     /// into a term's name or counted synonym: those labels, with their
-    /// terms (see `ContextRules`). A scan of every name, for a word not yet
-    /// known; [`Self::completed_by`] completes by a known one.
+    /// terms (see `ContextRules`). A scan of every name finds the words;
+    /// [`Self::completed_by`] completes by each.
     fn completions(&self, labels: &[String]) -> BTreeMap<&str, BTreeMap<String, String>> {
         let implied = &self.rules.implied.suffixes;
-        let mut by_word: BTreeMap<&str, BTreeMap<String, String>> = BTreeMap::new();
+        let mut found: BTreeSet<&str> = BTreeSet::new();
         for label in labels {
             let single = self.rules.singular(&self.rules.normalise(label));
             let own: Vec<&str> = words(&single).collect();
             if own.is_empty() {
                 continue;
             }
-            let mut found: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-            for (bag, ids) in &self.names.by_words {
+            for bag in self.names.by_words.keys() {
                 let mut rest: Vec<&str> = bag.split(' ').collect();
                 let all_there = own.iter().all(|w| {
                     rest.iter()
@@ -590,24 +592,19 @@ impl ClTerms {
                     rest.remove(i);
                 }
                 if let [w] = rest[..] {
-                    if !implied.iter().any(|s| s == w) {
-                        found.entry(w).or_default().extend(ids.iter().cloned());
-                    }
-                }
-            }
-            for (w, ids) in found {
-                if let Some(id) = self.most_general(&ids) {
-                    by_word.entry(w).or_default().insert(label.clone(), id);
+                    found.insert(w);
                 }
             }
         }
-        by_word
+        (found.into_iter())
+            .map(|w| (w, self.completed_by(labels, w)))
+            .filter(|(_, completed)| !completed.is_empty())
+            .collect()
     }
 
-    /// The labels of `labels` word `w` completes, with their terms: as
-    /// [`Self::completions`] gives them for `w`, by looking up the label's
-    /// words with `w`, and with `w` and each implied word, rather than by a
-    /// scan of every name.
+    /// The labels of `labels` word `w` completes, with their terms: each
+    /// label's words with `w`, or with `w` and an implied word, looked up
+    /// among the names, the most general term they name.
     fn completed_by(&self, labels: &[String], w: &str) -> BTreeMap<String, String> {
         let implied = &self.rules.implied.suffixes;
         if implied.iter().any(|s| s == w) {
@@ -616,17 +613,12 @@ impl ClTerms {
         let mut completed = BTreeMap::new();
         for label in labels {
             let single = self.rules.singular(&self.rules.normalise(label));
-            let own: Vec<&str> = words(&single).collect();
-            if own.is_empty() {
+            if words(&single).next().is_none() {
                 continue;
             }
-            let bag = |extra: &[&str]| {
-                let mut all: Vec<&str> = own.iter().chain(extra).copied().collect();
-                all.sort_unstable();
-                all.join(" ")
-            };
-            let ids: BTreeSet<String> = std::iter::once(bag(&[w]))
-                .chain(implied.iter().map(|s| bag(&[w, s])))
+            let with = |more: &str| word_bag(&format!("{single} {w}{more}"));
+            let ids: BTreeSet<String> = std::iter::once(with(""))
+                .chain(implied.iter().map(|s| with(&format!(" {s}"))))
                 .filter_map(|key| self.names.by_words.get(&key))
                 .flatten()
                 .cloned()
