@@ -39,12 +39,13 @@ impl Suggestions {
     }
 }
 
-/// The panel types with no Cell Ontology term of their own.
+/// The panel types with no Cell Ontology term: none of their own, and
+/// none they are placed under as a kind of it.
 #[must_use]
 pub fn unmatched(tree: &PanelTree) -> Vec<String> {
     let mut out: Vec<String> = (tree.nodes.iter())
         .flat_map(|n| &n.labels)
-        .filter(|l| tree.cl_of(l).is_none())
+        .filter(|l| tree.cl_of(l).is_none() && tree.under_of(l).is_none())
         .cloned()
         .collect();
     out.sort();

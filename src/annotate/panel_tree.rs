@@ -52,6 +52,9 @@ pub struct PanelTree {
     pub release: Option<String>,
     /// Each panel type's ([`label_key`]) node.
     of_label: HashMap<String, usize>,
+    /// Each panel type ([`label_key`]) placed under a term, as a kind of
+    /// it, with that term.
+    under: HashMap<String, String>,
     folded: BTreeSet<usize>,
 }
 
@@ -121,6 +124,7 @@ impl PanelTree {
         // leaf below that term.
         for (label, id) in &placed.under {
             tree.push_leaf(label, Some(index[id.as_str()]));
+            tree.under.insert(label_key(label), id.clone());
         }
         // A type the ontology does not have goes where the first round's grouping puts it
         // ([`TypeTree::from_ontology`]): under the class whose types share most of its markers,
@@ -239,6 +243,7 @@ impl PanelTree {
             source,
             release,
             of_label: HashMap::new(),
+            under: HashMap::new(),
             folded: BTreeSet::new(),
         }
     }
@@ -299,6 +304,13 @@ impl PanelTree {
     pub fn cl_of(&self, label: &str) -> Option<&str> {
         let i = *self.of_label.get(&label_key(label))?;
         self.nodes[i].cl_id.as_deref()
+    }
+
+    /// The CL term panel type `label` is placed under, as a kind of it,
+    /// when the ontology has a kind of term for it but not its own.
+    #[must_use]
+    pub fn under_of(&self, label: &str) -> Option<&str> {
+        self.under.get(&label_key(label)).map(String::as_str)
     }
 
     /// The panel types (label keys) placed on a CL term, with their terms.

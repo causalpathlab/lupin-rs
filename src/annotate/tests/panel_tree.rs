@@ -210,6 +210,12 @@ fn a_type_under_a_term_is_a_leaf_below_its_node() {
     );
     assert!(!t.is_type("CT0_cell"), "the term is no panel type");
     assert_eq!(t.cl_of("early CT0 cells"), None);
+    assert_eq!(
+        t.under_of("early CT0 cells"),
+        Some("CL:12"),
+        "a kind of that term"
+    );
+    assert_eq!(t.under_of("CT3"), None, "on its own term");
 }
 
 #[test]

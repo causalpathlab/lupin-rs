@@ -515,14 +515,20 @@ pub fn term_label(cl: &ClTerms, tree: &PanelTree, id: &str) -> String {
         .map_or_else(|| label_key(cl.name(id).unwrap_or(id)), String::from)
 }
 
-/// The CL term a label names: a panel type's, else the term it matches
-/// by name, synonym or abbreviation, read as the panel's labels are.
+/// The CL term a label names, or is placed under as a kind of it: a panel
+/// type's, else the one it matches by name, synonym or abbreviation, or by
+/// a run of its words, read as the panel's labels are
+/// ([`ClTerms::place_labels`], as `review` places them).
 #[must_use]
 pub fn term_of(cl: &ClTerms, tree: &PanelTree, label: &str) -> Option<String> {
-    if let Some(id) = tree.cl_of(label) {
+    if let Some(id) = tree.cl_of(label).or_else(|| tree.under_of(label)) {
         return Some(id.to_string());
     }
-    cl.map_labels([label]).0.into_values().next()
+    let mut placed = cl.place_labels([label]);
+    placed
+        .on
+        .remove(label)
+        .or_else(|| placed.under.remove(label))
 }
 
 /// Each panel type on a CL term with every term above it: which types a

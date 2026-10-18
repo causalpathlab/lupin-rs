@@ -284,3 +284,36 @@ fn a_label_cl_file_taken_in_the_tui_rebuilds_the_tree_on_it() {
     assert_eq!(app.tree.cl_of("XQ"), Some("CL:2"));
     assert_eq!(app.term_of("XQ").as_deref(), Some("CL:2"));
 }
+
+#[test]
+fn a_type_under_a_term_reads_as_that_term_and_is_no_type_to_suggest_for() {
+    // early X is a kind of X three times over, so `Early CT2` is a kind of
+    // CT2 cell.
+    let obo = format!(
+        "{OBO}\n[Term]\nid: CL:20\nname: early CT1 cell\nis_a: CL:10\n\n\
+         [Term]\nid: CL:21\nname: early CT3 cell\nis_a: CL:2\n\n\
+         [Term]\nid: CL:4\nname: CT4 cell\nis_a: CL:0\n\n\
+         [Term]\nid: CL:22\nname: early CT4 cell\nis_a: CL:4\n"
+    );
+    let cl = ClTerms::parse(&obo, &crate::annotate::cl_rules::shipped());
+    let pairs = |types: &[&str]| -> Vec<(String, String)> {
+        types
+            .iter()
+            .map(|t| ("G".to_string(), (*t).to_string()))
+            .collect()
+    };
+    let tree = crate::manifest::ontology::panel_tree_on(
+        Some(&cl),
+        &pairs(&["CT1 cells", "CT2 cells", "Early CT2"]),
+    );
+    assert!(unmatched(&tree).is_empty(), "{:?}", unmatched(&tree));
+    let term = |tree: &PanelTree, l: &str| super::super::ontology::term_of(&cl, tree, l);
+    assert_eq!(term(&tree, "Early CT2").as_deref(), Some("CL:12"));
+    let off =
+        crate::manifest::ontology::panel_tree_on(Some(&cl), &pairs(&["CT1 cells", "CT2 cells"]));
+    assert_eq!(
+        term(&off, "Early CT2").as_deref(),
+        Some("CL:12"),
+        "off the panel, read as the panel's types are"
+    );
+}
