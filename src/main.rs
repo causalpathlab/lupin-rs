@@ -112,8 +112,8 @@ enum Commands {
                       the proposals, the user confirms them.\n\
                       \n\
                       Without `-o` the TUI opens on the round (or the trajectory) and runs it\n\
-                      into the manifest's `{stem}.consensus.jsonl` alone (`--cache-only`), so\n\
-                      no description file is written over.\n\
+                      into the manifest's `{stem}.consensus.jsonl` alone, so no description\n\
+                      file is written over.\n\
                       Every sentence is citation-checked: it names only its evidence."
     )]
     Describe(DescribeArgs),

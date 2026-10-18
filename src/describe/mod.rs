@@ -81,6 +81,7 @@ pub struct DescribeArgs {
     #[arg(
         long,
         requires = "lm",
+        hide = true,
         help = "With --lm: write only the model's cache (`{out}.consensus.jsonl`), not the description files; what the TUI runs"
     )]
     pub cache_only: bool,

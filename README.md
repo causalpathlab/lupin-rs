@@ -178,8 +178,8 @@ first or second); a sentence that fails the check twice, or makes a claim
 the evidence does not bear out, is replaced by the template. Results
 are appended to `{out}.consensus.jsonl`, keyed by the prompt, model and
 revision, so only clusters whose evidence changed are asked again. The
-TUI's run (`describe` without `-o`, or `L`) writes that cache alone
-(`--cache-only`), never a description file.
+TUI's run (`describe` without `-o`, or `L`) writes that cache alone,
+never a description file.
 
 In the annotate TUI the suggestion shows under the candidates and, marked
 ◆, among the label choices (`P` opens them on it). It is a suggestion, not
