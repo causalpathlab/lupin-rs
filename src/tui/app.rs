@@ -2546,6 +2546,47 @@ impl App {
         }
     }
 
+    /// `lupin kill`: quit as `q` does, asking nothing. A save under way
+    /// finishes first (its round taken in), a running pass or trajectory,
+    /// the rescoring and the term ranking are stopped, and unsaved edits are
+    /// dropped.
+    pub fn kill(&mut self) {
+        while self.saving_now() {
+            if let Some(r) = &mut self.child {
+                let _ = r.child.wait();
+            }
+            self.tick();
+        }
+        self.stop();
+        self.stop_rescoring();
+        if let Some(r) = self.ranking.take() {
+            r.stop();
+        }
+        self.edits.clear();
+        self.quit = true;
+    }
+
+    /// Whether a save is running.
+    pub fn saving_now(&self) -> bool {
+        self.child
+            .as_ref()
+            .is_some_and(|r| matches!(r.job, Job::Save(_)))
+    }
+
+    /// One line for `lupin sessions` and the resume picker: the run or round
+    /// on screen, the job running and the unsaved edits.
+    pub fn session_status(&self) -> String {
+        let shown = self.round.as_ref().map_or(&self.source, |r| &r.manifest);
+        let mut line = crate::manifest::family::file_name(shown);
+        if let Some(r) = &self.child {
+            line += &format!(", {} running", r.job.name());
+        }
+        if !self.edits.is_empty() {
+            line += &format!(", {} unsaved edit(s)", self.edits.len());
+        }
+        line
+    }
+
     /// Keys in the annotation form: ↑↓ move, ←→ change a value, Enter picks
     /// the panel, edits the output or runs (on `▶ run`); Shift+Enter runs
     /// from any row where the terminal tells it from Enter.
@@ -3556,12 +3597,33 @@ impl App {
         }
     }
 
-    /// The terminal's picture protocol, asked for the first time figures are
-    /// shown and reused after.
+    /// The attached terminal's picture protocol, as the screen last asked it
+    /// ([`App::repick`]); block characters until it has.
     fn picker(&mut self) -> &ratatui_image::picker::Picker {
-        let graphics = self.args.graphics;
         self.picker
-            .get_or_insert_with(|| super::figure_pane::picker(graphics))
+            .get_or_insert_with(ratatui_image::picker::Picker::halfblocks)
+    }
+
+    /// The pictures for the terminal attached now, with `picker`: each
+    /// figure's terminal picture made again (kitty's images went with the
+    /// last terminal), and with another protocol or cell size, the figure
+    /// itself drawn again.
+    pub fn repick(&mut self, picker: ratatui_image::picker::Picker) {
+        let kind = |p: &ratatui_image::picker::Picker| {
+            let f = p.font_size();
+            (p.protocol_type(), f.width, f.height)
+        };
+        let changed = self
+            .picker
+            .as_ref()
+            .is_none_or(|old| kind(old) != kind(&picker));
+        for pane in [&mut self.figures, &mut self.cell_map]
+            .into_iter()
+            .flatten()
+        {
+            pane.repick(&picker, changed);
+        }
+        self.picker = Some(picker);
     }
 
     /// After a pass started from the order view: run the trajectory on the

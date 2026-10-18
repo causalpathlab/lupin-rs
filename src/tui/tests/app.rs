@@ -3608,3 +3608,157 @@ fn a_statement_on_a_type_below_min_cells_leaves_the_order_menu_to_ask_and_says_s
     assert!(m.question.contains("--min-cells 2"), "{}", m.question);
     assert!(m.question.contains("CT1 precedes CT2"), "{}", m.question);
 }
+
+#[test]
+fn kill_quits_at_once_dropping_unsaved_edits_without_asking() {
+    let mut app = app_with_terms(false);
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    app.kill();
+    assert!(app.quit, "no second press asked for");
+    assert!(app.edits.is_empty(), "the unsaved edits are dropped");
+    assert!(app.armed.is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn kill_stops_a_running_pass_as_quitting_does() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    let pid = app.child.as_ref().unwrap().child.id();
+    app.kill();
+    assert!(app.quit && app.child.is_none());
+    assert!(
+        !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+        "the pass is killed and waited for"
+    );
+}
+
+#[test]
+fn kill_lets_a_save_under_way_finish_before_quitting() {
+    let mut app = app_with_terms(false);
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    // A save that takes a moment, and fails, so nothing is read after it.
+    let child = std::process::Command::new("sh")
+        .args(["-c", "sleep 0.3; exit 3"])
+        .spawn()
+        .unwrap();
+    app.child = Some(Running::new(child, Job::Save(1)));
+    assert!(app.saving_now());
+    let started = Instant::now();
+    app.kill();
+    assert!(
+        started.elapsed() >= Duration::from_millis(250),
+        "waited for the save"
+    );
+    assert!(app.quit && app.child.is_none());
+    assert!(app.status.contains("save failed"), "{}", app.status);
+    assert!(app.edits.is_empty());
+}
+
+#[test]
+fn the_sessions_line_names_the_run_the_job_and_the_unsaved_edits() {
+    let mut app = app_with_terms(false);
+    app.source = PathBuf::from("dir").join("X.senna.json");
+    app.round = None;
+    assert_eq!(app.session_status(), "X.senna.json");
+    running(&mut app);
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    assert_eq!(
+        app.session_status(),
+        "X.senna.json, pass running, 1 unsaved edit(s)"
+    );
+    app.stop();
+}
+
+#[test]
+fn a_new_terminal_gives_the_figures_its_picker() {
+    let mut app = app_with_terms(false);
+    assert_eq!(
+        app.picker().protocol_type(),
+        ratatui_image::picker::ProtocolType::Halfblocks,
+        "block characters until the terminal is asked"
+    );
+    use super::super::figure_pane::tests::{made, pane};
+    use ratatui_image::picker::ProtocolType::{Halfblocks, Kitty};
+    // Both panes with a picture made for the old terminal.
+    let area = ratatui::layout::Rect::new(0, 0, 30, 10);
+    let (figures, cell_map) = (pane(), pane());
+    assert!(figures.protocol(area).is_ok() && cell_map.protocol(area).is_ok());
+    app.figures = Some(figures);
+    app.cell_map = Some(cell_map);
+    for p in [&app.figures, &app.cell_map].into_iter().flatten() {
+        assert_eq!(made(p), (Halfblocks, true, true));
+    }
+    #[allow(deprecated)]
+    let mut kitty = ratatui_image::picker::Picker::from_fontsize((10, 20).into());
+    kitty.set_protocol_type(Kitty);
+    app.repick(kitty);
+    assert_eq!(app.picker().protocol_type(), Kitty);
+    // Each pane has the new picker, its picture and figure dropped (another
+    // protocol), and makes them again for the new terminal.
+    for p in [&app.figures, &app.cell_map].into_iter().flatten() {
+        assert_eq!(made(p), (Kitty, false, false));
+        assert!(p.protocol(area).is_ok());
+        assert_eq!(made(p), (Kitty, true, true));
+    }
+}
+
+/// The process group of `pid`, as `/proc` has it.
+#[cfg(target_os = "linux")]
+fn group_of(pid: u32) -> u32 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    // After the command's name in parentheses: state, parent, group.
+    let rest = &stat[stat.rfind(')').unwrap() + 1..];
+    rest.split_whitespace().nth(2).unwrap().parse().unwrap()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_child_of_the_tui_has_a_process_group_of_its_own_only_when_hosted() {
+    let group = |hosted| {
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        let mut child = crate::tui::child_group(&mut cmd, hosted).spawn().unwrap();
+        let pid = child.id();
+        let g = group_of(pid);
+        let _ = (child.kill(), child.wait());
+        (pid, g)
+    };
+    let (pid, g) = group(true);
+    assert_eq!(g, pid, "hosted, it leads its own group");
+    // Plain, a hangup of the user's terminal reaches it with the TUI.
+    let (_, g) = group(false);
+    assert_eq!(g, group_of(std::process::id()), "plain, it keeps the TUI's");
+    // No session at all (as here): plain.
+    let mut cmd = std::process::Command::new("sleep");
+    cmd.arg("30");
+    let mut child = crate::tui::child_command(&mut cmd).spawn().unwrap();
+    assert_eq!(group_of(child.id()), group_of(std::process::id()));
+    let _ = (child.kill(), child.wait());
+}
+
+#[test]
+fn the_terminal_s_keys_decide_shift_enter_and_the_keyboard_mode() {
+    use ratatui::crossterm::event::KeyboardEnhancementFlags as Flags;
+    let picker = ratatui_image::picker::Picker::halfblocks;
+    let mut app = app_with_terms(false);
+    let modes = crate::tui::fit(&mut app, picker(), true);
+    assert!(app.shift_enter);
+    assert_eq!(
+        modes.keyboard_enhancement,
+        Some(Flags::DISAMBIGUATE_ESCAPE_CODES)
+    );
+    // Attached again from a terminal that cannot: both off.
+    let modes = crate::tui::fit(&mut app, picker(), false);
+    assert!(!app.shift_enter);
+    assert_eq!(modes, legume_tui::Modes::default());
+}

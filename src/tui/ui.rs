@@ -741,9 +741,15 @@ fn draw_guide(f: &mut Frame, app: &App) {
     let columns: u16 = if screen.width >= 150 { 2 } else { 1 };
     let width = screen.width.saturating_sub(4).min(110 * columns);
     let col = usize::from((width.saturating_sub(2)) / columns);
-    let sections: Vec<Vec<Line>> = guide(trajectory)
+    let mut sections: Vec<Vec<Line>> = guide(trajectory)
         .map(|(section, keys)| guide_section(section, &keys, col))
         .collect();
+    // The detach and switch keys, where the screen runs as a session.
+    let session = super::session_keys();
+    if !session.is_empty() {
+        let keys: Vec<(&str, &str)> = session.iter().map(|(k, w)| (&**k, &**w)).collect();
+        sections.push(guide_section("session", &keys, col));
+    }
     // The first `split` sections go left, the rest right: the split whose
     // taller column is shortest.
     let tall = |part: &[Vec<Line>]| part.iter().map(|s| s.len() + 1).sum::<usize>();

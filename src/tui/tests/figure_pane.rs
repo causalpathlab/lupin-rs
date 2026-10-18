@@ -4,6 +4,17 @@ use crate::trajectory::edges::{EdgeRow, Verdict};
 use legume_numeric::matrix::dense_mat_io::Mat;
 use ratatui::crossterm::event::KeyCode;
 
+/// What `p` has made for the terminal: its picture protocol, and whether a
+/// terminal picture and a rasterised figure are cached.
+pub(crate) fn made(p: &FigurePane) -> (ratatui_image::picker::ProtocolType, bool, bool) {
+    let rendered = p.rendered.borrow().is_some();
+    (
+        p.picker.protocol_type(),
+        rendered,
+        p.image.borrow().is_some(),
+    )
+}
+
 /// Two layouts, a diffusion map and one edge, on placeholder types.
 pub(crate) fn pane() -> FigurePane {
     let n = 30;
@@ -196,49 +207,28 @@ fn the_grid_names_the_tile_it_would_export() {
 }
 
 #[test]
-fn the_picture_protocol_comes_from_the_environment_without_asking_the_terminal() {
-    let proto = |vars: &[(&str, &str)]| {
-        protocol_from_env(|k| {
-            vars.iter()
-                .find(|(n, _)| *n == k)
-                .map(|(_, v)| (*v).to_string())
-        })
-    };
-    assert_eq!(proto(&[("KITTY_WINDOW_ID", "1")]), ProtocolType::Kitty);
-    assert_eq!(proto(&[("TERM", "xterm-kitty")]), ProtocolType::Kitty);
-    assert_eq!(proto(&[("TERM_PROGRAM", "ghostty")]), ProtocolType::Kitty);
+fn a_new_terminal_gets_new_pictures_and_new_figures_only_when_it_differs() {
+    let mut p = pane();
+    let area = Rect::new(0, 0, 30, 10);
+    assert!(p.protocol(area).is_ok());
+    assert!(p.rendered.borrow().is_some() && p.image.borrow().is_some());
+    // The same kind of terminal: the picture is made again, from the figure
+    // already drawn.
+    p.repick(&Picker::halfblocks(), false);
+    assert!(p.rendered.borrow().is_none(), "the picture goes");
+    assert!(p.image.borrow().is_some(), "the figure stays");
+    assert!(p.protocol(area).is_ok());
+    // Another protocol or cell size: the figure is drawn again too.
+    #[allow(deprecated)]
+    let mut kitty = Picker::from_fontsize((10, 20).into());
+    kitty.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+    p.repick(&kitty, true);
+    assert!(p.rendered.borrow().is_none() && p.image.borrow().is_none());
     assert_eq!(
-        proto(&[("TERM_PROGRAM", "iTerm.app")]),
-        ProtocolType::Iterm2
+        p.picker.protocol_type(),
+        ratatui_image::picker::ProtocolType::Kitty
     );
-    assert_eq!(proto(&[("LC_TERMINAL", "iTerm2")]), ProtocolType::Iterm2);
-    assert_eq!(proto(&[("TERM_PROGRAM", "WezTerm")]), ProtocolType::Iterm2);
-    assert_eq!(proto(&[("TERM", "foot")]), ProtocolType::Sixel);
-    assert_eq!(proto(&[("TERM", "mlterm")]), ProtocolType::Sixel);
-    assert_eq!(
-        proto(&[("TERM_PROGRAM", "Apple_Terminal")]),
-        ProtocolType::Halfblocks
-    );
-    assert_eq!(proto(&[]), ProtocolType::Halfblocks);
-    // Through tmux a picture needs passthrough: half-blocks unless asked.
-    assert_eq!(
-        proto(&[("TMUX", "/tmp/tmux"), ("KITTY_WINDOW_ID", "1")]),
-        ProtocolType::Halfblocks
-    );
-}
-
-#[test]
-fn a_cells_pixel_size_comes_from_the_window_size() {
-    use ratatui::crossterm::terminal::WindowSize;
-    let size = |columns, rows, width, height| WindowSize {
-        rows,
-        columns,
-        width,
-        height,
-    };
-    assert_eq!(cell_pixels(&size(200, 50, 2000, 1000)), Some((10, 20)));
-    assert_eq!(cell_pixels(&size(200, 50, 0, 0)), None, "not reported");
-    assert_eq!(cell_pixels(&size(0, 0, 2000, 1000)), None);
+    assert!(p.protocol(area).is_ok());
 }
 
 #[test]

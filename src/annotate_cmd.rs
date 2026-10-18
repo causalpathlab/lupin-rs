@@ -304,9 +304,11 @@ impl AnnotateCliArgs {
     }
 }
 
-pub fn run_annotate(args: &AnnotateCliArgs) -> Result<()> {
+/// `lupin annotate`: a pass with `-o`, else the TUI, in a session as
+/// `session` asks.
+pub fn run_annotate(args: &AnnotateCliArgs, session: &legume_tui::cli::SessionArgs) -> Result<()> {
     if args.opens_tui() {
-        return crate::tui::run(args, None);
+        return crate::tui::run(args, None, session);
     }
     if let Some(cfg) = build_enrichment_args(args).susie {
         cfg.validate()?;

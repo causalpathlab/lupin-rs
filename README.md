@@ -44,6 +44,19 @@ lupin describe -f run.senna.json --text-prefix run -o out
 lupin describe -f out.T1.senna.json -o out.T1          # a trajectory's order in words
 ```
 
+## Sessions
+
+In an interactive terminal the TUI (`lupin annotate` without `-o`, `lupin
+trajectory` without both `-f` and `-o`) runs as a detachable session, so a
+pass, a save or a trajectory run goes on when the connection drops.
+ctrl+alt+d detaches (the first time, it asks for a name), ctrl+alt+s
+switches to another session, and starting the TUI again with no `--from`
+offers the live sessions to return to. `lupin attach`, `lupin sessions`,
+`lupin rename` and `lupin kill` manage them; `kill` quits as `q` does,
+without asking: a save under way finishes, running jobs stop and unsaved
+edits are dropped. `--no-detach` (or `LEGUME_TUI_NO_DETACH=1`) runs it in
+the terminal only.
+
 ## Cell-type labels
 
 Spaces, commas and underscores in a cell-type label are interchangeable:

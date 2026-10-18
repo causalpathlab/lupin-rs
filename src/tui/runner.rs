@@ -1,7 +1,10 @@
 //! Passes, saves and rescoring previews run as child `lupin annotate` / `lupin relabel`, so
 //! their progress bars (which hide themselves off a terminal) and logs stay
 //! out of the screen, the screen stays live, and stopping is a kill. Their
-//! stderr comes back line by line.
+//! stderr comes back line by line. In a hosted session each runs in a
+//! process group of its own ([`super::child_command`]): a signal meant for
+//! the TUI does not reach it, and the TUI stops it itself (`x`, quitting,
+//! `lupin kill`).
 
 use crate::annotate_cmd::AnnotateCliArgs;
 use anyhow::{Context, Result};
@@ -109,6 +112,7 @@ fn spawn(argv: &[String], log: Sender<String>) -> Result<Child> {
 fn start(argv: &[String], log: Sender<String>, stdout: Stdio, progress: bool) -> Result<Child> {
     let exe = std::env::current_exe().context("locating the lupin executable")?;
     let mut cmd = Command::new(exe);
+    super::child_command(&mut cmd);
     if progress {
         cmd.env(crate::progress::ENV, "1");
     }
