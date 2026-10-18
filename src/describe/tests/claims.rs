@@ -313,3 +313,44 @@ fn a_rank_word_runs_over_a_list_of_methods_but_not_past_another_claim() {
     );
     assert!(check("CT A has the top enrichment, or SuSiE ranking", "CT_A").is_err());
 }
+
+#[test]
+fn a_listed_method_takes_the_rank_whatever_noun_follows_it() {
+    let c = cluster();
+    let check = |t: &str| rank_claims(t, &c, "CT_A");
+    for tail in ["support", "ranks", "rankings here", "scores"] {
+        let t = format!("CT A has the highest enrichment and SuSiE {tail}");
+        assert!(check(&t).is_err(), "{t}");
+    }
+    assert_eq!(
+        check("CT A is ranked first by enrichment, and all methods support it"),
+        Ok(())
+    );
+    // Other joins and nouns: the list goes on.
+    for t in [
+        "CT A has the highest enrichment and SuSiE scores here",
+        "CT A has the highest enrichment, and SuSiE support",
+        "CT A has the highest enrichment or SuSiE support",
+        "CT A has the highest enrichment scores and SuSiE support",
+        "CT A has the highest enrichment score and the SuSiE ranking",
+        "CT A has the highest enrichment and SuSiE's ranking",
+        "CT A has the highest enrichment and SuSiE agrees",
+        "CT A has the highest enrichment and all methods agree",
+        "CT A has the highest enrichment and SuSiE, which puts it first",
+    ] {
+        assert!(check(t).is_err(), "{t}");
+    }
+    // A predicate of its own: an object, a helper, a type, its own rank.
+    for t in [
+        "CT A has the highest enrichment and all methods support it",
+        "CT A has the highest enrichment and SuSiE also supports it",
+        "CT A has the highest enrichment and SuSiE is less sure",
+        "CT A has the highest enrichment and SuSiE does not",
+        "CT A has the highest enrichment and SuSiE favours CT B",
+        "CT A has the highest enrichment and SuSiE puts it second",
+        "CT A has the highest enrichment and SuSiE ranks second",
+        "CT A has the highest enrichment and SuSiE, which puts it second",
+    ] {
+        assert_eq!(check(t), Ok(()), "{t}");
+    }
+}

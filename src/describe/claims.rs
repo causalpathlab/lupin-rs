@@ -109,6 +109,39 @@ const FIRST: [&str; 8] = [
     "greatest",
     "likeliest",
 ];
+/// Words after a listed method that make its clause one of its own, a
+/// verb's object or helper (`SuSiE ranks it as likely`, `all methods
+/// support it`, `SuSiE is less sure`), not a noun the list ends in
+/// (`SuSiE support`, `SuSiE rankings here`).
+const OWN_PREDICATE: [&str; 27] = [
+    "it",
+    "its",
+    "them",
+    "they",
+    "this",
+    "that",
+    "these",
+    "those",
+    "a",
+    "an",
+    "the",
+    "another",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "does",
+    "do",
+    "did",
+    "has",
+    "have",
+    "had",
+    "not",
+    "as",
+    "differs",
+    "disagrees",
+];
 const ORDINALS: [&str; 9] = [
     "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth",
 ];
@@ -481,10 +514,14 @@ fn ranks(t: &str) -> Vec<(usize, usize)> {
 }
 
 /// The claims a cluster's sentence makes of cluster `c`'s methods: each
-/// method named takes the nearest rank word of its clause, else, when it
-/// is listed with the method before it and its clause says no more
-/// (`the highest enrichment and SuSiE ranking`, not `first by enrichment,
-/// and all methods support it`), that one's; the claim is about the choice
+/// method named takes the nearest rank word of its clause (with a relative
+/// clause right after it), else, when it
+/// is listed with the method before it (only `and`, `or`, commas, `the`,
+/// `ranking` between them), that one's, the list ending in whatever noun
+/// (`the highest enrichment and SuSiE ranking`, `… and SuSiE support`),
+/// unless the words after it in its clause name a type or are a verb's
+/// object or helper ([`OWN_PREDICATE`]): a predicate of its own (`first by
+/// enrichment, and all methods support it`). The claim is about the choice
 /// its clause names, else `label` (the one the sentence proposes).
 pub fn rank_claims(text: &str, c: &ClusterInput, label: &str) -> Claim {
     let mut entities: Vec<String> = c.choices.iter().map(|ch| ch.label().to_string()).collect();
@@ -492,10 +529,13 @@ pub fn rank_claims(text: &str, c: &ClusterInput, label: &str) -> Claim {
     entities.extend(c.tops.iter().map(|(_, t)| t.clone()));
     entities.sort();
     entities.dedup();
-    // `enrichment score` is the enrichment, not the projection score.
-    let text = norm(text)
-        .replace("enrichment score", "enrichment")
-        .replace("susie score", "susie");
+    // `enrichment score(s)` is the enrichment, not the projection score.
+    let mut text = norm(text);
+    for (scored, m) in [("enrichment score", "enrichment"), ("susie score", "susie")] {
+        for (i, j) in find(&text, scored, true).into_iter().rev() {
+            text.replace_range(i..j, m);
+        }
+    }
     let x = Text::new(&text, &entities);
     let mut named: Vec<(usize, usize, Method)> = Vec::new();
     for m in Method::ALL {
@@ -520,9 +560,25 @@ pub fn rank_claims(text: &str, c: &ClusterInput, label: &str) -> Claim {
         gap.split(|ch: char| ch == ',' || ch.is_whitespace())
             .all(|w| ["", "and", "or", "the", "ranking", "rankings", "'s"].contains(&w))
     };
+    // Whether the words after a method, to its clause's end, are a
+    // predicate of their own.
+    let own_predicate = |a: usize, b: usize| {
+        !x.named((a, b)).is_empty()
+            || (x.t.get(a..b)).is_some_and(|tail| {
+                tail.split(|ch: char| !ch.is_alphanumeric())
+                    .any(|w| OWN_PREDICATE.contains(&w))
+            })
+    };
     let mut taken: Vec<Option<usize>> = Vec::new();
     for (i, &(p, e, m)) in named.iter().enumerate() {
-        let clause = x.clause(p);
+        // A relative clause right after the method is of it (`SuSiE, which
+        // ranks it second`).
+        let (a, b) = x.clause(p);
+        let next = x.t[b..].find(|ch: char| ch != ',' && !ch.is_whitespace());
+        let clause = match next {
+            Some(k) if x.opener(b + k + 1, &RELATIVE).is_some() => (a, x.clause(b + k + 1).1),
+            _ => (a, b),
+        };
         let own = (said.iter())
             .filter(|(q, _)| (clause.0..clause.1).contains(q))
             .min_by_key(|(q, _)| q.abs_diff(p))
@@ -530,10 +586,9 @@ pub fn rank_claims(text: &str, c: &ClusterInput, label: &str) -> Claim {
         let rank = own.or_else(|| {
             // The methods of `all methods` share its place, and so its rank.
             let (q, prev_end, _) = *named.get(i.checked_sub(1)?)?;
-            // Else a method in a list, its clause saying no more than it.
-            let joined = q == p
-                || (x.t.get(prev_end..p).is_some_and(listed)
-                    && x.t.get(e..clause.1).is_some_and(listed));
+            // Else a method in a list, its clause no predicate of its own.
+            let joined =
+                q == p || (x.t.get(prev_end..p).is_some_and(listed) && !own_predicate(e, clause.1));
             joined.then(|| taken[i - 1]).flatten()
         });
         taken.push(rank);
