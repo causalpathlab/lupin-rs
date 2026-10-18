@@ -4279,12 +4279,12 @@ impl App {
     }
 
     /// The trajectory shown: the figures', else the first of the order
-    /// view's manifests that records a trajectory run.
+    /// view's manifests that records a trajectory run of its own.
     fn shown_trajectory(&self) -> Option<PathBuf> {
         let has = |m: &Path| {
             m.is_file()
                 && crate::manifest::run::load(&m.to_string_lossy())
-                    .is_ok_and(|l| l.manifest.trajectory.edges.is_some())
+                    .is_ok_and(|l| crate::manifest::family::is_trajectory(&l.manifest, &l.file))
         };
         let figures = self.figures.as_ref().map(|f| f.data.manifest.clone());
         figures.into_iter().chain(self.manifests()).find(|m| has(m))

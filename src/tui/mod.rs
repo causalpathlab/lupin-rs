@@ -91,8 +91,7 @@ pub fn run_describe(from: &str, lm: &crate::describe::LmArgs) -> Result<()> {
         lm: true,
         ..lm.clone()
     };
-    let t = &loaded.manifest.trajectory;
-    if t.lineages.is_some() || t.edges.is_some() {
+    if crate::manifest::family::is_trajectory(&loaded.manifest, &loaded.file) {
         #[derive(Parser)]
         struct Trajectory {
             #[command(flatten)]
