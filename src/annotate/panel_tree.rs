@@ -311,7 +311,8 @@ impl PanelTree {
         })
     }
 
-    /// The node a label names: a panel type, or a node called by it.
+    /// The node a label names: a panel type, a node called by it, or one
+    /// whose term it is (a group named for a member's own term).
     #[must_use]
     pub fn node_of(&self, label: &str) -> Option<usize> {
         let key = label_key(label);
@@ -319,6 +320,7 @@ impl PanelTree {
             .get(&key)
             .copied()
             .or_else(|| (0..self.nodes.len()).find(|&i| self.label(i) == key))
+            .or_else(|| (0..self.nodes.len()).find(|&i| self.nodes[i].name == key))
     }
 
     /// `i` and its ancestors, root first.

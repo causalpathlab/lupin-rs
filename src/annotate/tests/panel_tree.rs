@@ -111,6 +111,12 @@ fn a_node_is_called_by_its_panel_type_else_its_name() {
         Some(group2),
         "a class is found by its label"
     );
+    let ct1_term = t.node_of("CT1_cell");
+    assert_eq!(
+        ct1_term,
+        Some(ct1_cell),
+        "a node holding a type is also found by its term's name"
+    );
     let mut under = t.labels_under(group2);
     under.sort_unstable();
     assert_eq!(under, ["CT0_cells", "CT1_cells", "CT1_helper"]);

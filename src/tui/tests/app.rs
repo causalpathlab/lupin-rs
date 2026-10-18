@@ -1994,6 +1994,32 @@ fn a_typed_name_off_the_panel_is_not_said_to_have_failed_fdr() {
 }
 
 #[test]
+fn a_group_named_for_a_members_term_is_said_to_be_a_tree_group() {
+    use super::super::round::Edit;
+    // Stray shares CT1's markers, so CT1's term is the group of both.
+    let cl = crate::annotate::celltype_tree::ClTerms::parse(
+        "[Term]\nid: CL:0\nname: top\n\n\
+         [Term]\nid: CL:1\nname: CT1 cell\nis_a: CL:0\n\n\
+         [Term]\nid: CL:2\nname: CT2 cell\nis_a: CL:0\n",
+        &crate::annotate::cl_rules::shipped(),
+    );
+    let mut app = app_with_terms(false);
+    let panel = [
+        ("GENE1".to_string(), "CT1 cells".to_string()),
+        ("GENE2".to_string(), "CT2 cells".to_string()),
+        ("GENE1".to_string(), "Stray".to_string()),
+    ];
+    app.tree = crate::manifest::ontology::panel_tree_on(Some(&cl), &panel);
+    app.edits = vec![Edit::Label {
+        cluster: 0,
+        label: "CT1_cell".into(),
+        reason: "why".into(),
+    }];
+    let screen = drawn(&app);
+    assert!(screen.contains("a tree group"), "{screen}");
+}
+
+#[test]
 fn a_round_with_no_cluster_expression_says_so_and_calls_no_marker_weak() {
     let mut app = app_with_terms(false);
     if let Some(r) = app.round.as_mut() {
