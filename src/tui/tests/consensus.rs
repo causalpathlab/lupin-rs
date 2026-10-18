@@ -313,7 +313,31 @@ fn relineage(t: &Path, paths: &[&str]) {
     for (i, p) in paths.iter().enumerate() {
         text += &format!("L{i}\t0\t{p}\n");
     }
-    std::fs::write(t.with_file_name("t.trajectory_lineages.tsv"), text).unwrap();
+    let file = t.with_file_name("t.trajectory_lineages.tsv");
+    let before = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+    std::fs::write(&file, text).unwrap();
+    // Later than before, whatever the clock's grain.
+    if let Some(before) = before {
+        let later = std::time::SystemTime::now().max(before + std::time::Duration::from_secs(1));
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+    }
+}
+
+#[test]
+fn the_order_texts_notice_a_rewrite_of_the_same_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = fixture_trajectory(dir.path());
+    relineage(&t, &["HSC_like > MPP_like > ERY"]);
+    let mut texts = super::super::consensus::OrderTexts::of(&t).unwrap();
+    assert!(!texts.poll(), "nothing changed");
+    relineage(&t, &["HSC_like > MPP_like > MON"]);
+    assert!(texts.poll());
+    assert_eq!(texts.texts, texts_of(&t));
 }
 
 /// An app on a round in `dir/r`, the order view up on trajectory `t`.

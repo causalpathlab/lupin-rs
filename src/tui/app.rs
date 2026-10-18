@@ -2873,7 +2873,7 @@ impl App {
             }
         }
         self.reload_order();
-        self.load_order_texts(true);
+        self.load_order_texts(false);
         self.status = "order view: space marks a type, then > states the first precedes the second, u that they are unrelated".into();
     }
 
@@ -3370,7 +3370,7 @@ impl App {
         if self.in_order() {
             // The order view's edges and texts follow the trajectory now shown.
             self.rebuild_order(true);
-            self.load_order_texts(true);
+            self.load_order_texts(false);
         }
         self.status = match (&self.round, trajectory) {
             (Some(r), true) => format!(
@@ -4283,8 +4283,9 @@ impl App {
     /// In the order view, keep the table and the strip on the trajectory
     /// shown, whatever changed it: when where it is looked for has changed,
     /// its edges and texts are read again together; else the texts are
-    /// polled. Entering the view, opening a run and a run done read the
-    /// texts again themselves (`force`, [`Self::load_order_texts`]).
+    /// polled, a change of their files' size or time read again. A run done
+    /// reads them anew itself (`force`, [`Self::load_order_texts`]): its
+    /// facts changed.
     fn keep_order_current(&mut self) {
         if !self.in_order() {
             return;

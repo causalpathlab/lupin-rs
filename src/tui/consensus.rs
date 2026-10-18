@@ -17,9 +17,13 @@ use anyhow::Result;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The size of `file` now; `None` when it is missing.
-fn size(file: &Path) -> Option<u64> {
-    std::fs::metadata(file).ok().map(|m| m.len())
+/// A file's size and last change, to tell when it changed; `None` when it
+/// is missing.
+type Stamp = Option<(u64, Option<std::time::SystemTime>)>;
+
+fn stamp(file: &Path) -> Stamp {
+    let m = std::fs::metadata(file).ok()?;
+    Some((m.len(), m.modified().ok()))
 }
 
 /// A round's proposals, followed in its cache: each cluster's prompt as the
@@ -28,8 +32,8 @@ pub struct Following {
     pub round: PathBuf,
     prompts: BTreeMap<ClusterId, String>,
     pub cache: PathBuf,
-    /// The cache's size when last read.
-    read: Option<u64>,
+    /// The cache's [`Stamp`] when last read.
+    read: Stamp,
 }
 
 impl Following {
@@ -46,7 +50,7 @@ impl Following {
 
     /// The proposals now in the cache, when it changed since last read.
     pub fn poll(&mut self) -> Option<BTreeMap<ClusterId, Proposal>> {
-        let now = size(&self.cache);
+        let now = stamp(&self.cache);
         if now == self.read {
             return None;
         }
@@ -61,7 +65,7 @@ pub struct OrderTexts {
     pub manifest: PathBuf,
     /// The manifest and its facts' files, as last read.
     files: Vec<PathBuf>,
-    read: Vec<Option<u64>>,
+    read: Vec<Stamp>,
     pub texts: Vec<OrderText>,
 }
 
@@ -78,7 +82,7 @@ impl OrderTexts {
             .collect();
         Ok(Self {
             manifest: manifest.to_path_buf(),
-            read: files.iter().map(|f| size(f)).collect(),
+            read: files.iter().map(|f| stamp(f)).collect(),
             files,
             texts: trajectory::texts(&OrderFacts::read(&loaded)?),
         })
@@ -87,7 +91,7 @@ impl OrderTexts {
     /// Read the texts again when their files changed; whether they did. A
     /// manifest or facts that no longer read keep the texts as they were.
     pub fn poll(&mut self) -> bool {
-        let now: Vec<Option<u64>> = self.files.iter().map(|f| size(f)).collect();
+        let now: Vec<Stamp> = self.files.iter().map(|f| stamp(f)).collect();
         if now == self.read {
             return false;
         }
