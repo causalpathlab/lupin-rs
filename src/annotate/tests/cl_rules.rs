@@ -181,3 +181,23 @@ fn a_hyphen_parts_two_words_of_letters_only() {
     differ("CD16- monocyte", "CD16 monocyte");
     differ("CD4-positive T cell", "CD4 T cell");
 }
+
+#[test]
+fn rules_written_with_the_comma_switch_read_as_its_taxa() {
+    let shipped: Value =
+        serde_json::from_str(include_str!("../../../data/cl_matching.json")).unwrap();
+    let taxa = MatchRules::from_layers(std::slice::from_ref(&shipped))
+        .unwrap()
+        .qualifiers
+        .comma_words;
+    assert!(!taxa.is_empty());
+    // A pass's recorded rules from before the taxa were listed.
+    let recorded = json!({"qualifiers": {"parenthetical": true, "comma_word": true}});
+    let r = MatchRules::from_layers(&[recorded]).unwrap();
+    assert_eq!(r.qualifiers.comma_words, taxa, "on: the shipped taxa");
+    // A user's layer turning it off over the shipped rules.
+    let off = json!({"qualifiers": {"comma_word": false}});
+    let r = MatchRules::from_layers(&[shipped, off]).unwrap();
+    assert!(r.qualifiers.comma_words.is_empty(), "off: none");
+    assert!(r.qualifiers.parenthetical, "the rest kept");
+}

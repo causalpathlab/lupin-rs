@@ -99,7 +99,8 @@ pub struct MatchRules {
 #[serde(default)]
 pub struct QualifierRules {
     pub parenthetical: bool,
-    /// The taxa a comma may qualify a name by, compared ignoring case.
+    /// The taxa a comma may qualify a name by, compared ignoring case; the
+    /// older switch `comma_word` reads as the shipped taxa or none.
     pub comma_words: Vec<String>,
 }
 
@@ -197,6 +198,7 @@ impl MatchRules {
             merge_patch(&mut merged, l);
         }
         strip_docs(&mut merged);
+        comma_switch(&mut merged);
         Ok(serde_json::from_value(merged)?)
     }
 
@@ -261,6 +263,28 @@ pub fn merge_patch(target: &mut Value, patch: &Value) {
         other => *target = other.clone(),
     }
 }
+
+/// Rules written before the comma's taxa were listed (a pass's recorded
+/// files, a user's layer) say `"comma_word": true` or `false`: the shipped
+/// taxa, or none. The switch, where a layer sets it, decides.
+fn comma_switch(rules: &mut Value) {
+    let Some(q) = rules.get_mut("qualifiers").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(on) = q.remove("comma_word").as_ref().and_then(Value::as_bool) else {
+        return;
+    };
+    let taxa = if on {
+        let shipped: Value = serde_json::from_str(SHIPPED).expect("the shipped rules are JSON");
+        shipped["qualifiers"]["comma_words"].clone()
+    } else {
+        Value::Array(Vec::new())
+    };
+    q.insert("comma_words".into(), taxa);
+}
+
+/// The rules the repository ships, `data/cl_matching.json`.
+const SHIPPED: &str = include_str!("../../data/cl_matching.json");
 
 fn strip_docs(v: &mut Value) {
     if let Value::Object(m) = v {
@@ -368,8 +392,7 @@ fn word(chars: impl Iterator<Item = char>) -> String {
 /// The rules the repository ships (`data/cl_matching.json`), for tests.
 #[cfg(test)]
 pub(crate) fn shipped() -> MatchRules {
-    let v: Value = serde_json::from_str(include_str!("../../data/cl_matching.json"))
-        .expect("the shipped rules are JSON");
+    let v: Value = serde_json::from_str(SHIPPED).expect("the shipped rules are JSON");
     MatchRules::from_layers(&[v]).expect("the shipped rules parse")
 }
 
