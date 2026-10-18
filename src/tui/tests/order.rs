@@ -309,11 +309,11 @@ fn the_shown_run_notices_a_rewrite_of_the_same_size() {
     let dir = tempfile::tempdir().unwrap();
     let t = fixture_trajectory(dir.path());
     relineage(&t, &["HSC_like > MPP_like > ERY"]);
-    let mut shown = ShownRun::find(std::slice::from_ref(&t), None).0.unwrap();
-    assert!(!shown.poll(), "nothing changed");
+    let mut shown = Shown::find(vec![t.clone()]);
+    assert!(!shown.refresh(), "nothing changed");
     relineage(&t, &["HSC_like > MPP_like > MON"]);
-    assert!(shown.poll());
-    assert_eq!(shown.texts, texts_of(&t));
+    assert!(shown.refresh());
+    assert_eq!(shown.run.unwrap().texts, texts_of(&t));
 }
 
 #[test]
@@ -322,9 +322,30 @@ fn a_write_while_a_file_is_read_shows_as_a_change_on_the_next_poll() {
     let f = dir.path().join("a");
     std::fs::write(&f, "a").unwrap();
     // The run writes the file between its read and its stamp.
-    let ((), (at, s)) = read_stamped(&f, |p| std::fs::write(p, "longer").unwrap());
-    assert_eq!(at, f);
-    assert_ne!(s, stamp(&f), "the stamp is the one before the read");
+    let mut watched = Vec::new();
+    read_stamped(&f, &mut watched, |p| std::fs::write(p, "longer").unwrap());
+    assert_eq!(watched.len(), 1);
+    assert_eq!(watched[0].0, f);
+    assert!(!unchanged(&watched), "the stamp is the one before the read");
+}
+
+#[test]
+fn a_run_that_stops_reading_stays_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = fixture_trajectory(dir.path());
+    let edges = t.with_file_name("t.trajectory_edges.parquet");
+    let mut shown = Shown::find(vec![t.clone()]);
+    assert!(shown.run.is_some());
+    std::fs::write(&edges, "not a parquet").unwrap();
+    assert!(
+        !shown.refresh(),
+        "a look that finds none changes nothing shown"
+    );
+    assert_eq!(shown.run.as_ref().map(|r| &r.manifest), Some(&t));
+    assert!(
+        !shown.refresh(),
+        "and is not repeated until a file changes again"
+    );
 }
 
 #[test]
@@ -335,10 +356,9 @@ fn a_trajectory_found_nowhere_is_looked_for_again() {
     let away = t.with_file_name("away.parquet");
     std::fs::rename(&edges, &away).unwrap();
     let among = vec![t.clone()];
-    let mut shown = Shown::find(among, None);
+    let mut shown = Shown::find(among);
     assert!(shown.run.is_none(), "no edges yet");
-    std::thread::sleep(POLL_EVERY);
-    assert!(!shown.poll(), "nothing changed: not looked for again");
+    assert!(!shown.refresh(), "nothing changed: not looked for again");
     let watched: Vec<&Path> = shown.watched.iter().map(|(f, _)| f.as_path()).collect();
     assert_eq!(
         watched,
@@ -346,8 +366,7 @@ fn a_trajectory_found_nowhere_is_looked_for_again() {
         "what a look depends on"
     );
     std::fs::rename(&away, &edges).unwrap();
-    std::thread::sleep(POLL_EVERY);
-    assert!(shown.poll(), "written since");
+    assert!(shown.refresh(), "written since");
     assert_eq!(shown.run.as_ref().map(|r| &r.manifest), Some(&t));
 }
 
@@ -371,7 +390,7 @@ fn the_order_view_shows_the_selected_types_line_or_the_runs_paragraph() {
     assert!(app.child.is_none());
     app.focus = Focus::Clusters;
     let paragraph = paragraph_of(&t);
-    assert_eq!(app.order_line().as_deref(), Some(paragraph.as_str()));
+    assert_eq!(app.order_line(), Some(paragraph.as_str()));
     app.focus = Focus::Order;
     let select = |app: &mut App, ty: &str| {
         let TreeMode::Order(v) = &mut app.tree_mode else {
@@ -384,13 +403,13 @@ fn the_order_view_shows_the_selected_types_line_or_the_runs_paragraph() {
     };
     // A type the trajectory does not order has no line: the paragraph.
     select(&mut app, "CT2");
-    assert_eq!(app.order_line().as_deref(), Some(paragraph.as_str()));
+    assert_eq!(app.order_line(), Some(paragraph.as_str()));
     select(&mut app, "MPP_like");
     let mpp = texts_of(&t)
         .into_iter()
         .find(|x| x.subject.as_deref() == Some("MPP_like"))
         .unwrap();
-    assert_eq!(app.order_line(), Some(mpp.text));
+    assert_eq!(app.order_line().map(str::to_string), Some(mpp.text));
 }
 
 #[test]
@@ -406,7 +425,7 @@ fn another_trajectory_shown_shows_its_own_texts() {
     app.tick();
     assert_eq!(shown(&app).map(|t| &t.manifest), Some(&b));
     app.focus = Focus::Clusters;
-    assert_eq!(app.order_line(), Some(paragraph_of(&b)));
+    assert_eq!(app.order_line().map(str::to_string), Some(paragraph_of(&b)));
 }
 
 #[test]
@@ -458,13 +477,13 @@ fn a_new_output_shows_the_new_trajectorys_edges_with_its_texts() {
     let mut app = order_on(dir.path(), &a);
     app.focus = Focus::Clusters;
     app.tick();
-    assert_eq!(app.order_line(), Some(first.clone()));
+    assert_eq!(app.order_line().map(str::to_string), Some(first.clone()));
     assert_ne!(order_edges(&app).len(), fewer.len());
     let out = b.to_string_lossy().replace(".senna.json", "");
     app.set_output(&out);
     app.tick();
     assert_eq!(shown(&app).map(|t| &t.manifest), Some(&b));
-    assert_eq!(app.order_line(), Some(other.clone()));
+    assert_eq!(app.order_line().map(str::to_string), Some(other.clone()));
     assert_eq!(order_edges(&app), fewer, "the table is B's too");
     // Back to A, then to B while the view is away.
     let a_edges = pairs(
@@ -476,14 +495,14 @@ fn a_new_output_shows_the_new_trajectorys_edges_with_its_texts() {
     );
     app.set_output(&a.to_string_lossy().replace(".senna.json", ""));
     app.tick();
-    assert_eq!(app.order_line(), Some(first));
+    assert_eq!(app.order_line().map(str::to_string), Some(first));
     assert_eq!(order_edges(&app), a_edges);
     app.toggle_order(false);
     app.set_output(&out);
     app.toggle_order(false);
     app.figures = None;
     app.tick();
-    assert_eq!(app.order_line(), Some(other));
+    assert_eq!(app.order_line().map(str::to_string), Some(other));
     assert_eq!(order_edges(&app), fewer);
 }
 
@@ -495,7 +514,7 @@ fn the_order_view_entered_again_reads_the_texts_again() {
     let early = paragraph_of(&a);
     let mut app = order_on(dir.path(), &a);
     app.focus = Focus::Clusters;
-    assert_eq!(app.order_line(), Some(early.clone()));
+    assert_eq!(app.order_line().map(str::to_string), Some(early.clone()));
     app.toggle_order(false);
     // Run anew while the view is away, its lineages file the same size.
     relineage(&a, &["HSC_like > MPP_like > MON"]);
@@ -503,7 +522,7 @@ fn the_order_view_entered_again_reads_the_texts_again() {
     assert_ne!(later, early);
     app.toggle_order(false);
     app.focus = Focus::Clusters;
-    assert_eq!(app.order_line(), Some(later));
+    assert_eq!(app.order_line().map(str::to_string), Some(later));
     // So does opening the run again, the view up.
     relineage(&a, &["HSC_like > MPP_like > ERY"]);
     let pick = crate::manifest::family::Pick {
@@ -512,7 +531,7 @@ fn the_order_view_entered_again_reads_the_texts_again() {
         labelled: false,
     };
     app.open_run(pick, true);
-    assert_eq!(app.order_line(), Some(early));
+    assert_eq!(app.order_line().map(str::to_string), Some(early));
 }
 
 #[test]
@@ -562,5 +581,5 @@ fn the_order_views_edges_and_texts_come_from_one_trajectory() {
     assert_eq!(order_edges(&app), a_edges);
     assert_eq!(shown(&app).map(|t| &t.manifest), Some(&borrowed));
     app.focus = Focus::Clusters;
-    assert_eq!(app.order_line(), Some(paragraph_of(&a)));
+    assert_eq!(app.order_line().map(str::to_string), Some(paragraph_of(&a)));
 }

@@ -3587,26 +3587,17 @@ impl App {
         )
     }
 
-    /// (Re)build the order view from the labels on screen and the data files.
-    /// The trajectory run's edges are kept from the view on screen, so only
-    /// the precedence files are read again.
+    /// (Re)build the order view from the labels on screen, the data files
+    /// and the edges of the trajectory shown, already read.
     fn reload_order(&mut self) {
-        self.rebuild_order(None);
-    }
-
-    /// [`Self::reload_order`]; with `edges` (the trajectory shown was read
-    /// again) those, not the view's.
-    fn rebuild_order(&mut self, edges: Option<Vec<crate::trajectory::edges::EdgeRow>>) {
-        let (sel, kept, ontology) = match std::mem::replace(&mut self.tree_mode, TreeMode::Panel) {
-            TreeMode::Order(v) => (v.sel, Some(v.edges), v.ontology),
-            _ => (0, None, None),
+        let (sel, ontology) = match std::mem::replace(&mut self.tree_mode, TreeMode::Panel) {
+            TreeMode::Order(v) => (v.sel, v.ontology),
+            _ => (0, None),
         };
-        let edges = edges.or(kept).unwrap_or_else(|| {
-            (self.order_shown.as_ref())
-                .and_then(|s| s.run.as_ref())
-                .map(|r| r.edges.clone())
-                .unwrap_or_default()
-        });
+        let edges = (self.order_shown.as_ref())
+            .and_then(|s| s.run.as_ref())
+            .map(|r| r.edges.clone())
+            .unwrap_or_default();
         let mut v = super::order::OrderView::load(
             self.order_types(),
             self.cl.as_ref(),
@@ -4063,23 +4054,17 @@ impl App {
 
     /// Show in the order view the trajectory found now among
     /// [`Self::trajectory_candidates`]: its edges in the table, its texts in
-    /// the strip, read together. The figures' edges are taken, not read
-    /// again.
+    /// the strip, read together.
     fn show_trajectory(&mut self) {
         let among = self.trajectory_candidates();
-        let known = (self.figures.as_ref()).map(|f| (f.data.manifest.as_path(), &f.data.edges[..]));
-        let shown = super::order::Shown::find(among, known);
-        let edges = (shown.run.as_ref())
-            .map(|r| r.edges.clone())
-            .unwrap_or_default();
-        self.order_shown = Some(shown);
-        self.rebuild_order(Some(edges));
+        self.order_shown = Some(super::order::Shown::find(among));
+        self.reload_order();
     }
 
     /// In the order view, keep the table and the strip on the trajectory
     /// shown, whatever changed it: when where it is looked for has changed,
-    /// it is found again; else its files are polled, and read again together
-    /// when they changed.
+    /// it is found again; else, looked at every [`super::order::POLL_EVERY`],
+    /// once a file it was read from changed.
     fn keep_order_current(&mut self) {
         if !self.in_order() {
             return;
@@ -4087,9 +4072,8 @@ impl App {
         let among = self.trajectory_candidates();
         match &mut self.order_shown {
             Some(s) if s.among == among => {
-                if s.poll() {
-                    let edges = s.run.as_ref().map(|r| r.edges.clone());
-                    self.rebuild_order(Some(edges.unwrap_or_default()));
+                if s.due() && s.refresh() {
+                    self.reload_order();
                 }
             }
             _ => self.show_trajectory(),
@@ -4100,7 +4084,7 @@ impl App {
     /// the focus, else (or for a type the run does not order) the run's
     /// paragraph.
     #[must_use]
-    pub fn order_line(&self) -> Option<String> {
+    pub fn order_line(&self) -> Option<&str> {
         let t = self.order_shown.as_ref()?.run.as_ref()?;
         let ty = match &self.tree_mode {
             TreeMode::Order(v) if self.focus == Focus::Order => {
@@ -4108,7 +4092,7 @@ impl App {
             }
             _ => None,
         };
-        t.line(ty).map(str::to_string)
+        t.line(ty)
     }
 
     /// Take alias `label → id`, just written to `file`, in this session:

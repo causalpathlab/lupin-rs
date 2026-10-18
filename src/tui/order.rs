@@ -332,101 +332,58 @@ fn stamp(file: &Path) -> Stamp {
 }
 
 /// The trajectory the order view shows: its edges for the table and the
-/// texts code writes from its outputs for the strip, read together and
-/// read again together when the manifest or an output changes.
+/// texts code writes from its outputs for the strip, read together.
 pub struct ShownRun {
+    /// The manifest it was read from, which tests check.
+    #[cfg(test)]
     pub manifest: PathBuf,
     pub edges: Vec<EdgeRow>,
     pub texts: Vec<OrderText>,
-    /// The manifest and its outputs, with their stamps as last read.
-    files: Vec<(PathBuf, Stamp)>,
 }
+
+/// Files read, each with its stamp from just before it was read.
+type Watched = Vec<(PathBuf, Stamp)>;
 
 impl ShownRun {
     /// The first of `manifests` whose `trajectory` section records an edge
     /// table that can be read (its own or one a round borrowed from the run
-    /// it was made on). `known` are edges already read from one of them
-    /// (the figures'), taken rather than read again. When it finds none,
-    /// the files that told so, each stamped before it was read: each
-    /// manifest, and the edge table one records.
-    pub fn find(
-        manifests: &[PathBuf],
-        known: Option<(&Path, &[EdgeRow])>,
-    ) -> (Option<Self>, Vec<(PathBuf, Stamp)>) {
-        let mut looked = Vec::new();
+    /// it was made on), and every file the look read, each stamped before it
+    /// was read: the manifests tried and the outputs they record.
+    #[must_use]
+    pub fn find(manifests: &[PathBuf]) -> (Option<Self>, Watched) {
+        let mut watched = Vec::new();
         for m in manifests {
-            let known = known.filter(|(at, _)| at == m).map(|(_, e)| e);
-            match Self::read(m, known) {
-                Ok(run) => return (Some(run), Vec::new()),
-                Err(files) => looked.extend(files),
+            if let Some(run) = Self::read(m, &mut watched) {
+                return (Some(run), watched);
             }
         }
-        (None, looked)
+        (None, watched)
     }
 
-    /// The run `manifest` records, else the files that told it has none.
-    /// Each file is stamped before it is read, so a write that lands while
-    /// it is read shows as a change on the next poll.
-    fn read(manifest: &Path, known: Option<&[EdgeRow]>) -> Result<Self, Vec<(PathBuf, Stamp)>> {
-        let (loaded, at) = read_stamped(manifest, |m| load(&m.to_string_lossy()));
-        let mut files = vec![at];
-        let Ok(loaded) = loaded else {
-            return Err(files);
-        };
-        let [lineages_file, edges] = OrderFacts::files(&loaded);
-        let Some(edges_file) = edges.map(PathBuf::from) else {
-            return Err(files);
-        };
-        let edges = match known {
-            Some(e) => {
-                files.push((edges_file.clone(), stamp(&edges_file)));
-                e.to_vec()
-            }
-            None => {
-                let (read, at) = read_stamped(&edges_file, |f| edges::read(&f.to_string_lossy()));
-                files.push(at);
-                match read {
-                    Ok(e) => e,
-                    Err(_) => return Err(files),
-                }
-            }
-        };
+    /// The run `manifest` records, if it records one that reads; each file
+    /// read goes to `watched` with its stamp from before the read, so a
+    /// write that lands while it is read shows as a change on the next look.
+    fn read(manifest: &Path, watched: &mut Watched) -> Option<Self> {
+        let loaded = read_stamped(manifest, watched, |m| load(&m.to_string_lossy())).ok()?;
+        let [lineages_file, edges_file] = OrderFacts::files(&loaded);
+        let edges_file = PathBuf::from(edges_file?);
+        let edges =
+            read_stamped(&edges_file, watched, |f| edges::read(&f.to_string_lossy())).ok()?;
         let lineages = match lineages_file.map(PathBuf::from) {
-            Some(p) => {
-                let (read, at) = read_stamped(&p, |f| lineages::read(&f.to_string_lossy()));
-                files.insert(1, at);
-                read.unwrap_or_else(|e| {
+            Some(p) => read_stamped(&p, watched, |f| lineages::read(&f.to_string_lossy()))
+                .unwrap_or_else(|e| {
                     log::warn!("no trajectory texts: {e:#}");
                     Vec::new()
-                })
-            }
+                }),
             None => Vec::new(),
         };
         let facts = OrderFacts { lineages, edges };
-        Ok(Self {
+        Some(Self {
+            #[cfg(test)]
             manifest: manifest.to_path_buf(),
             texts: trajectory::texts(&facts),
             edges: facts.edges,
-            files,
         })
-    }
-
-    /// Read it again when its files changed; whether they did. A manifest
-    /// or edges that no longer read keep it as it was.
-    pub fn poll(&mut self) -> bool {
-        if self.files.iter().all(|(f, s)| stamp(f) == *s) {
-            return false;
-        }
-        match Self::read(&self.manifest, None) {
-            Ok(again) => *self = again,
-            // The files read keep their stamps from before the read.
-            Err(read) => {
-                for (f, s) in &mut self.files {
-                    *s = (read.iter().find(|(r, _)| r == f)).map_or_else(|| stamp(f), |(_, s)| *s);
-                }
-            }
-        }
-        true
     }
 
     /// Type `ty`'s line, or the run's paragraph without one.
@@ -450,16 +407,16 @@ pub const POLL_EVERY: Duration = Duration::from_secs(1);
 pub struct Shown {
     pub among: Vec<PathBuf>,
     pub run: Option<ShownRun>,
-    /// With no run found, the files that told so, with their stamps then.
-    watched: Vec<(PathBuf, Stamp)>,
+    /// The files the last look read, with their stamps then.
+    watched: Watched,
     polled: Instant,
 }
 
 impl Shown {
     /// The run found among `among` ([`ShownRun::find`]).
     #[must_use]
-    pub fn find(among: Vec<PathBuf>, known: Option<(&Path, &[EdgeRow])>) -> Self {
-        let (run, watched) = ShownRun::find(&among, known);
+    pub fn find(among: Vec<PathBuf>) -> Self {
+        let (run, watched) = ShownRun::find(&among);
         Self {
             among,
             run,
@@ -468,31 +425,42 @@ impl Shown {
         }
     }
 
-    /// [`ShownRun::poll`], at most every [`POLL_EVERY`], or with no run
-    /// found yet a look among the candidates again once a file that told so
-    /// changed; whether it changed.
-    pub fn poll(&mut self) -> bool {
+    /// Whether it is time to look at the files again: at most every
+    /// [`POLL_EVERY`].
+    pub fn due(&mut self) -> bool {
         if self.polled.elapsed() < POLL_EVERY {
             return false;
         }
         self.polled = Instant::now();
-        if let Some(run) = &mut self.run {
-            return run.poll();
-        }
-        if self.watched.iter().all(|(f, s)| stamp(f) == *s) {
+        true
+    }
+
+    /// Look among the candidates again once a file the last look read
+    /// changed; whether a run was found. With none found, the run shown
+    /// before is kept.
+    pub fn refresh(&mut self) -> bool {
+        if unchanged(&self.watched) {
             return false;
         }
-        let (run, watched) = ShownRun::find(&self.among, None);
-        self.run = run;
+        let (run, watched) = ShownRun::find(&self.among);
         self.watched = watched;
-        self.run.is_some()
+        let found = run.is_some();
+        if found {
+            self.run = run;
+        }
+        found
     }
 }
 
-/// `read` of `file`, with `file`'s stamp taken before it.
-fn read_stamped<T>(file: &Path, read: impl FnOnce(&Path) -> T) -> (T, (PathBuf, Stamp)) {
-    let s = stamp(file);
-    (read(file), (file.to_path_buf(), s))
+/// Whether every file in `watched` still has its stamp.
+fn unchanged(watched: &Watched) -> bool {
+    watched.iter().all(|(f, s)| stamp(f) == *s)
+}
+
+/// `read` of `file`, `file` going to `watched` with its stamp taken before.
+fn read_stamped<T>(file: &Path, watched: &mut Watched, read: impl FnOnce(&Path) -> T) -> T {
+    watched.push((file.to_path_buf(), stamp(file)));
+    read(file)
 }
 
 #[cfg(test)]
