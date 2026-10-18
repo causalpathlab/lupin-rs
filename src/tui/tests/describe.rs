@@ -1,53 +1,93 @@
-//! The language model's opinion in the annotate TUI: among the candidates'
-//! evidence, its top suggested under them and among the label choices,
-//! flagging no cluster, taken only once confirmed, and recorded as the
-//! user's call on it; and the trajectory's texts in the order view.
+//! The trajectory's texts in the order view: written by code from the
+//! run's outputs, shown at once, and read again when they change.
 
 use super::super::app::{App, Focus, Job, Running};
-use super::super::round::decisions;
-use crate::annotate::rounds::{DecidedBy, Method};
+use crate::annotate::rounds::{ClusterId, Method};
 use crate::annotate_cmd::AnnotateCliArgs;
-use crate::describe::lm::{Lm, LmModel, LmSpec};
-use crate::describe::opinion::tests::{fixture_round, Stub};
-use crate::describe::opinion::{self, Opinion};
-use crate::gene_text::cli::ComputeDevice;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::{Path, PathBuf};
 
-fn press(app: &mut App, code: KeyCode) {
-    app.key(KeyEvent::new(code, KeyModifiers::NONE));
-}
-
-const WHY: &str = "CT2 cells express GENE1.";
-
-fn spec() -> LmSpec {
-    LmSpec {
-        model: LmModel::Qwen3_0_6b,
-        local_dir: None,
-        device: ComputeDevice::Cpu,
+/// A round of three clusters of ten cells in `dir`: CT1–CT3 each lead their
+/// own cluster on the enrichment's share, their five markers rising there;
+/// cluster 1 has a decision in its history.
+fn fixture_round(dir: &Path) -> PathBuf {
+    use crate::manifest::rounds::write_clusters;
+    use crate::manifest::run::RunManifest;
+    use legume_numeric::matrix::dense_mat_io::Mat;
+    use legume_numeric::matrix::traits::IoOps;
+    let at = |f: &str| dir.join(f).to_string_lossy().into_owned();
+    let (g, k, per) = (30usize, 3usize, 10usize);
+    let genes: Vec<Box<str>> = (0..g).map(|i| format!("GENE{i}").into()).collect();
+    let cells: Vec<Box<str>> = (0..k * per).map(|i| format!("c{i}").into()).collect();
+    let ids: Vec<Option<ClusterId>> = (0..k * per).map(|i| Some((i / per) as ClusterId)).collect();
+    write_clusters(&at("run.clusters.parquet"), &cells, &ids).unwrap();
+    let labels: Vec<Box<str>> = (0..k * per)
+        .map(|i| format!("CT{}", i / per + 1).into())
+        .collect();
+    graph_embedding_util::type_annotation::write_cell_labels(
+        &at("run"),
+        &cells,
+        &labels,
+        &vec![0.9; k * per],
+    )
+    .unwrap();
+    let mut expr = Mat::zeros(g, k);
+    for i in 0..g {
+        for c in 0..k {
+            expr[(i, c)] = 1.0;
+        }
     }
-}
-
-/// The round's cache.
-fn cache_of(round: &Path) -> PathBuf {
-    opinion::cache_of(&crate::manifest::run::load(&round.to_string_lossy()).unwrap())
-}
-
-/// The model's opinion of every cluster of `round` by a stub scoring the
-/// panel's types `scores`, cached as the job writes it.
-fn opine_by(round: &Path, scores: &[(&str, f32)]) -> Vec<Opinion> {
-    let loaded = crate::manifest::run::load(&round.to_string_lossy()).unwrap();
-    let r = opinion::inputs(&loaded).unwrap();
-    let load = || -> anyhow::Result<Box<dyn Lm>> {
-        let cont = WHY.trim_start_matches("CT2 cells");
-        Ok(Box::new(Stub::new(scores, &[cont, cont, cont])))
+    for c in 0..k {
+        for m in 0..5 {
+            expr[(c * 5 + m, c)] = 20.0 - m as f32;
+        }
+    }
+    let kcols: Vec<Box<str>> = (0..k).map(|c| format!("K{c}").into()).collect();
+    expr.to_parquet_with_names(
+        &at("run.cluster_expression.parquet"),
+        (Some(&genes), Some("gene")),
+        Some(&kcols),
+    )
+    .unwrap();
+    let mut panel = String::from("gene\tcelltype\n");
+    for c in 0..k {
+        for m in 0..5 {
+            panel += &format!("GENE{}\tCT{}\n", c * 5 + m, c + 1);
+        }
+    }
+    std::fs::write(dir.join("markers.tsv"), panel).unwrap();
+    let types: Vec<Box<str>> = (0..k).map(|c| format!("CT{}", c + 1).into()).collect();
+    let table = |own: f32, other: f32, file: &str| {
+        let mut m = Mat::zeros(k, k);
+        for r in 0..k {
+            for c in 0..k {
+                m[(r, c)] = if r == c { own } else { other };
+            }
+        }
+        m.to_parquet_with_names(&at(file), (Some(&kcols), Some("cluster")), Some(&types))
+            .unwrap();
     };
-    opinion::opine_round(&r, &spec(), &cache_of(round), load).unwrap()
-}
-
-/// CT2 the model's top for every cluster of `round`.
-fn opine_ct2(round: &Path) -> Vec<Opinion> {
-    opine_by(round, &[("CT2", -0.1)])
+    table(0.7, 0.15, "run.cluster_celltype_q.parquet");
+    table(0.001, 0.5, "run.cluster_celltype_q_values.parquet");
+    std::fs::write(
+        dir.join("run.annotation_history.json"),
+        r#"{"1": [{"round": "run.senna.json", "action": "label", "label": "CT2",
+            "rationale": "its markers rise", "decided_by": "user",
+            "timestamp": "2026-01-01T00:00:00Z"}]}"#,
+    )
+    .unwrap();
+    let mut m = RunManifest::new(crate::manifest::run::RunKind::Topic, "run");
+    m.cluster.clusters = Some("run.clusters.parquet".into());
+    let a = &mut m.annotate;
+    a.argmax = Some("run.argmax.parquet".into());
+    a.markers = Some("markers.tsv".into());
+    a.cluster_expression = Some("run.cluster_expression.parquet".into());
+    a.cluster_celltype_q = Some("run.cluster_celltype_q.parquet".into());
+    a.cluster_celltype_q_values = Some("run.cluster_celltype_q_values.parquet".into());
+    a.history = Some("run.annotation_history.json".into());
+    a.called_by = Some(Method::Enrichment);
+    let file = dir.join("run.senna.json");
+    m.save(&file).unwrap();
+    file
 }
 
 /// An app on the fixture round in `dir`.
@@ -68,186 +108,6 @@ fn app_on(round: &Path) -> App {
     app
 }
 
-/// Cluster `id` has an opinion on screen.
-fn has(app: &App, id: u32) -> bool {
-    app.round
-        .as_ref()
-        .is_some_and(|r| r.opinions.contains_key(&id))
-}
-
-#[test]
-fn a_rounds_cached_opinions_suggest_their_top_under_each_cluster_and_flag_none() {
-    let dir = tempfile::tempdir().unwrap();
-    let round = fixture_round(dir.path());
-    opine_ct2(&round);
-    let mut app = app_on(&round);
-    for (sel, id) in [(0usize, 0u32), (1, 1), (2, 2)] {
-        app.cluster_sel = sel;
-        assert!(has(&app, id));
-        let line = app.opinion_line().unwrap();
-        assert!(line.starts_with("◆ suggested CT2 "), "{line}");
-    }
-    // A suggestion is no call: the clusters' flags stay the evidence's.
-    let r = app.round.as_ref().unwrap();
-    let flagged: Vec<bool> = r.clusters.iter().map(|c| c.flagged()).collect();
-    assert_eq!(flagged, [false, false, false]);
-}
-
-#[test]
-fn opinions_made_on_other_genes_are_not_shown() {
-    let dir = tempfile::tempdir().unwrap();
-    let round = fixture_round(dir.path());
-    let mut stale = opine_ct2(&round);
-    std::fs::remove_file(cache_of(&round)).unwrap();
-    stale[0].key = "another prompt's".into();
-    opinion::append(&cache_of(&round), &stale[0]).unwrap();
-    let app = app_on(&round);
-    assert!(!has(&app, 0));
-    assert!(app.opinion_line().is_none());
-}
-
-#[test]
-fn the_models_reading_joins_the_candidates_as_a_method_of_its_own() {
-    let dir = tempfile::tempdir().unwrap();
-    let round = fixture_round(dir.path());
-    // Before it runs, the candidates are the other methods' alone.
-    let app = app_on(&round);
-    let c = &app.round.as_ref().unwrap().clusters[0];
-    assert!(c.candidates.iter().all(|t| t.llm.is_none()));
-    assert!(c
-        .candidates
-        .iter()
-        .all(|t| t.ranks[Method::Llm.index()].is_none()));
-    opine_by(&round, &[("CT3", -0.1), ("CT2", -0.5), ("CT1", -1.0)]);
-    let mut app = app_on(&round);
-    let c = &app.round.as_ref().unwrap().clusters[0];
-    let rank = |l: &str| {
-        let t = c.candidates.iter().find(|t| t.label == l).unwrap();
-        (
-            t.ranks[Method::Llm.index()],
-            t.ranks[Method::Enrichment.index()],
-        )
-    };
-    assert_eq!(
-        rank("CT3"),
-        (Some(0), Some(2)),
-        "the model's top, ranked by the others as before"
-    );
-    assert_eq!(rank("CT1"), (Some(2), Some(0)));
-    // Its top three are among the label choices; S lists by it.
-    let choices = super::super::round::choices(&c.candidates);
-    assert!(["CT1", "CT2", "CT3"]
-        .iter()
-        .all(|l| choices.iter().any(|t| t.label == *l)));
-    for _ in 0..Method::ALL.len() {
-        if app.cand_method() == Method::Llm {
-            break;
-        }
-        press(&mut app, KeyCode::Char('S'));
-    }
-    assert_eq!(app.cand_method(), Method::Llm);
-    assert_eq!(app.listed_candidates()[0].label, "CT3");
-    // The suggestion's facts say where the others put it.
-    let line = app.opinion_line().unwrap();
-    assert!(line.starts_with("◆ suggested CT3 "), "{line}");
-    assert!(line.contains("CT3: third by enrichment"), "{line}");
-}
-
-#[test]
-fn the_strip_and_the_choices_show_the_suggestion_and_p_takes_it_with_its_reason() {
-    let dir = tempfile::tempdir().unwrap();
-    let round = fixture_round(dir.path());
-    opine_ct2(&round);
-    let mut app = app_on(&round);
-    let line = app.opinion_line().expect("K0's suggestion");
-    assert!(line.starts_with("◆ suggested CT2 "), "{line}");
-    assert!(line.ends_with(&format!(" {WHY}")), "{line}");
-    let text = line.split_once(" — ").unwrap().1.to_string();
-    assert!(text.starts_with("CT2: "), "the facts by code first: {text}");
-    // The choices mark it, keyed as before, its text in its detail.
-    press(&mut app, KeyCode::Enter);
-    let m = app.menu.as_ref().expect("the label choices");
-    let at = m
-        .choices
-        .iter()
-        .position(|c| c.label.starts_with("◆ CT2"))
-        .expect("the suggestion marked");
-    assert_eq!(m.choices[at].key, Some('2'), "CT2 keeps its key");
-    assert!(
-        m.choices[at].detail.contains(&text),
-        "{}",
-        m.choices[at].detail
-    );
-    assert_eq!(m.sel, 0, "Enter opens on the first choice");
-    press(&mut app, KeyCode::Esc);
-    // P opens them on it; Enter takes it, its reason the facts and sentence.
-    press(&mut app, KeyCode::Char('P'));
-    assert_eq!(app.menu.as_ref().unwrap().sel, at);
-    press(&mut app, KeyCode::Enter);
-    assert_eq!(app.prompt.as_ref().unwrap().text, text);
-    assert!(
-        app.edits.is_empty(),
-        "nothing is applied before the confirm"
-    );
-    press(&mut app, KeyCode::Enter);
-    let r = app.round.as_ref().unwrap();
-    let d = decisions(&app.edits, r, None);
-    assert_eq!(d.len(), 1);
-    assert_eq!(d[0].label.as_deref(), Some("CT2"));
-    assert_eq!(d[0].decided_by, DecidedBy::AgentProposedUserAccepted);
-    assert_eq!(d[0].rationale, text);
-    let c = &d[0].evidence[0]["llm"];
-    assert_eq!(c["model"], "Qwen/Qwen3-0.6B");
-    assert_eq!(c["revision"], LmModel::Qwen3_0_6b.revision());
-    assert!(c["p"].as_f64().unwrap() > 0.5);
-    assert!(
-        d[0].evidence.iter().any(|e| e["term"] == "CT2"),
-        "the cited type's row: {:?}",
-        d[0].evidence
-    );
-    assert!(
-        d[0].alternatives
-            .iter()
-            .all(|a| a["label"] != "CT2" && a["p"].is_number()),
-        "{:?}",
-        d[0].alternatives
-    );
-}
-
-#[test]
-fn another_label_while_a_suggestion_is_shown_is_the_users_override() {
-    let dir = tempfile::tempdir().unwrap();
-    let round = fixture_round(dir.path());
-    opine_ct2(&round);
-    let mut app = app_on(&round);
-    let text = app
-        .opinion_line()
-        .unwrap()
-        .split_once(" — ")
-        .unwrap()
-        .1
-        .to_string();
-    // The first candidate, CT1, over the suggestion.
-    press(&mut app, KeyCode::Char('1'));
-    assert_ne!(app.prompt.as_ref().unwrap().text, text);
-    press(&mut app, KeyCode::Enter);
-    let d = decisions(&app.edits, app.round.as_ref().unwrap(), None);
-    assert_eq!(d[0].label.as_deref(), Some("CT1"));
-    assert_eq!(d[0].decided_by, DecidedBy::UserOverride);
-    let first = &d[0].alternatives[0];
-    assert_eq!(first["label"], "CT2");
-    assert_eq!(first["proposed_by"], "llm");
-    assert_eq!(first["rationale"], text.as_str());
-    // A round without opinions decides as before.
-    let plain = fixture_round(&dir.path().join("plain").tap_mkdir());
-    let mut app = app_on(&plain);
-    press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
-    let d = decisions(&app.edits, app.round.as_ref().unwrap(), None);
-    assert_eq!(d[0].decided_by, DecidedBy::User);
-    assert!(d[0].alternatives.is_empty());
-}
-
 trait TapMkdir {
     fn tap_mkdir(self) -> Self;
 }
@@ -257,101 +117,6 @@ impl TapMkdir for PathBuf {
         std::fs::create_dir_all(&self).unwrap();
         self
     }
-}
-
-#[test]
-fn p_without_a_suggestion_says_how_to_get_one() {
-    let dir = tempfile::tempdir().unwrap();
-    let round = fixture_round(dir.path());
-    let mut app = app_on(&round);
-    press(&mut app, KeyCode::Char('P'));
-    assert!(app.menu.is_none());
-    assert!(app.status.contains("L"), "{}", app.status);
-}
-
-#[test]
-fn l_waits_for_a_running_job() {
-    let dir = tempfile::tempdir().unwrap();
-    let round = fixture_round(dir.path());
-    let mut app = app_on(&round);
-    let child = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .unwrap();
-    app.child = Some(Running::new(child, Job::Pass));
-    press(&mut app, KeyCode::Char('L'));
-    assert!(app.status.contains("wait"), "{}", app.status);
-    assert!(matches!(
-        app.child.as_ref().map(|r| &r.job),
-        Some(Job::Pass)
-    ));
-    if let Some(mut r) = app.child.take() {
-        let _ = r.child.kill();
-        let _ = r.child.wait();
-    }
-}
-
-/// Tick until the job is taken in.
-fn finish(app: &mut App) {
-    for _ in 0..200 {
-        app.tick();
-        if app.child.is_none() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    panic!("the job never ended");
-}
-
-#[test]
-fn opinions_fill_in_as_the_running_job_appends_them() {
-    let dir = tempfile::tempdir().unwrap();
-    let round = fixture_round(dir.path());
-    let made = opine_ct2(&round);
-    let cache = cache_of(&round);
-    std::fs::remove_file(&cache).unwrap();
-    let mut app = app_on(&round);
-    assert!(!has(&app, 0));
-    app.follow_opinions().unwrap();
-    let child = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .unwrap();
-    app.child = Some(Running::new(child, Job::Llm(round.clone())));
-    opinion::append(&cache, &made[0]).unwrap();
-    app.tick();
-    assert!(has(&app, 0), "K0's line is in");
-    assert!(!has(&app, 2), "K2's is not yet");
-    opinion::append(&cache, &made[2]).unwrap();
-    app.tick();
-    assert!(has(&app, 2));
-    if let Some(r) = &mut app.child {
-        let _ = r.child.kill();
-    }
-    finish(&mut app);
-    assert!(app.failed.is_none());
-}
-
-#[test]
-fn a_model_job_without_the_model_says_so_and_the_rest_works() {
-    let dir = tempfile::tempdir().unwrap();
-    let round = fixture_round(dir.path());
-    let mut app = app_on(&round);
-    app.follow_opinions().unwrap();
-    app.push_log(format!("Error: {}", crate::describe::lm::OFFLINE));
-    let child = std::process::Command::new("false").spawn().unwrap();
-    app.child = Some(Running::new(child, Job::Llm(round.clone())));
-    finish(&mut app);
-    assert!(app.failed.is_none(), "no failure popup: the rest works");
-    assert!(
-        app.status.contains("run once online or give --lm-dir"),
-        "{}",
-        app.status
-    );
-    // Labels still go on as before.
-    press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
-    assert_eq!(app.edits.len(), 1);
 }
 
 use super::super::app::TreeMode;
@@ -444,17 +209,6 @@ fn the_order_view_shows_the_selected_types_line_or_the_runs_paragraph() {
 }
 
 #[test]
-fn l_in_the_order_view_runs_no_model() {
-    let dir = tempfile::tempdir().unwrap();
-    let t = fixture_trajectory(dir.path());
-    let mut app = order_on(dir.path(), &t);
-    app.focus = Focus::Order;
-    press(&mut app, KeyCode::Char('L'));
-    assert!(app.child.is_none());
-    assert!(app.status.contains("no model"), "{}", app.status);
-}
-
-#[test]
 fn another_trajectory_shown_shows_its_own_texts() {
     let dir = tempfile::tempdir().unwrap();
     let a = fixture_trajectory(&dir.path().join("a").tap_mkdir());
@@ -487,16 +241,16 @@ fn opening_another_trajectory_shows_its_texts() {
     assert_eq!(app.order_texts.as_ref().map(|t| &t.manifest), Some(&b));
 }
 
-#[test]
-fn the_tuis_describe_job_writes_its_cache_and_no_description() {
-    let lm = crate::describe::LmArgs::default();
-    let argv = super::super::runner::describe_argv(Path::new("d/r.senna.json"), "d/r", &lm);
-    assert_eq!(argv[..5], ["describe", "-f", "d/r.senna.json", "-o", "d/r"]);
-    assert!(argv.iter().any(|a| a == "--lm"));
-    assert!(
-        argv.iter().any(|a| a == "--cache-only"),
-        "never writes over a description the user made: {argv:?}"
-    );
+/// Tick until the job is taken in.
+fn finish(app: &mut App) {
+    for _ in 0..200 {
+        app.tick();
+        if app.child.is_none() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("the job never ended");
 }
 
 /// The order view's edges, as pairs.

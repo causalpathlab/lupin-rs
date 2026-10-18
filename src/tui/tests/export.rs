@@ -61,7 +61,6 @@ fn round() -> RoundView {
         rescorable: false,
         by: Default::default(),
         figures: Default::default(),
-        opinions: Default::default(),
     }
 }
 

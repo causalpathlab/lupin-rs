@@ -3,7 +3,7 @@
 //! end) and one line per type (its lineages, the types either side of it,
 //! the verdicts of its edges). Both are written by code from the run's own
 //! outputs (`trajectory_lineages.tsv` and `trajectory_edges.parquet`), so
-//! they say only what the run found; no model words them.
+//! they say only what the run found.
 
 use crate::manifest::run::{resolve, Loaded};
 use crate::trajectory::edges::{self, EdgeRow};
@@ -175,7 +175,7 @@ fn edge_text(e: &EdgeRow) -> String {
     format!("{} → {} {verdict}", e.a, e.b)
 }
 
-/// The run paragraph when no model words it.
+/// The run paragraph.
 #[must_use]
 pub fn run_template(f: &OrderFacts) -> String {
     if f.lineages.is_empty() {
@@ -200,7 +200,7 @@ pub fn run_template(f: &OrderFacts) -> String {
     format!("{s} {}.", paths.join("; "))
 }
 
-/// Type `t`'s line when no model words it.
+/// Type `t`'s line.
 #[must_use]
 pub fn type_template(f: &OrderFacts, t: &str) -> String {
     let on: Vec<String> = f.lineages_of(t).iter().map(|l| l.name.clone()).collect();

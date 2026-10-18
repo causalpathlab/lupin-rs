@@ -367,8 +367,6 @@ pub(crate) fn read_type_tables(loaded: &Loaded, mut score: Option<Table>) -> Res
                 tables.extend(score.take().map(|t| (stat, t)));
                 continue;
             }
-            // No pass writes it: the opinions' cache gives it.
-            Stat::Llm => continue,
         };
         match rel.as_deref().map(|r| (r, loaded.recorded(r))) {
             Some((_, Some(path))) => tables.push((stat, read_table(&path)?)),
@@ -1717,17 +1715,17 @@ fn read_digests(
 
 /// What `review` shows of a round: per cluster its digest, its history and
 /// its place on the round's type tree; and the type tables.
-pub(crate) struct Reviewed {
-    pub(crate) digests: BTreeMap<ClusterId, Digest>,
-    pub(crate) history: History,
+struct Reviewed {
+    digests: BTreeMap<ClusterId, Digest>,
+    history: History,
     tree: Option<TypeTree>,
-    pub(crate) tables: TypeTables,
+    tables: TypeTables,
 }
 
 impl Reviewed {
     /// The round as review shows it; `every_type` when the types' evidence
-    /// is wanted too (`--json`), the model's opinions among it.
-    pub(crate) fn read(loaded: &Loaded, every_type: bool) -> Result<Self> {
+    /// is wanted too (`--json`).
+    fn read(loaded: &Loaded, every_type: bool) -> Result<Self> {
         // The cells give the score's shares over the current clusters: for
         // the types' evidence, the digests when no summary was written, and
         // the order of tied calls when the score made the call. A round
@@ -1756,26 +1754,16 @@ impl Reviewed {
             .inspect_err(|e| log::warn!("review without the type tree: {e:#}"))
             .ok()
             .flatten();
-        let digests = read_digests(loaded, cells.as_ref(), &ties)?;
-        let mut tables = ties.tables;
-        // The model's opinions, where the round has them: evidence beside
-        // the others, read after the digests, whose calls it never orders.
-        if every_type {
-            match crate::describe::opinion::read_table(loaded) {
-                Ok(t) => tables.tables.extend(t.map(|t| (Stat::Llm, t))),
-                Err(e) => log::warn!("review without the model's opinions: {e:#}"),
-            }
-        }
         Ok(Self {
-            digests,
+            digests: read_digests(loaded, cells.as_ref(), &ties)?,
             history: read_history(loaded)?,
             tree,
-            tables,
+            tables: ties.tables,
         })
     }
 
     /// The Cell Ontology term the tree puts cluster `d`'s label on.
-    pub(crate) fn placement(&self, d: &Digest) -> Option<TreePlacement> {
+    fn placement(&self, d: &Digest) -> Option<TreePlacement> {
         self.tree.as_ref()?.placement(d.label.as_deref()?)
     }
 }

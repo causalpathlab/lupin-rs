@@ -17,7 +17,7 @@ mod menu;
 mod ontology;
 mod order;
 mod picker;
-pub(crate) mod round;
+mod round;
 mod runner;
 mod suggest;
 mod ui;
@@ -78,48 +78,6 @@ fn drain_own_log() -> Vec<String> {
 /// order view, which picks the manifest when none is given and asks for the
 /// output prefix when it runs.
 pub fn run_trajectory(t: &crate::trajectory::run::TrajectoryArgs) -> Result<()> {
-    run_trajectory_with(t, None)
-}
-
-/// `lupin describe -f <manifest>` without `-o`: the TUI on the round,
-/// running the model `lm` names on it at once; or, for a trajectory
-/// run, on its order view, whose texts are the run's own.
-pub fn run_describe(from: &str, lm: &crate::describe::LmArgs) -> Result<()> {
-    use clap::Parser;
-    let loaded = run::load(from)?;
-    let lm = crate::describe::LmArgs {
-        lm: true,
-        ..lm.clone()
-    };
-    if crate::manifest::family::is_trajectory(&loaded.manifest, &loaded.file) {
-        #[derive(Parser)]
-        struct Trajectory {
-            #[command(flatten)]
-            args: crate::trajectory::run::TrajectoryArgs,
-        }
-        let mut t = Trajectory::try_parse_from(["lupin trajectory"])
-            .context("building the TUI's arguments")?
-            .args;
-        t.from = Some(from.into());
-        return run_trajectory_with(&t, Some(lm));
-    }
-    #[derive(Parser)]
-    struct Annotate {
-        #[command(flatten)]
-        args: AnnotateCliArgs,
-    }
-    let mut a = Annotate::try_parse_from(["lupin annotate"])
-        .context("building the TUI's arguments")?
-        .args;
-    a.from = Some(from.into());
-    run_with(&a, None, Some(lm))
-}
-
-/// [`run_trajectory`], with `lm` the model `L` runs on a round.
-fn run_trajectory_with(
-    t: &crate::trajectory::run::TrajectoryArgs,
-    lm: Option<crate::describe::LmArgs>,
-) -> Result<()> {
     use clap::Parser;
     #[derive(Parser)]
     struct Annotate {
@@ -133,22 +91,12 @@ fn run_trajectory_with(
     a.obo.clone_from(&t.obo);
     a.label_cl.clone_from(&t.label_cl);
     a.graphics = t.graphics;
-    run_with(&a, Some(order::TrajectoryRun::of(t)), lm)
+    run(&a, Some(order::TrajectoryRun::of(t)))
 }
 
 /// Run the TUI on `args`; with `trajectory`, it opens on the order view and
 /// runs `lupin trajectory` with those options.
 pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> Result<()> {
-    run_with(args, trajectory, None)
-}
-
-/// [`run`]; with `lm`, that model runs on the round as soon as it
-/// is up (not on the order view, whose texts need none).
-fn run_with(
-    args: &AnnotateCliArgs,
-    trajectory: Option<order::TrajectoryRun>,
-    lm: Option<crate::describe::LmArgs>,
-) -> Result<()> {
     use std::io::IsTerminal;
     anyhow::ensure!(
         std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
@@ -269,14 +217,6 @@ fn run_with(
     // A run with no annotation whose rounds sit beside it: say where they are.
     if app.round.is_none() && crate::manifest::family::has_round(&loaded.file) {
         app.status = "this run has annotated rounds: g lists them".into();
-    }
-    // The order's texts need no model: a trajectory keeps `lm` for `L` on a
-    // round.
-    if let Some(lm) = lm {
-        app.lm = lm;
-        if !start_in_order {
-            app.start_describing();
-        }
     }
 
     let mut terminal = ratatui::init();

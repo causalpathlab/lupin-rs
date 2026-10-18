@@ -1,22 +1,14 @@
 //! `lupin describe` — compose a short sentence from annotate evidence.
 //!
-//! The template composer **never decides**: evidence comes from annotate artifacts (and
-//! optional keyword incidence from a `word-graph` vocab). With `--lm` a small local model
-//! ([`lm`]) gives its own opinion of each cluster, a method beside the others: its
-//! probability of each panel type from the cluster's genes and terms, and one sentence
-//! on what they indicate for its top ([`opinion`]); code writes every fact about the
-//! evidence (where the other methods put that type, and a trajectory's order,
-//! [`trajectory`]). Nothing is applied: the user confirms a label in the TUI. Every
-//! sentence, template or model's, is citation-checked against the entities its evidence
-//! allows ([`citation_check`]).
+//! The composer **never decides**: evidence comes from annotate artifacts (and optional
+//! keyword incidence from a `word-graph` vocab). Sentences are citation-checked against
+//! the allowed entity set. On a trajectory run, code writes its order in words from the
+//! run's outputs ([`trajectory`]).
 
-pub mod lm;
-pub mod opinion;
 pub mod trajectory;
-pub(crate) mod vocabulary;
 
 use enrichment::UNASSIGNED_LABEL;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -32,11 +24,6 @@ use legume_numeric::matrix::common_io::open_buf_reader;
 use legume_numeric::matrix::parquet::peek_parquet_field_names;
 use log::info;
 use serde_json::json;
-
-/// `--neighbour-k`'s default.
-const NEIGHBOUR_K: usize = 5;
-/// `--fdr-alpha`'s default.
-const FDR_ALPHA: f32 = 0.1;
 
 #[derive(Args, Debug)]
 pub struct DescribeArgs {
@@ -67,103 +54,20 @@ pub struct DescribeArgs {
 
     #[arg(
         long = "neighbour-k",
-        default_value_t = NEIGHBOUR_K,
+        default_value_t = 5,
         help = "How many embedding neighbours to add per cluster when `--feature-embedding` is set"
     )]
     pub neighbour_k: usize,
 
     #[arg(
         long = "fdr-alpha",
-        default_value_t = FDR_ALPHA,
+        default_value_t = 0.1,
         help = "FDR gate for calling a runner-up significant (must match annotate --fdr-alpha)"
     )]
     pub fdr_alpha: f32,
 
-    #[arg(
-        long,
-        short = 'o',
-        help = "Output prefix; without it, the TUI opens on the round (or the trajectory), the model run on the round"
-    )]
-    pub out: Option<Box<str>>,
-
-    #[arg(
-        long,
-        requires = "lm",
-        hide = true,
-        help = "With --lm: write only the model's cache (`{stem}.llm.jsonl` beside the round), not the description files; what the TUI runs"
-    )]
-    pub cache_only: bool,
-
-    #[command(flatten)]
-    pub lm: LmArgs,
-}
-
-/// The small local model `describe` writes with ([`lm`]).
-#[derive(Args, Debug, Clone, PartialEq, Eq)]
-pub struct LmArgs {
-    #[arg(
-        long,
-        help = "A small local model's opinion of each cluster, a method beside the others: its probability of each panel type from the cluster's genes and terms, with a checked sentence on what they indicate; nothing is applied"
-    )]
-    pub lm: bool,
-
-    #[arg(long, value_enum, default_value_t = lm::LmModel::default(), help = "The model (pinned revision, fetched once from the Hub)")]
-    pub lm_model: lm::LmModel,
-
-    #[arg(
-        long,
-        help = "Local model directory (config.json, tokenizer.json, *.safetensors); skips the Hub"
-    )]
-    pub lm_dir: Option<String>,
-
-    #[arg(long, value_enum, default_value_t = lm::default_device(), help = "Compute device for the model")]
-    pub device: crate::gene_text::cli::ComputeDevice,
-}
-
-impl Default for LmArgs {
-    fn default() -> Self {
-        Self {
-            lm: false,
-            lm_model: lm::LmModel::default(),
-            lm_dir: None,
-            device: lm::default_device(),
-        }
-    }
-}
-
-impl LmArgs {
-    #[must_use]
-    pub fn spec(&self) -> lm::LmSpec {
-        lm::LmSpec {
-            model: self.lm_model,
-            local_dir: self.lm_dir.as_deref().map(std::path::PathBuf::from),
-            device: self.device,
-        }
-    }
-
-    /// The flags a child `lupin describe` is run with: `--lm` and these.
-    #[must_use]
-    pub fn to_argv(&self) -> Vec<String> {
-        use clap::ValueEnum;
-        let mut v = vec![
-            "--lm".into(),
-            "--lm-model".into(),
-            self.lm_model.arg().into(),
-        ];
-        if let Some(d) = &self.lm_dir {
-            v.extend(["--lm-dir".into(), d.clone()]);
-        }
-        if let Some(d) = self.device.to_possible_value() {
-            v.extend(["--device".into(), d.get_name().to_string()]);
-        }
-        v
-    }
-
-    /// The model loader, run only when a text is not cached.
-    fn loader(&self) -> impl FnOnce() -> Result<Box<dyn lm::Lm>> {
-        let spec = self.spec();
-        move || Ok(Box::new(lm::Qwen3::load(&spec)?) as Box<dyn lm::Lm>)
-    }
+    #[arg(long, short = 'o', help = "Output prefix")]
+    pub out: Box<str>,
 }
 
 #[derive(Debug, Clone)]
@@ -192,19 +96,12 @@ impl ClusterEvidence {
 
 /// `describe` on a trajectory run: the run's paragraph and each type's line
 /// to `{out}.trajectory.describe.md`, written by code from its outputs
-/// ([`trajectory`]); the model has nothing to add, and `--cache-only` has
-/// nothing to write.
+/// ([`trajectory`]).
 fn describe_trajectory(
     loaded: &crate::manifest::run::Loaded,
     args: &DescribeArgs,
     out: &str,
 ) -> Result<()> {
-    if args.lm.lm {
-        info!("describe: a trajectory's texts are written from its outputs; the model is not run");
-    }
-    if args.cache_only {
-        return Ok(());
-    }
     let texts = trajectory::texts(&trajectory::OrderFacts::read(loaded)?);
     let md = trajectory::md_path(out);
     std::fs::write(&md, trajectory::markdown(&args.from, &texts))
@@ -213,84 +110,19 @@ fn describe_trajectory(
     Ok(())
 }
 
-/// The flags given, or set off their defaults, that act only on what `-o`
-/// writes: the description files, or (`--cache-only`) the model's cache
-/// alone.
-fn ignored_without_out(args: &DescribeArgs) -> Vec<&'static str> {
-    [
-        ("--text-prefix", args.text_prefix.is_some()),
-        ("--markers", args.markers.is_some()),
-        ("--feature-embedding", args.feature_embedding.is_some()),
-        ("--neighbour-k", args.neighbour_k != NEIGHBOUR_K),
-        ("--fdr-alpha", args.fdr_alpha != FDR_ALPHA),
-        ("--cache-only", args.cache_only),
-    ]
-    .into_iter()
-    .filter_map(|(flag, given)| given.then_some(flag))
-    .collect()
-}
-
-/// The warning that `ignored` ([`ignored_without_out`]) go unused, if any.
-fn ignored_warning(ignored: &[&str]) -> Option<String> {
-    let (acts, is) = match ignored {
-        [] => return None,
-        [_] => ("acts", "is"),
-        _ => ("act", "are"),
-    };
-    Some(format!(
-        "{} {acts} only on the files -o writes, so {is} ignored; the TUI shows the model's \
-         suggestions",
-        ignored.join(", ")
-    ))
-}
-
 pub fn run_describe(args: &DescribeArgs) -> Result<()> {
-    let Some(out) = args.out.as_deref() else {
-        // The TUI writes the model's cache alone (`--cache-only`).
-        if let Some(warning) = ignored_warning(&ignored_without_out(args)) {
-            log::warn!("{warning}");
-        }
-        return crate::tui::run_describe(&args.from, &args.lm);
-    };
+    let out: &str = &args.out;
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
-    let loaded = crate::manifest::run::load(&args.from).ok();
     // A trajectory run: its order is what is described.
-    if let Some(l) = loaded
-        .as_ref()
+    if let Some(l) = crate::manifest::run::load(&args.from)
+        .ok()
         .filter(|l| crate::manifest::family::is_trajectory(&l.manifest, &l.file))
     {
-        return describe_trajectory(l, args, out);
+        return describe_trajectory(&l, args, out);
     }
-    // The model's opinions come first: they need only the round. Its cache
-    // is the round's, beside it, which its review and the TUI read.
-    let opinions: Vec<(opinion::Opinion, String)> = if args.lm.lm {
-        let loaded = loaded
-            .as_ref()
-            .context("--lm gives the model's opinion of an annotated round: give its manifest")?;
-        let round = opinion::inputs(loaded)?;
-        let cache = opinion::cache_of(loaded);
-        let made = opinion::opine_round(&round, &args.lm.spec(), &cache, args.lm.loader())?;
-        if args.cache_only {
-            return Ok(());
-        }
-        opinion_texts(loaded, made)?
-    } else {
-        Vec::new()
-    };
-    if args.cache_only {
-        return Ok(());
-    }
-
     let files = EvidenceFiles::locate(&args.from);
-    let mut enriched = match load_evidence(&files, args.fdr_alpha) {
-        Ok(e) => e,
-        // With the model's opinions, the template sentences are extra.
-        Err(e) if !opinions.is_empty() => {
-            log::warn!("describe: no template sentences ({e:#})");
-            Vec::new()
-        }
-        Err(e) => return Err(e),
-    };
+
+    let mut enriched = load_evidence(&files, args.fdr_alpha)?;
     attach_second_best(&mut enriched, &files, args.fdr_alpha)?;
     let markers_tsv = args.markers.as_deref().or(files.markers_tsv.as_deref());
     let markers_by_type = load_markers_by_type(&files, markers_tsv)?;
@@ -304,55 +136,30 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     let mut sentences = Vec::new();
     for c in &enriched {
         let draft = template_sentence(c);
-        let sentence = citation_check(&draft, &allowed, &cluster_entities(c), &own_entities(c))
-            .map_err(|e| anyhow::anyhow!("citation check failed for {}: {e}", c.id))?;
+        let sentence = citation_check(&draft, &allowed, c)?;
         sentences.push((c.id.clone(), sentence));
     }
 
-    let opinion_of = |id: &str| {
-        opinions
-            .iter()
-            .find(|(o, _)| format!("K{}", o.cluster) == id)
-    };
-    let mut evidence = json!({
+    let evidence = json!({
         "from": args.from.as_ref(),
         "text_prefix": args.text_prefix.as_ref().map(|s| s.as_ref()),
         "markers": args.markers.as_ref().map(|s| s.as_ref()),
-        "clusters": enriched.iter().map(|c| {
-            let mut v = json!({
-                "id": c.id,
-                "coarse_label": c.coarse_label,
-                "best_label": c.best_label,
-                "best_q": c.best_q,
-                "coarse_q": c.coarse_q,
-                "label_support": c.label_support,
-                "best_significant": c.best_significant,
-                "second_label": c.second.as_ref().map(|(l, _)| l),
-                "second_q": c.second.as_ref().map(|(_, q)| q),
-                "markers": c.markers,
-                "neighbour_genes": c.neighbour_genes,
-                "incidence_words": c.incidence_words,
-            });
-            if let Some((o, text)) = opinion_of(&c.id) {
-                v["llm"] = json!(o);
-                v["llm"]["text"] = json!(text);
-            }
-            v
-        }).collect::<Vec<_>>(),
+        "clusters": enriched.iter().map(|c| json!({
+            "id": c.id,
+            "coarse_label": c.coarse_label,
+            "best_label": c.best_label,
+            "best_q": c.best_q,
+            "coarse_q": c.coarse_q,
+            "label_support": c.label_support,
+            "best_significant": c.best_significant,
+            "second_label": c.second.as_ref().map(|(l, _)| l),
+            "second_q": c.second.as_ref().map(|(_, q)| q),
+            "markers": c.markers,
+            "neighbour_genes": c.neighbour_genes,
+            "incidence_words": c.incidence_words,
+        })).collect::<Vec<_>>(),
         "allowed_entities": allowed.iter().cloned().collect::<Vec<_>>(),
     });
-    if args.lm.lm {
-        let spec = args.lm.spec();
-        evidence["lm"] = json!({"model": spec.name(), "revision": spec.revision()});
-        evidence["opinions"] = json!(opinions
-            .iter()
-            .map(|(o, text)| {
-                let mut v = json!(o);
-                v["text"] = json!(text);
-                v
-            })
-            .collect::<Vec<_>>());
-    }
 
     let json_path = format!("{out}.describe.json");
     let mut jw = File::create(&json_path).with_context(|| format!("create {json_path}"))?;
@@ -366,52 +173,14 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     writeln!(mw)?;
     writeln!(mw, "From `{from}`.", from = args.from.as_ref())?;
     writeln!(mw)?;
-    let opined = |mw: &mut File, (o, text): &(opinion::Opinion, String)| {
-        writeln!(
-            mw,
-            "The model: **{}** ({:.2}) — {text}",
-            o.label,
-            o.p_label()
-        )
-        .and_then(|()| writeln!(mw))
-    };
     for (id, s) in &sentences {
         writeln!(mw, "## {id}")?;
         writeln!(mw)?;
         writeln!(mw, "{s}")?;
         writeln!(mw)?;
-        if let Some(o) = opinion_of(id) {
-            opined(&mut mw, o)?;
-        }
-    }
-    for o in &opinions {
-        let id = format!("K{}", o.0.cluster);
-        if !sentences.iter().any(|(s, _)| *s == id) {
-            writeln!(mw, "## {id}")?;
-            writeln!(mw)?;
-            opined(&mut mw, o)?;
-        }
     }
     info!("wrote {md_path} ({} cluster(s))", sentences.len());
     Ok(())
-}
-
-/// Each opinion with its text: the facts on its label by code, on the
-/// round's evidence as its review reads it, and the model's sentence.
-fn opinion_texts(
-    loaded: &crate::manifest::run::Loaded,
-    made: Vec<opinion::Opinion>,
-) -> Result<Vec<(opinion::Opinion, String)>> {
-    let r = crate::manifest::rounds::Reviewed::read(loaded, true)?;
-    let by = crate::manifest::rounds::called_by(&loaded.manifest.annotate).unwrap_or_default();
-    Ok(made
-        .into_iter()
-        .map(|o| {
-            let (candidates, _) = crate::tui::round::ranked_view(&r.tables.evidence(o.cluster), by);
-            let text = o.text(&candidates);
-            (o, text)
-        })
-        .collect())
 }
 
 /// Where each piece of annotate evidence lives.
@@ -1077,8 +846,8 @@ fn template_sentence(c: &ClusterEvidence) -> String {
     if c.has_significant_call() {
         let markers = marker_sentence(c, false);
         format!(
-            "{} is annotated as {}.{markers}{runner}{words}",
-            c.id, c.coarse_label
+            "{} is annotated as {}.{}{}{}",
+            c.id, c.coarse_label, markers, runner, words
         )
     } else if c.best_label != UNASSIGNED_LABEL {
         let q = c
@@ -1097,106 +866,51 @@ fn template_sentence(c: &ClusterEvidence) -> String {
     }
 }
 
-/// Why a sentence failed the citation check.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CitationError {
-    /// It names none of the entities it should name one of.
-    NamesNone,
-    /// It names this entity of the run, which is not its own.
-    Foreign(String),
-    Braces,
-    /// (A model's text) a number outside the names it cites.
-    Digits(String),
-    /// (A model's text) a formula or markup sign.
-    Markup(String),
-    /// (A model's text) nothing.
-    Empty,
-    /// (A model's text) a word that states an order, a role, a verdict, a
-    /// rank or a method, which code states ([`vocabulary`]).
-    Vocabulary(String),
-    /// (A model's text) a list of this many of the names it was given, not
-    /// a sentence.
-    List(usize),
-}
-
-impl std::fmt::Display for CitationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NamesNone => write!(f, "names none of its evidence"),
-            Self::Foreign(e) => write!(f, "mentions `{e}` outside its evidence"),
-            Self::Braces => write!(f, "braces in the sentence"),
-            Self::Digits(d) => write!(f, "a number ({d})"),
-            Self::Markup(m) => write!(f, "markup ({m})"),
-            Self::Empty => write!(f, "no sentence"),
-            Self::Vocabulary(w) => write!(f, "a word only code may use ({w})"),
-            Self::List(n) => write!(f, "a list of {n} names, not a sentence"),
-        }
+fn citation_check(draft: &str, allowed: &BTreeSet<String>, c: &ClusterEvidence) -> Result<String> {
+    let lower = draft.to_lowercase();
+    let cluster_allowed = cluster_entities(c);
+    let cluster_lower: Vec<String> = cluster_allowed.iter().map(|e| e.to_lowercase()).collect();
+    if !cluster_allowed.is_empty() && !cluster_lower.iter().any(|e| lower.contains(e.as_str())) {
+        bail!(
+            "citation check failed for {}: sentence names none of {:?}",
+            c.id,
+            cluster_allowed
+        );
     }
-}
-
-impl std::error::Error for CitationError {}
-
-/// `s` as the check compares it: lowercase, the panel's underscores as
-/// spaces.
-pub(crate) fn norm(s: &str) -> String {
-    s.to_lowercase().replace('_', " ")
-}
-
-/// `text` names `entity` (both [`norm`]ed) as a whole word or words, or
-/// their plural (`cells`).
-pub(crate) fn mentions(text: &str, entity: &str) -> bool {
-    !entity.is_empty() && !vocabulary::find(text, entity, true).is_empty()
-}
-
-/// Check `draft` against what it may say: it names at least one of `named`
-/// (when there are any), and no entity of the `run` that is neither in
-/// `named` nor in `own` (what the subject may name but need not, such as
-/// its markers). Short names (under three letters) are not policed: gene
-/// symbols collide with them.
-pub fn citation_check(
-    draft: &str,
-    run: &BTreeSet<String>,
-    named: &BTreeSet<String>,
-    own: &BTreeSet<String>,
-) -> std::result::Result<String, CitationError> {
-    let text = norm(draft);
-    let named_n: Vec<String> = named.iter().map(|e| norm(e)).collect();
-    for ent in run {
-        if ent.len() < 3
-            || ent.as_str() == UNASSIGNED_LABEL
-            || own.contains(ent)
-            || named.contains(ent)
-        {
-            continue;
-        }
-        let e = norm(ent);
-        // A name inside one of the subject's own (`B` in `Pre B`) is that one.
-        if mentions(&text, &e)
-            && !named_n
-                .iter()
-                .any(|a| a.contains(&e) || e.contains(a.as_str()))
-        {
-            return Err(CitationError::Foreign(ent.clone()));
-        }
-    }
-    if !named_n.is_empty() && !named_n.iter().any(|e| mentions(&text, e)) {
-        return Err(CitationError::NamesNone);
-    }
-    if draft.contains('{') || draft.contains('}') {
-        return Err(CitationError::Braces);
-    }
-    Ok(draft.to_string())
-}
-
-/// What cluster `c`'s template sentence may name besides its own
-/// entities: its markers, keywords and their neighbours.
-fn own_entities(c: &ClusterEvidence) -> BTreeSet<String> {
-    c.markers
+    // Reject other panel types from the run that are not this cluster's evidence.
+    // Gene symbols can collide; only enforce for entities that are not markers/words.
+    let own: HashSet<&str> = c
+        .markers
         .iter()
         .chain(&c.incidence_words)
         .chain(&c.neighbour_genes)
-        .cloned()
-        .collect()
+        .map(String::as_str)
+        .collect();
+    for ent in allowed {
+        if ent.len() < 3
+            || ent.as_str() == UNASSIGNED_LABEL
+            || own.contains(ent.as_str())
+            || cluster_allowed.contains(ent)
+        {
+            continue;
+        }
+        let ent_lower = ent.to_lowercase();
+        if lower.contains(&ent_lower)
+            && !cluster_lower
+                .iter()
+                .any(|a| a.contains(&ent_lower) || ent_lower.contains(a.as_str()))
+        {
+            bail!(
+                "citation check failed for {}: sentence mentions `{}` outside evidence",
+                c.id,
+                ent
+            );
+        }
+    }
+    if draft.contains('{') || draft.contains('}') {
+        bail!("citation check failed for {}: braces in sentence", c.id);
+    }
+    Ok(draft.to_string())
 }
 
 #[cfg(test)]

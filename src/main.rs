@@ -94,29 +94,19 @@ enum Commands {
     Annotate(AnnotateCliArgs),
     #[command(
         name = "describe",
-        about = "Short citation-checked sentences from annotate evidence; with --lm, a small local model's opinion of each cluster",
+        about = "Short citation-checked sentence from annotate evidence",
         long_about = "Builds structured evidence from `{from}.annot.parquet` (or argmax).\n\
                       Optionally fishes per-cluster keywords from a `word-graph` prefix\n\
                       (`feature_word.edges` over each cluster's markers;\n\
                       `--feature-embedding` adds nearest-neighbour genes first).\n\
                       When `{from}.cluster_term_q.parquet` is present,\n\
                       a second FDR-significant contender is named if one exists.\n\
-                      Writes `{out}.describe.json` and `{out}.describe.md`.\n\
+                      Writes `{out}.describe.json` and `{out}.describe.md`. On a trajectory\n\
+                      run, code writes its order in words from the run's outputs,\n\
+                      `{out}.trajectory.describe.md`.\n\
                       \n\
-                      `--lm` runs a small local model (Qwen3, pinned revision, fetched once\n\
-                      from the Hub; `--lm-dir` for local files) as a method of its own: from\n\
-                      each cluster's size, top genes and terms alone it gives its probability\n\
-                      of each panel type, and one sentence on what they indicate for its top.\n\
-                      Code writes the facts beside it (where the other methods put that type).\n\
-                      Its opinions are cached beside the round, `{stem}.llm.jsonl`, which\n\
-                      `review --json` and the TUI read. On a trajectory run the order is\n\
-                      described by code from its outputs, `{out}.trajectory.describe.md`.\n\
-                      Nothing is applied: the TUI offers the model's top, the user confirms.\n\
-                      \n\
-                      Without `-o` the TUI opens on the round, running the model into the\n\
-                      round's cache alone, so no description file is written over; or on a\n\
-                      trajectory's order view.\n\
-                      Every sentence is citation-checked: it names only its evidence."
+                      The composer never invents labels: sentences are citation-checked.\n\
+                      Default composer is a citation-checked template (candle decoder TBD)."
     )]
     Describe(DescribeArgs),
     #[command(
@@ -168,7 +158,6 @@ fn main() -> Result<()> {
     let interactive = match &cli.cmd {
         Commands::Annotate(c) => c.opens_tui(),
         Commands::Trajectory(c) => c.opens_tui(),
-        Commands::Describe(c) => c.out.is_none(),
         _ => false,
     };
     if interactive {
