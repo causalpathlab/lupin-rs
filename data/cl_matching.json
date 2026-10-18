@@ -37,7 +37,7 @@
     "min_words": 2
   },
   "context": {
-    "_doc": "A word the panel leaves off its labels (a tissue): the one word that, with an implied one, completes a term's name or counted synonym for at least min_labels labels no name matched (an alias for one changes nothing for the others), and for more than any other word; it then completes the labels nothing else matched (Alpha, Beta, Ductal -> pancreatic ...). null turns it off.",
+    "_doc": "A word the panel leaves off its labels (a tissue): the one word that, with an implied one, completes a term's name or counted synonym for at least min_labels labels no name matched (an aliased one counts only when the word completes it to its alias's term), and for more than any other word; it then completes the labels nothing else matched (Alpha, Beta, Ductal -> pancreatic ...). null turns it off.",
     "min_labels": 3
   },
   "part": {

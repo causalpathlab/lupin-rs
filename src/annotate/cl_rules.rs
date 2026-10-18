@@ -145,8 +145,9 @@ impl Default for PartRules {
 /// A word the whole panel leaves off its labels (a tissue: `pancreatic`
 /// for `Alpha`, `Beta`, `Ductal`), found as the one word that, with an
 /// implied one, completes a term's name or counted synonym for the most
-/// labels no name matched, an alias for one changing nothing for the
-/// others; it then completes the labels nothing else matched.
+/// labels no name matched (an aliased one counting only when the word
+/// completes it to its alias's term); it then completes the labels nothing
+/// else matched.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct ContextRules {

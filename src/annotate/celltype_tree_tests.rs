@@ -1167,3 +1167,37 @@ fn a_marker_s_positive_or_negative_word_reads_as_a_word() {
         "the marker is not its negative; a hyphen beside a digit is kept, as in CD4-T"
     );
 }
+
+#[test]
+fn an_alias_elsewhere_counts_for_no_panel_word() {
+    let obo = "[Term]\nid: CL:1\nname: organx beta cell\n\n\
+               [Term]\nid: CL:2\nname: organx gamma cell\n\n\
+               [Term]\nid: CL:3\nname: organx delta cell\n\n\
+               [Term]\nid: CL:11\nname: tissuey xa cell\n\n\
+               [Term]\nid: CL:12\nname: tissuey xb cell\n\n\
+               [Term]\nid: CL:13\nname: tissuey xc cell\n\n\
+               [Term]\nid: CL:21\nname: first cell\n\n\
+               [Term]\nid: CL:22\nname: second cell\n\n\
+               [Term]\nid: CL:23\nname: third cell\n";
+    let labels = ["Beta", "Gamma", "Delta", "Xa", "Xb", "Xc"];
+    let mut t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    t.add_aliases("Xa\tCL:21\nXb\tCL:22\nXc\tCL:23\n", "test");
+    let (mapped, unmapped) = t.map_labels(labels);
+    assert!(unmapped.is_empty(), "{unmapped:?}");
+    assert_eq!(
+        mapped["Beta"], "CL:1",
+        "the panel's word, not the aliased labels'"
+    );
+    assert_eq!(mapped["Xa"], "CL:21", "the alias");
+    t.set_panel(&panel(&labels.map(|l| ("G", l))));
+    assert_eq!(t.panel_context, Some(Some("organx".into())));
+    // Aliased to the very terms the other word completes them to, they count.
+    let mut t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
+    t.add_aliases("Xa\tCL:11\nXb\tCL:12\nXc\tCL:13\n", "test");
+    let (mapped, _) = t.map_labels(labels);
+    assert_eq!(mapped["Xa"], "CL:11");
+    assert!(
+        !mapped.contains_key("Beta"),
+        "a tie tells no word: {mapped:?}"
+    );
+}

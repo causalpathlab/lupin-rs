@@ -711,12 +711,25 @@ impl ClTerms {
     /// The panel's context word among the completions of `labels` (the ones
     /// no name matches, [`Self::completions`]): the one that completes the
     /// most labels, when it completes enough of them and more than any other
-    /// word, with the labels it completes and their terms. None when the
-    /// rules leave context off.
+    /// word, with the labels it completes and their terms. An aliased label
+    /// counts for a word only when the word completes it to its alias's term.
+    /// None when the rules leave context off.
     fn context_of(&self, labels: &[String]) -> Option<(String, BTreeMap<String, String>)> {
         let min = self.rules.context.min_labels?;
-        let mut ranked: Vec<(&str, BTreeMap<String, String>)> =
-            self.completions(labels).into_iter().collect();
+        let mut ranked: Vec<(&str, BTreeMap<String, String>)> = (self.completions(labels))
+            .into_iter()
+            .map(|(w, completed)| {
+                let agree = |(l, id): &(String, String)| self.alias_of(l).is_none_or(|a| a == *id);
+                (
+                    w,
+                    completed
+                        .into_iter()
+                        .filter(agree)
+                        .collect::<BTreeMap<_, _>>(),
+                )
+            })
+            .filter(|(_, completed)| !completed.is_empty())
+            .collect();
         ranked.sort_by_key(|(_, m)| std::cmp::Reverse(m.len()));
         let mut ranked = ranked.into_iter();
         let (w, completed) = ranked.next()?;
