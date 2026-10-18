@@ -1,11 +1,18 @@
 //! `lupin describe` — compose a short sentence from annotate evidence.
 //!
-//! The composer **never decides**: evidence comes from annotate artifacts (and optional
-//! keyword incidence from a `word-graph` vocab). Sentences are citation-checked against
-//! the allowed entity set. Candle Hub decoding is not wired yet — templates only.
+//! The template composer **never decides**: evidence comes from annotate artifacts (and
+//! optional keyword incidence from a `word-graph` vocab). With `--lm` a small local model
+//! ([`lm`]) proposes a label among each cluster's choices with one sentence on why
+//! ([`consensus`]), and describes a trajectory's order ([`trajectory`]); nothing is
+//! applied, the user confirms it in the TUI. Every sentence, template or model's, is
+//! citation-checked against the entities its evidence allows ([`citation_check`]).
+
+pub mod consensus;
+pub mod lm;
+pub mod trajectory;
 
 use enrichment::UNASSIGNED_LABEL;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -65,6 +72,77 @@ pub struct DescribeArgs {
 
     #[arg(long, short = 'o', help = "Output prefix")]
     pub out: Box<str>,
+
+    #[command(flatten)]
+    pub lm: LmArgs,
+}
+
+/// The small local model `describe` writes with ([`lm`]).
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct LmArgs {
+    #[arg(
+        long,
+        help = "Propose a label per cluster among its choices, with a citation-checked sentence on why (or describe a trajectory's order), by a small local model; nothing is applied"
+    )]
+    pub lm: bool,
+
+    #[arg(long, value_enum, default_value_t = lm::LmModel::default(), help = "The model (pinned revision, fetched once from the Hub)")]
+    pub lm_model: lm::LmModel,
+
+    #[arg(
+        long,
+        help = "Local model directory (config.json, tokenizer.json, *.safetensors); skips the Hub"
+    )]
+    pub lm_dir: Option<String>,
+
+    #[arg(long, value_enum, default_value_t = lm::default_device(), help = "Compute device for the model")]
+    pub device: crate::gene_text::cli::ComputeDevice,
+}
+
+impl Default for LmArgs {
+    fn default() -> Self {
+        Self {
+            lm: false,
+            lm_model: lm::LmModel::default(),
+            lm_dir: None,
+            device: lm::default_device(),
+        }
+    }
+}
+
+impl LmArgs {
+    #[must_use]
+    pub fn spec(&self) -> lm::LmSpec {
+        lm::LmSpec {
+            model: self.lm_model,
+            local_dir: self.lm_dir.as_deref().map(std::path::PathBuf::from),
+            device: self.device,
+        }
+    }
+
+    /// The flags a child `lupin describe` is run with: `--lm` and these.
+    #[must_use]
+    pub fn to_argv(&self) -> Vec<String> {
+        use clap::ValueEnum;
+        let mut v = vec![
+            "--lm".into(),
+            "--lm-model".into(),
+            self.lm_model.arg().into(),
+        ];
+        if let Some(d) = &self.lm_dir {
+            v.extend(["--lm-dir".into(), d.clone()]);
+        }
+        if let Some(d) = self.device.to_possible_value() {
+            v.extend(["--device".into(), d.get_name().to_string()]);
+        }
+        v
+    }
+
+    /// The model loader, run only when a text is not cached.
+    fn loader(&self) -> impl FnOnce() -> Result<Box<dyn lm::Lm>> {
+        let spec = self.spec();
+        move || Ok(Box::new(lm::Qwen3::load(&spec)?) as Box<dyn lm::Lm>)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,12 +169,59 @@ impl ClusterEvidence {
     }
 }
 
+/// A manifest with a trajectory run: its order is what is described.
+fn is_trajectory(loaded: &crate::manifest::run::Loaded) -> bool {
+    let t = &loaded.manifest.trajectory;
+    t.lineages.is_some() || t.edges.is_some()
+}
+
+/// `describe` on a trajectory run: the run's paragraph and each type's line
+/// to `{out}.trajectory.describe.md`, by the model with `--lm`.
+fn describe_trajectory(
+    loaded: &crate::manifest::run::Loaded,
+    args: &DescribeArgs,
+    out: &str,
+) -> Result<()> {
+    let facts = trajectory::OrderFacts::read(loaded)?;
+    let spec = args.lm.lm.then(|| args.lm.spec());
+    let cache = consensus::cache_path(out);
+    let texts = trajectory::describe(&facts, spec.as_ref(), &cache, args.lm.loader())?;
+    let md = trajectory::md_path(out);
+    std::fs::write(&md, trajectory::markdown(&args.from, &texts))
+        .with_context(|| format!("writing {}", md.display()))?;
+    info!("wrote {} ({} text(s))", md.display(), texts.len());
+    Ok(())
+}
+
 pub fn run_describe(args: &DescribeArgs) -> Result<()> {
-    let files = EvidenceFiles::locate(&args.from);
     let out: &str = &args.out;
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
+    let loaded = crate::manifest::run::load(&args.from).ok();
+    if let Some(l) = loaded.as_ref().filter(|l| is_trajectory(l)) {
+        return describe_trajectory(l, args, out);
+    }
+    // The model's proposals come first: they need only the round.
+    let proposals = if args.lm.lm {
+        let loaded = loaded
+            .as_ref()
+            .context("--lm proposes labels for an annotated round: give its manifest")?;
+        let round = consensus::inputs(loaded)?;
+        let cache = consensus::cache_path(out);
+        consensus::propose_round(&round, &args.lm.spec(), &cache, args.lm.loader())?
+    } else {
+        Vec::new()
+    };
 
-    let mut enriched = load_evidence(&files, args.fdr_alpha)?;
+    let files = EvidenceFiles::locate(&args.from);
+    let mut enriched = match load_evidence(&files, args.fdr_alpha) {
+        Ok(e) => e,
+        // With proposals, the template sentences are extra.
+        Err(e) if !proposals.is_empty() => {
+            log::warn!("describe: no template sentences ({e:#})");
+            Vec::new()
+        }
+        Err(e) => return Err(e),
+    };
     attach_second_best(&mut enriched, &files, args.fdr_alpha)?;
     let markers_tsv = args.markers.as_deref().or(files.markers_tsv.as_deref());
     let markers_by_type = load_markers_by_type(&files, markers_tsv)?;
@@ -110,30 +235,43 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     let mut sentences = Vec::new();
     for c in &enriched {
         let draft = template_sentence(c);
-        let sentence = citation_check(&draft, &allowed, c)?;
+        let sentence = citation_check(&draft, &allowed, &cluster_entities(c), &own_entities(c))
+            .map_err(|e| anyhow::anyhow!("citation check failed for {}: {e}", c.id))?;
         sentences.push((c.id.clone(), sentence));
     }
 
-    let evidence = json!({
+    let proposal_of = |id: &str| proposals.iter().find(|p| format!("K{}", p.cluster) == id);
+    let mut evidence = json!({
         "from": args.from.as_ref(),
         "text_prefix": args.text_prefix.as_ref().map(|s| s.as_ref()),
         "markers": args.markers.as_ref().map(|s| s.as_ref()),
-        "clusters": enriched.iter().map(|c| json!({
-            "id": c.id,
-            "coarse_label": c.coarse_label,
-            "best_label": c.best_label,
-            "best_q": c.best_q,
-            "coarse_q": c.coarse_q,
-            "label_support": c.label_support,
-            "best_significant": c.best_significant,
-            "second_label": c.second.as_ref().map(|(l, _)| l),
-            "second_q": c.second.as_ref().map(|(_, q)| q),
-            "markers": c.markers,
-            "neighbour_genes": c.neighbour_genes,
-            "incidence_words": c.incidence_words,
-        })).collect::<Vec<_>>(),
+        "clusters": enriched.iter().map(|c| {
+            let mut v = json!({
+                "id": c.id,
+                "coarse_label": c.coarse_label,
+                "best_label": c.best_label,
+                "best_q": c.best_q,
+                "coarse_q": c.coarse_q,
+                "label_support": c.label_support,
+                "best_significant": c.best_significant,
+                "second_label": c.second.as_ref().map(|(l, _)| l),
+                "second_q": c.second.as_ref().map(|(_, q)| q),
+                "markers": c.markers,
+                "neighbour_genes": c.neighbour_genes,
+                "incidence_words": c.incidence_words,
+            });
+            if let Some(p) = proposal_of(&c.id) {
+                v["proposal"] = json!(p);
+            }
+            v
+        }).collect::<Vec<_>>(),
         "allowed_entities": allowed.iter().cloned().collect::<Vec<_>>(),
     });
+    if args.lm.lm {
+        let spec = args.lm.spec();
+        evidence["lm"] = json!({"model": spec.name(), "revision": spec.revision()});
+        evidence["proposals"] = json!(proposals);
+    }
 
     let json_path = format!("{out}.describe.json");
     let mut jw = File::create(&json_path).with_context(|| format!("create {json_path}"))?;
@@ -147,11 +285,32 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     writeln!(mw)?;
     writeln!(mw, "From `{from}`.", from = args.from.as_ref())?;
     writeln!(mw)?;
+    let proposed = |mw: &mut File, p: &consensus::Proposal| {
+        writeln!(
+            mw,
+            "Proposed: **{}** ({:.2}) — {}",
+            p.label,
+            p.p_label(),
+            p.rationale
+        )
+        .and_then(|()| writeln!(mw))
+    };
     for (id, s) in &sentences {
         writeln!(mw, "## {id}")?;
         writeln!(mw)?;
         writeln!(mw, "{s}")?;
         writeln!(mw)?;
+        if let Some(p) = proposal_of(id) {
+            proposed(&mut mw, p)?;
+        }
+    }
+    for p in &proposals {
+        let id = format!("K{}", p.cluster);
+        if !sentences.iter().any(|(s, _)| *s == id) {
+            writeln!(mw, "## {id}")?;
+            writeln!(mw)?;
+            proposed(&mut mw, p)?;
+        }
     }
     info!("wrote {md_path} ({} cluster(s))", sentences.len());
     Ok(())
@@ -840,51 +999,107 @@ fn template_sentence(c: &ClusterEvidence) -> String {
     }
 }
 
-fn citation_check(draft: &str, allowed: &BTreeSet<String>, c: &ClusterEvidence) -> Result<String> {
-    let lower = draft.to_lowercase();
-    let cluster_allowed = cluster_entities(c);
-    let cluster_lower: Vec<String> = cluster_allowed.iter().map(|e| e.to_lowercase()).collect();
-    if !cluster_allowed.is_empty() && !cluster_lower.iter().any(|e| lower.contains(e.as_str())) {
-        bail!(
-            "citation check failed for {}: sentence names none of {:?}",
-            c.id,
-            cluster_allowed
-        );
+/// Why a sentence failed the citation check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CitationError {
+    /// It names none of the entities it should name one of.
+    NamesNone,
+    /// It names this entity of the run, which is not its own.
+    Foreign(String),
+    Braces,
+    /// (A model's text) a number outside the names it cites.
+    Digits(String),
+    /// (A model's text) a formula or markup sign.
+    Markup(String),
+    /// (A model's text) nothing.
+    Empty,
+}
+
+impl std::fmt::Display for CitationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NamesNone => write!(f, "names none of its evidence"),
+            Self::Foreign(e) => write!(f, "mentions `{e}` outside its evidence"),
+            Self::Braces => write!(f, "braces in the sentence"),
+            Self::Digits(d) => write!(f, "a number ({d})"),
+            Self::Markup(m) => write!(f, "markup ({m})"),
+            Self::Empty => write!(f, "no sentence"),
+        }
     }
-    // Reject other panel types from the run that are not this cluster's evidence.
-    // Gene symbols can collide; only enforce for entities that are not markers/words.
-    let own: HashSet<&str> = c
-        .markers
-        .iter()
-        .chain(&c.incidence_words)
-        .chain(&c.neighbour_genes)
-        .map(String::as_str)
-        .collect();
-    for ent in allowed {
+}
+
+impl std::error::Error for CitationError {}
+
+/// `s` as the check compares it: lowercase, the panel's underscores as
+/// spaces.
+pub(crate) fn norm(s: &str) -> String {
+    s.to_lowercase().replace('_', " ")
+}
+
+/// `text` names `entity` (both [`norm`]ed) as a whole word or words, or
+/// their plural (`cells`).
+pub(crate) fn mentions(text: &str, entity: &str) -> bool {
+    if entity.is_empty() {
+        return false;
+    }
+    let edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+    text.match_indices(entity).any(|(i, m)| {
+        let mut after = text[i + m.len()..].chars();
+        let next = after.next();
+        edge(text[..i].chars().next_back())
+            && (edge(next) || next == Some('s') && edge(after.next()))
+    })
+}
+
+/// Check `draft` against what it may say: it names at least one of `named`
+/// (when there are any), and no entity of the `run` that is neither in
+/// `named` nor in `own` (what the subject may name but need not, such as
+/// its markers). Short names (under three letters) are not policed: gene
+/// symbols collide with them.
+pub fn citation_check(
+    draft: &str,
+    run: &BTreeSet<String>,
+    named: &BTreeSet<String>,
+    own: &BTreeSet<String>,
+) -> std::result::Result<String, CitationError> {
+    let text = norm(draft);
+    let named_n: Vec<String> = named.iter().map(|e| norm(e)).collect();
+    for ent in run {
         if ent.len() < 3
             || ent.as_str() == UNASSIGNED_LABEL
-            || own.contains(ent.as_str())
-            || cluster_allowed.contains(ent)
+            || own.contains(ent)
+            || named.contains(ent)
         {
             continue;
         }
-        let ent_lower = ent.to_lowercase();
-        if lower.contains(&ent_lower)
-            && !cluster_lower
+        let e = norm(ent);
+        // A name inside one of the subject's own (`B` in `Pre B`) is that one.
+        if mentions(&text, &e)
+            && !named_n
                 .iter()
-                .any(|a| a.contains(&ent_lower) || ent_lower.contains(a.as_str()))
+                .any(|a| a.contains(&e) || e.contains(a.as_str()))
         {
-            bail!(
-                "citation check failed for {}: sentence mentions `{}` outside evidence",
-                c.id,
-                ent
-            );
+            return Err(CitationError::Foreign(ent.clone()));
         }
     }
+    if !named_n.is_empty() && !named_n.iter().any(|e| mentions(&text, e)) {
+        return Err(CitationError::NamesNone);
+    }
     if draft.contains('{') || draft.contains('}') {
-        bail!("citation check failed for {}: braces in sentence", c.id);
+        return Err(CitationError::Braces);
     }
     Ok(draft.to_string())
+}
+
+/// What cluster `c`'s template sentence may name besides its own
+/// entities: its markers, keywords and their neighbours.
+fn own_entities(c: &ClusterEvidence) -> BTreeSet<String> {
+    c.markers
+        .iter()
+        .chain(&c.incidence_words)
+        .chain(&c.neighbour_genes)
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]

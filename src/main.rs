@@ -93,7 +93,7 @@ enum Commands {
     Annotate(AnnotateCliArgs),
     #[command(
         name = "describe",
-        about = "Short citation-checked sentence from annotate evidence",
+        about = "Short citation-checked sentences from annotate evidence; with --lm, a proposed label per cluster by a small local model",
         long_about = "Builds structured evidence from `{from}.annot.parquet` (or argmax).\n\
                       Optionally fishes per-cluster keywords from a `word-graph` prefix\n\
                       (`feature_word.edges` over each cluster's markers;\n\
@@ -102,8 +102,15 @@ enum Commands {
                       a second FDR-significant contender is named if one exists.\n\
                       Writes `{out}.describe.json` and `{out}.describe.md`.\n\
                       \n\
-                      The composer never invents labels: sentences are citation-checked.\n\
-                      Default composer is a citation-checked template (candle decoder TBD)."
+                      `--lm` runs a small local model (Qwen3, pinned revision, fetched once\n\
+                      from the Hub; `--lm-dir` for local files): for each cluster of a round\n\
+                      it proposes one of the TUI's label choices with one sentence on why,\n\
+                      cached in `{out}.consensus.jsonl` and added to the outputs. On a\n\
+                      trajectory run it describes the order instead,\n\
+                      `{out}.trajectory.describe.md`. Nothing is applied: the TUI offers\n\
+                      the proposals, the user confirms them.\n\
+                      \n\
+                      Every sentence is citation-checked: it names only its evidence."
     )]
     Describe(DescribeArgs),
     #[command(

@@ -1715,17 +1715,17 @@ fn read_digests(
 
 /// What `review` shows of a round: per cluster its digest, its history and
 /// its place on the round's type tree; and the type tables.
-struct Reviewed {
-    digests: BTreeMap<ClusterId, Digest>,
-    history: History,
+pub(crate) struct Reviewed {
+    pub(crate) digests: BTreeMap<ClusterId, Digest>,
+    pub(crate) history: History,
     tree: Option<TypeTree>,
-    tables: TypeTables,
+    pub(crate) tables: TypeTables,
 }
 
 impl Reviewed {
     /// The round as review shows it; `every_type` when the types' evidence
     /// is wanted too (`--json`).
-    fn read(loaded: &Loaded, every_type: bool) -> Result<Self> {
+    pub(crate) fn read(loaded: &Loaded, every_type: bool) -> Result<Self> {
         // The cells give the score's shares over the current clusters: for
         // the types' evidence, the digests when no summary was written, and
         // the order of tied calls when the score made the call. A round
@@ -1763,7 +1763,7 @@ impl Reviewed {
     }
 
     /// The Cell Ontology term the tree puts cluster `d`'s label on.
-    fn placement(&self, d: &Digest) -> Option<TreePlacement> {
+    pub(crate) fn placement(&self, d: &Digest) -> Option<TreePlacement> {
         self.tree.as_ref()?.placement(d.label.as_deref()?)
     }
 }
