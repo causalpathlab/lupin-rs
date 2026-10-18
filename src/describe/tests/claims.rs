@@ -105,6 +105,32 @@ fn an_order_word_runs_from_the_earlier_type_to_the_later() {
 }
 
 #[test]
+fn an_order_word_speaks_of_its_clauses_type_else_the_sentences_subject() {
+    let ct1 = Some("CT1_cell");
+    // `before` speaks of CT1 cell, not of the stem cell its `and` parts it from.
+    for subject in [ct1, None] {
+        wrong(
+            "CT1 cell comes after the stem cell and before the wide progenitor cell.",
+            subject,
+        );
+    }
+    wrong(
+        "It comes after the stem cell and before the wide progenitor cell.",
+        ct1,
+    );
+    ok(
+        "CT3 cell comes after the narrow progenitor cell and before the CT4 mature cell.",
+        None,
+    );
+    // A clause that names its own type speaks of it.
+    ok(
+        "The stem cell comes first, and the wide progenitor cell comes before the narrow \
+         progenitor cell.",
+        None,
+    );
+}
+
+#[test]
 fn a_role_is_held_by_a_type_the_clause_names_else_the_subject() {
     wrong(
         "The wide progenitor cell is a root.",
