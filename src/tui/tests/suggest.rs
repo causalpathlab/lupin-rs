@@ -118,14 +118,36 @@ fn the_suggestions_file_reads_back_by_label() {
 fn the_types_without_a_term_are_the_ones_to_suggest_for() {
     let dir = tempfile::tempdir().unwrap();
     let app = app(dir.path());
-    assert_eq!(unmatched(&app.tree), ["XQ"]);
+    let cl = app.cl.as_ref().unwrap();
+    assert_eq!(unmatched(cl, &app.tree), ["XQ"]);
     for t in ["CT1 cells", "CT2 cells", "XQ"] {
         assert_eq!(
-            needs_term(&app.tree, t),
-            unmatched(&app.tree).contains(&label_key(t)),
+            needs_term(cl, &app.tree, t),
+            unmatched(cl, &app.tree).contains(&label_key(t)),
             "{t}: c and the job ask one question"
         );
     }
+}
+
+#[test]
+fn a_type_with_its_own_term_needs_none_on_a_tree_built_from_markers() {
+    // One type on a term is too few for the ontology's tree: the tree is
+    // the markers' and puts no type on a term, yet CT1 has its own.
+    let dir = tempfile::tempdir().unwrap();
+    let panel = dir.path().join("few.tsv");
+    std::fs::write(&panel, "G1\tCT1 cells\nG2\tXQ\nG3\tYZ\n").unwrap();
+    let mut app = app(dir.path());
+    app.panel = crate::annotate::markers::read_panel(panel.to_str().unwrap()).unwrap();
+    app.rebuild_tree();
+    assert!(app.tree.cl_of("CT1_cells").is_none(), "the markers' tree");
+    let cl = app.cl.as_ref().unwrap();
+    assert!(!needs_term(cl, &app.tree, "CT1_cells"));
+    assert_eq!(unmatched(cl, &app.tree), ["XQ", "YZ"]);
+    select(&mut app, "CT1_cells");
+    app.suggestions = Some(Suggestions::read(&suggested(dir.path())).unwrap());
+    press(&mut app, KeyCode::Char('c'));
+    assert!(app.menu.is_none());
+    assert!(app.status.contains("has its own"), "{}", app.status);
 }
 
 #[test]
@@ -167,7 +189,7 @@ fn c_offers_the_top_three_with_scores_and_a_confirmed_one_is_written_and_placed(
     assert_eq!(a.get("XQ"), Some("CL:2"));
     // The tree is built again with the alias: XQ now sits on its term.
     assert_eq!(app.tree.cl_of("XQ"), Some("CL:2"));
-    assert!(unmatched(&app.tree).is_empty());
+    assert!(unmatched(app.cl.as_ref().unwrap(), &app.tree).is_empty());
 }
 
 #[test]

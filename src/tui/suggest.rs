@@ -6,6 +6,7 @@
 //! which fetches the text model and encodes the ontology the first time.
 
 use super::menu::{numbered_but, Action, Choice, Menu};
+use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::markers::label_key;
 use crate::annotate::panel_tree::PanelTree;
 use crate::annotate::term_match::{Suggested, Suggestion};
@@ -39,20 +40,22 @@ impl Suggestions {
     }
 }
 
-/// Whether `label` is a panel type with no Cell Ontology term: what `c`
-/// asks before ranking, and [`unmatched`] of every type.
+/// Whether `label` is a panel type the ontology has no term for: what `c`
+/// asks before ranking, and [`unmatched`] of every type. Asked of the
+/// label's own reading ([`super::ontology::term_of`]), not of where the
+/// tree put it: a tree built from the markers puts no type on a term.
 #[must_use]
-pub fn needs_term(tree: &PanelTree, label: &str) -> bool {
-    tree.is_type(label) && tree.cl_of(label).is_none()
+pub fn needs_term(cl: &ClTerms, tree: &PanelTree, label: &str) -> bool {
+    tree.is_type(label) && super::ontology::term_of(cl, tree, label).is_none()
 }
 
 /// The panel types with no Cell Ontology term, by their [`label_key`]s, the
 /// keys [`Suggestions`] gives them back by.
 #[must_use]
-pub fn unmatched(tree: &PanelTree) -> Vec<String> {
+pub fn unmatched(cl: &ClTerms, tree: &PanelTree) -> Vec<String> {
     let mut out: Vec<String> = (tree.nodes.iter())
         .flat_map(|n| &n.labels)
-        .filter(|l| needs_term(tree, l))
+        .filter(|l| needs_term(cl, tree, l))
         .map(|l| label_key(l))
         .collect();
     out.sort();
