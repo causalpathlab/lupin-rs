@@ -4153,19 +4153,23 @@ impl App {
             self.tree.reveal(i);
             self.select_node(i);
         }
+        self.clamp_tree_sel();
     }
 
     /// Build the panel's tree again from [`Self::panel`], with each type's
     /// terms; the selection stays on a row of the new tree.
     pub(super) fn rebuild_tree(&mut self) {
         self.tree = crate::manifest::ontology::panel_tree_on(self.cl.as_ref(), &self.panel);
-        self.tree_sel = self
-            .tree_sel
-            .min(self.tree.visible().len().saturating_sub(1));
+        self.clamp_tree_sel();
         self.terms_of.borrow_mut().clear();
         if let Some(cl) = &self.cl {
             self.panel_ancestry = super::ontology::type_ancestry(cl, &self.tree);
         }
+    }
+
+    /// Keep the panel tree's selection on a row it shows.
+    fn clamp_tree_sel(&mut self) {
+        self.tree_sel = (self.tree_sel).min(self.tree.visible().len().saturating_sub(1));
     }
 
     /// The Cell Ontology term `label` names ([`super::ontology::term_of`]);

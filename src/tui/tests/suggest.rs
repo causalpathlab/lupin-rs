@@ -409,3 +409,20 @@ fn a_rebuild_leaves_the_selection_on_a_row_of_the_new_tree() {
         app.tree.visible().len()
     );
 }
+
+#[test]
+fn a_rebuild_that_folds_again_leaves_the_selection_on_a_row_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    let group = app.tree.node_of("group1").unwrap();
+    app.tree.fold(group, true);
+    select(&mut app, "XQ");
+    app.panel.retain(|(_, t)| t != "XQ");
+    app.rebuild_tree_keeping(None);
+    assert!(
+        app.tree_sel < app.tree.visible().len(),
+        "{} of {}",
+        app.tree_sel,
+        app.tree.visible().len()
+    );
+}
