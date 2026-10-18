@@ -19,6 +19,10 @@ use std::fs;
 use std::path::Path;
 
 const TREE: &str = ".celltype_tree.json";
+/// How the panel's labels were put on the Cell Ontology, and the methods
+/// paragraph drafted from it.
+const RECORD: &str = ".cl_record.json";
+const METHODS: &str = ".methods.md";
 
 const LABEL_CL: &str = ".label_cl.tsv";
 /// The fine labels a coarse first round keeps, with the recorded labels'
@@ -57,6 +61,24 @@ pub fn prepare(
     let found = data.ontology.clone();
     mkdir_parent(out)?;
     fs::write(format!("{out}{TREE}"), serde_json::to_string_pretty(&tree)?)?;
+    if let Some(terms) = data.terms()? {
+        let record = crate::annotate::provenance::Record::of(terms, &panel);
+        fs::write(
+            format!("{out}{RECORD}"),
+            serde_json::to_string_pretty(&record)?,
+        )?;
+        let text = crate::annotate::provenance::methods(&record);
+        fs::write(format!("{out}{METHODS}"), text + "\n")?;
+        for q in &record.questions {
+            info!(
+                "{} stands alone; its siblings are in {}: answer in {} (`{}<TAB>join` or `alone`)",
+                q.label,
+                q.group,
+                super::data_files::GROUPS,
+                q.label
+            );
+        }
+    }
 
     // The ontology walk needs every panel type on a term; with any left
     // unmatched it would refuse the whole pass, so it is not wired in then.

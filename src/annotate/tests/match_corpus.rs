@@ -655,3 +655,124 @@ fn the_panel_tree_puts_a_placed_label_with_its_lineage() {
         up("Mature CT16")
     );
 }
+
+#[test]
+fn a_panel_reading_says_how_each_label_was_placed() {
+    let mut aliases = Aliases::default();
+    aliases.add_tsv("CTR\tCL:9100016\n", "test");
+    let t = terms().with_aliases(aliases);
+    let p = t.place_labels([
+        "CTR",
+        "CT2 cell",
+        "Omega",
+        "Sigma",
+        "Tau",
+        "Mature CT16",
+        "Pre CT16",
+        "CT6",
+    ]);
+    let how = |l: &str| p.how(l);
+    assert_eq!(how("CTR"), How::Alias);
+    assert_eq!(how("CT2 cell"), How::Name);
+    assert_eq!(how("Omega"), How::PanelWord("tisa".into()));
+    assert_eq!(how("Mature CT16"), How::Under);
+    assert_eq!(how("Pre CT16"), How::Kept);
+    assert_eq!(how("CT6"), How::Nowhere);
+}
+
+/// Two types under CT1 cell (a class) and CT2 cell, which shares only the
+/// broader CTH lineage with them.
+const LONE: [&str; 3] = [
+    "MK1-positive, alpha-beta CT1 cell",
+    "MK5-positive, alpha-beta CT1 cell",
+    "CT2 cell",
+];
+
+#[test]
+fn a_type_its_siblings_left_alone_is_a_question() {
+    let t = tree_of(&LONE, &[]);
+    assert_ne!(t.group_of("CT2 cell"), t.group_of(LONE[0]));
+    let panel: Vec<(String, String)> = (LONE.iter().enumerate())
+        .map(|(i, l)| (format!("GENE{i}"), (*l).to_string()))
+        .collect();
+    let terms = terms();
+    let asked = TypeTree::join_questions(&terms, &panel);
+    assert_eq!(
+        asked,
+        [JoinQuestion {
+            label: "CT2 cell".into(),
+            class: "CL:9100001".into(),
+            group: t.group_of(LONE[0]).unwrap().to_string(),
+        }]
+    );
+}
+
+#[test]
+fn an_answer_joins_the_lone_type_under_the_class_it_shares() {
+    let panel: Vec<(String, String)> = (LONE.iter().enumerate())
+        .map(|(i, l)| (format!("GENE{i}"), (*l).to_string()))
+        .collect();
+    let mut terms = terms();
+    terms.add_joins("CT2 cell\tjoin\n");
+    let t = TypeTree::from_ontology(&terms, &panel).unwrap();
+    assert_eq!(t.group_of("CT2 cell"), t.group_of(LONE[0]));
+    let g = t.groups.iter().find(|g| g.members.len() == 3).unwrap();
+    assert_eq!(
+        g.cl_id.as_deref(),
+        Some("CL:9100001"),
+        "named for the class they share"
+    );
+    assert!(
+        TypeTree::join_questions(&terms, &panel).is_empty(),
+        "answered"
+    );
+    let mut terms = self::terms();
+    terms.add_joins("CT2 cell\talone\n");
+    let t = TypeTree::from_ontology(&terms, &panel).unwrap();
+    assert_ne!(t.group_of("CT2 cell"), t.group_of(LONE[0]));
+    assert!(
+        TypeTree::join_questions(&terms, &panel).is_empty(),
+        "answered"
+    );
+}
+
+#[test]
+fn the_record_drafts_a_methods_paragraph() {
+    let mut terms = terms();
+    terms.add_aliases("CTR\tCL:9100016\n", "aliases");
+    terms.add_joins("CT2 cell\tjoin\n");
+    let labels = [
+        "CTR",
+        "MK1-positive, alpha-beta CT1 cell",
+        "MK5-positive, alpha-beta CT1 cell",
+        "CT2 cell",
+        "Omega",
+        "Sigma",
+        "Tau",
+        "Mature CT16",
+        "CT6",
+    ];
+    let panel: Vec<(String, String)> = (labels.iter().enumerate())
+        .map(|(i, l)| (format!("GENE{i}"), (*l).to_string()))
+        .collect();
+    let r = crate::annotate::provenance::Record::of(&terms, &panel);
+    assert_eq!(r.labels.len(), 9);
+    assert_eq!(r.answers, [("CT2 cell".to_string(), true)]);
+    let text = crate::annotate::provenance::methods(&r);
+    for want in [
+        "9 cell-type labels",
+        "release corpus/2026-01-01",
+        "1 by a curated alias",
+        "3 by completing the word \"tisa\"",
+        "1 was placed under",
+        "1 matched no term",
+        "CT2 cell",
+    ] {
+        assert!(text.contains(want), "{want:?} not in:\n{text}");
+    }
+    assert_eq!(
+        text,
+        crate::annotate::provenance::methods(&r),
+        "the same record, the same text"
+    );
+}
