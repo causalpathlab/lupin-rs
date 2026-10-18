@@ -251,6 +251,13 @@ fn a_sentence_names_only_the_types_and_terms_of_its_evidence() {
         check("CT A, with a share of 0.7."),
         Err(CitationError::Digits("0".into()))
     );
+    let mut with_ct2 = run();
+    with_ct2.insert("CT2".into());
+    assert_eq!(
+        check_lm("CT A or CT2 fits.", &with_ct2, &c.named(), &c.own()),
+        Err(CitationError::Foreign("CT2".into())),
+        "another cluster's name is foreign, digit and all, so a retry bans it"
+    );
     assert_eq!(check("Its cells look odd."), Err(CitationError::NamesNone));
     assert_eq!(
         check("CT A with markers MS₄A₃."),
