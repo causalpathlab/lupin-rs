@@ -217,10 +217,10 @@ pub fn run_describe(args: &DescribeArgs) -> Result<()> {
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
     let loaded = crate::manifest::run::load(&args.from).ok();
     // A trajectory run: its order is what is described.
-    let trajectory = |l: &&crate::manifest::run::Loaded| {
-        crate::manifest::family::is_trajectory(&l.manifest, &l.file)
-    };
-    if let Some(l) = loaded.as_ref().filter(trajectory) {
+    if let Some(l) = loaded
+        .as_ref()
+        .filter(|l| crate::manifest::family::is_trajectory(&l.manifest, &l.file))
+    {
         return describe_trajectory(l, args, out);
     }
     // The model's proposals come first: they need only the round.
