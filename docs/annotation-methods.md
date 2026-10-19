@@ -34,7 +34,8 @@ and `units` columns are each method's share of the cluster's cells called the ty
 
 **Which reading makes the call.** `--call {enrichment, susie, score, units}` picks the method
 whose reading becomes the round's per-cell labels (`annotate.argmax`), and so its cluster
-labels; the others stay beside it as evidence. By default it is SuSiE's where it ran, else the
+labels; the others stay beside it as evidence. Under `--call score` or `units` the round
+records no `annotate.annotation`: the enrichment's per-cell posterior is not the call's. By default it is SuSiE's where it ran, else the
 enrichment's. A `--call` naming a method that does not run on the pass is refused before
 anything is read, and a pass whose calling method fails is an error, not a fallback. The
 round records the method as `annotate.called_by`. The TUI's form sets it as `call by`, under

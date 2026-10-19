@@ -363,8 +363,9 @@ fn pass_rows(
 /// enrichment's (`--call score` or `units`): its per-cell calls become the
 /// round's labels over the pass's `cells` (a cell it has no row for is
 /// unassigned), with the units' membership as the probability (the score
-/// has none). SuSiE's call was made by its stage; `--call susie` only
-/// checks it was.
+/// has none). The enrichment's per-cell posterior goes from the record, as
+/// it is not the call's. SuSiE's call was made by its stage; `--call susie`
+/// only checks it was.
 fn take_call(
     call: Option<Method>,
     outputs: &mut AnnotationOutputs,
@@ -411,6 +412,7 @@ fn take_call(
     graph_embedding_util::type_annotation::write_cell_labels(out, cells, &labels, &probs)?;
     info!("the round's call is the {name}'s");
     outputs.argmax = Some(crate::annotate::outputs::labels_path(out));
+    outputs.annotation = None;
     Ok(())
 }
 

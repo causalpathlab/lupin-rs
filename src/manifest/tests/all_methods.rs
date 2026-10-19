@@ -119,6 +119,11 @@ fn the_call_goes_to_the_method_asked_for() {
             a.cluster_celltype_q.is_some() && a.marker_score.is_some() && a.units_call.is_some(),
             "{by}: every reading is still the round's"
         );
+        assert!(
+            a.annotation.is_none(),
+            "{by}: no per-cell posterior but the caller's: {:?}",
+            a.annotation
+        );
     }
 }
 
