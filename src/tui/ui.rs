@@ -82,6 +82,9 @@ fn draw_overlays(f: &mut Frame, app: &App, menu_area: Rect) {
         draw_guide(f, app);
     }
     draw_progress(f, app);
+    for pane in [&app.figures, &app.cell_map].into_iter().flatten() {
+        pane.draw_save(f, f.area());
+    }
     if app.prompt.is_some() {
         draw_prompt(f, app);
     }
@@ -351,6 +354,19 @@ fn key_line(app: &App) -> Vec<&'static str> {
         };
         keys.insert(keys.len().min(2), order);
     }
+    // A units round's map: its GO stars, links and rings, after the layout.
+    let editing = app.cell_map.as_ref().is_some_and(|m| m.editing());
+    if app.focus == Focus::Tree
+        && matches!(app.tree_mode, TreeMode::Cells)
+        && !editing
+        && app.cell_map.as_ref().is_some_and(|m| m.units_keys())
+    {
+        let at = keys
+            .iter()
+            .position(|k| *k == "m layout")
+            .map_or(0, |i| i + 1);
+        keys.splice(at..at, ["g GO terms", "l links", "r rings"]);
+    }
     keys
 }
 
@@ -476,6 +492,30 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "T tree",
             "esc clusters",
         ],
+        Focus::Tree
+            if matches!(app.tree_mode, TreeMode::Cells)
+                && app.cell_map.as_ref().is_some_and(|m| m.editing()) =>
+        {
+            &[
+                "tab next label",
+                "←↑→↓ move it",
+                "shift further",
+                "⌫ back on its cells",
+                "esc done",
+            ]
+        }
+        Focus::Tree
+            if matches!(app.tree_mode, TreeMode::Cells)
+                && app.cell_map.as_ref().is_some_and(|m| m.charting()) =>
+        {
+            &[
+                "H next chart",
+                "c what it shows",
+                "p save",
+                "f exports",
+                "esc the map",
+            ]
+        }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Cells) => &[
             "c colour",
             "t labels",
@@ -483,6 +523,9 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "+-0 zoom",
             "←↑→↓ pan",
             "o ontology",
+            "E move labels",
+            "H charts",
+            "mouse: drag pan · wheel zoom · click cluster · drag a label",
             "w all",
             "p export",
             "f exports",
@@ -606,7 +649,11 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("← →", "fold / unfold; → on a panel leaf or an open branch goes on into the Cell Ontology at its term (ontology: up / into a term; in the data: → opens a folded chain, then the term in place on all its Cell Ontology children, ▸ more to show, ← closes)"),
             ("h", "in the data's tree: hide / show the terms not in the data below the selected term (◈ hiding)"),
             ("o", "panel tree ↔ the Cell Ontology; from the cell map, the Cell Ontology and o back to the map"),
-            ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, o the Cell Ontology, w all figures, p export, f the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, R re-check) / the tree again"),
+            ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, o the Cell Ontology, w all figures, p save the map as a PDF, f the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, R re-check) / the tree again"),
+            ("mouse", "on the cell map: drag to pan, the wheel zooms where it points, a click selects the cluster under it, the pointer names it; a label pressed is dragged. The map takes the mouse only while it is shown: elsewhere the terminal selects text as ever"),
+            ("g l r", "on a units round's cell map: each cell type is a dot at the median of its 30 nearest cells, labelled; g the selected cluster's GO terms (q < 0.05, best six) as numbered stars at their nearest cells, listed beside the map with score and q (named from the pass's GO ontology, else by id); l the strongest links between types; r each type's fitted radius as a ring. There g and r are the map's: g lists the runs and r runs a pass from the other panes"),
+            ("H", "on the cell map: its charts in turn, as senna's: the structure plot (each cell's mixture stacked from the bottom, a panel per cluster: the cell types from the pass's per-cell posterior, else a units round's region membership; c the topics on a topic run), then a heatmap (c steps: the panel's markers × clusters from the cluster expression, z by row; the GO terms a cluster stars × clusters, z of the alignment score, blank where q ≥ 0.05; the cell types × clusters from the enrichment's Q, else the units' membership share), then the map; esc the map. A chart whose table the round lacks says which. p saves the chart as a PDF through the save dialog, logged in the exports"),
+            ("E", "on the cell map: move its labels from the keys: tab / shift+tab the next / previous label, arrows move it half a line (shift: two), ⌫ back on its cells, esc done. Labels moved (here or by the mouse) are kept per round and layout in {round}.lupin_labels.json beside the run, never in its manifest; a file there that cannot be read is left as it is and the labels stay put"),
             ("d", "Cell Ontology: the terms in the data (the labels, under their common ancestor) ↔ all"),
             ("c", "on a panel type with no Cell Ontology term: its three nearest terms by text embedding, with their scores; one you confirm goes to your cl_aliases.tsv and the tree is built again (the first ranking fetches the text model and encodes the ontology, a minute or two; offline without the model, there are none)"),
             (
@@ -666,10 +713,10 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("m", "the scatter's layout: each layout the run has (PHATE first), then the diffusion map"),
             (", .", "the diffusion map's y axis: the previous or next component"),
             ("[ ]", "the diffusion map's x axis: the previous or next component"),
-            ("w", "all figures as thumbnails: arrows choose, enter, space or 1-9 opens, p exports the tile, V the table, esc or w closes"),
+            ("w", "all figures as thumbnails: arrows choose, enter, space or 1-9 opens, p exports the tile (a scatter's whole map through the save dialog), V the table, esc or w closes"),
             ("+ - 0", "zoom the scatter in / out / show it whole (m, , . and [ ] also show it whole)"),
             ("arrows", "pan a zoomed scatter (with the exports strip open, ↑↓ move in the strip)"),
-            ("p", "export the figure as on screen (zoomed too) as {run}.trajectory.{figure}.svg + .pdf and log it"),
+            ("p", "a scatter: the save dialog, as senna's (what: the map as on screen, zoomed too, or whole; width 3.5-14 in; dpi 150-1200 for the points, the text stays text; the file, {run}.trajectory.{figure}.pdf numbered past saved ones; enter saves, a second enter replaces a file there, esc cancels). The other figures: exported at once as on screen as .pdf + .svg. Each is logged with a thumbnail"),
             ("f", "the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, esc closes"),
             ("R", "re-read the log and check every export against its files"),
             ("", "keys act on the figures while the ordering column has the focus; p exports figures (senna view: s), s saves the round"),
@@ -2334,6 +2381,27 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
         );
         inner = rest;
     }
+    // A units round's starred GO terms beside the map, or under a narrow one.
+    let terms = if v.current().is_scatter() {
+        v.data.go_terms(v.style.focus.filter(|_| v.style.go))
+    } else {
+        &[]
+    };
+    if !terms.is_empty() && inner.width >= 20 && inner.height >= 8 {
+        let rows = (2 * terms.len() + 1) as u16;
+        let (map, side) = if inner.width >= 70 {
+            let [a, b] =
+                Layout::horizontal([Constraint::Fill(1), Constraint::Length(32)]).areas(inner);
+            (a, b)
+        } else {
+            let h = rows.min(inner.height / 2);
+            let [a, b] =
+                Layout::vertical([Constraint::Fill(1), Constraint::Length(h)]).areas(inner);
+            (a, b)
+        };
+        draw_go_terms(f, side, v.style.focus, terms);
+        inner = map;
+    }
     // A quick frame shows the figure as last drawn; the next draws it.
     let drawn = if app.quick_frame.get() {
         let (drawn, behind) = v.drawn_so_far(inner);
@@ -2355,6 +2423,33 @@ fn draw_figures(f: &mut Frame, area: Rect, app: &App, v: &super::figure_pane::Fi
     if let Some(strip) = strip {
         draw_exports(f, strip, &v.exports, focused);
     }
+}
+
+/// Cluster `k`'s starred GO `terms`, numbered as their stars: each name,
+/// then its score and q.
+fn draw_go_terms(
+    f: &mut Frame,
+    area: Rect,
+    k: Option<i32>,
+    terms: &[crate::figures::units::GoTerm],
+) {
+    let width = usize::from(area.width.saturating_sub(3)).max(1);
+    let mut lines = vec![Line::from(format!(
+        "{} · GO terms",
+        k.map_or(String::new(), crate::figures::cluster_name)
+    ))
+    .bold()];
+    for (i, t) in terms.iter().enumerate() {
+        let name = wrap(&t.name, width, 1).concat();
+        lines.push(Line::from(format!("{} {name}", i + 1)));
+        let q = if t.q >= 1e-3 {
+            format!("{:.3}", t.q)
+        } else {
+            format!("{:.1e}", t.q)
+        };
+        lines.push(Line::from(format!("  score {:.2} · q {q}", t.score)).dim());
+    }
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// The exports strip's height in a figure pane `height` rows tall: its
@@ -2428,7 +2523,7 @@ fn draw_exports(f: &mut Frame, area: Rect, x: &super::figure_pane::Exports, focu
     let now = super::gallery::now();
     let mut rows: Vec<Row> = x
         .gallery
-        .entries
+        .entries()
         .iter()
         .zip(&x.statuses)
         .map(|(e, s)| {
@@ -2451,7 +2546,7 @@ fn draw_exports(f: &mut Frame, area: Rect, x: &super::figure_pane::Exports, focu
         ])
         .style(Style::default().add_modifier(Modifier::DIM))
     }));
-    let note = x.gallery.set_aside.as_ref().map_or(String::new(), |p| {
+    let note = x.gallery.set_aside().map_or(String::new(), |p| {
         format!(" · unreadable log set aside as {}", p.display())
     });
     let table = Table::new(
@@ -2465,7 +2560,7 @@ fn draw_exports(f: &mut Frame, area: Rect, x: &super::figure_pane::Exports, focu
     .block(pane(
         format!(
             " exports ({}){note} · enter list · M move · d unlist · D D delete ",
-            x.gallery.entries.len()
+            x.gallery.entries().len()
         ),
         focused,
     ))

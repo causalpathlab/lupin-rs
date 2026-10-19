@@ -22,20 +22,34 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Each cell type's genes in the table and given, radius, share of the
 /// cells and centre (`h0…`), by type.
 pub const UNITS_PARQUET: &str = ".celltype_units.parquet";
+/// Each cell's membership of each cell type's region, cells × types: what a
+/// viewer's structure plot stacks.
+pub const MEMBERSHIP_PARQUET: &str = ".celltype_membership.parquet";
 /// Each pair of cell types and the cells they share (`Regions::links`).
 pub const TYPE_LINKS_TSV: &str = ".celltype_links.tsv";
 /// Each cluster against each ontology term: score, p and q ([`align`]).
 pub const TERM_ALIGNMENT_PARQUET: &str = ".term_alignment.parquet";
 /// Each ontology term's genes in the table and given, and centre (`h0…`).
 pub const TERM_UNITS_PARQUET: &str = ".term_units.parquet";
+/// Each cell type's and term's nearest cells ([`ANCHORS_K`]) and their
+/// cosine: where a viewer draws the unit on a layout of the cells.
+pub const UNIT_ANCHORS_PARQUET: &str = ".unit_anchors.parquet";
 /// What a pass writes beside the per-cell labels, cleared before it runs so
 /// no file of an earlier pass (its terms, say) is read as this one's.
-pub const UNITS_OUTPUT_SUFFIXES: [&str; 4] = [
+pub const UNITS_OUTPUT_SUFFIXES: [&str; 6] = [
     UNITS_PARQUET,
+    MEMBERSHIP_PARQUET,
     TYPE_LINKS_TSV,
     TERM_ALIGNMENT_PARQUET,
     TERM_UNITS_PARQUET,
+    UNIT_ANCHORS_PARQUET,
 ];
+/// The cells nearest each unit kept as its anchors.
+pub const ANCHORS_K: usize = 30;
+/// A cluster's terms starred: at most this many, best score first.
+pub const STARS: usize = 6;
+/// The q below which a term is starred.
+pub const STAR_Q: f32 = 0.05;
 
 /// A run's genes and their rows (row-major, `dim` wide), in the space its
 /// cells share with them.
@@ -535,22 +549,39 @@ pub fn run_pass(
         &[("radius", &r.radius), ("weight", &r.weight)],
     )?;
     write_links(&format!("{out}{TYPE_LINKS_TSV}"), &r)?;
+    let membership = format!("{out}{MEMBERSHIP_PARQUET}");
+    write_membership(&membership, &r, &cells.rows)?;
+    // Anchored: every cell type, and only the terms some cluster stars, as
+    // only those are drawn; the pool's other terms would cost a pass over
+    // the cells each.
+    let mut anchored = units.of_kind(SetKind::CellType);
     let (term_alignment, term_units) = if units.kinds.contains(&SetKind::Term) {
         let path = format!("{out}{TERM_ALIGNMENT_PARQUET}");
         let a = align(&units, SetKind::Term, &flat, groups)?;
         write_alignment(&path, &a)?;
+        let of_term = units.of_kind(SetKind::Term);
+        anchored.extend(a.starred().into_iter().map(|j| of_term[j]));
         let sets = format!("{out}{TERM_UNITS_PARQUET}");
-        write_sets(&sets, &units, &units.of_kind(SetKind::Term), &[])?;
+        write_sets(&sets, &units, &of_term, &[])?;
         (Some(path), Some(sets))
     } else {
         (None, None)
     };
+    let anchors = format!("{out}{UNIT_ANCHORS_PARQUET}");
+    write_anchors(
+        &anchors,
+        &units,
+        &cells.rows,
+        &nearest_cells(&units, &anchored, &flat, n, ANCHORS_K),
+    )?;
     Ok(AnnotationOutputs {
         argmax: Some(labels_path(out)),
         celltype_units: Some(format!("{out}{UNITS_PARQUET}")),
         celltype_links: Some(format!("{out}{TYPE_LINKS_TSV}")),
+        celltype_membership: Some(membership),
         term_alignment,
         term_units,
+        unit_anchors: Some(anchors),
         ..AnnotationOutputs::default()
     })
 }
@@ -697,6 +728,101 @@ fn write_alignment(path: &str, a: &Alignment) -> Result<()> {
     Ok(())
 }
 
+/// A cell near a unit: the unit's index in [`Units`], the cell's row and
+/// the cosine between them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Anchor {
+    pub unit: usize,
+    pub cell: usize,
+    pub weight: f32,
+}
+
+/// Each unit of `which`'s `k` nearest of the `n` `cells` (`[n × dim]`, as
+/// [`whitened`] puts them) by cosine to its centre, nearest first, unit by
+/// unit; every cell when there are fewer. A cell with no direction (zero,
+/// or not finite) is no unit's.
+pub fn nearest_cells(
+    units: &Units,
+    which: &[usize],
+    cells: &[f32],
+    n: usize,
+    k: usize,
+) -> Vec<Anchor> {
+    let dim = units.dim;
+    let dirs: Vec<Option<Vec<f32>>> = cells
+        .chunks(dim)
+        .take(n)
+        .map(|c| {
+            let u = unit(c);
+            (u.iter().all(|v| v.is_finite()) && u.iter().any(|&v| v != 0.0)).then_some(u)
+        })
+        .collect();
+    which
+        .par_iter()
+        .flat_map_iter(|&u| {
+            let m = unit(units.centre(u));
+            let mut cos: Vec<(f32, usize)> = (dirs.iter().enumerate())
+                .filter_map(|(c, d)| {
+                    let d = d.as_ref()?;
+                    Some((d.iter().zip(&m).map(|(a, b)| a * b).sum::<f32>(), c))
+                })
+                .collect();
+            let by = |a: &(f32, usize), b: &(f32, usize)| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1));
+            if cos.len() > k && k > 0 {
+                cos.select_nth_unstable_by(k - 1, by);
+            }
+            cos.truncate(k);
+            cos.sort_by(by);
+            cos.into_iter().map(move |(weight, cell)| Anchor {
+                unit: u,
+                cell,
+                weight,
+            })
+        })
+        .collect()
+}
+
+/// `anchors` as a long table: unit, kind (`cell_type` or `term`), cell (by
+/// name) and weight (the cosine).
+fn write_anchors(
+    path: &str,
+    units: &Units,
+    cell_names: &[Box<str>],
+    anchors: &[Anchor],
+) -> Result<()> {
+    let unit: Vec<Box<str>> = (anchors.iter())
+        .map(|a| units.names[a.unit].as_str().into())
+        .collect();
+    let kind: Vec<Box<str>> = (anchors.iter())
+        .map(|a| units.kinds[a.unit].name().into())
+        .collect();
+    let cell: Vec<Box<str>> = anchors.iter().map(|a| cell_names[a.cell].clone()).collect();
+    let weight: Vec<f32> = anchors.iter().map(|a| a.weight).collect();
+    let rows: Vec<Box<str>> = (0..anchors.len()).map(|i| i.to_string().into()).collect();
+    write_named_table(
+        path,
+        "row",
+        &rows,
+        &[
+            ("unit".into(), Column::Str(&unit)),
+            ("kind".into(), Column::Str(&kind)),
+            ("cell".into(), Column::Str(&cell)),
+            ("weight".into(), Column::F32(&weight)),
+        ],
+    )?;
+    Ok(())
+}
+
+/// `r`'s membership as a table: a row per cell (by name), a column per
+/// type.
+fn write_membership(path: &str, r: &Regions, cell_names: &[Box<str>]) -> Result<()> {
+    use legume_numeric::matrix::traits::IoOps;
+    let m = Mat::from_row_slice(cell_names.len(), r.names.len(), &r.membership);
+    let cols: Vec<Box<str>> = r.names.iter().map(|n| n.as_str().into()).collect();
+    m.to_parquet_with_names(path, (Some(cell_names), Some("cell")), Some(&cols))?;
+    Ok(())
+}
+
 fn write_links(path: &str, r: &Regions) -> Result<()> {
     let k = r.names.len();
     let mut text = String::from("type_a\ttype_b\tlink\n");
@@ -724,6 +850,27 @@ pub struct Alignment {
     pub p: Vec<f32>,
     /// `p` adjusted by Benjamini–Hochberg within each cluster.
     pub q: Vec<f32>,
+}
+
+impl Alignment {
+    /// The terms (by index in `terms`) some cluster stars: its at most
+    /// [`STARS`] best scored with q below [`STAR_Q`]. A viewer stars the
+    /// same.
+    pub fn starred(&self) -> Vec<usize> {
+        let t = self.terms.len();
+        let mut starred = BTreeSet::new();
+        for k in 0..self.clusters.len() {
+            let row = k * t..(k + 1) * t;
+            let mut best: Vec<usize> = (0..t)
+                .filter(|&j| {
+                    self.q[row.start + j] < STAR_Q && self.score[row.start + j].is_finite()
+                })
+                .collect();
+            best.sort_by(|&a, &b| self.score[row.start + b].total_cmp(&self.score[row.start + a]));
+            starred.extend(best.into_iter().take(STARS));
+        }
+        starred.into_iter().collect()
+    }
 }
 
 /// Align the clusters of `cells` (`[n × dim]`, `groups` per cell,

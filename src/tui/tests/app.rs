@@ -3819,3 +3819,149 @@ fn a_new_terminal_of_the_same_kind_leaves_the_pictures_or_sends_kittys_again() {
     assert_eq!(app.picker().protocol_type(), Kitty);
     assert_eq!(made(app.figures.as_ref().unwrap()), (Kitty, false, true));
 }
+
+#[test]
+fn the_mouse_is_the_maps_while_it_is_shown_and_a_click_picks_a_cluster() {
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let at = |kind, (column, row): (u16, u16)| MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Clusters;
+    assert!(app.wants_mouse(), "the map is on screen");
+    drawn(&app);
+    let map = app.cell_map.as_ref().unwrap();
+    let (on_k0, on_k1) = (
+        super::super::figure_pane::tests::screen_at(map, [0.0, 0.0]),
+        super::super::figure_pane::tests::screen_at(map, [5.0, 5.0]),
+    );
+    assert!(app.mouse(at(MouseEventKind::Moved, on_k1)));
+    assert!(app.status.starts_with("K1"), "{}", app.status);
+    assert_eq!(
+        app.selected().map(|c| c.id),
+        Some(0),
+        "a hover picks nothing"
+    );
+    app.mouse(at(MouseEventKind::Down(MouseButton::Left), on_k1));
+    app.mouse(at(MouseEventKind::Up(MouseButton::Left), on_k1));
+    assert_eq!(app.selected().map(|c| c.id), Some(1));
+    assert_eq!(map_focus(&app), Some(1), "and lit");
+    app.mouse(at(MouseEventKind::Down(MouseButton::Left), on_k0));
+    app.mouse(at(MouseEventKind::Up(MouseButton::Left), on_k0));
+    assert_eq!(app.selected().map(|c| c.id), Some(0));
+    // A press that says nothing leaves the progress free to go on.
+    app.status = "job 34%".into();
+    app.replied = None;
+    app.mouse(at(MouseEventKind::Down(MouseButton::Left), on_k1));
+    assert!(app.replied.is_none(), "the status was not the mouse's");
+    app.mouse(at(MouseEventKind::Up(MouseButton::Left), on_k1));
+    assert!(app.replied.is_some(), "a click says its cluster");
+    app.focus = Focus::Tree;
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("E move labels"), "{bar}");
+    press(&mut app, KeyCode::Char('V'));
+    assert!(!app.wants_mouse(), "the tree: the terminal's own selection");
+    assert!(!app.mouse(at(MouseEventKind::Down(MouseButton::Left), on_k1)));
+    press(&mut app, KeyCode::Char('v'));
+    assert!(app.wants_mouse());
+    let guide: String = super::super::ui::guide(false)
+        .flat_map(|(_, keys)| keys)
+        .map(|(k, what)| format!("{k} {what}\n"))
+        .collect();
+    assert!(guide.contains("mouse"), "{guide}");
+    assert!(guide.contains("lupin_labels.json"), "{guide}");
+}
+
+#[test]
+fn capital_h_on_the_rounds_map_shows_its_charts_and_esc_the_map_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    drawn(&app);
+    let charting = |app: &App| app.cell_map.as_ref().unwrap().charting();
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("H charts"), "{bar}");
+    app.key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(charting(&app), "{}", app.status);
+    // The round records no posterior: the status says which table.
+    assert!(app.status.contains("annotate.annotation"), "{}", app.status);
+    assert!(
+        !app.wants_mouse(),
+        "a chart leaves the terminal its selection"
+    );
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("H next chart"), "{bar}");
+    drawn(&app);
+    press(&mut app, KeyCode::Esc);
+    assert!(!charting(&app));
+    assert_eq!(app.focus, Focus::Tree, "esc left the chart, not the map");
+    assert!(app.wants_mouse());
+    let guide: String = super::super::ui::guide(false)
+        .flat_map(|(_, keys)| keys)
+        .map(|(k, what)| format!("{k} {what}\n"))
+        .collect();
+    assert!(guide.contains("structure plot"), "{guide}");
+}
+
+#[test]
+fn capital_e_on_the_map_edits_its_labels_until_esc() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    drawn(&app);
+    app.key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::SHIFT));
+    assert!(app.cell_map.as_ref().unwrap().editing(), "{}", app.status);
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("tab next label"), "{bar}");
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Tree, "tab is the labels' while editing");
+    press(&mut app, KeyCode::Right);
+    assert!(dir.path().join("r.lupin_labels.json").is_file());
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.cell_map.as_ref().unwrap().editing());
+    assert_eq!(app.focus, Focus::Tree, "esc left the labels, not the map");
+}
+
+#[test]
+fn on_a_units_round_g_l_and_r_toggle_the_maps_units_and_the_side_lists_the_terms() {
+    let dir = tempfile::tempdir().unwrap();
+    let l = crate::figures::units::tests::units_round(dir.path(), true);
+    let panel = vec![("GENE1".to_string(), "A".to_string())];
+    let mut app = App::new(cli(&[]), PathBuf::new(), PathBuf::new(), panel, None);
+    app.open(&l.file);
+    app.focus = Focus::Tree;
+    assert_eq!(map_focus(&app), Some(0));
+    let screen = drawn_in(&app, 140, 40).concat();
+    assert!(screen.contains("first process"), "K0's term beside the map");
+    assert!(screen.contains("q 0.002"), "with its q");
+    let help = super::super::ui::help(&app);
+    assert!(help.contains("g GO terms"), "{help}");
+    press(&mut app, KeyCode::Char('g'));
+    let style = app.cell_map.as_ref().unwrap().style;
+    assert!(
+        !style.go,
+        "g hides the stars, not lists the runs: {}",
+        app.status
+    );
+    assert!(!drawn_in(&app, 140, 40).concat().contains("first process"));
+    press(&mut app, KeyCode::Char('l'));
+    press(&mut app, KeyCode::Char('r'));
+    let style = app.cell_map.as_ref().unwrap().style;
+    assert!(!style.links && style.rings, "{}", app.status);
+    assert!(app.form.is_none(), "r rings, not a run");
+}
+
+#[test]
+fn on_a_round_without_units_g_and_r_keep_their_meaning() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    let before = app.cell_map.as_ref().unwrap().style;
+    press(&mut app, KeyCode::Char('l'));
+    assert_eq!(app.cell_map.as_ref().unwrap().style, before);
+    assert!(!super::super::ui::help(&app).contains("g GO terms"));
+}

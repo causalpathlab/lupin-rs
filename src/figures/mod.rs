@@ -2,37 +2,61 @@
 //! layouts coloured by what the run says of each cell, and, for a trajectory
 //! run (`docs/trajectory-plan.md` §6), the prior's edges as arrows, the
 //! diffusion map, the types in pseudotime order and the connectivity between
-//! types. Each is an SVG that legume-plot renders to PNG for the terminal or
-//! writes as a figure file; the TUI's figure pane is where they are shown and
-//! exported.
+//! types. A scatter of cells is a map drawn as senna draws its own, through
+//! `legume_tui::map` on senna's paper page, and exported as a PDF of its
+//! raster with the text set over it, a units round's cell types and GO
+//! terms drawn on it ([`units`]); the order and connectivity panels are
+//! SVGs that legume-plot writes as figure files and resvg rasterises for the
+//! terminal. The TUI's figure pane is where they are shown and exported.
 
 use crate::manifest::rounds::{Cells, ScoreCells};
 use crate::manifest::run::{derive_out_prefix, resolve, Loaded, RunManifest};
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
 use anyhow::{Context, Result};
+use charts::{Charts, HeatKind, Mixture};
 use enrichment::UNASSIGNED_LABEL;
 use legume_numeric::matrix::dense_mat_io::Mat;
 use legume_numeric::matrix::parquet::{peek_parquet_field_names, read_table_columns};
 use legume_numeric::matrix::traits::IoOps;
 use legume_numeric::matrix::utils::{median, quantiles};
 use legume_plot::hinton::{hinton_size, render_hinton, HintonOpts};
-use legume_plot::palette::{self, sample_blue_red, Palette, Rgb};
-use legume_plot::rasterize::{
-    rasterize_arrow_layer_png, rasterize_per_point_png, DataBounds, Extent, PointShape,
-};
-use legume_plot::svg_emit::{emit_svg, escape_xml, SvgOpts, TopicLayer};
+use legume_plot::palette::{sample_blue_red, Rgb};
+use legume_plot::svg_emit::escape_xml;
 use legume_plot::FigureFormats;
+use legume_tui::export::{write_pdf, Page};
+use legume_tui::map::colour::{to_linear, Lin, Srgb};
+use legume_tui::map::labels::{place, Label, Placed, Rect};
+use legume_tui::map::legend::draw_legend;
+use legume_tui::map::offsets::Offsets;
+use legume_tui::map::points::{Job, Mark, PointLayer};
+use legume_tui::map::raster::{edge, ring, stamp, Canvas, Frame, Shape};
+use legume_tui::map::text::{Font, TextRun};
+use legume_tui::map::theme::Theme;
+use legume_tui::map::viewport::{Bounds, Limits, Viewport, YAxis};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use units::{GoTerm, Marks, UnitMap};
 
-/// Cells no root reaches, pairs outside the prior, and the frame.
+pub(crate) mod charts;
+pub(crate) mod units;
+
+/// Pairs outside the prior on the connectivity panel, and the pairs it
+/// orders.
 const GREY: Rgb = (190, 190, 190);
 const INK: Rgb = (40, 40, 40);
-/// An inferred edge's arrow: the data's edge, not the prior's.
-const INFERRED: Rgb = (115, 115, 115);
+/// The page a cell map is drawn on, and its palette: senna's.
+const THEME: Theme = Theme::PAPER;
+/// How much of the frame a whole cell map fills, as senna's.
+const MAP_MARGIN: f32 = 0.92;
+/// A prior edge's arrow on a cell map, and an inferred edge's: the data's
+/// edge, not the prior's.
+const ARROW: Srgb = [40, 40, 40];
+const INFERRED: Srgb = [115, 115, 115];
+/// A GO term's star on a cell map.
+const STAR: Srgb = [214, 140, 20];
 /// Entries a categorical legend lists before `+k more`.
 const LEGEND_MAX: usize = 20;
 /// Figure width in inches and dots per inch for an export.
@@ -89,12 +113,17 @@ impl Colouring {
 
 /// How the scatters are drawn: the label size (an index into
 /// [`TEXT_SCALES`], `None` for no labels), the colouring, and the cluster in
-/// focus, whose cells keep their colours over the others in grey.
+/// focus, whose cells keep their colours over the others in grey. On a
+/// units round, also whether the focus's GO terms are starred, the types
+/// linked and ringed ([`units`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Style {
     pub(crate) labels: Option<usize>,
     pub(crate) colouring: Colouring,
     pub(crate) focus: Option<i32>,
+    pub(crate) go: bool,
+    pub(crate) links: bool,
+    pub(crate) rings: bool,
 }
 
 impl Default for Style {
@@ -103,6 +132,9 @@ impl Default for Style {
             labels: Some(1),
             colouring: Colouring::Pseudotime,
             focus: None,
+            go: true,
+            links: true,
+            rings: false,
         }
     }
 }
@@ -129,6 +161,22 @@ impl Style {
         }
     }
 
+    /// The units' stars (`g`), links (`l`) or rings (`r`) off or on; the
+    /// note for the status line.
+    pub(crate) fn toggle_units(&mut self, key: char) -> String {
+        let (on, what) = match key {
+            'g' => (&mut self.go, "the selected cluster's GO terms"),
+            'l' => (&mut self.links, "the links between types"),
+            _ => (&mut self.rings, "the types' radii"),
+        };
+        *on = !*on;
+        format!(
+            "{what} {} · {key} {}",
+            if *on { "shown" } else { "hidden" },
+            if *on { "hides them" } else { "shows them" }
+        )
+    }
+
     /// The next of the colourings `all` (`c`); the note for the status line.
     pub(crate) fn cycle_colouring(&mut self, all: &[Colouring]) -> String {
         self.colouring = next_in(all, self.colouring);
@@ -148,6 +196,8 @@ const PAN_STEP: f32 = 0.2;
 /// The part of a scatter on screen: the whole extent zoomed `level` steps
 /// about the centre `(cx, cy)`, both in shares of the whole extent (y up).
 /// The level is a count, so zooming in and back out lands on whole exactly.
+/// Zoom and pan take the frame's `reach` ([`View::reach`]), so the centre
+/// kept is the one the frame draws.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct View {
     pub(crate) level: u8,
@@ -175,41 +225,105 @@ impl View {
         2f32.powf(f32::from(self.level) / 2.0)
     }
 
+    /// How much of `whole` a `w × h` frame shows across and up when it
+    /// shows it whole, in shares of its extent: one axis fills the frame
+    /// to its margin, the other shows more than the data.
+    pub(crate) fn reach(whole: Bounds, w: usize, h: usize) -> [f32; 2] {
+        let [x0, y0, x1, y1] = Viewport::fit(whole, w, h, MAP_MARGIN, YAxis::Up).window();
+        let [a0, b0, a1, b1] = whole;
+        [
+            (x1 - x0) / (a1 - a0).max(1e-6),
+            (y1 - y0) / (b1 - b0).max(1e-6),
+        ]
+    }
+
     /// Zoom in (`inward`) or out by one step about the centre.
-    pub(crate) fn zoom(&mut self, inward: bool) {
+    pub(crate) fn zoom(&mut self, inward: bool, reach: [f32; 2]) {
         self.level = if inward {
             (self.level + 1).min(MAX_ZOOM_LEVEL)
         } else {
             self.level.saturating_sub(1)
         };
-        self.clamp();
+        self.clamp(reach);
     }
 
     /// Move the part on screen by `(dx, dy)` steps (right and up positive).
-    pub(crate) fn pan(&mut self, dx: f32, dy: f32) {
-        let span = 1.0 / self.factor();
-        self.cx += dx * PAN_STEP * span;
-        self.cy += dy * PAN_STEP * span;
-        self.clamp();
+    pub(crate) fn pan(&mut self, dx: f32, dy: f32, reach: [f32; 2]) {
+        let f = self.factor();
+        self.cx += dx * PAN_STEP * reach[0] / f;
+        self.cy += dy * PAN_STEP * reach[1] / f;
+        self.clamp(reach);
     }
 
-    /// Keep the part on screen inside the whole extent.
-    fn clamp(&mut self) {
-        let half = 0.5 / self.factor();
-        self.cx = self.cx.clamp(half, 1.0 - half);
-        self.cy = self.cy.clamp(half, 1.0 - half);
+    /// Move the picture by `(dx, dy)` pixels of a `w × h` frame of `whole`
+    /// (down the screen for `dy`), as a drag does.
+    pub(crate) fn pan_px(&mut self, dx: f32, dy: f32, whole: Bounds, w: usize, h: usize) {
+        let mut vp = self.viewport(whole, w, h);
+        vp.pan_px(dx, dy, &Limits::default());
+        self.centre_on(&vp, whole);
+        self.clamp(Self::reach(whole, w, h));
     }
 
-    /// The part of `whole` on screen.
-    pub(crate) fn of(&self, whole: &DataBounds) -> DataBounds {
-        let half = 0.5 / self.factor();
-        let (w, h) = (whole.xmax - whole.xmin, whole.ymax - whole.ymin);
-        DataBounds {
-            xmin: whole.xmin + (self.cx - half) * w,
-            xmax: whole.xmin + (self.cx + half) * w,
-            ymin: whole.ymin + (self.cy - half) * h,
-            ymax: whole.ymin + (self.cy + half) * h,
-        }
+    /// Zoom in (`inward`) or out by one step, the data under pixel `at` of
+    /// a `w × h` frame of `whole` kept under it, as the wheel does.
+    pub(crate) fn zoom_at(
+        &mut self,
+        inward: bool,
+        at: (f32, f32),
+        whole: Bounds,
+        w: usize,
+        h: usize,
+    ) {
+        let mut vp = self.viewport(whole, w, h);
+        let before = self.factor();
+        self.level = if inward {
+            (self.level + 1).min(MAX_ZOOM_LEVEL)
+        } else {
+            self.level.saturating_sub(1)
+        };
+        vp.zoom_at(self.factor() / before, at.0, at.1, &Limits::default());
+        self.centre_on(&vp, whole);
+        self.clamp(Self::reach(whole, w, h));
+    }
+
+    /// The centre `vp` looks at, in shares of `whole`.
+    fn centre_on(&mut self, vp: &Viewport, whole: Bounds) {
+        let [x0, y0, x1, y1] = whole;
+        self.cx = (vp.cx - x0) / (x1 - x0).max(1e-6);
+        self.cy = (vp.cy - y0) / (y1 - y0).max(1e-6);
+    }
+
+    /// Keep the part on screen inside the whole extent, as the frame keeps
+    /// it (`Limits.keep_inside`): centred on an axis it shows all of.
+    fn clamp(&mut self, reach: [f32; 2]) {
+        let f = self.factor();
+        let inside = |c: f32, r: f32| {
+            let half = 0.5 * r / f;
+            if half >= 0.5 {
+                0.5
+            } else {
+                c.clamp(half, 1.0 - half)
+            }
+        };
+        self.cx = inside(self.cx, reach[0]);
+        self.cy = inside(self.cy, reach[1]);
+    }
+
+    /// The camera on `whole` for a `w × h` frame: fitted as senna fits a
+    /// map, zoomed and centred as the view says, and kept from showing past
+    /// the data (`Limits.keep_inside`), so a zoomed map never pans off it.
+    pub(crate) fn viewport(&self, whole: Bounds, w: usize, h: usize) -> Viewport {
+        let mut vp = Viewport::fit(whole, w, h, MAP_MARGIN, YAxis::Up);
+        let [x0, y0, x1, y1] = whole;
+        vp.scale *= self.factor();
+        vp.cx = x0 + self.cx * (x1 - x0);
+        vp.cy = y0 + self.cy * (y1 - y0);
+        let keep = Limits {
+            scale: None,
+            keep_inside: Some(whole),
+        };
+        vp.pan_px(0.0, 0.0, &keep);
+        vp
     }
 }
 
@@ -225,6 +339,10 @@ pub(crate) enum Panel {
     Order,
     /// PAGA connectivity between the node types, in pseudotime order.
     Connectivity,
+    /// A round's cells' mixtures stacked, a panel per cluster ([`charts`]).
+    Structure { of: Mixture },
+    /// A round's features × clusters ([`charts`]).
+    Heatmap { of: HeatKind },
 }
 
 impl Panel {
@@ -241,6 +359,7 @@ impl Panel {
             Self::Diffusion { x, y } => format!("diffusion_dc{x}_dc{y}"),
             Self::Order => "order".into(),
             Self::Connectivity => "connectivity".into(),
+            Self::Structure { .. } | Self::Heatmap { .. } => self.chart_slug().expect("a chart"),
         }
     }
 
@@ -250,6 +369,8 @@ impl Panel {
             Self::Diffusion { x, y } => format!("diffusion map · DC{x} × DC{y}"),
             Self::Order => "types by median pseudotime".into(),
             Self::Connectivity => "connectivity between types".into(),
+            Self::Structure { of } => of.title().into(),
+            Self::Heatmap { of } => of.title().into(),
         }
     }
 }
@@ -259,6 +380,80 @@ pub(crate) struct Figure {
     pub(crate) svg: String,
     pub(crate) w: u32,
     pub(crate) h: u32,
+}
+
+/// A figure as drawn: a scatter as a cell map, a chart as its frame, the
+/// other panels as SVG.
+pub(crate) enum Picture {
+    Map(Box<CellMap>),
+    Chart(Box<Frame>),
+    Svg(Figure),
+}
+
+/// The size a figure is drawn at: its pixels, and the height of a line of
+/// its text (a terminal cell's on screen, as senna sizes its labels).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Size {
+    pub(crate) w: u32,
+    pub(crate) h: u32,
+    pub(crate) text_px: f32,
+}
+
+/// A scatter drawn as a map: the frame, the camera it was drawn with, and
+/// where its labels and legend went (which a press on a label finds).
+pub(crate) struct CellMap {
+    pub(crate) frame: Frame,
+    pub(crate) vp: Viewport,
+    /// The labels placed, keyed by their place in `names`.
+    pub(crate) placed: Vec<Placed<u32>>,
+    pub(crate) names: Vec<Box<str>>,
+    /// The labels' line height in pixels, the unit of their offsets; none
+    /// without labels.
+    pub(crate) line: f32,
+    /// Where the legend went, which the tests read.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) legend: Option<Rect>,
+    /// The legend's and the labels' text, when it was kept as text (for a
+    /// PDF) rather than drawn into the frame.
+    pub(crate) text: Vec<TextRun>,
+}
+
+/// The cells of a scatter as the map draws them: each in its colour, grey
+/// without one, in the order the figure draws them.
+pub(crate) struct CellLayer<'a> {
+    x: &'a [f32],
+    y: &'a [f32],
+    /// The cells with coordinates, in a fixed random order.
+    shuffled: Vec<u32>,
+    order: Arc<Vec<u32>>,
+    colour: Cow<'a, [Option<Rgb>]>,
+}
+
+impl PointLayer for CellLayer<'_> {
+    fn xy(&self, i: usize) -> [f32; 2] {
+        [self.x[i], self.y[i]]
+    }
+
+    fn shuffled(&self) -> &[u32] {
+        &self.shuffled
+    }
+
+    fn order(&self) -> Arc<Vec<u32>> {
+        Arc::clone(&self.order)
+    }
+
+    fn mark(&self, i: usize) -> Option<Mark> {
+        let colour = match self.colour.get(i).copied().flatten() {
+            Some((r, g, b)) => to_linear([r, g, b]),
+            None => to_linear(THEME.no_group),
+        };
+        Some(Mark {
+            colour,
+            alpha: 1.0,
+            shape: Shape::Circle,
+            size: 1.0,
+        })
+    }
 }
 
 /// A type's pseudotime summary, one row of the order panel.
@@ -271,11 +466,13 @@ pub(crate) struct TypeOrder {
     pub(crate) q3: f32,
 }
 
-/// An export: its base name, the files written and a line for the log.
+/// An export: its base name, the files written, a line for the log and
+/// the figure's pixels for its thumbnail.
 pub(crate) struct Export {
     pub(crate) base: PathBuf,
     pub(crate) files: Vec<PathBuf>,
     pub(crate) what: String,
+    pub(crate) picture: Option<image::RgbaImage>,
 }
 
 /// A run's per-cell outputs, aligned to its cells: a trajectory run's
@@ -321,6 +518,11 @@ pub(crate) struct CellFigures {
     pub(crate) dc_min_share: f32,
     /// Each scatter's label medians over all its cells, made on first use.
     pub(crate) medians: Mutex<Vec<(MediansKey, Arc<Medians>)>>,
+    /// A units round's cell types and GO terms, when it records their
+    /// anchors.
+    pub(crate) units: Option<UnitMap>,
+    /// The tables a round's charts read, read when first drawn.
+    pub(crate) charts: Charts,
 }
 
 /// Each cell's colour (`None` for grey) and the legend of a categorical
@@ -342,8 +544,12 @@ pub(crate) fn cluster_name(k: impl std::fmt::Display) -> String {
 /// Each cell's colour on a scatter and the legend of those colours.
 type Shown<'a> = (Cow<'a, [Option<Rgb>]>, Cow<'a, [(String, Rgb)]>);
 
-/// Each label's median position on a scatter.
-type Medians = BTreeMap<Box<str>, (f32, f32)>;
+/// A scatter's x and y per cell, borrowed from a layout or made from the
+/// diffusion map.
+type Coords<'a> = (Cow<'a, [f32]>, Cow<'a, [f32]>);
+
+/// Each label's median position on a scatter, and its count of cells.
+type Medians = BTreeMap<Box<str>, ((f32, f32), usize)>;
 
 /// The scatter and labelling a set of medians is of.
 type MediansKey = (Panel, LabelBy);
@@ -424,8 +630,14 @@ impl CellFigures {
             &index,
             cells.names.len(),
         );
+        let units = UnitMap::read(loaded, &index).unwrap_or_else(|e| {
+            log::warn!("the units on the cell map: {e:#}");
+            None
+        });
         Self {
             source: Source::Round,
+            charts: Charts::of(loaded, &cells.names),
+            units,
             manifest: loaded.file.clone(),
             types: cells
                 .labels
@@ -442,6 +654,11 @@ impl CellFigures {
             score,
             ..Self::default()
         }
+    }
+
+    /// The starred GO terms of cluster `k`, none without units.
+    pub(crate) fn go_terms(&self, k: Option<i32>) -> &[GoTerm] {
+        self.units.as_ref().map_or(&[], |u| u.terms_of(k))
     }
 
     /// What the figures are of, in export names: `trajectory` for a
@@ -596,54 +813,122 @@ impl CellFigures {
         }
     }
 
-    /// The figure, drawn to fit `w × h` pixels; a scatter in `style` at
-    /// `view` (a thumbnail shows it whole).
+    /// The figure, drawn to fit `size`; a scatter in `style` at `view` (a
+    /// thumbnail shows it whole), its labels moved by `moved`.
     pub(crate) fn figure(
         &self,
         panel: Panel,
-        w: u32,
-        h: u32,
+        size: Size,
         style: &Style,
         view: View,
-    ) -> Result<Figure> {
+        moved: &Offsets<String>,
+    ) -> Result<Picture> {
+        Ok(match panel {
+            Panel::Layout { .. } | Panel::Diffusion { .. } => Picture::Map(Box::new(
+                self.cell_map(panel, size, style, view, false, moved)?,
+            )),
+            Panel::Order => Picture::Svg(self.order_figure(size.w, size.h)),
+            Panel::Connectivity => Picture::Svg(self.connectivity_figure(size.w, size.h)),
+            Panel::Structure { .. } | Panel::Heatmap { .. } => {
+                Picture::Chart(Box::new(self.chart_frame(panel, size, false)))
+            }
+        })
+    }
+
+    /// The extent of `panel`'s cells with coordinates, as its map fits it.
+    pub(crate) fn whole(&self, panel: Panel) -> Result<Bounds> {
+        let (x, y) = self.coords(panel)?;
+        let finite: Vec<usize> = (0..x.len())
+            .filter(|&i| x[i].is_finite() && y[i].is_finite())
+            .collect();
+        anyhow::ensure!(!finite.is_empty(), "no cell has coordinates");
+        Ok(bounds_of(&x, &y, finite.into_iter()))
+    }
+
+    /// The cell of `panel` drawn nearest pixel `(px, py)` of a frame with
+    /// camera `vp`, when one is within `reach` pixels.
+    pub(crate) fn cell_at(
+        &self,
+        panel: Panel,
+        vp: &Viewport,
+        px: f32,
+        py: f32,
+        reach: f32,
+    ) -> Option<usize> {
+        let (x, y) = self.coords(panel).ok()?;
+        (0..x.len())
+            .filter(|&i| x[i].is_finite() && y[i].is_finite())
+            .map(|i| {
+                let (cx, cy) = vp.to_px([x[i], y[i]]);
+                (i, (cx - px).hypot(cy - py))
+            })
+            .filter(|&(_, d)| d <= reach)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    }
+
+    /// The coordinates of the scatter `panel`.
+    fn coords(&self, panel: Panel) -> Result<Coords<'_>> {
         match panel {
             Panel::Layout { k } => {
                 let l = self.layouts.get(k).context("the run has no layout")?;
-                self.scatter(panel, &l.x, &l.y, (w, h), true, style, view)
+                Ok((Cow::Borrowed(&l.x[..]), Cow::Borrowed(&l.y[..])))
             }
             Panel::Diffusion { x, y } => {
                 let d = self.diffusion.as_ref().context("no diffusion map")?;
-                let cx: Vec<f32> = d.column(x).iter().copied().collect();
-                let cy: Vec<f32> = d.column(y).iter().copied().collect();
-                self.scatter(panel, &cx, &cy, (w, h), false, style, view)
+                let column = |j: usize| d.column(j).iter().copied().collect::<Vec<f32>>();
+                Ok((Cow::Owned(column(x)), Cow::Owned(column(y))))
             }
-            Panel::Order => Ok(self.order_figure(w, h)),
-            Panel::Connectivity => Ok(self.connectivity_figure(w, h)),
+            _ => anyhow::bail!("{} is not a scatter", panel.title()),
         }
     }
 
-    /// Write `panel` as `{prefix}.{kind}.{panel}.svg` and `.pdf`, moved
-    /// past existing files as `-2`, `-3` …, a scatter as it is on screen.
-    pub(crate) fn export(&self, panel: Panel, style: &Style, view: View) -> Result<Export> {
+    /// Write `panel` as `{prefix}.{kind}.{panel}`, moved past existing
+    /// files as `-2`, `-3` …: a scatter as it is on screen, as a PDF of its
+    /// raster with its text set over it (as senna exports its map), its
+    /// labels moved by `moved`; the other panels as `.svg` and `.pdf`.
+    pub(crate) fn export(
+        &self,
+        panel: Panel,
+        style: &Style,
+        view: View,
+        frame: Option<(u32, u32)>,
+        moved: &Offsets<String>,
+    ) -> Result<Export> {
         let base = free_base(&format!(
             "{}.{}.{}",
             self.prefix(),
             self.kind(),
             self.slug(panel)
         ));
-        let w = (EXPORT_WIDTH_IN * EXPORT_DPI) as u32;
-        let fig = self.figure(panel, w, w * 3 / 4, style, view)?;
+        let size = export_size(frame);
         let b = base.to_string_lossy();
-        let formats = FigureFormats {
-            svg: true,
-            png: false,
-            pdf: true,
+        let (files, picture) = if panel.is_scatter() {
+            let pdf = PathBuf::from(format!("{b}.pdf"));
+            let img = self.write_map(panel, size, EXPORT_DPI, style, view, moved, &pdf)?;
+            (vec![pdf], Some(img))
+        } else if panel.is_chart() {
+            let pdf = PathBuf::from(format!("{b}.pdf"));
+            let img = self.write_chart(panel, size, EXPORT_DPI, &pdf)?;
+            (vec![pdf], Some(img))
+        } else {
+            let Picture::Svg(fig) = self.figure(panel, size, style, view, moved)? else {
+                unreachable!("only a scatter is a map")
+            };
+            let formats = FigureFormats {
+                svg: true,
+                png: false,
+                pdf: true,
+            };
+            legume_plot::write_figure(&fig.svg, fig.w, fig.h, &b, formats)?;
+            let files = vec![
+                PathBuf::from(format!("{b}.svg")),
+                PathBuf::from(format!("{b}.pdf")),
+            ];
+            // The thumbnail is a nicety: a figure resvg cannot draw is
+            // still exported.
+            (files, render_svg(&fig).ok())
         };
-        legume_plot::write_figure(&fig.svg, fig.w, fig.h, &b, formats)?;
-        let files = vec![
-            PathBuf::from(format!("{b}.svg")),
-            PathBuf::from(format!("{b}.pdf")),
-        ];
         let zoomed = if panel.is_scatter() && !view.is_whole() {
             format!(" · zoomed ×{:.1}", view.factor())
         } else {
@@ -656,76 +941,108 @@ impl CellFigures {
                 "{}{zoomed} · {EXPORT_WIDTH_IN:.0} in · {EXPORT_DPI:.0} dpi",
                 self.title(panel, style),
             ),
+            picture,
         })
     }
 
-    /// The cells of `(x, y)` inside `view` in the style's colouring (grey
-    /// when they have no value), the type labels at the medians of their
-    /// cells on screen, with the prior's direct edges as arrows between type
-    /// medians when `arrows`.
+    /// The scatter `panel` as a PDF at `path`, as senna saves its map: the
+    /// points as one image of `size` at `dpi`, the legend and labels set
+    /// over it as text; its labels moved by `moved`. The image, for a
+    /// thumbnail.
     #[allow(clippy::too_many_arguments)]
-    fn scatter(
+    pub(crate) fn write_map(
         &self,
         panel: Panel,
-        x: &[f32],
-        y: &[f32],
-        (w, h): (u32, u32),
-        arrows: bool,
+        size: Size,
+        dpi: f32,
         style: &Style,
         view: View,
-    ) -> Result<Figure> {
-        let ext = Extent { w, h };
-        let finite: Vec<usize> = (0..x.len())
-            .filter(|&i| x[i].is_finite() && y[i].is_finite())
-            .collect();
-        anyhow::ensure!(!finite.is_empty(), "no cell has coordinates");
-        let bounds = view.of(&bounds_of(x, y, &finite));
-        let inside = |i: &usize| {
-            (bounds.xmin..=bounds.xmax).contains(&x[*i])
-                && (bounds.ymin..=bounds.ymax).contains(&y[*i])
+        moved: &Offsets<String>,
+        path: &Path,
+    ) -> Result<image::RgbaImage> {
+        let mut m = self.cell_map(panel, size, style, view, true, moved)?;
+        let img = m.frame.to_image();
+        let page = Page {
+            img: img.clone(),
+            text: std::mem::take(&mut m.text),
         };
-        let shown: Vec<usize> = finite.iter().copied().filter(inside).collect();
-        let (colour_of, legend) = self.shown_colours(style);
-        let order = self.draw_order(&shown, style.colouring, &colour_of);
-        let pts: Vec<(f32, f32)> = order
-            .iter()
-            .map(|&i| to_pixel((x[i], y[i]), &bounds, ext))
-            .collect();
-        let colors: Vec<Rgb> = order
-            .iter()
-            .map(|&i| colour_of[i].unwrap_or(GREY))
-            .collect();
-        let radius = (w.min(h) as f32 / 400.0).clamp(1.0, 3.0);
-        let mut layers = vec![raster_layer(rasterize_per_point_png(
-            &pts,
-            &colors,
-            ext,
-            radius,
-            0.85,
-            PointShape::Circle,
-        )?)];
+        write_pdf(&[page], dpi, path).with_context(|| format!("writing {}", path.display()))?;
+        Ok(img)
+    }
+
+    /// The scatter `panel` as a map, as senna draws its own: the cells in
+    /// the style's colouring (grey when they have no value) by the shared
+    /// point job on the paper page; with the prior's direct edges as arrows
+    /// between the type medians on a layout; the legend in the top-left
+    /// corner; and the labels at the medians of their cells (of the cells on
+    /// screen when zoomed), placed so none covers another; a label the user
+    /// moved (`moved`, by name) sits its offset away. With `keep_text` the
+    /// text is kept as text, for a PDF, instead of drawn.
+    pub(crate) fn cell_map(
+        &self,
+        panel: Panel,
+        size: Size,
+        style: &Style,
+        view: View,
+        keep_text: bool,
+        moved: &Offsets<String>,
+    ) -> Result<CellMap> {
+        let (x, y) = self.coords(panel)?;
+        let (x, y) = (&x[..], &y[..]);
+        let layer = self.cell_layer(x, y, style);
+        anyhow::ensure!(!layer.shuffled.is_empty(), "no cell has coordinates");
+        let whole = bounds_of(x, y, layer.shuffled.iter().map(|&i| i as usize));
+        let vp = view.viewport(whole, size.w as usize, size.h as usize);
+        let layers = std::slice::from_ref(&layer);
+        let mut job = Job::new(vp, THEME.background, layers);
+        while !job.step(layers) {}
+        let mut frame = job.finish();
+        let finite: Vec<usize> = layer.shuffled.iter().map(|&i| i as usize).collect();
         // The type medians over all cells anchor the arrows; only made when
         // they are drawn.
-        if arrows && !self.edges.is_empty() {
+        if matches!(panel, Panel::Layout { .. }) && !self.edges.is_empty() {
             let all = self.medians(panel, LabelBy::Type, x, y, &finite);
-            layers.extend(self.arrow_layers(&all, &bounds, ext, radius)?);
+            let stroke = (size.w.min(size.h) as f32 / 400.0).clamp(1.0, 3.0) * 1.2;
+            self.draw_arrows(&mut frame, &all, &vp, stroke);
         }
-        let mut svg = emit_svg(
-            &layers,
-            &SvgOpts {
-                width_px: w,
-                height_px: h,
-                frame_stroke_px: 1.0,
-                background: Some((255, 255, 255)),
-                ..SvgOpts::default()
-            },
-        );
-        // Text over the layers, as legume-plot draws its labels. Spliced in:
-        // legume-plot's labels come with an image per layer.
-        let base_font = (w.min(h) as f32 / 48.0).max(6.0);
-        let mut text = legend_svg(&legend, base_font, h);
+        // A units round's types, links, rings and stars, under the text.
+        let marks = match (&self.units, panel) {
+            (Some(u), Panel::Layout { .. }) => {
+                Some(u.marks(x, y, style.focus.filter(|_| style.go)))
+            }
+            _ => None,
+        };
+        let (_, type_legend) = self.cell_colours(Colouring::Type);
+        let dot = (size.text_px * 0.3).max(2.0);
+        if let Some(m) = &marks {
+            let colour = |name: &str| {
+                (type_legend.iter())
+                    .find(|(n, _)| n == name)
+                    .filter(|_| style.colouring == Colouring::Type)
+                    .map_or(to_linear(THEME.ink), |&(_, (r, g, b))| to_linear([r, g, b]))
+            };
+            draw_units(&mut frame, m, &vp, style, dot, colour);
+        }
+        if keep_text {
+            frame.keep_text();
+        }
+        let (_, legend) = self.shown_colours(style);
+        let legend = self.draw_legend(&mut frame, &legend, size.text_px);
+        let mut names = Vec::new();
+        let mut labels = Vec::new();
+        let mut line = 0.0;
+        // Where a label of `font` above a mark of radius `r` at `(px, py)`
+        // is anchored, when the mark is on the frame.
+        let above = |(px, py): (f32, f32), r: f32, font: Font, text: &str, frame: &Frame| {
+            let on = (0.0..frame.w as f32).contains(&px) && (0.0..frame.h as f32).contains(&py);
+            on.then(|| {
+                let lift = r + 0.6 * font.line_height() as f32;
+                keep_inside((px, py - lift), font, text, frame)
+            })
+        };
         if let Some(k) = style.labels {
-            let font = base_font * TEXT_SCALES[k];
+            let font = Font::for_cell_height(size.text_px * TEXT_SCALES[k], true);
+            line = font.line_height() as f32;
             // Coloured by cluster, the labels name the clusters; else the
             // types. The whole scatter's are kept; a zoomed one's are of the
             // cells on screen.
@@ -737,18 +1054,160 @@ impl CellFigures {
             let medians = if view.is_whole() {
                 self.medians(panel, by, x, y, &finite)
             } else {
+                let [x0, y0, x1, y1] = vp.window();
+                let shown: Vec<usize> = finite
+                    .iter()
+                    .copied()
+                    .filter(|&i| (x0..=x1).contains(&x[i]) && (y0..=y1).contains(&y[i]))
+                    .collect();
                 Arc::new(self.label_medians(by, x, y, &shown))
             };
-            for (t, &at) in medians.iter() {
-                if t.as_ref() != UNASSIGNED_LABEL {
-                    let xy = keep_inside(to_pixel(at, &bounds, ext), font, t, ext);
-                    text += &svg_text(xy, font, Some("middle"), true, t);
+            // A label in its group's ink when the cells are coloured by its
+            // groups, as senna inks them; else in the page's.
+            let (_, all) = self.cell_colours(style.colouring);
+            let ink_of = |name: &str| {
+                all.iter()
+                    .find(|(n, _)| n == name)
+                    .map_or(to_linear(THEME.ink), |&(_, (r, g, b))| {
+                        THEME.ink_for(to_linear([r, g, b]))
+                    })
+            };
+            // A type with a unit is labelled at its unit instead.
+            let at_unit = |t: &str| {
+                by == LabelBy::Type
+                    && marks
+                        .as_ref()
+                        .is_some_and(|m| m.types.iter().any(|u| &*u.name == t))
+            };
+            for (t, &((mx, my), cells)) in medians.iter() {
+                if t.as_ref() == UNASSIGNED_LABEL || at_unit(t) {
+                    continue;
                 }
+                let (lx, ly) = keep_inside(vp.to_px([mx, my]), font, t, &frame);
+                labels.push(Label {
+                    text: t.to_string(),
+                    x: lx,
+                    y: ly,
+                    ink: ink_of(t),
+                    tier: 0,
+                    priority: cells as f32,
+                    font,
+                    key: Some(names.len() as u32),
+                });
+                names.push(t.clone());
+            }
+            for u in marks.iter().flat_map(|m| &m.types) {
+                let Some(at) = u.at.map(|(ux, uy)| vp.to_px([ux, uy])) else {
+                    continue;
+                };
+                let Some((lx, ly)) = above(at, dot, font, &u.name, &frame) else {
+                    continue;
+                };
+                labels.push(Label {
+                    text: u.name.to_string(),
+                    x: lx,
+                    y: ly,
+                    ink: ink_of(&u.name),
+                    tier: 1,
+                    priority: medians.get(&u.name).map_or(0.0, |&(_, n)| n as f32),
+                    font,
+                    key: Some(names.len() as u32),
+                });
+                names.push(u.name.clone());
             }
         }
-        let end = svg.rfind("</svg>").context("an SVG without its end")?;
-        svg.insert_str(end, &text);
-        Ok(Figure { svg, w, h })
+        // The stars are numbered whatever the labels, as the list beside
+        // the map names them by number.
+        let stars = marks.as_ref().map_or(&[][..], |m| &m.stars[..]);
+        if !stars.is_empty() {
+            let k = style.labels.unwrap_or(0);
+            let font = Font::for_cell_height(size.text_px * TEXT_SCALES[k], true);
+            line = font.line_height() as f32;
+            for (i, (_, (sx, sy))) in stars.iter().enumerate() {
+                let text = (i + 1).to_string();
+                let Some((lx, ly)) = above(vp.to_px([*sx, *sy]), 2.0 * dot, font, &text, &frame)
+                else {
+                    continue;
+                };
+                labels.push(Label {
+                    text: text.clone(),
+                    x: lx,
+                    y: ly,
+                    ink: to_linear(THEME.ink),
+                    tier: 2,
+                    priority: (stars.len() - i) as f32,
+                    font,
+                    key: Some(names.len() as u32),
+                });
+                names.push(text.into());
+            }
+        }
+        let reserved: Vec<Rect> = legend.into_iter().collect();
+        // The moves are kept by name; here the labels go by their place.
+        let offsets: Offsets<u32> = names
+            .iter()
+            .enumerate()
+            .filter_map(|(k, n)| Some((k as u32, moved.get(&n.to_string())?)))
+            .collect();
+        let placed = place(&mut frame, labels, &reserved, &offsets);
+        let text = frame.take_text();
+        Ok(CellMap {
+            frame,
+            vp,
+            placed,
+            names,
+            line,
+            legend,
+            text,
+        })
+    }
+
+    /// The cells of `(x, y)` with coordinates as a map layer in the style's
+    /// colouring and draw order.
+    pub(crate) fn cell_layer<'a>(
+        &'a self,
+        x: &'a [f32],
+        y: &'a [f32],
+        style: &Style,
+    ) -> CellLayer<'a> {
+        let finite = (0..x.len()).filter(|&i| x[i].is_finite() && y[i].is_finite());
+        let shuffled = shuffled(finite);
+        let (colour, _) = self.shown_colours(style);
+        let cells: Vec<usize> = shuffled.iter().map(|&i| i as usize).collect();
+        let order = self
+            .draw_order(&cells, style.colouring, &colour)
+            .into_iter()
+            .map(|i| i as u32)
+            .collect();
+        CellLayer {
+            x,
+            y,
+            shuffled,
+            order: Arc::new(order),
+            colour,
+        }
+    }
+
+    /// A categorical colouring's legend in the top-left corner, as senna
+    /// draws it: a dot and the name in its group's ink per entry, at most
+    /// [`LEGEND_MAX`] rows and no more than fill half the frame; none in a
+    /// frame too small for two rows (a grid thumbnail).
+    fn draw_legend(
+        &self,
+        frame: &mut Frame,
+        legend: &[(String, Rgb)],
+        text_px: f32,
+    ) -> Option<Rect> {
+        let font = Font::for_cell_height(text_px * 0.8, false);
+        let rows = legend_rows(frame.h, font.line_height())?;
+        let entries: Vec<(String, Lin, Lin)> = legend
+            .iter()
+            .map(|(name, (r, g, b))| {
+                let c = to_linear([*r, *g, *b]);
+                (name.clone(), c, THEME.ink_for(c))
+            })
+            .collect();
+        draw_legend(frame, &entries, font, Some((rows, to_linear(THEME.ink))))
     }
 
     /// The order `cells` are drawn in, later over earlier: grey cells first,
@@ -893,47 +1352,20 @@ impl CellFigures {
     }
 
     /// The prior's direct edges as arrows between the type `medians`:
-    /// supported ones solid, the rest faded.
-    fn arrow_layers(
-        &self,
-        medians: &Medians,
-        bounds: &DataBounds,
-        ext: Extent,
-        radius: f32,
-    ) -> Result<Vec<TopicLayer>> {
-        let mut strong = Vec::new();
-        let mut weak = Vec::new();
-        let mut inferred = Vec::new();
+    /// supported ones solid, the rest faded, inferred ones in grey.
+    fn draw_arrows(&self, frame: &mut Frame, medians: &Medians, vp: &Viewport, stroke: f32) {
         let drawn = |e: &&EdgeRow| e.in_prior || e.verdict == Some(Verdict::Inferred);
         for e in self.edges.iter().filter(drawn) {
-            if let (Some(&a), Some(&b)) = (medians.get(&e.a), medians.get(&e.b)) {
-                let seg = (to_pixel(a, bounds, ext), to_pixel(b, bounds, ext));
-                match e.verdict {
-                    Some(Verdict::Supported) => strong.push(seg),
-                    Some(Verdict::Inferred) => inferred.push(seg),
-                    _ => weak.push(seg),
-                }
+            if let (Some(&(a, _)), Some(&(b, _))) = (medians.get(&e.a), medians.get(&e.b)) {
+                let (ink, alpha) = match e.verdict {
+                    Some(Verdict::Supported) => (ARROW, 0.9),
+                    Some(Verdict::Inferred) => (INFERRED, 0.9),
+                    _ => (ARROW, 0.3),
+                };
+                let (a, b) = (vp.to_px([a.0, a.1]), vp.to_px([b.0, b.1]));
+                arrow(frame, a, b, stroke, to_linear(ink), alpha);
             }
         }
-        let stroke = radius * 1.2;
-        let mut layers = Vec::new();
-        for (segs, colour, alpha) in [
-            (strong, INK, 0.9),
-            (weak, INK, 0.3),
-            (inferred, INFERRED, 0.9),
-        ] {
-            if !segs.is_empty() {
-                layers.push(raster_layer(rasterize_arrow_layer_png(
-                    &segs,
-                    ext,
-                    stroke,
-                    stroke * 5.0,
-                    colour,
-                    alpha,
-                )?));
-            }
-        }
-        Ok(layers)
     }
 
     /// Each type's, or each cluster's (`by`), median position among `cells`.
@@ -943,7 +1375,7 @@ impl CellFigures {
             key: impl Fn(usize) -> Option<K>,
             x: &[f32],
             y: &[f32],
-        ) -> BTreeMap<K, (f32, f32)> {
+        ) -> BTreeMap<K, ((f32, f32), usize)> {
             let mut by: BTreeMap<K, (Vec<f32>, Vec<f32>)> = BTreeMap::new();
             for &i in cells {
                 if let Some(k) = key(i) {
@@ -953,7 +1385,7 @@ impl CellFigures {
                 }
             }
             by.into_iter()
-                .map(|(k, (xs, ys))| (k, (median(&xs), median(&ys))))
+                .map(|(k, (xs, ys))| (k, ((median(&xs), median(&ys)), xs.len())))
                 .collect()
         }
         match by {
@@ -1096,22 +1528,165 @@ impl CellFigures {
     }
 }
 
-/// Data → pixel with y pointing up (larger data-y higher on screen).
-fn to_pixel(p: (f32, f32), bounds: &DataBounds, ext: Extent) -> (f32, f32) {
-    let (x, y) = bounds.to_pixel(p, ext);
-    (x, ext.h as f32 - y)
+/// The size an export draws at: [`EXPORT_WIDTH_IN`] wide, in the shape of
+/// the `frame` on screen (so a zoomed scatter shows the same data), else
+/// 4:3; its text 11 pt.
+pub(crate) fn export_size(frame: Option<(u32, u32)>) -> Size {
+    let w = (EXPORT_WIDTH_IN * EXPORT_DPI) as u32;
+    let h = match frame {
+        Some((fw, fh)) if fw > 0 && fh > 0 => {
+            (f64::from(w) * f64::from(fh) / f64::from(fw)).round() as u32
+        }
+        _ => w * 3 / 4,
+    };
+    Size {
+        w,
+        h: h.max(1),
+        text_px: EXPORT_DPI * 11.0 / 72.0,
+    }
 }
 
 /// The bounding box of the points `idx` of `(x, y)`.
-fn bounds_of(x: &[f32], y: &[f32], idx: &[usize]) -> DataBounds {
+fn bounds_of(x: &[f32], y: &[f32], idx: impl Iterator<Item = usize>) -> Bounds {
     let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-    for &i in idx {
+    for i in idx {
         x0 = x0.min(x[i]);
         x1 = x1.max(x[i]);
         y0 = y0.min(y[i]);
         y1 = y1.max(y[i]);
     }
-    DataBounds::from_minmax(x0, x1, y0, y1)
+    [x0, y0, x1, y1]
+}
+
+/// `cells` in a fixed random order, the same on every draw: each prefix a
+/// uniform subsample, as the map's point job wants them.
+fn shuffled(cells: impl Iterator<Item = usize>) -> Vec<u32> {
+    // splitmix64 of the cell's index: a permutation without a generator.
+    let mix = |i: usize| {
+        let mut z = (i as u64).wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    };
+    let mut out: Vec<u32> = cells.map(|i| i as u32).collect();
+    out.sort_by_cached_key(|&i| mix(i as usize));
+    out
+}
+
+/// An arrow from `a` to `b`: a shaft `stroke` pixels wide and a two-stroke
+/// head at `b`, each as thin edges side by side.
+fn arrow(frame: &mut Frame, a: (f32, f32), b: (f32, f32), stroke: f32, ink: Lin, alpha: f32) {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = dx.hypot(dy);
+    if !len.is_finite() || len < 1.0 {
+        return;
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    thick(frame, a, b, stroke, ink, alpha);
+    let head = (stroke * 5.0).min(0.5 * len);
+    for side in [-1.0, 1.0] {
+        let back = (
+            b.0 - head * ux + side * 0.5 * head * -uy,
+            b.1 - head * uy + side * 0.5 * head * ux,
+        );
+        thick(frame, b, back, stroke, ink, alpha);
+    }
+}
+
+/// A line from `p` to `q` `stroke` pixels wide, as thin edges side by side.
+fn thick(frame: &mut Frame, p: (f32, f32), q: (f32, f32), stroke: f32, ink: Lin, alpha: f32) {
+    let lines = stroke.round().max(1.0) as usize;
+    let (vx, vy) = (q.0 - p.0, q.1 - p.1);
+    let l = vx.hypot(vy).max(1e-6);
+    let (nx, ny) = (-vy / l, vx / l);
+    for k in 0..lines {
+        let o = k as f32 - 0.5 * (lines - 1) as f32;
+        let at = |(x, y): (f32, f32)| (x + o * nx, y + o * ny);
+        edge(frame, at(p), at(q), (0.0, 0.0), ink, alpha);
+    }
+}
+
+/// A units round's marks on a frame with camera `vp`: the links kept as
+/// lines, wider and darker the stronger; with `style.rings` each type's
+/// radius as a ring; each type as a dot of radius `dot` in its `colour`;
+/// and the stars.
+fn draw_units(
+    frame: &mut Frame,
+    m: &Marks,
+    vp: &Viewport,
+    style: &Style,
+    dot: f32,
+    colour: impl Fn(&str) -> Lin,
+) {
+    let ink = to_linear(THEME.ink);
+    let px = |(x, y): (f32, f32)| vp.to_px([x, y]);
+    if style.links {
+        for &(a, b, s) in &m.links {
+            if let (Some(p), Some(q)) = (m.types[a].at, m.types[b].at) {
+                thick(frame, px(p), px(q), 1.0 + 2.0 * s, ink, 0.15 + 0.6 * s);
+            }
+        }
+    }
+    for u in &m.types {
+        let Some(at) = u.at.map(px) else { continue };
+        if let Some(r) = u.ring.filter(|_| style.rings) {
+            ring(frame, at.0, at.1, r / vp.upp(), ink);
+        }
+        stamp(frame, at.0, at.1, dot + 1.0, Shape::Circle, ink, 1.0);
+        stamp(frame, at.0, at.1, dot, Shape::Circle, colour(&u.name), 1.0);
+    }
+    for (_, at) in &m.stars {
+        let (x, y) = px(*at);
+        star(frame, x, y, 2.0 * dot + 1.5, ink, 1.0);
+        star(frame, x, y, 2.0 * dot, to_linear(STAR), 1.0);
+    }
+}
+
+/// A five-pointed star of outer radius `r` centred on `(x, y)`, point up,
+/// each pixel covered by the share of its 4 × 4 samples inside.
+fn star(frame: &mut Frame, x: f32, y: f32, r: f32, colour: Lin, alpha: f32) {
+    let corners: Vec<(f32, f32)> = (0..10)
+        .map(|i| {
+            let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+            let at = if i % 2 == 0 { r } else { 0.42 * r };
+            (x + at * a.cos(), y + at * a.sin())
+        })
+        .collect();
+    // Even-odd: a ray to the right crosses the outline an odd number of times.
+    let inside = |px: f32, py: f32| {
+        let mut odd = false;
+        for (i, &(ax, ay)) in corners.iter().enumerate() {
+            let (bx, by) = corners[(i + 1) % corners.len()];
+            if (ay > py) != (by > py) && px < ax + (py - ay) * (bx - ax) / (by - ay) {
+                odd = !odd;
+            }
+        }
+        odd
+    };
+    let (x0, x1) = (
+        (x - r).floor().max(0.0),
+        (x + r).ceil().min(frame.w as f32 - 1.0),
+    );
+    let (y0, y1) = (
+        (y - r).floor().max(0.0),
+        (y + r).ceil().min(frame.h as f32 - 1.0),
+    );
+    if x0 > x1 || y0 > y1 {
+        return;
+    }
+    for py in y0 as usize..=y1 as usize {
+        for px in x0 as usize..=x1 as usize {
+            let hits = (0..16)
+                .filter(|s| {
+                    let (sx, sy) = ((s % 4) as f32 + 0.5, (s / 4) as f32 + 0.5);
+                    inside(px as f32 + sx / 4.0, py as f32 + sy / 4.0)
+                })
+                .count();
+            if hits > 0 {
+                frame.blend(px, py, colour, alpha * hits as f32 / 16.0);
+            }
+        }
+    }
 }
 
 /// The layouts senna makes that the trajectory's figures look for.
@@ -1363,17 +1938,6 @@ fn aligned(rows: &[Box<str>], mat: &Mat, index: &CellIndex, n: usize) -> Mat {
     out
 }
 
-/// A raster-only layer: no hull, no label.
-fn raster_layer(png: Vec<u8>) -> TopicLayer {
-    TopicLayer {
-        label: String::new(),
-        png,
-        hull_px: Vec::new(),
-        label_xy_px: (f32::NAN, f32::NAN),
-        color: INK,
-    }
-}
-
 /// Colours for `keys` (one per cell, `None` for grey), a palette entry per
 /// distinct key in order, and the legend naming them.
 fn categorical<K: Ord + Copy>(keys: &[Option<K>], name: impl Fn(K) -> String) -> CellColours {
@@ -1396,43 +1960,15 @@ fn categorical<K: Ord + Copy>(keys: &[Option<K>], name: impl Fn(K) -> String) ->
     (colours, legend)
 }
 
-/// `n` different colours: legume-plot's palette for `n` while it has that
-/// many, then hues a golden angle apart in two lightnesses, so no two
-/// groups share a colour however many there are.
+/// `n` different colours, from senna's palette: golden-angle hues at equal
+/// lightness, alternating lightness past a dozen.
 fn distinct_colours(n: usize) -> Vec<Rgb> {
-    let pal = palette::resolve(&Palette::Auto, n);
-    // The palette cycles; its own colours are those before the first repeat.
-    let own = (1..n)
-        .find(|&j| palette::color(&pal, j) == palette::color(&pal, 0))
-        .unwrap_or(n);
-    (0..n)
-        .map(|j| {
-            if j < own {
-                return palette::color(&pal, j);
-            }
-            let k = j - own;
-            let hue = (k as f32 * 137.508) % 360.0;
-            let light = if k % 2 == 0 { 0.42 } else { 0.62 };
-            hsl(hue, 0.65, light)
-        })
+    THEME
+        .palette
+        .srgb_all(n)
+        .into_iter()
+        .map(Rgb::from)
         .collect()
-}
-
-/// An HSL colour (hue in degrees, saturation and lightness in 0..=1).
-fn hsl(h: f32, s: f32, l: f32) -> Rgb {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let (r, g, b) = match (h / 60.0) as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = l - c / 2.0;
-    let byte = |v: f32| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
-    (byte(r), byte(g), byte(b))
 }
 
 /// `cells` in order, the grey ones (no colour in `colour_of`) first.
@@ -1448,78 +1984,31 @@ fn codes(v: &[i32]) -> Vec<Option<i32>> {
     v.iter().map(|&c| (c >= 0).then_some(c)).collect()
 }
 
-/// `text` at `xy` in [`INK`], centred vertically and anchored at `anchor`
-/// (the start when `None`), with a white halo as legume-plot draws a label
-/// when `halo`.
-/// `xy` moved so a centred label of `text` stays inside the figure, its
-/// width taken as about 0.55 font sizes per character.
-fn keep_inside(xy: (f32, f32), font: f32, text: &str, ext: Extent) -> (f32, f32) {
-    let half = 0.275 * font * text.chars().count() as f32 + 2.0;
-    let (w, h) = (ext.w as f32, ext.h as f32);
-    let x = if 2.0 * half >= w {
-        w / 2.0
-    } else {
-        xy.0.clamp(half, w - half)
+/// `xy` moved so a label of `text` in `font` centred on it stays inside
+/// `frame`, instead of being dropped off its edge.
+fn keep_inside(xy: (f32, f32), font: Font, text: &str, frame: &Frame) -> (f32, f32) {
+    // The label's box, padded as `place` pads it.
+    let half_w = 0.5 * font.width(text) as f32 + 3.0;
+    let half_h = 0.5 * font.line_height() as f32 + 1.0;
+    let inside = |v: f32, half: f32, len: f32| {
+        if 2.0 * half >= len {
+            0.5 * len
+        } else {
+            v.clamp(half, len - half)
+        }
     };
-    (x, xy.1.clamp(font, (h - font).max(font)))
-}
-
-fn svg_text(xy: (f32, f32), font: f32, anchor: Option<&str>, halo: bool, text: &str) -> String {
-    let (x, y) = xy;
-    let (r, g, b) = INK;
-    let anchor = anchor.map_or(String::new(), |a| format!(" text-anchor='{a}'"));
-    let halo = if halo {
-        format!(
-            " paint-order='stroke' stroke='white' stroke-width='{:.2}' stroke-linejoin='round'",
-            (font * 0.35).max(1.5)
-        )
-    } else {
-        String::new()
-    };
-    format!(
-        "<text x='{x:.2}' y='{y:.2}' font-family='Helvetica, Arial, sans-serif' font-size='{font:.2}'{anchor} \
-         dominant-baseline='central'{halo} fill='rgb({r},{g},{b})'>{}</text>\n",
-        escape_xml(text)
+    (
+        inside(xy.0, half_w, frame.w as f32),
+        inside(xy.1, half_h, frame.h as f32),
     )
 }
 
-/// A categorical colouring's legend in the top-left corner of a figure
-/// `height` pixels high: a swatch and a name per entry, at most
-/// [`LEGEND_MAX`] of them and no more than fill half the figure.
-fn legend_svg(entries: &[(String, Rgb)], font: f32, height: u32) -> String {
-    let mut s = String::new();
-    let row = font * 1.4;
-    // At most half the figure's height, counting the "+k more" line; none
-    // in a figure too small for two rows (a grid thumbnail).
-    let fits = ((height as f32 * 0.5 - font) / row).floor().max(0.0) as usize;
-    if fits < 2 {
-        return s;
-    }
-    let shown = if entries.len() <= fits.min(LEGEND_MAX) {
-        entries.len()
-    } else {
-        fits.min(LEGEND_MAX) - 1
-    };
-    for (k, (name, (r, g, b))) in entries.iter().take(shown).enumerate() {
-        let y = font + row * k as f32;
-        s += &format!(
-            "<rect x='{:.2}' y='{:.2}' width='{font:.2}' height='{font:.2}' fill='rgb({r},{g},{b})'/>",
-            font * 0.6,
-            y - font * 0.5,
-        );
-        s += &svg_text((font * 1.9, y), font, None, true, name);
-    }
-    if entries.len() > shown {
-        let more = format!("+{} more", entries.len() - shown);
-        s += &svg_text(
-            (font * 0.6, font + row * shown as f32),
-            font,
-            None,
-            false,
-            &more,
-        );
-    }
-    s
+/// Rows a legend may take in a frame `h` pixels high, with lines `line`
+/// pixels high: at most [`LEGEND_MAX`] and half the frame, counting the
+/// `+k more` line; `None` when fewer than two fit.
+fn legend_rows(h: usize, line: usize) -> Option<usize> {
+    let fits = (h / 2).saturating_sub(line / 2) / line.max(1);
+    (fits >= 2).then_some(fits.min(LEGEND_MAX))
 }
 
 /// `base`, or `base-2`, `base-3`, … while any file of the set exists.
@@ -1539,9 +2028,17 @@ fn free_base(base: &str) -> PathBuf {
         .expect("some suffix is free")
 }
 
-/// `fig` rendered to pixels, through legume-plot's renderer (which writes a
-/// file, here a private temporary one) and the `image` crate.
-pub(crate) fn render(fig: &Figure) -> Result<image::RgbaImage> {
+/// `picture` as pixels: a cell map's frame as it is, an SVG through resvg.
+pub(crate) fn render(picture: &Picture) -> Result<image::RgbaImage> {
+    match picture {
+        Picture::Map(m) => Ok(m.frame.to_image()),
+        Picture::Chart(f) => Ok(f.to_image()),
+        Picture::Svg(fig) => render_svg(fig),
+    }
+}
+
+/// `fig` rendered to pixels by resvg, with the system's fonts.
+fn render_svg(fig: &Figure) -> Result<image::RgbaImage> {
     use resvg::{tiny_skia, usvg};
     // The system fonts are loaded once, not for every figure drawn.
     static FONTS: std::sync::OnceLock<std::sync::Arc<usvg::fontdb::Database>> =

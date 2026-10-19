@@ -325,18 +325,33 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
   off, and `c` colours the cells by pseudotime, cell type, lineage (a
   type on one lineage only) or component, the last two only when there are
   several; cells without a value are grey, and a categorical colouring has
-  a legend (no more than half the figure high, none in a thumbnail). Every
-  group gets its own colour: legume-plot's palette while it lasts, then
-  hues a golden angle apart. Unassigned cells get no label.
+  a legend (no more than half the figure high, none in a thumbnail). The
+  scatter is drawn as senna view draws its map, through `legume_tui::map`:
+  senna's paper page and palette (golden-angle hues at equal lightness,
+  alternating lightness past a dozen groups), its point job, and its labels,
+  each in its group's ink at the median, placed so none covers another or
+  the legend (a label that would run off the edge is moved in). Unassigned
+  cells get no label.
   `+`/`=` and `-`/`_` zoom the scatter in and out about its centre in
-  steps of ×√2 (up to ×64, and back out to whole exactly), the
-  arrows pan it (with the exports strip open, ↑ and ↓ move in the strip
+  steps of ×√2 (up to ×64, and back out to whole exactly), never showing
+  past the cells' extent, the arrows pan it (with the exports strip open, ↑ and ↓ move in the strip
   and ← → still pan), and `0` shows it whole again, as in senna view. The figure is
   drawn again from the data at the part on screen, so points and labels stay
   sharp; a label sits at the median of its type's cells on screen, and a
   type with none there has no label. A new layout (`m`), diffusion pair or
   figure (`v`, or opened from the grid) starts whole. The order and
   connectivity panels do not zoom.
+  On the round's cell map the mouse works too, as on senna view's map, but
+  only while the map is shown (elsewhere the terminal keeps its text
+  selection): a drag pans, the wheel zooms a step at the pointer, a click
+  selects the cluster under it and the pointer names it in the status line.
+  A label pressed is dragged instead of the map; `E` moves the labels from
+  the keys (Tab and Shift+Tab choose one, the arrows move it half a line,
+  Shift two, Backspace puts it back, Esc ends). A label moved keeps its
+  distance from its cells in lines, at any zoom and in an export, and is kept
+  by name per round and layout in `{round}.lupin_labels.json` beside the run,
+  lupin's own file, never the run's manifest. A file there that cannot be
+  read is left as it is, and the labels stay where they are, saying so.
 - **Order by type**: median pseudotime and middle half per type, in order of
   the median.
 - **Connectivity**: PAGA connectivity between the node types as a Hinton
@@ -359,15 +374,27 @@ Images are drawn as senna view draws them, so both viewers behave alike:
 {auto,kitty,sixel,iterm2,blocks}`, querying the terminal on `auto` and falling
 back to half-blocks.
 
-**Export.** `p` on a panel writes it through legume-plot's `write_figure` as
-SVG and PDF, 7 in wide at 200 dpi, with the labels, colouring, layout and
-zoom on screen; the log notes a zoomed export. An export is a set of files sharing one base name, handled as a
-unit: the name `{out}.trajectory.{panel}` (`layout_phate`, `layout_umap`, …
-for a layout) moves to
-`-2`, `-3` … while any file of the set exists.
+**Export.** `p` on a scatter opens senna's save dialog (`legume_tui::save`):
+the map as on screen (labels, colouring, layout and zoom, in the screen's
+shape) or whole, 3.5 to 14 in wide, the points at 150 to 1200 dpi, and the
+file name, offered as `{out}.trajectory.{panel}` (`layout_phate`,
+`layout_umap`, … for a layout; `{round}.cells.{panel}` for a round's cell
+map) and moved to `-2`, `-3` … past saved files; a name typed over a file
+asks for a second Enter. It writes a PDF only, as senna saves its map: the
+raster as one image with its text set over it in Helvetica
+(`legume_tui::export`). The order and connectivity panels are written at once,
+7 in wide at 200 dpi, through legume-plot's `write_figure` as SVG and PDF,
+named the same way. The log notes a zoomed export. An export is a set of files
+sharing one base name, handled as a unit.
 
-**What was exported.** Each export is listed in `./.lupin-view/saved.json` in
-the directory lupin runs from (newest first; an existing PDF path replaces
+`lupin annotate -f ROUND --pdf FILE [--width IN] [--dpi DPI]` saves the
+round's cell map as the TUI opens on it (its first layout, whole, in its first
+colouring, with the labels as they were moved) to `FILE` without a terminal,
+`--width` 7 in and `--dpi` 300 unless given, as `senna view --pdf` does.
+
+**What was exported.** Each export is listed, with a thumbnail in
+`./.lupin-view/thumbs/`, in `./.lupin-view/saved.json` in the directory lupin
+runs from, kept by `legume_tui::gallery` under its traced policy (newest first; an existing PDF path replaces
 its entry; reloaded from disk before every change, and a change finds its
 entry by path, not by row). The list is written to a temporary file and
 renamed into place, and a list that cannot be read is set aside as

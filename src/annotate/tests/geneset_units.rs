@@ -156,6 +156,87 @@ fn types_that_share_cells_are_connected_and_apart_ones_are_not() {
 }
 
 #[test]
+fn a_units_anchors_are_its_nearest_cells_by_cosine_nearest_first() {
+    let (units, cells, n) = planted_regions();
+    let a = nearest_cells(&units, &[0, 1, 2], &cells, n, 5);
+    let cos = |u: usize, c: usize| {
+        let x = unit(&cells[c * 4..(c + 1) * 4]);
+        x.iter()
+            .zip(units.centre(u))
+            .map(|(a, b)| a * b)
+            .sum::<f32>()
+    };
+    for u in 0..3 {
+        let mine: Vec<&Anchor> = a.iter().filter(|x| x.unit == u).collect();
+        assert_eq!(mine.len(), 5, "k per unit");
+        // Every other cell is no nearer than the farthest anchor.
+        let last = mine.last().unwrap().weight;
+        assert!(mine.windows(2).all(|w| w[0].weight >= w[1].weight));
+        for c in (0..n).filter(|c| !mine.iter().any(|x| x.cell == *c)) {
+            assert!(cos(u, c) <= last + 1e-6, "unit {u}, cell {c}");
+        }
+        for x in &mine {
+            assert!((x.weight - cos(u, x.cell)).abs() < 1e-5);
+        }
+    }
+    // The planted types' cells come in blocks of forty.
+    assert!(a.iter().filter(|x| x.unit == 0).all(|x| x.cell < 40));
+}
+
+#[test]
+fn fewer_cells_than_k_are_all_anchors() {
+    let (units, cells, _) = planted_regions();
+    let a = nearest_cells(&units, &[0, 1, 2], &cells[..3 * 4], 3, 30);
+    assert_eq!(a.len(), 3 * 3, "each unit's three cells");
+}
+
+#[test]
+fn only_the_units_asked_for_are_anchored() {
+    let (units, cells, n) = planted_regions();
+    let a = nearest_cells(&units, &[2, 0], &cells, n, 5);
+    assert_eq!(a.len(), 2 * 5);
+    assert!(a.iter().all(|x| x.unit == 0 || x.unit == 2), "{a:?}");
+    let all = nearest_cells(&units, &[0, 1, 2], &cells, n, 5);
+    let of = |v: &[Anchor], u: usize| -> Vec<Anchor> {
+        v.iter().filter(|x| x.unit == u).copied().collect()
+    };
+    assert_eq!(
+        of(&a, 2),
+        of(&all, 2),
+        "the same anchors as asked with the rest"
+    );
+}
+
+#[test]
+fn a_clusters_starred_terms_are_its_best_scored_below_the_q_cut() {
+    // Two clusters × nine terms: cluster 0 has eight terms below the cut,
+    // cluster 1 one, and T8 is below the cut in neither.
+    let terms: Vec<String> = (0..9).map(|t| format!("T{t}")).collect();
+    let mut score = Vec::new();
+    let mut q = Vec::new();
+    for k in 0..2 {
+        for t in 0..9 {
+            score.push(t as f32);
+            q.push(match (k, t) {
+                (0, 0..=7) => 0.01,
+                (1, 0) => 0.01,
+                (1, 8) => f32::NAN,
+                _ => 0.5,
+            });
+        }
+    }
+    let a = Alignment {
+        terms,
+        clusters: vec![0, 1],
+        p: q.clone(),
+        score,
+        q,
+    };
+    // Cluster 0's six best (T2-T7) and cluster 1's one (T0).
+    assert_eq!(a.starred(), vec![0, 2, 3, 4, 5, 6, 7]);
+}
+
+#[test]
 fn a_pass_calls_each_cell_by_its_region_and_writes_the_units_and_links() {
     use crate::annotate::marker_score::toy;
     let dir = tempfile::tempdir().unwrap();
@@ -204,6 +285,25 @@ fn a_pass_calls_each_cell_by_its_region_and_writes_the_units_and_links() {
     assert!(t.cols.iter().any(|c| &**c == "radius"), "{:?}", t.cols);
     let links = std::fs::read_to_string(format!("{out}{TYPE_LINKS_TSV}")).unwrap();
     assert!(links.lines().any(|l| l.starts_with("A\tB\t")), "{links}");
+    // Each cell's membership of each type's region, by cell and type.
+    let m =
+        Mat::from_parquet_with_row_names(&format!("{out}{MEMBERSHIP_PARQUET}"), Some(0)).unwrap();
+    assert_eq!(m.cols, ["A".into(), "B".into()] as [Box<str>; 2]);
+    assert_eq!(m.rows.len(), 20);
+    assert!(m.rows.iter().all(|c| c.starts_with('c')), "cells by name");
+    for r in 0..m.rows.len() {
+        let row = m.mat.row(r);
+        assert!(
+            (row.sum() - 1.0).abs() < 1e-4,
+            "a cell's memberships sum to one"
+        );
+    }
+    let a = m.rows.iter().position(|c| &**c == "c00").unwrap();
+    assert!(m.mat[(a, 0)] > m.mat[(a, 1)], "c00 is most in A's region");
+    assert_eq!(
+        o.celltype_membership.as_deref(),
+        Some(format!("{out}{MEMBERSHIP_PARQUET}").as_str())
+    );
 
     // Every cluster against every term, with its decoys' p and q.
     let (strings, nums) = legume_numeric::matrix::parquet::read_table_columns(
@@ -231,6 +331,46 @@ fn a_pass_calls_each_cell_by_its_region_and_writes_the_units_and_links() {
     assert_eq!(
         o.term_units.as_deref(),
         Some(format!("{out}{TERM_UNITS_PARQUET}").as_str())
+    );
+    // Each cell type's and term's nearest cells, the toy's twenty each.
+    let (strings, nums) = legume_numeric::matrix::parquet::read_table_columns(
+        &format!("{out}{UNIT_ANCHORS_PARQUET}"),
+        &["unit", "kind", "cell"],
+        &["weight"],
+    )
+    .unwrap();
+    let rows = |unit: &str, kind: &str| {
+        (0..strings[0].len())
+            .filter(|&i| &*strings[0][i] == unit && &*strings[1][i] == kind)
+            .count()
+    };
+    assert_eq!(rows("A", "cell_type"), 20);
+    assert_eq!(rows("B", "cell_type"), 20);
+    // A term only where some cluster stars it, as a viewer draws only those.
+    let alignment = |names: &[&str]| {
+        let (s, v) = legume_numeric::matrix::parquet::read_table_columns(
+            &format!("{out}{TERM_ALIGNMENT_PARQUET}"),
+            &["term"],
+            names,
+        )
+        .unwrap();
+        (s.into_iter().next().unwrap(), v)
+    };
+    let (term, v) = alignment(&["score", "q"]);
+    let starred = |t: &str| {
+        (0..term.len()).any(|i| &*term[i] == t && v[1][i] < STAR_Q as f64 && v[0][i].is_finite())
+    };
+    for t in ["TERM1", "TERM2"] {
+        assert_eq!(rows(t, "term"), if starred(t) { 20 } else { 0 }, "{t}");
+    }
+    assert!(nums[0].iter().all(|w| (-1.0..=1.0 + 1e-5).contains(w)));
+    assert!(
+        strings[2].iter().all(|c| c.starts_with('c')),
+        "cells by name"
+    );
+    assert_eq!(
+        o.unit_anchors.as_deref(),
+        Some(format!("{out}{UNIT_ANCHORS_PARQUET}").as_str())
     );
 }
 
@@ -289,6 +429,65 @@ fn four_groups() -> (GeneTable, Vec<f32>, Vec<usize>) {
         dim: DIM,
     };
     (table, cells, groups)
+}
+
+#[test]
+fn a_pass_anchors_the_terms_a_cluster_stars_and_not_the_rest() {
+    let (g, flat, groups) = four_groups();
+    let dir = tempfile::tempdir().unwrap();
+    let as_mat = |rows: &[f32], names: Vec<Box<str>>| {
+        let mut m = Mat::zeros(names.len(), g.dim);
+        for (i, r) in rows.chunks(g.dim).enumerate() {
+            for (j, &x) in r.iter().enumerate() {
+                m[(i, j)] = x;
+            }
+        }
+        MatWithNames {
+            mat: m,
+            rows: names,
+            cols: (0..g.dim).map(|d| format!("h{d}").into()).collect(),
+        }
+    };
+    let feat = as_mat(&g.rows, g.names.iter().map(|n| n.as_str().into()).collect());
+    let cells = as_mat(&flat, (0..80).map(|c| format!("c{c:02}").into()).collect());
+    let panel = dir.path().join("panel.tsv");
+    let lines: String = (0..5)
+        .map(|i| format!("GENE{i}\tCT1\nGENE{}\tCT2\n", 10 + i))
+        .collect();
+    std::fs::write(&panel, lines).unwrap();
+    let terms = Terms {
+        sets: vec![
+            set("TERM1", SetKind::Term, &[5, 6, 7, 8, 9]),
+            set("TERM2", SetKind::Term, &[150, 151, 152, 153, 154]),
+        ],
+        pool: Vec::new(),
+    };
+    let out = dir.path().join("p").to_string_lossy().into_owned();
+    let cfg = UnitConfig {
+        decoys: 99,
+        ..quick()
+    };
+    run_pass(
+        &panel.to_string_lossy(),
+        &out,
+        &feat,
+        &cells,
+        &groups,
+        &terms,
+        &cfg,
+    )
+    .unwrap();
+
+    let (s, _) = legume_numeric::matrix::parquet::read_table_columns(
+        &format!("{out}{UNIT_ANCHORS_PARQUET}"),
+        &["unit"],
+        &["weight"],
+    )
+    .unwrap();
+    let rows = |u: &str| s[0].iter().filter(|x| &***x == u).count();
+    assert_eq!(rows("CT1"), ANCHORS_K);
+    assert_eq!(rows("TERM1"), ANCHORS_K, "the first cluster's term");
+    assert_eq!(rows("TERM2"), 0, "no cluster's term");
 }
 
 #[test]
