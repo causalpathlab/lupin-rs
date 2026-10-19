@@ -643,7 +643,8 @@ fn enrichment_reads(l: &crate::manifest::run::Loaded) -> bool {
 
 /// The methods whose readings a pass of `args` on `loaded` records, in
 /// [`Method::ALL`]'s order: a projection pass its own; an enrichment pass
-/// the enrichment, SuSiE (on raw counts, unless `--no-susie`) and, under
+/// the enrichment, SuSiE (on count sums, the raw counts or an earlier
+/// pass's cache of them, unless `--no-susie`) and, under
 /// `auto`, each projection the run has the gene table for.
 ///
 /// [`Method::ALL`]: crate::annotate::rounds::Method::ALL
@@ -664,11 +665,11 @@ pub fn methods_run(
     if args.markers.is_empty() {
         return vec![Method::Enrichment];
     }
+    // Count sums: the raw counts, or an earlier pass's cache of them (a
+    // decoder's expectation is none).
     let counts = loaded.is_some_and(|l| {
-        matches!(
-            crate::manifest::no_counts::source(l),
-            crate::manifest::no_counts::Source::Counts
-        )
+        use crate::manifest::no_counts::{source, Source};
+        matches!(source(l), Source::Counts | Source::Cache(_))
     });
     let beside = |p: ProjectionMethod| {
         args.method == AnnotateMethod::Auto
@@ -913,11 +914,11 @@ fn build_units_args(args: &AnnotateCliArgs) -> Result<crate::annotate::args::Uni
 }
 
 #[cfg(test)]
-mod route_tests {
+pub(crate) mod route_tests {
     use super::*;
     use crate::manifest::run::RunKind;
 
-    fn cli(more: &[&str]) -> AnnotateCliArgs {
+    pub(crate) fn cli(more: &[&str]) -> AnnotateCliArgs {
         #[derive(clap::Parser)]
         struct Cli {
             #[command(flatten)]

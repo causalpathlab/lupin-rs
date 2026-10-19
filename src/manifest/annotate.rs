@@ -378,8 +378,8 @@ fn take_call(
         Some(Method::Susie) => {
             anyhow::ensure!(
                 outputs.cluster_celltype_pip.is_some(),
-                "--call susie: the SuSiE stage did not run on this pass (no raw counts, or \
-                 --no-susie)"
+                "--call susie: the SuSiE stage did not run on this pass (decoder expression, \
+                 or --no-susie)"
             );
             return Ok(());
         }

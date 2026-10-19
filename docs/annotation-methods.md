@@ -17,7 +17,8 @@ ways (`--projection`):
 Under `--method auto` (the default) every method the run supports runs, and their readings go
 into one round, on the enrichment's clusters:
 
-- the enrichment, with its SuSiE stage where the raw counts are here;
+- the enrichment, with its SuSiE stage where it has count sums (the raw counts here, or an
+  earlier pass's cache of them; not a decoder's expectation);
 - the projection score (§0) where the run decodes cells;
 - the gene-set units (§1) where the run's genes are placed among the cells (its co-embedding,
   or a ρ that shares the cells' space). GO terms asked for (`--go`, `--gaf`, `--gmt`) are then
