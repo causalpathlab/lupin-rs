@@ -42,6 +42,10 @@ pub const UNITS_OUTPUT_SUFFIXES: [&str; 5] = [
 ];
 /// The cells nearest each unit kept as its anchors.
 pub const ANCHORS_K: usize = 30;
+/// A cluster's terms starred: at most this many, best score first.
+pub const STARS: usize = 6;
+/// The q below which a term is starred.
+pub const STAR_Q: f32 = 0.05;
 
 /// A run's genes and their rows (row-major, `dim` wide), in the space its
 /// cells share with them.
@@ -541,23 +545,29 @@ pub fn run_pass(
         &[("radius", &r.radius), ("weight", &r.weight)],
     )?;
     write_links(&format!("{out}{TYPE_LINKS_TSV}"), &r)?;
+    // Anchored: every cell type, and only the terms some cluster stars, as
+    // only those are drawn; the pool's other terms would cost a pass over
+    // the cells each.
+    let mut anchored = units.of_kind(SetKind::CellType);
+    let (term_alignment, term_units) = if units.kinds.contains(&SetKind::Term) {
+        let path = format!("{out}{TERM_ALIGNMENT_PARQUET}");
+        let a = align(&units, SetKind::Term, &flat, groups)?;
+        write_alignment(&path, &a)?;
+        let of_term = units.of_kind(SetKind::Term);
+        anchored.extend(a.starred().into_iter().map(|j| of_term[j]));
+        let sets = format!("{out}{TERM_UNITS_PARQUET}");
+        write_sets(&sets, &units, &of_term, &[])?;
+        (Some(path), Some(sets))
+    } else {
+        (None, None)
+    };
     let anchors = format!("{out}{UNIT_ANCHORS_PARQUET}");
     write_anchors(
         &anchors,
         &units,
         &cells.rows,
-        &nearest_cells(&units, &flat, n, ANCHORS_K),
+        &nearest_cells(&units, &anchored, &flat, n, ANCHORS_K),
     )?;
-    let (term_alignment, term_units) = if units.kinds.contains(&SetKind::Term) {
-        let path = format!("{out}{TERM_ALIGNMENT_PARQUET}");
-        let a = align(&units, SetKind::Term, &flat, groups)?;
-        write_alignment(&path, &a)?;
-        let sets = format!("{out}{TERM_UNITS_PARQUET}");
-        write_sets(&sets, &units, &units.of_kind(SetKind::Term), &[])?;
-        (Some(path), Some(sets))
-    } else {
-        (None, None)
-    };
     Ok(AnnotationOutputs {
         argmax: Some(labels_path(out)),
         celltype_units: Some(format!("{out}{UNITS_PARQUET}")),
@@ -720,11 +730,17 @@ pub struct Anchor {
     pub weight: f32,
 }
 
-/// Each unit's `k` nearest of the `n` `cells` (`[n × dim]`, as [`whitened`]
-/// puts them) by cosine to its centre, nearest first, unit by unit; every
-/// cell when there are fewer. A cell with no direction (zero, or not
-/// finite) is no unit's.
-pub fn nearest_cells(units: &Units, cells: &[f32], n: usize, k: usize) -> Vec<Anchor> {
+/// Each unit of `which`'s `k` nearest of the `n` `cells` (`[n × dim]`, as
+/// [`whitened`] puts them) by cosine to its centre, nearest first, unit by
+/// unit; every cell when there are fewer. A cell with no direction (zero,
+/// or not finite) is no unit's.
+pub fn nearest_cells(
+    units: &Units,
+    which: &[usize],
+    cells: &[f32],
+    n: usize,
+    k: usize,
+) -> Vec<Anchor> {
     let dim = units.dim;
     let dirs: Vec<Option<Vec<f32>>> = cells
         .chunks(dim)
@@ -734,9 +750,9 @@ pub fn nearest_cells(units: &Units, cells: &[f32], n: usize, k: usize) -> Vec<An
             (u.iter().all(|v| v.is_finite()) && u.iter().any(|&v| v != 0.0)).then_some(u)
         })
         .collect();
-    (0..units.names.len())
-        .into_par_iter()
-        .flat_map_iter(|u| {
+    which
+        .par_iter()
+        .flat_map_iter(|&u| {
             let m = unit(units.centre(u));
             let mut cos: Vec<(f32, usize)> = (dirs.iter().enumerate())
                 .filter_map(|(c, d)| {
@@ -817,6 +833,27 @@ pub struct Alignment {
     pub p: Vec<f32>,
     /// `p` adjusted by Benjamini–Hochberg within each cluster.
     pub q: Vec<f32>,
+}
+
+impl Alignment {
+    /// The terms (by index in `terms`) some cluster stars: its at most
+    /// [`STARS`] best scored with q below [`STAR_Q`]. A viewer stars the
+    /// same.
+    pub fn starred(&self) -> Vec<usize> {
+        let t = self.terms.len();
+        let mut starred = BTreeSet::new();
+        for k in 0..self.clusters.len() {
+            let row = k * t..(k + 1) * t;
+            let mut best: Vec<usize> = (0..t)
+                .filter(|&j| {
+                    self.q[row.start + j] < STAR_Q && self.score[row.start + j].is_finite()
+                })
+                .collect();
+            best.sort_by(|&a, &b| self.score[row.start + b].total_cmp(&self.score[row.start + a]));
+            starred.extend(best.into_iter().take(STARS));
+        }
+        starred.into_iter().collect()
+    }
 }
 
 /// Align the clusters of `cells` (`[n × dim]`, `groups` per cell,

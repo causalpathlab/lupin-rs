@@ -14,10 +14,8 @@ use legume_numeric::matrix::traits::IoOps;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// A cluster's terms starred: at most this many, best score first.
-pub(crate) const STARS: usize = 6;
-/// The q below which a term is starred.
-pub(crate) const STAR_Q: f32 = 0.05;
+/// A cluster's terms starred, as the pass anchored them.
+pub(crate) use crate::annotate::geneset_units::{STARS, STAR_Q};
 
 /// A unit's anchors: the round's cells nearest it and their cosines.
 #[derive(Debug, Clone, Default)]
