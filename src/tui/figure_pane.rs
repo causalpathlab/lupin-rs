@@ -537,7 +537,8 @@ impl FigurePane {
 
     /// Zoom the scatter in or out by a step (`+` / `-`).
     pub fn zoom(&mut self, inward: bool) -> String {
-        match self.with_view(|v| v.zoom(inward)) {
+        let reach = self.reach();
+        match self.with_view(|v| v.zoom(inward, reach)) {
             None => "only the scatter zooms (m and v choose it)".into(),
             Some((_, v)) if v.is_whole() => "the whole scatter".into(),
             Some((_, v)) => format!("zoom ×{:.1} · arrows pan · 0 shows it whole", v.factor()),
@@ -546,7 +547,8 @@ impl FigurePane {
 
     /// Pan the scatter by a step (the arrows); `dx`, `dy` right and up.
     pub fn pan(&mut self, dx: f32, dy: f32) -> String {
-        match self.with_view(|v| v.pan(dx, dy)) {
+        let reach = self.reach();
+        match self.with_view(|v| v.pan(dx, dy, reach)) {
             None => "only the scatter pans (m and v choose it)".into(),
             Some((a, b)) if a != b => String::new(),
             Some((_, v)) if v.is_whole() => "+ zooms in; the arrows then pan".into(),
@@ -742,14 +744,34 @@ impl FigurePane {
         px: (u32, u32),
         area: Rect,
     ) -> Result<RgbaImage, String> {
-        let size = Size {
-            w: (u32::from(area.width) * px.0).max(64),
-            h: (u32::from(area.height) * px.1).max(64),
-            text_px: px.1 as f32,
-        };
-        data.figure(look.panel, size, style, look.view)
+        data.figure(look.panel, frame_size(px, area), style, look.view)
             .and_then(|f| figures::render(&f))
             .map_err(|e| format!("{e:#}"))
+    }
+
+    /// The scatter's frame in pixels, as last drawn on screen; before
+    /// that, an export's.
+    pub(crate) fn frame(&self) -> (u32, u32) {
+        match self.rendered.borrow().as_ref() {
+            Some(((_, (w, h)), _)) => {
+                let s = frame_size(self.cell_px(), Rect::new(0, 0, *w, *h));
+                (s.w, s.h)
+            }
+            None => {
+                let s = figures::export_size(None);
+                (s.w, s.h)
+            }
+        }
+    }
+
+    /// How much of the scatter on screen its frame shows when whole
+    /// ([`View::reach`]); the whole extent when it has no cells to fit.
+    fn reach(&self) -> [f32; 2] {
+        let (w, h) = self.frame();
+        match self.data.whole(self.current()) {
+            Ok(whole) => View::reach(whole, w as usize, h as usize),
+            Err(_) => [1.0, 1.0],
+        }
     }
 
     /// The terminal cell's size in frame pixels.
@@ -817,11 +839,11 @@ impl FigurePane {
     /// Export the current panel as it is on screen and log it; with the
     /// grid open, its selected tile as the tile shows it (whole).
     pub fn export(&mut self) -> Result<String> {
-        let (panel, view) = match self.selected_tile() {
-            Some(tile) => (tile, View::default()),
-            None => (self.current(), self.view),
+        let (panel, view, frame) = match self.selected_tile() {
+            Some(tile) => (tile, View::default(), None),
+            None => (self.current(), self.view, Some(self.frame())),
         };
-        let e = self.data.export(panel, &self.style, view)?;
+        let e = self.data.export(panel, &self.style, view, frame)?;
         let logged = self
             .exports
             .gallery
@@ -844,6 +866,16 @@ impl FigurePane {
             e.base.display(),
             exts.join(" and ")
         ))
+    }
+}
+
+/// The pixels a figure is rasterised at for `area`, `px` per cell, its
+/// text a cell high.
+fn frame_size(px: (u32, u32), area: Rect) -> Size {
+    Size {
+        w: (u32::from(area.width) * px.0).max(64),
+        h: (u32::from(area.height) * px.1).max(64),
+        text_px: px.1 as f32,
     }
 }
 

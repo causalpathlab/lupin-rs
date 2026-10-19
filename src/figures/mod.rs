@@ -164,6 +164,8 @@ const PAN_STEP: f32 = 0.2;
 /// The part of a scatter on screen: the whole extent zoomed `level` steps
 /// about the centre `(cx, cy)`, both in shares of the whole extent (y up).
 /// The level is a count, so zooming in and back out lands on whole exactly.
+/// Zoom and pan take the frame's `reach` ([`View::reach`]), so the centre
+/// kept is the one the frame draws.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct View {
     pub(crate) level: u8,
@@ -191,29 +193,50 @@ impl View {
         2f32.powf(f32::from(self.level) / 2.0)
     }
 
+    /// How much of `whole` a `w × h` frame shows across and up when it
+    /// shows it whole, in shares of its extent: one axis fills the frame
+    /// to its margin, the other shows more than the data.
+    pub(crate) fn reach(whole: Bounds, w: usize, h: usize) -> [f32; 2] {
+        let [x0, y0, x1, y1] = Viewport::fit(whole, w, h, MAP_MARGIN, YAxis::Up).window();
+        let [a0, b0, a1, b1] = whole;
+        [
+            (x1 - x0) / (a1 - a0).max(1e-6),
+            (y1 - y0) / (b1 - b0).max(1e-6),
+        ]
+    }
+
     /// Zoom in (`inward`) or out by one step about the centre.
-    pub(crate) fn zoom(&mut self, inward: bool) {
+    pub(crate) fn zoom(&mut self, inward: bool, reach: [f32; 2]) {
         self.level = if inward {
             (self.level + 1).min(MAX_ZOOM_LEVEL)
         } else {
             self.level.saturating_sub(1)
         };
-        self.clamp();
+        self.clamp(reach);
     }
 
     /// Move the part on screen by `(dx, dy)` steps (right and up positive).
-    pub(crate) fn pan(&mut self, dx: f32, dy: f32) {
-        let span = 1.0 / self.factor();
-        self.cx += dx * PAN_STEP * span;
-        self.cy += dy * PAN_STEP * span;
-        self.clamp();
+    pub(crate) fn pan(&mut self, dx: f32, dy: f32, reach: [f32; 2]) {
+        let f = self.factor();
+        self.cx += dx * PAN_STEP * reach[0] / f;
+        self.cy += dy * PAN_STEP * reach[1] / f;
+        self.clamp(reach);
     }
 
-    /// Keep the part on screen inside the whole extent.
-    fn clamp(&mut self) {
-        let half = 0.5 / self.factor();
-        self.cx = self.cx.clamp(half, 1.0 - half);
-        self.cy = self.cy.clamp(half, 1.0 - half);
+    /// Keep the part on screen inside the whole extent, as the frame keeps
+    /// it (`Limits.keep_inside`): centred on an axis it shows all of.
+    fn clamp(&mut self, reach: [f32; 2]) {
+        let f = self.factor();
+        let inside = |c: f32, r: f32| {
+            let half = 0.5 * r / f;
+            if half >= 0.5 {
+                0.5
+            } else {
+                c.clamp(half, 1.0 - half)
+            }
+        };
+        self.cx = inside(self.cx, reach[0]);
+        self.cy = inside(self.cy, reach[1]);
     }
 
     /// The camera on `whole` for a `w × h` frame: fitted as senna fits a
@@ -708,6 +731,16 @@ impl CellFigures {
         })
     }
 
+    /// The extent of `panel`'s cells with coordinates, as its map fits it.
+    pub(crate) fn whole(&self, panel: Panel) -> Result<Bounds> {
+        let (x, y) = self.coords(panel)?;
+        let finite: Vec<usize> = (0..x.len())
+            .filter(|&i| x[i].is_finite() && y[i].is_finite())
+            .collect();
+        anyhow::ensure!(!finite.is_empty(), "no cell has coordinates");
+        Ok(bounds_of(&x, &y, finite.into_iter()))
+    }
+
     /// The coordinates of the scatter `panel`.
     fn coords(&self, panel: Panel) -> Result<Coords<'_>> {
         match panel {
@@ -728,20 +761,20 @@ impl CellFigures {
     /// files as `-2`, `-3` …: a scatter as it is on screen, as a PDF of its
     /// raster with its text set over it (as senna exports its map); the
     /// other panels as `.svg` and `.pdf`.
-    pub(crate) fn export(&self, panel: Panel, style: &Style, view: View) -> Result<Export> {
+    pub(crate) fn export(
+        &self,
+        panel: Panel,
+        style: &Style,
+        view: View,
+        frame: Option<(u32, u32)>,
+    ) -> Result<Export> {
         let base = free_base(&format!(
             "{}.{}.{}",
             self.prefix(),
             self.kind(),
             self.slug(panel)
         ));
-        let w = (EXPORT_WIDTH_IN * EXPORT_DPI) as u32;
-        // 11 pt text at the export's resolution.
-        let size = Size {
-            w,
-            h: w * 3 / 4,
-            text_px: EXPORT_DPI * 11.0 / 72.0,
-        };
+        let size = export_size(frame);
         let b = base.to_string_lossy();
         let files = if panel.is_scatter() {
             let mut m = self.cell_map(panel, size, style, view, true)?;
@@ -1248,6 +1281,24 @@ impl CellFigures {
             w: size.width_px,
             h: size.height_px,
         }
+    }
+}
+
+/// The size an export draws at: [`EXPORT_WIDTH_IN`] wide, in the shape of
+/// the `frame` on screen (so a zoomed scatter shows the same data), else
+/// 4:3; its text 11 pt.
+pub(crate) fn export_size(frame: Option<(u32, u32)>) -> Size {
+    let w = (EXPORT_WIDTH_IN * EXPORT_DPI) as u32;
+    let h = match frame {
+        Some((fw, fh)) if fw > 0 && fh > 0 => {
+            (f64::from(w) * f64::from(fh) / f64::from(fw)).round() as u32
+        }
+        _ => w * 3 / 4,
+    };
+    Size {
+        w,
+        h: h.max(1),
+        text_px: EXPORT_DPI * 11.0 / 72.0,
     }
 }
 

@@ -309,6 +309,20 @@ fn the_strips_keys_say_why_when_it_has_no_room() {
 }
 
 #[test]
+fn a_pan_the_frame_cannot_show_says_so_and_the_export_follows_the_frame() {
+    let mut p = pane();
+    let area = Rect::new(0, 0, 30, 10);
+    assert!(p.protocol(area).is_ok());
+    let (cw, ch) = p.cell_px();
+    assert_eq!(p.frame(), (30 * cw, 10 * ch), "the pane's pixels");
+    p.zoom(true);
+    // The first layout is wide and flat: its height is all on screen.
+    assert_eq!(p.pan(0.0, 1.0), "at the edge of the scatter");
+    assert_eq!(p.view.cy, 0.5);
+    assert_eq!(p.pan(1.0, 0.0), "");
+}
+
+#[test]
 fn a_quick_frame_shows_the_figure_last_drawn_while_the_new_one_is_drawn_apart() {
     let mut p = pane();
     let area = Rect::new(0, 0, 30, 10);

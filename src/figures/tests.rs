@@ -180,12 +180,13 @@ fn labels_are_placed_at_the_type_medians() {
 fn the_cell_map_keeps_inside_the_data_when_zoomed_to_its_edge() {
     let t = data();
     let style = Style::default();
+    let reach = View::reach(t.whole(Panel::Layout { k: 0 }).unwrap(), 320, 240);
     let mut v = View::default();
     for _ in 0..4 {
-        v.zoom(true);
+        v.zoom(true, reach);
     }
     for _ in 0..50 {
-        v.pan(1.0, 1.0);
+        v.pan(1.0, 1.0, reach);
     }
     let m = map_at(&t, &style, v);
     // Across, the window is narrower than the cells: stopped at their
@@ -266,12 +267,12 @@ fn export_writes_svg_and_pdf_past_existing_files() {
     let mut t = data();
     t.manifest = dir.join("x.senna.json");
     let first = t
-        .export(Panel::Order, &Style::default(), View::default())
+        .export(Panel::Order, &Style::default(), View::default(), None)
         .unwrap();
     assert_eq!(first.base, dir.join("x.trajectory.order"));
     assert!(first.files.iter().all(|f| f.is_file()), "{:?}", first.files);
     let second = t
-        .export(Panel::Order, &Style::default(), View::default())
+        .export(Panel::Order, &Style::default(), View::default(), None)
         .unwrap();
     assert_eq!(second.base, dir.join("x.trajectory.order-2"));
 }
@@ -393,16 +394,16 @@ fn a_cell_takes_the_one_lineage_it_weighs_most_on() {
 fn the_view_zooms_pans_and_stays_inside_the_scatter() {
     let mut v = View::default();
     assert!(v.is_whole());
-    v.pan(1.0, 0.0);
+    v.pan(1.0, 0.0, ALL);
     assert_eq!(v, View::default(), "the whole scatter does not pan");
-    v.zoom(false);
+    v.zoom(false, ALL);
     assert_eq!(v.level, 0, "no further out than the whole");
-    v.zoom(true);
-    v.zoom(true);
+    v.zoom(true, ALL);
+    v.zoom(true, ALL);
     assert_eq!(v.factor(), 2.0);
     let half = 0.5 / v.factor();
     for _ in 0..50 {
-        v.pan(1.0, -1.0);
+        v.pan(1.0, -1.0, ALL);
     }
     assert!(
         (v.cx - (1.0 - half)).abs() < 1e-6,
@@ -410,7 +411,7 @@ fn the_view_zooms_pans_and_stays_inside_the_scatter() {
     );
     assert!((v.cy - half).abs() < 1e-6, "and at the bottom");
     for _ in 0..50 {
-        v.zoom(true);
+        v.zoom(true, ALL);
     }
     assert_eq!(v.level, MAX_ZOOM_LEVEL);
     assert_eq!(v.factor(), 64.0);
@@ -431,15 +432,78 @@ fn the_view_zooms_pans_and_stays_inside_the_scatter() {
     assert_eq!((all.cx, all.cy), (5.0, 0.0), "whole, centred");
 }
 
+/// What a frame showing exactly the whole extent reaches on each axis.
+const ALL: [f32; 2] = [1.0, 1.0];
+
+/// The view's centre as the frame draws it, in shares of `whole`.
+fn drawn_centre(v: View, whole: Bounds, w: usize, h: usize) -> (f32, f32) {
+    let vp = v.viewport(whole, w, h);
+    let [x0, y0, x1, y1] = whole;
+    ((vp.cx - x0) / (x1 - x0), (vp.cy - y0) / (y1 - y0))
+}
+
+#[test]
+fn the_view_is_where_the_frame_draws_it_so_every_pan_moves_the_picture() {
+    // A square of data in a 3:2 frame: across, the frame shows more than
+    // the data at ×1.4, so it does not pan that way.
+    let whole = [0.0, 0.0, 10.0, 10.0];
+    let (w, h) = (1200, 800);
+    let reach = View::reach(whole, w, h);
+    assert!(reach[0] > reach[1], "{reach:?}");
+    let mut v = View::default();
+    v.zoom(true, reach);
+    for _ in 0..3 {
+        v.pan(1.0, 0.0, reach);
+    }
+    assert_eq!(v.cx, 0.5, "across, the data is all on screen");
+    // ×2: as far right as the frame goes, the view is what is drawn, and
+    // the first step back moves the picture.
+    v.zoom(true, reach);
+    for _ in 0..50 {
+        v.pan(1.0, 1.0, reach);
+    }
+    let (dx, dy) = drawn_centre(v, whole, w, h);
+    assert!((v.cx - dx).abs() < 1e-5 && (v.cy - dy).abs() < 1e-5);
+    assert!(v.cx < 1.0 - 0.5 / v.factor(), "{v:?}");
+    let before = drawn_centre(v, whole, w, h);
+    v.pan(-1.0, 0.0, reach);
+    let after = drawn_centre(v, whole, w, h);
+    assert!(after.0 < before.0 - 1e-3, "{before:?} {after:?}");
+    // Zooming out keeps it so.
+    v.zoom(false, reach);
+    let (dx, dy) = drawn_centre(v, whole, w, h);
+    assert!((v.cx - dx).abs() < 1e-5 && (v.cy - dy).abs() < 1e-5);
+}
+
+#[test]
+fn a_zoomed_export_shows_the_data_the_screen_shows() {
+    let whole = [0.0, 0.0, 10.0, 10.0];
+    let v = View {
+        level: 3,
+        cx: 0.4,
+        cy: 0.6,
+    };
+    for (w, h) in [(1200, 800), (600, 900), (640, 480)] {
+        let size = export_size(Some((w, h)));
+        let screen = v.viewport(whole, w as usize, h as usize).window();
+        let paper = v.viewport(whole, size.w as usize, size.h as usize).window();
+        for (a, b) in screen.iter().zip(&paper) {
+            assert!((a - b).abs() < 1e-2, "{w}×{h}: {screen:?} {paper:?}");
+        }
+    }
+    let size = export_size(None);
+    assert_eq!(size.h, size.w * 3 / 4, "4:3 with no screen to follow");
+}
+
 #[test]
 fn zooming_in_and_back_out_shows_the_whole_scatter() {
     let mut v = View::default();
     for _ in 0..3 {
-        v.zoom(true);
+        v.zoom(true, ALL);
     }
-    v.pan(1.0, 1.0);
+    v.pan(1.0, 1.0, ALL);
     for _ in 0..3 {
-        v.zoom(false);
+        v.zoom(false, ALL);
     }
     assert!(v.is_whole());
     assert_eq!(v.factor(), 1.0);
@@ -809,7 +873,12 @@ fn a_rounds_figures_export_as_cells_not_trajectory() {
     assert_eq!(f.kind(), "cells");
     assert_eq!(data().kind(), "trajectory");
     let e = f
-        .export(Panel::Layout { k: 0 }, &Style::opening(&f), View::default())
+        .export(
+            Panel::Layout { k: 0 },
+            &Style::opening(&f),
+            View::default(),
+            None,
+        )
         .unwrap();
     assert!(
         e.base.to_string_lossy().contains("r.cells.layout_umap"),
