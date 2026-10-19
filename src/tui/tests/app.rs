@@ -3894,3 +3894,43 @@ fn capital_e_on_the_map_edits_its_labels_until_esc() {
     assert!(!app.cell_map.as_ref().unwrap().editing());
     assert_eq!(app.focus, Focus::Tree, "esc left the labels, not the map");
 }
+
+#[test]
+fn on_a_units_round_g_l_and_r_toggle_the_maps_units_and_the_side_lists_the_terms() {
+    let dir = tempfile::tempdir().unwrap();
+    let l = crate::figures::units::tests::units_round(dir.path(), true);
+    let panel = vec![("GENE1".to_string(), "A".to_string())];
+    let mut app = App::new(cli(&[]), PathBuf::new(), PathBuf::new(), panel, None);
+    app.open(&l.file);
+    app.focus = Focus::Tree;
+    assert_eq!(map_focus(&app), Some(0));
+    let screen = drawn_in(&app, 140, 40).concat();
+    assert!(screen.contains("first process"), "K0's term beside the map");
+    assert!(screen.contains("q 0.002"), "with its q");
+    let help = super::super::ui::help(&app);
+    assert!(help.contains("g GO terms"), "{help}");
+    press(&mut app, KeyCode::Char('g'));
+    let style = app.cell_map.as_ref().unwrap().style;
+    assert!(
+        !style.go,
+        "g hides the stars, not lists the runs: {}",
+        app.status
+    );
+    assert!(!drawn_in(&app, 140, 40).concat().contains("first process"));
+    press(&mut app, KeyCode::Char('l'));
+    press(&mut app, KeyCode::Char('r'));
+    let style = app.cell_map.as_ref().unwrap().style;
+    assert!(!style.links && style.rings, "{}", app.status);
+    assert!(app.form.is_none(), "r rings, not a run");
+}
+
+#[test]
+fn on_a_round_without_units_g_and_r_keep_their_meaning() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    let before = app.cell_map.as_ref().unwrap().style;
+    press(&mut app, KeyCode::Char('l'));
+    assert_eq!(app.cell_map.as_ref().unwrap().style, before);
+    assert!(!super::super::ui::help(&app).contains("g GO terms"));
+}

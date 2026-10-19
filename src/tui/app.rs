@@ -2515,8 +2515,12 @@ impl App {
         if self.form.is_some() {
             return self.settings_key(k);
         }
-        // `g` lists the run's family from any pane.
-        if k.code == KeyCode::Char('g') {
+        // `g` lists the run's family from any pane, but a units round's
+        // map in the tree pane stars its GO terms with it.
+        let map_units = self.focus == Focus::Tree
+            && matches!(self.tree_mode, TreeMode::Cells)
+            && self.cell_map.as_ref().is_some_and(|m| m.units_keys());
+        if k.code == KeyCode::Char('g') && !map_units {
             return self.list_runs();
         }
         // `x` stops a running job from any pane, asked twice; a save, which

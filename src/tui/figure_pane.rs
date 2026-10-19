@@ -390,6 +390,8 @@ impl FigurePane {
     pub fn keep_look(&mut self, before: &FigurePane) {
         let colouring = before.style.colouring;
         self.style.labels = before.style.labels;
+        (self.style.go, self.style.links, self.style.rings) =
+            (before.style.go, before.style.links, before.style.rings);
         if self.data.colourings().contains(&colouring) {
             self.style.colouring = colouring;
         }
@@ -518,6 +520,10 @@ impl FigurePane {
             KeyCode::Char('t') if shown => Say(self.style.cycle_labels()),
             KeyCode::Char('c') if shown => Say(self.style.cycle_colouring(&self.data.colourings())),
             KeyCode::Char('m') if shown => Say(self.next_layout()),
+            // A units round's GO stars, links and rings.
+            KeyCode::Char(c @ ('g' | 'l' | 'r')) if self.units_keys() => {
+                Say(self.style.toggle_units(c))
+            }
             // senna view's navigation: the grid, zoom and pan.
             KeyCode::Char('w') if shown => {
                 self.open_grid();
@@ -586,6 +592,15 @@ impl FigurePane {
             }
             _ => Ignored,
         }
+    }
+
+    /// Whether `g`, `l` and `r` are the units' here: a units round's map
+    /// on screen, not its grid.
+    pub fn units_keys(&self) -> bool {
+        self.shown
+            && self.grid.is_none()
+            && self.data.units.is_some()
+            && self.current().is_scatter()
     }
 
     /// The panel on screen; the diffusion map at the pair chosen.

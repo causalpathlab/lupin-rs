@@ -4,7 +4,8 @@
 //! diffusion map, the types in pseudotime order and the connectivity between
 //! types. A scatter of cells is a map drawn as senna draws its own, through
 //! `legume_tui::map` on senna's paper page, and exported as a PDF of its
-//! raster with the text set over it; the order and connectivity panels are
+//! raster with the text set over it, a units round's cell types and GO
+//! terms drawn on it ([`units`]); the order and connectivity panels are
 //! SVGs that legume-plot writes as figure files and resvg rasterises for the
 //! terminal. The TUI's figure pane is where they are shown and exported.
 
@@ -27,7 +28,7 @@ use legume_tui::map::labels::{place, Label, Placed, Rect};
 use legume_tui::map::legend::draw_legend;
 use legume_tui::map::offsets::Offsets;
 use legume_tui::map::points::{Job, Mark, PointLayer};
-use legume_tui::map::raster::{edge, Frame, Shape};
+use legume_tui::map::raster::{edge, ring, stamp, Canvas, Frame, Shape};
 use legume_tui::map::text::{Font, TextRun};
 use legume_tui::map::theme::Theme;
 use legume_tui::map::viewport::{Bounds, Limits, Viewport, YAxis};
@@ -36,6 +37,9 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use units::{GoTerm, Marks, UnitMap};
+
+pub(crate) mod units;
 
 /// Pairs outside the prior on the connectivity panel, and the pairs it
 /// orders.
@@ -49,6 +53,8 @@ const MAP_MARGIN: f32 = 0.92;
 /// edge, not the prior's.
 const ARROW: Srgb = [40, 40, 40];
 const INFERRED: Srgb = [115, 115, 115];
+/// A GO term's star on a cell map.
+const STAR: Srgb = [214, 140, 20];
 /// Entries a categorical legend lists before `+k more`.
 const LEGEND_MAX: usize = 20;
 /// Figure width in inches and dots per inch for an export.
@@ -105,12 +111,17 @@ impl Colouring {
 
 /// How the scatters are drawn: the label size (an index into
 /// [`TEXT_SCALES`], `None` for no labels), the colouring, and the cluster in
-/// focus, whose cells keep their colours over the others in grey.
+/// focus, whose cells keep their colours over the others in grey. On a
+/// units round, also whether the focus's GO terms are starred, the types
+/// linked and ringed ([`units`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Style {
     pub(crate) labels: Option<usize>,
     pub(crate) colouring: Colouring,
     pub(crate) focus: Option<i32>,
+    pub(crate) go: bool,
+    pub(crate) links: bool,
+    pub(crate) rings: bool,
 }
 
 impl Default for Style {
@@ -119,6 +130,9 @@ impl Default for Style {
             labels: Some(1),
             colouring: Colouring::Pseudotime,
             focus: None,
+            go: true,
+            links: true,
+            rings: false,
         }
     }
 }
@@ -143,6 +157,22 @@ impl Style {
             }
             None => "labels off · t shows them small".into(),
         }
+    }
+
+    /// The units' stars (`g`), links (`l`) or rings (`r`) off or on; the
+    /// note for the status line.
+    pub(crate) fn toggle_units(&mut self, key: char) -> String {
+        let (on, what) = match key {
+            'g' => (&mut self.go, "the selected cluster's GO terms"),
+            'l' => (&mut self.links, "the links between types"),
+            _ => (&mut self.rings, "the types' radii"),
+        };
+        *on = !*on;
+        format!(
+            "{what} {} · {key} {}",
+            if *on { "shown" } else { "hidden" },
+            if *on { "hides them" } else { "shows them" }
+        )
     }
 
     /// The next of the colourings `all` (`c`); the note for the status line.
@@ -477,6 +507,9 @@ pub(crate) struct CellFigures {
     pub(crate) dc_min_share: f32,
     /// Each scatter's label medians over all its cells, made on first use.
     pub(crate) medians: Mutex<Vec<(MediansKey, Arc<Medians>)>>,
+    /// A units round's cell types and GO terms, when it records their
+    /// anchors.
+    pub(crate) units: Option<UnitMap>,
 }
 
 /// Each cell's colour (`None` for grey) and the legend of a categorical
@@ -584,8 +617,13 @@ impl CellFigures {
             &index,
             cells.names.len(),
         );
+        let units = UnitMap::read(loaded, &index).unwrap_or_else(|e| {
+            log::warn!("the units on the cell map: {e:#}");
+            None
+        });
         Self {
             source: Source::Round,
+            units,
             manifest: loaded.file.clone(),
             types: cells
                 .labels
@@ -602,6 +640,11 @@ impl CellFigures {
             score,
             ..Self::default()
         }
+    }
+
+    /// The starred GO terms of cluster `k`, none without units.
+    pub(crate) fn go_terms(&self, k: Option<i32>) -> &[GoTerm] {
+        self.units.as_ref().map_or(&[], |u| u.terms_of(k))
     }
 
     /// What the figures are of, in export names: `trajectory` for a
@@ -941,6 +984,24 @@ impl CellFigures {
             let stroke = (size.w.min(size.h) as f32 / 400.0).clamp(1.0, 3.0) * 1.2;
             self.draw_arrows(&mut frame, &all, &vp, stroke);
         }
+        // A units round's types, links, rings and stars, under the text.
+        let marks = match (&self.units, panel) {
+            (Some(u), Panel::Layout { .. }) => {
+                Some(u.marks(x, y, style.focus.filter(|_| style.go)))
+            }
+            _ => None,
+        };
+        let (_, type_legend) = self.cell_colours(Colouring::Type);
+        let dot = (size.text_px * 0.3).max(2.0);
+        if let Some(m) = &marks {
+            let colour = |name: &str| {
+                (type_legend.iter())
+                    .find(|(n, _)| n == name)
+                    .filter(|_| style.colouring == Colouring::Type)
+                    .map_or(to_linear(THEME.ink), |&(_, (r, g, b))| to_linear([r, g, b]))
+            };
+            draw_units(&mut frame, m, &vp, style, dot, colour);
+        }
         if keep_text {
             frame.keep_text();
         }
@@ -949,6 +1010,15 @@ impl CellFigures {
         let mut names = Vec::new();
         let mut labels = Vec::new();
         let mut line = 0.0;
+        // Where a label of `font` above a mark of radius `r` at `(px, py)`
+        // is anchored, when the mark is on the frame.
+        let above = |(px, py): (f32, f32), r: f32, font: Font, text: &str, frame: &Frame| {
+            let on = (0.0..frame.w as f32).contains(&px) && (0.0..frame.h as f32).contains(&py);
+            on.then(|| {
+                let lift = r + 0.6 * font.line_height() as f32;
+                keep_inside((px, py - lift), font, text, frame)
+            })
+        };
         if let Some(k) = style.labels {
             let font = Font::for_cell_height(size.text_px * TEXT_SCALES[k], true);
             line = font.line_height() as f32;
@@ -981,8 +1051,15 @@ impl CellFigures {
                         THEME.ink_for(to_linear([r, g, b]))
                     })
             };
+            // A type with a unit is labelled at its unit instead.
+            let at_unit = |t: &str| {
+                by == LabelBy::Type
+                    && marks
+                        .as_ref()
+                        .is_some_and(|m| m.types.iter().any(|u| &*u.name == t))
+            };
             for (t, &((mx, my), cells)) in medians.iter() {
-                if t.as_ref() == UNASSIGNED_LABEL {
+                if t.as_ref() == UNASSIGNED_LABEL || at_unit(t) {
                     continue;
                 }
                 let (lx, ly) = keep_inside(vp.to_px([mx, my]), font, t, &frame);
@@ -997,6 +1074,51 @@ impl CellFigures {
                     key: Some(names.len() as u32),
                 });
                 names.push(t.clone());
+            }
+            for u in marks.iter().flat_map(|m| &m.types) {
+                let Some(at) = u.at.map(|(ux, uy)| vp.to_px([ux, uy])) else {
+                    continue;
+                };
+                let Some((lx, ly)) = above(at, dot, font, &u.name, &frame) else {
+                    continue;
+                };
+                labels.push(Label {
+                    text: u.name.to_string(),
+                    x: lx,
+                    y: ly,
+                    ink: ink_of(&u.name),
+                    tier: 1,
+                    priority: medians.get(&u.name).map_or(0.0, |&(_, n)| n as f32),
+                    font,
+                    key: Some(names.len() as u32),
+                });
+                names.push(u.name.clone());
+            }
+        }
+        // The stars are numbered whatever the labels, as the list beside
+        // the map names them by number.
+        let stars = marks.as_ref().map_or(&[][..], |m| &m.stars[..]);
+        if !stars.is_empty() {
+            let k = style.labels.unwrap_or(0);
+            let font = Font::for_cell_height(size.text_px * TEXT_SCALES[k], true);
+            line = font.line_height() as f32;
+            for (i, (_, (sx, sy))) in stars.iter().enumerate() {
+                let text = (i + 1).to_string();
+                let Some((lx, ly)) = above(vp.to_px([*sx, *sy]), 2.0 * dot, font, &text, &frame)
+                else {
+                    continue;
+                };
+                labels.push(Label {
+                    text: text.clone(),
+                    x: lx,
+                    y: ly,
+                    ink: to_linear(THEME.ink),
+                    tier: 2,
+                    priority: (stars.len() - i) as f32,
+                    font,
+                    key: Some(names.len() as u32),
+                });
+                names.push(text.into());
             }
         }
         let reserved: Vec<Rect> = legend.into_iter().collect();
@@ -1439,25 +1561,110 @@ fn arrow(frame: &mut Frame, a: (f32, f32), b: (f32, f32), stroke: f32, ink: Lin,
         return;
     }
     let (ux, uy) = (dx / len, dy / len);
-    let lines = stroke.round().max(1.0) as usize;
-    let mut thick = |p: (f32, f32), q: (f32, f32)| {
-        let (vx, vy) = (q.0 - p.0, q.1 - p.1);
-        let l = vx.hypot(vy).max(1e-6);
-        let (nx, ny) = (-vy / l, vx / l);
-        for k in 0..lines {
-            let o = k as f32 - 0.5 * (lines - 1) as f32;
-            let at = |(x, y): (f32, f32)| (x + o * nx, y + o * ny);
-            edge(frame, at(p), at(q), (0.0, 0.0), ink, alpha);
-        }
-    };
-    thick(a, b);
+    thick(frame, a, b, stroke, ink, alpha);
     let head = (stroke * 5.0).min(0.5 * len);
     for side in [-1.0, 1.0] {
         let back = (
             b.0 - head * ux + side * 0.5 * head * -uy,
             b.1 - head * uy + side * 0.5 * head * ux,
         );
-        thick(b, back);
+        thick(frame, b, back, stroke, ink, alpha);
+    }
+}
+
+/// A line from `p` to `q` `stroke` pixels wide, as thin edges side by side.
+fn thick(frame: &mut Frame, p: (f32, f32), q: (f32, f32), stroke: f32, ink: Lin, alpha: f32) {
+    let lines = stroke.round().max(1.0) as usize;
+    let (vx, vy) = (q.0 - p.0, q.1 - p.1);
+    let l = vx.hypot(vy).max(1e-6);
+    let (nx, ny) = (-vy / l, vx / l);
+    for k in 0..lines {
+        let o = k as f32 - 0.5 * (lines - 1) as f32;
+        let at = |(x, y): (f32, f32)| (x + o * nx, y + o * ny);
+        edge(frame, at(p), at(q), (0.0, 0.0), ink, alpha);
+    }
+}
+
+/// A units round's marks on a frame with camera `vp`: the links kept as
+/// lines, wider and darker the stronger; with `style.rings` each type's
+/// radius as a ring; each type as a dot of radius `dot` in its `colour`;
+/// and the stars.
+fn draw_units(
+    frame: &mut Frame,
+    m: &Marks,
+    vp: &Viewport,
+    style: &Style,
+    dot: f32,
+    colour: impl Fn(&str) -> Lin,
+) {
+    let ink = to_linear(THEME.ink);
+    let px = |(x, y): (f32, f32)| vp.to_px([x, y]);
+    if style.links {
+        for &(a, b, s) in &m.links {
+            if let (Some(p), Some(q)) = (m.types[a].at, m.types[b].at) {
+                thick(frame, px(p), px(q), 1.0 + 2.0 * s, ink, 0.15 + 0.6 * s);
+            }
+        }
+    }
+    for u in &m.types {
+        let Some(at) = u.at.map(px) else { continue };
+        if let Some(r) = u.ring.filter(|_| style.rings) {
+            ring(frame, at.0, at.1, r / vp.upp(), ink);
+        }
+        stamp(frame, at.0, at.1, dot + 1.0, Shape::Circle, ink, 1.0);
+        stamp(frame, at.0, at.1, dot, Shape::Circle, colour(&u.name), 1.0);
+    }
+    for (_, at) in &m.stars {
+        let (x, y) = px(*at);
+        star(frame, x, y, 2.0 * dot + 1.5, ink, 1.0);
+        star(frame, x, y, 2.0 * dot, to_linear(STAR), 1.0);
+    }
+}
+
+/// A five-pointed star of outer radius `r` centred on `(x, y)`, point up,
+/// each pixel covered by the share of its 4 × 4 samples inside.
+fn star(frame: &mut Frame, x: f32, y: f32, r: f32, colour: Lin, alpha: f32) {
+    let corners: Vec<(f32, f32)> = (0..10)
+        .map(|i| {
+            let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+            let at = if i % 2 == 0 { r } else { 0.42 * r };
+            (x + at * a.cos(), y + at * a.sin())
+        })
+        .collect();
+    // Even-odd: a ray to the right crosses the outline an odd number of times.
+    let inside = |px: f32, py: f32| {
+        let mut odd = false;
+        for (i, &(ax, ay)) in corners.iter().enumerate() {
+            let (bx, by) = corners[(i + 1) % corners.len()];
+            if (ay > py) != (by > py) && px < ax + (py - ay) * (bx - ax) / (by - ay) {
+                odd = !odd;
+            }
+        }
+        odd
+    };
+    let (x0, x1) = (
+        (x - r).floor().max(0.0),
+        (x + r).ceil().min(frame.w as f32 - 1.0),
+    );
+    let (y0, y1) = (
+        (y - r).floor().max(0.0),
+        (y + r).ceil().min(frame.h as f32 - 1.0),
+    );
+    if x0 > x1 || y0 > y1 {
+        return;
+    }
+    for py in y0 as usize..=y1 as usize {
+        for px in x0 as usize..=x1 as usize {
+            let hits = (0..16)
+                .filter(|s| {
+                    let (sx, sy) = ((s % 4) as f32 + 0.5, (s / 4) as f32 + 0.5);
+                    inside(px as f32 + sx / 4.0, py as f32 + sy / 4.0)
+                })
+                .count();
+            if hits > 0 {
+                frame.blend(px, py, colour, alpha * hits as f32 / 16.0);
+            }
+        }
     }
 }
 
