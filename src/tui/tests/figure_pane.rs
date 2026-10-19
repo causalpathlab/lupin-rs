@@ -731,6 +731,40 @@ fn a_rounds_cell_map_is_saved_without_the_tui() {
     );
 }
 
+#[test]
+fn a_rounds_cell_map_never_replaces_its_manifest_or_another_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let loaded = crate::figures::tests::round(dir.path(), true);
+    let from = loaded.file.to_string_lossy().to_string();
+    let to = |out: PathBuf| legume_tui::export::PdfArgs {
+        pdf: Some(out),
+        width: 3.5,
+        dpi: 150,
+    };
+    let before = std::fs::read(&loaded.file).unwrap();
+    // The manifest itself, and through a path that only resolves to it.
+    let roundabout = dir.path().join(".").join(loaded.file.file_name().unwrap());
+    for at in [loaded.file.clone(), roundabout] {
+        let e = round_pdf(&from, &to(at.clone())).unwrap_err();
+        assert!(e.to_string().contains("manifest"), "{e}");
+    }
+    assert_eq!(
+        std::fs::read(&loaded.file).unwrap(),
+        before,
+        "the manifest is left"
+    );
+    // Not a .pdf.
+    let png = dir.path().join("map.png");
+    assert!(round_pdf(&from, &to(png.clone())).is_err());
+    assert!(!png.exists());
+    // A PDF already there: kept without --overwrite (no terminal to ask on).
+    let taken = dir.path().join("taken.pdf");
+    std::fs::write(&taken, b"mine").unwrap();
+    let e = round_pdf(&from, &to(taken.clone())).unwrap_err();
+    assert!(e.to_string().contains("--overwrite"), "{e}");
+    assert_eq!(std::fs::read(&taken).unwrap(), b"mine");
+}
+
 /// The text a PDF sets, as its `Tj` lines.
 fn tj(pdf: &str) -> String {
     pdf.lines()

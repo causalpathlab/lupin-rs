@@ -1411,10 +1411,23 @@ struct Saving {
 /// `lupin annotate -f ROUND --pdf FILE`: the round's cell map as the TUI
 /// opens on it (its first layout, whole, in its first colouring, the
 /// labels where they were moved), saved as a PDF at `pdf`'s size without
-/// the TUI. Where it went.
+/// the TUI. Where it went. Never over the round's manifest, only to a
+/// `.pdf`, and over a file already there only as `--overwrite` allows.
 pub fn round_pdf(from: &str, pdf: &PdfArgs) -> Result<PathBuf> {
     let path = pdf.pdf.clone().context("no --pdf file")?;
     let loaded = load(from)?;
+    anyhow::ensure!(
+        !crate::manifest::run::same_file(&path, &loaded.file),
+        "--pdf {} is the round's manifest: choose another file",
+        path.display()
+    );
+    anyhow::ensure!(
+        path.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf")),
+        "--pdf {} is not a .pdf",
+        path.display()
+    );
+    crate::manifest::run::may_replace(&path)?;
     let cells = crate::manifest::rounds::read_cells(&loaded)?;
     let score = crate::manifest::rounds::read_score_cells(&loaded, &cells)?;
     let data = CellFigures::of_round(&loaded, &cells, score);
