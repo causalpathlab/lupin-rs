@@ -232,12 +232,10 @@ enum Commands {
 fn session_help(what_goes_on: &str, resume_hint: &str) -> String {
     legume_tui::cli::session_help(
         &tui::TOOL,
-        legume_tui::cli::SessionHelp {
-            what_goes_on: Some(what_goes_on),
-            resume_hint,
-            more: Some("`?` in the TUI shows the keys in effect."),
-            ..Default::default()
-        },
+        legume_tui::cli::SessionHelp::new()
+            .what_goes_on(what_goes_on)
+            .resume_hint(Some(resume_hint))
+            .more("`?` in the TUI shows the keys in effect."),
     )
 }
 
@@ -254,17 +252,14 @@ fn main() -> Result<()> {
         Commands::Trajectory { args, .. } => args.opens_tui(),
         _ => false,
     };
+    // On stderr, as RUST_LOG says; the TUI's log pane takes it too.
+    let mut stderr = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(if cli.verbose { "debug" } else { "info" }),
+    );
     if interactive {
-        tui::init_logger(cli.verbose);
+        tui::init_logger(cli.verbose, stderr.build());
     } else {
-        env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or(if cli.verbose {
-                "debug"
-            } else {
-                "info"
-            }),
-        )
-        .init();
+        stderr.init();
     }
     match cli.cmd {
         Commands::TextQc(c) => run_qc(&c),

@@ -541,7 +541,7 @@ fn a_trajectory_run_again_on_its_output_leaves_no_stale_texts() {
     // The run made again on the same output orders other types.
     relineage(&a, &["HSC_like > ERY"]);
     let child = std::process::Command::new("true").spawn().unwrap();
-    app.child = Some(Running::new(child, Job::Trajectory(a.clone())));
+    app.child = Some(Running::new(child.into(), Job::Trajectory(a.clone())));
     finish(&mut app);
     assert_eq!(shown(&app).map(|t| &t.texts), Some(&texts_of(&a)));
 }

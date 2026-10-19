@@ -11,6 +11,7 @@ use crate::annotate::markers::key_labels;
 use crate::manifest::{pinto, run};
 use anyhow::Result;
 use data_beans::aux::gene_sets::membership_rows;
+use legume_tui::Round;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -505,9 +506,6 @@ pub fn pick(
     session.status(&title.to_lowercase());
     let mut dirty = true;
     loop {
-        if session.stop_requested() {
-            return Ok(None);
-        }
         dirty |= p.poll();
         if dirty {
             // Detached, nothing is drawn; panels are still read.
@@ -520,15 +518,15 @@ pub fn pick(
         } else {
             Duration::from_secs(60)
         };
-        // An attach clears the screen, to be drawn whole.
-        let mut repainted = false;
-        let event = session.poll_with(terminal, wait, || {
-            repainted = true;
-            Ok(())
-        })?;
-        dirty |= repainted;
-        let Some(event) = event else {
-            continue;
+        let event = match session.poll(terminal, wait)? {
+            Round::Event(event) => event,
+            // An attach clears the screen, to be drawn whole.
+            Round::Repainted => {
+                dirty = true;
+                continue;
+            }
+            Round::Stopped => return Ok(None),
+            _ => continue,
         };
         dirty = true;
         let Event::Key(k) = event else {

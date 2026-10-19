@@ -35,58 +35,44 @@ use crate::manifest::run::{self, annotated_path, resolve};
 use anyhow::{Context, Result};
 use app::App;
 pub use legume_tui::graphics::Graphics;
-use legume_tui::{cli::SessionArgs, Session};
+use legume_tui::{cli::SessionArgs, Keyboard, Round, Session};
 use ratatui::crossterm::event::{Event, KeyEventKind, KeyboardEnhancementFlags};
 use ratatui::DefaultTerminal;
-use ratatui_image::picker::{Picker, ProtocolType};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The tool lupin's TUI sessions belong to: they are named
 /// `lupin-annotate-1`, `lupin-trajectory-2`, and `lupin attach` finds them.
 pub const TOOL: legume_tui::Tool = legume_tui::Tool::new("lupin");
 
-/// The process's one session: the pickers and the main screen share it and
-/// its terminal, and the children the TUI starts are set up by it.
-static SESSION: OnceLock<Session> = OnceLock::new();
-
-/// Set `cmd` up as a child of the TUI: with the session's opt-out passed on
-/// (`--no-detach`), and grouped as [`child_group`] says for this session.
-pub fn child_command(cmd: &mut Command) -> &mut Command {
-    let session = SESSION.get();
-    if let Some(session) = session {
-        session.command(cmd);
-    }
-    child_group(cmd, session.is_some_and(Session::is_hosted))
-}
-
-/// In a hosted session (`hosted`), a child runs in a process group of its
-/// own, so only the TUI's own stop or quit ends it. Plain, it stays in the
-/// TUI's group, as before sessions: a hangup of the user's terminal reaches
-/// it with the TUI.
-fn child_group(cmd: &mut Command, hosted: bool) -> &mut Command {
-    #[cfg(unix)]
-    if hosted {
-        std::os::unix::process::CommandExt::process_group(cmd, 0);
-    }
-    cmd
-}
-
 /// The detach and switch keys for the `?` guide, each with what it does,
 /// in lower case as the guide shows keys; none when the screen runs plain.
+/// The guide's own words for the two it knows, the crate's for any other.
 pub(crate) fn session_keys() -> Vec<(String, String)> {
     legume_tui::help_keys()
         .into_iter()
-        .map(|(key, help)| (key.to_lowercase(), help))
+        .map(|k| {
+            let what = match k.short.as_str() {
+                "detach" => format!(
+                    "leave it running (named on the first detach); \
+                     `{} attach` (or starting it again) returns",
+                    TOOL.name()
+                ),
+                "switch" => "leave it running and pick another session".into(),
+                _ => return (k.key.to_lowercase(), k.long),
+            };
+            (k.key.to_lowercase(), format!("{}: {what}", k.short))
+        })
         .collect()
 }
 
-/// This process's own log lines while the screen is up.
+/// This process's own log lines, for the log pane.
 static OWN_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-struct PaneLogger(log::LevelFilter);
+/// The log pane's logger, at its level, and the stderr logger behind the
+/// gate, which stays quiet while the screen is up ([`run`]).
+struct PaneLogger(log::LevelFilter, &'static legume_tui::logs::Gate);
 
 impl log::Log for PaneLogger {
     fn enabled(&self, m: &log::Metadata) -> bool {
@@ -100,19 +86,24 @@ impl log::Log for PaneLogger {
             if let Ok(mut v) = OWN_LOG.lock() {
                 v.push(format!("[{}] {}", r.level(), r.args()));
             }
+            self.1.log(r);
         }
     }
-    fn flush(&self) {}
+    fn flush(&self) {
+        self.1.flush();
+    }
 }
 
-/// Send this process's `log` output to the log pane instead of stderr.
-pub fn init_logger(verbose: bool) {
+/// Send this process's `log` output to the log pane, and to `stderr` (as
+/// the other subcommands log) while the screen is not up.
+pub fn init_logger(verbose: bool, stderr: env_logger::Logger) {
     let level = if verbose {
         log::LevelFilter::Debug
     } else {
         log::LevelFilter::Info
     };
-    if log::set_boxed_logger(Box::new(PaneLogger(level))).is_ok() {
+    let pane = PaneLogger(level, legume_tui::logs::gate(stderr));
+    if log::set_boxed_logger(Box::new(pane)).is_ok() {
         log::set_max_level(level);
     }
 }
@@ -168,23 +159,35 @@ pub fn run(
     } else {
         "annotate"
     };
-    let opened = TOOL.session(screen, &session.options(args.from.is_some()))?;
-    SESSION
-        .set(opened)
-        .map_err(|_| anyhow::anyhow!("the TUI runs once per process"))?;
-    let session = SESSION.get().expect("set above");
-    let mut terminal = session.terminal()?;
-    let latest = screens(session, &mut terminal, args, trajectory);
-    if let Err(e) = &latest {
-        if !session.attached() {
-            hold_error(session, &mut terminal, e);
+    let session = TOOL.session(screen, &session.options(args.from.is_some()))?;
+    // stderr's copy of the log is dropped while the screen is up; the pane
+    // keeps every line.
+    let quiet = legume_tui::logs::quiet_stderr();
+    // Shift+Enter is told from Enter where the terminal can.
+    let keys = Keyboard::IfSupported(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES);
+    let mut terminal =
+        session.terminal_with(legume_tui::Modes::new().keyboard_enhancement(keys))?;
+    let latest = screens(&session, &mut terminal, args, trajectory);
+    // The latest round is said on the terminal attached as the screen
+    // ends; detached, it is left for whoever looks next.
+    let said_here = session.attached();
+    let round = match &latest {
+        Ok(m) => m
+            .as_ref()
+            .map(|m| format!("lupin: latest round {}", m.display())),
+        // Seen before the session ends, then said as main says it.
+        Err(e) => {
+            let _ = session.hold_error(&mut terminal, e);
+            None
         }
+    };
+    if let (Some(r), false) = (&round, said_here) {
+        session.leave(r);
     }
     session.restore();
-    // Said where a terminal is there to show it: not into a detached
-    // session's pty, which nobody reads.
-    if let (Ok(Some(m)), true) = (&latest, session.attached()) {
-        eprintln!("lupin: latest round {}", m.display());
+    drop(quiet);
+    if let (Some(r), true) = (round, said_here) {
+        eprintln!("{r}");
     }
     latest.map(|_| ())
 }
@@ -193,36 +196,12 @@ pub fn run(
 /// status.
 fn say(session: &Session, terminal: &mut DefaultTerminal, msg: &str) -> Result<()> {
     session.status(msg);
-    show(session, terminal, msg)
-}
-
-/// `msg` on the whole screen, wrapped.
-fn show(session: &Session, terminal: &mut DefaultTerminal, msg: &str) -> Result<()> {
     session.draw(terminal, |f| {
         use ratatui::widgets::{Paragraph, Wrap};
         let text = Paragraph::new(format!(" lupin: {msg}")).wrap(Wrap { trim: false });
         f.render_widget(text, f.area());
     })?;
     Ok(())
-}
-
-/// An error that ended the TUI while detached (a long load that failed,
-/// say): kept on screen and as the session's status, for `lupin sessions`
-/// and the next attach to show, until a key is pressed there or `lupin
-/// kill` comes. Then the session ends and it is said on the terminal.
-fn hold_error(session: &Session, terminal: &mut DefaultTerminal, e: &anyhow::Error) {
-    let msg = format!("{e:#}\n\n any key quits");
-    // One line for the listing.
-    let line = format!("stopped: {e:#}").replace('\n', " ");
-    session.status(&line);
-    while !session.stop_requested() {
-        let _ = show(session, terminal, &msg);
-        match session.poll(terminal, Duration::from_millis(250)) {
-            Ok(Some(Event::Key(k))) if k.kind == KeyEventKind::Press => return,
-            Ok(_) => {}
-            Err(_) => return,
-        }
-    }
 }
 
 /// The pickers, then the main screen, on `terminal`; the latest round on
@@ -353,16 +332,14 @@ fn screens(
         app.status = why;
     }
 
-    // The screen is the pickers' still: brought back whole if an attach came
-    // while loading, then the attached terminal is asked what it can show.
-    if session.take_repaint() {
-        session.repaint(terminal)?;
-    }
-    let graphics = app.args.graphics;
-    if session.attached() {
-        let (picker, keys) = probe(session, graphics);
-        fit_terminal(session, &mut app, picker, keys)?;
-    }
+    // The screen is the pickers' still: cleared, and the attached terminal
+    // asked what it can show, before the main screen is drawn, so no key
+    // typed on it meets the query. Taken by the loop's first round.
+    session.request_repaint();
+    let mut first = Some(session.poll_with(terminal, Duration::ZERO, || {
+        fit(session, &mut app);
+        Ok(())
+    })?);
     // Drawn when something changed: a key, a resize, an attach, the log, the
     // status or a rescoring starting or ending; and each second a job runs.
     // Every frame goes out at once, the figures as last drawn while a new one
@@ -427,72 +404,54 @@ fn screens(
         while !app.quit && app.want_file.is_none() {
             // After an attach: the screen is cleared and the new terminal
             // asked what it can show, before its modes are on again.
-            let mut fresh = None;
-            let event = session.poll_with(terminal, wait, || {
-                fresh = Some(probe(session, graphics));
-                Ok(())
-            })?;
-            if let Some((picker, keys)) = fresh {
-                fit_terminal(session, &mut app, picker, keys)?;
-                dirty = true;
-            }
-            // `lupin kill` quits as q does, without asking.
-            if session.stop_requested() {
-                if app.saving_now() {
-                    app.status = "lupin kill: the save finishes, then lupin quits".into();
-                    session.draw(terminal, |f| ui::draw(f, &app))?;
-                }
-                app.kill();
-                break;
-            }
-            let Some(event) = event else { break };
+            let round = match first.take() {
+                Some(round) => round,
+                None => session.poll_with(terminal, wait, || {
+                    fit(session, &mut app);
+                    Ok(())
+                })?,
+            };
             wait = Duration::ZERO;
-            match event {
-                Event::Key(k) if k.kind == KeyEventKind::Press => {
+            match round {
+                Round::Event(Event::Key(k)) if k.kind == KeyEventKind::Press => {
                     app.key(k);
                     dirty = true;
                 }
-                Event::Resize(..) => dirty = true,
-                _ => {}
+                Round::Event(Event::Resize(..)) => dirty = true,
+                Round::Event(_) => {}
+                Round::Repainted => {
+                    app.shift_enter = session.keyboard_enhanced();
+                    dirty = true;
+                    break;
+                }
+                // `lupin kill` quits as q does, without asking.
+                Round::Stopped => {
+                    if app.saving_now() {
+                        app.status = "lupin kill: the save finishes, then lupin quits".into();
+                        session.draw(terminal, |f| ui::draw(f, &app))?;
+                    }
+                    app.kill();
+                    break;
+                }
+                _ => break,
             }
         }
     }
     Ok(app.round.as_ref().map(|r| r.manifest.clone()))
 }
 
-/// What the attached terminal can show: its picture protocol (as `graphics`
-/// names it, else asked of the terminal, else guessed from its environment)
-/// and whether it tells Shift+Enter from Enter (the kitty keyboard
-/// protocol). Asked with the terminal raw and before mouse reports are on.
-fn probe(session: &Session, graphics: Graphics) -> (Picker, bool) {
-    use legume_tui::graphics::{pick, Fallback};
-    let mut picker = pick(session, graphics, Fallback::Probe);
-    // A terminal that does not answer may still be named by its
-    // environment, as lupin guessed before it asked.
-    if graphics == Graphics::Auto && picker.protocol_type() == ProtocolType::Halfblocks {
-        picker = pick(session, graphics, Fallback::Env);
-    }
-    let keys = ratatui::crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
-    (picker, keys)
-}
-
-/// Fit the screen to the attached terminal: its pictures made for `picker`,
-/// and Shift+Enter told from Enter where it can (`keys`), with the session
-/// turning that on again after every attach.
-fn fit_terminal(session: &Session, app: &mut App, picker: Picker, keys: bool) -> Result<()> {
-    session.set_modes(fit(app, picker, keys))?;
-    Ok(())
-}
-
-/// [`fit_terminal`]'s part on the screen: `app` fitted to the terminal, and
-/// the modes to turn on there.
-fn fit(app: &mut App, picker: Picker, keys: bool) -> legume_tui::Modes {
-    app.repick(picker);
-    app.shift_enter = keys;
-    legume_tui::Modes {
-        keyboard_enhancement: keys.then_some(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
-        ..Default::default()
-    }
+/// Fit the figures to the terminal attached now: its picture protocol as
+/// `--graphics` names it, else asked of the terminal, else guessed from its
+/// environment. Asked with the terminal raw and before mouse reports are on.
+fn fit(session: &Session, app: &mut App) {
+    use legume_tui::graphics::{reprobe, Fallback};
+    let old = app.picker().clone();
+    app.repick(reprobe(
+        session,
+        &old,
+        app.args.graphics,
+        Fallback::ProbeThenEnv,
+    ));
 }
 
 /// The run's genes, indexed to score marker panels against.

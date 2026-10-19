@@ -160,7 +160,7 @@ fn running(app: &mut App) {
         .arg("30")
         .spawn()
         .unwrap();
-    app.child = Some(Running::new(child, Job::Pass));
+    app.child = Some(Running::new(child.into(), Job::Pass));
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn a_running_save_offers_no_stop_and_x_says_so_at_once() {
         .arg("30")
         .spawn()
         .unwrap();
-    app.child = Some(Running::new(child, Job::Save(1)));
+    app.child = Some(Running::new(held_as(child, &Job::Save(1)), Job::Save(1)));
     app.tick();
     assert!(!app.status.contains("x: stop"), "{}", app.status);
     assert!(!drawn(&app).contains("x stop"), "the popup offers no stop");
@@ -230,7 +230,7 @@ fn a_running_save_offers_no_stop_and_x_says_so_at_once() {
     assert!(app.status.contains("finishes on its own"), "{}", app.status);
     assert!(app.child.is_some());
     if let Some(mut r) = app.child.take() {
-        let _ = r.child.kill();
+        r.child.kill();
         let _ = r.child.wait();
     }
 }
@@ -2726,13 +2726,61 @@ fn the_log_pane_leaves_out_the_svg_fonts_fallback_notes() {
     fn at(target: &str, level: Level) -> Metadata<'_> {
         Metadata::builder().target(target).level(level).build()
     }
-    let pane = crate::tui::PaneLogger(LevelFilter::Info);
+    let stderr = || legume_tui::logs::gate(Kept::default());
+    let pane = crate::tui::PaneLogger(LevelFilter::Info, stderr());
     assert!(!pane.enabled(&at("usvg::text", Level::Warn)), "font noise");
     assert!(pane.enabled(&at("lupin::figures", Level::Warn)));
     assert!(pane.enabled(&at("lupin::tui", Level::Info)));
     // With -v, everything.
-    let verbose = crate::tui::PaneLogger(LevelFilter::Debug);
+    let verbose = crate::tui::PaneLogger(LevelFilter::Debug, stderr());
     assert!(verbose.enabled(&at("usvg::text", Level::Warn)));
+}
+
+/// A logger that keeps what it is given, standing in for stderr's.
+#[derive(Clone, Default)]
+struct Kept(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl log::Log for Kept {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, r: &log::Record) {
+        self.0.lock().unwrap().push(r.args().to_string());
+    }
+    fn flush(&self) {}
+}
+
+#[test]
+fn a_log_line_for_the_pane_goes_through_the_gate_to_stderr_too() {
+    use log::{Level, LevelFilter, Log, Record};
+    let stderr = Kept::default();
+    let pane = crate::tui::PaneLogger(LevelFilter::Info, legume_tui::logs::gate(stderr.clone()));
+    let say = |level, target, text: &str| {
+        let args = format_args!("{text}");
+        pane.log(
+            &Record::builder()
+                .level(level)
+                .target(target)
+                .args(args)
+                .build(),
+        );
+    };
+    say(Level::Info, "lupin::tui", "PLACEHOLDER1 read");
+    say(Level::Warn, "usvg::text", "a font fallback");
+    say(Level::Debug, "lupin::tui", "a detail");
+    // What the pane leaves out, stderr does too.
+    assert_eq!(*stderr.0.lock().unwrap(), ["PLACEHOLDER1 read"]);
+}
+
+/// `child` held as the runner holds `job`'s: a save is let finish.
+fn held_as(child: std::process::Child, job: &Job) -> Held {
+    use legume_tui::child::Stopper;
+    let stopper = if matches!(job, Job::Save(_)) {
+        Stopper::saving()
+    } else {
+        Stopper::new()
+    };
+    Held::new(child, stopper)
 }
 
 /// A stand-in for a running `job`.
@@ -2741,7 +2789,7 @@ fn running_job(app: &mut App, job: Job) {
         .arg("30")
         .spawn()
         .unwrap();
-    app.child = Some(Running::new(child, job));
+    app.child = Some(Running::new(held_as(child, &job), job));
 }
 
 /// `job`, ended well, taken in as the main loop does: one tick says it is
@@ -2749,7 +2797,7 @@ fn running_job(app: &mut App, job: Job) {
 fn finished(app: &mut App, job: Job) {
     let mut child = std::process::Command::new("true").spawn().unwrap();
     child.wait().unwrap();
-    app.child = Some(Running::new(child, job));
+    app.child = Some(Running::new(held_as(child, &job), job));
     app.tick();
     assert!(app.job_ended(), "{}", app.status);
     assert!(app.status.contains(" done in "), "{}", app.status);
@@ -2767,8 +2815,9 @@ fn a_job_that_ends_says_so_before_its_output_is_read() {
     assert!(app.status.starts_with("pass…"), "{}", app.status);
     let mut child = std::process::Command::new("true").spawn().unwrap();
     child.wait().unwrap();
-    let mut sleeping = std::mem::replace(&mut app.child.as_mut().unwrap().child, child);
-    let _ = (sleeping.kill(), sleeping.wait());
+    let mut sleeping = std::mem::replace(&mut app.child.as_mut().unwrap().child, child.into());
+    sleeping.kill();
+    let _ = sleeping.wait();
     app.tick();
     assert!(app.status.starts_with("pass done in"), "{}", app.status);
     assert!(app.status.contains("reading"), "{}", app.status);
@@ -2795,7 +2844,7 @@ fn a_keys_reply_holds_the_status_against_the_progress_for_a_while() {
     assert!(app.status.starts_with("save…"), "{}", app.status);
     app.stop();
     if let Some(mut r) = app.child.take() {
-        let _ = r.child.kill();
+        r.child.kill();
         let _ = r.child.wait();
     }
 
@@ -2822,7 +2871,7 @@ fn the_settings_note_does_not_offer_r_while_a_job_refuses_it() {
     assert!(screen.contains("settings changed"), "{screen}");
     assert!(!screen.contains("r to re-run"), "{screen}");
     if let Some(mut r) = app.child.take() {
-        let _ = r.child.kill();
+        r.child.kill();
         let _ = r.child.wait();
     }
 }
@@ -3648,7 +3697,7 @@ fn kill_lets_a_save_under_way_finish_before_quitting() {
         .args(["-c", "sleep 0.3; exit 3"])
         .spawn()
         .unwrap();
-    app.child = Some(Running::new(child, Job::Save(1)));
+    app.child = Some(Running::new(held_as(child, &Job::Save(1)), Job::Save(1)));
     assert!(app.saving_now());
     let started = Instant::now();
     app.kill();
@@ -3701,7 +3750,7 @@ fn a_new_terminal_gives_the_figures_its_picker() {
     #[allow(deprecated)]
     let mut kitty = ratatui_image::picker::Picker::from_fontsize((10, 20).into());
     kitty.set_protocol_type(Kitty);
-    app.repick(kitty);
+    app.repick(Repick::Changed(kitty));
     assert_eq!(app.picker().protocol_type(), Kitty);
     // Each pane has the new picker, its picture and figure dropped (another
     // protocol), and makes them again for the new terminal.
@@ -3712,53 +3761,57 @@ fn a_new_terminal_gives_the_figures_its_picker() {
     }
 }
 
-/// The process group of `pid`, as `/proc` has it.
-#[cfg(target_os = "linux")]
-fn group_of(pid: u32) -> u32 {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
-    // After the command's name in parentheses: state, parent, group.
-    let rest = &stat[stat.rfind(')').unwrap() + 1..];
-    rest.split_whitespace().nth(2).unwrap().parse().unwrap()
-}
-
 #[cfg(target_os = "linux")]
 #[test]
-fn a_child_of_the_tui_has_a_process_group_of_its_own_only_when_hosted() {
-    let group = |hosted| {
-        let mut cmd = std::process::Command::new("sleep");
-        cmd.arg("30");
-        let mut child = crate::tui::child_group(&mut cmd, hosted).spawn().unwrap();
-        let pid = child.id();
-        let g = group_of(pid);
-        let _ = (child.kill(), child.wait());
-        (pid, g)
+fn a_held_child_is_killed_and_waited_for_and_its_end_kept() {
+    let sleeping = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut held = Held::from(sleeping);
+    let pid = held.id();
+    assert!(held.try_wait().unwrap().is_none());
+    held.kill();
+    let ended = held.wait().unwrap();
+    assert!(!ended.success());
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    // Seen once, it stays seen: the tick after reads it again.
+    assert_eq!(held.try_wait().unwrap(), Some(ended));
+    let mut done = Held::from(std::process::Command::new("true").spawn().unwrap());
+    let st = loop {
+        if let Some(st) = done.try_wait().unwrap() {
+            break st;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     };
-    let (pid, g) = group(true);
-    assert_eq!(g, pid, "hosted, it leads its own group");
-    // Plain, a hangup of the user's terminal reaches it with the TUI.
-    let (_, g) = group(false);
-    assert_eq!(g, group_of(std::process::id()), "plain, it keeps the TUI's");
-    // No session at all (as here): plain.
-    let mut cmd = std::process::Command::new("sleep");
-    cmd.arg("30");
-    let mut child = crate::tui::child_command(&mut cmd).spawn().unwrap();
-    assert_eq!(group_of(child.id()), group_of(std::process::id()));
-    let _ = (child.kill(), child.wait());
+    assert!(st.success());
+    assert_eq!(done.try_wait().unwrap(), Some(st));
+    assert_eq!(done.wait().unwrap(), st);
 }
 
 #[test]
-fn the_terminal_s_keys_decide_shift_enter_and_the_keyboard_mode() {
-    use ratatui::crossterm::event::KeyboardEnhancementFlags as Flags;
-    let picker = ratatui_image::picker::Picker::halfblocks;
+fn a_new_terminal_of_the_same_kind_leaves_the_pictures_or_sends_kittys_again() {
+    use super::super::figure_pane::tests::{made, pane};
+    use ratatui_image::picker::ProtocolType::{Halfblocks, Kitty};
     let mut app = app_with_terms(false);
-    let modes = crate::tui::fit(&mut app, picker(), true);
-    assert!(app.shift_enter);
+    let area = ratatui::layout::Rect::new(0, 0, 30, 10);
+    let figures = pane();
+    assert!(figures.protocol(area).is_ok());
+    app.figures = Some(figures);
+    // The same: nothing made again.
+    app.repick(Repick::Same);
     assert_eq!(
-        modes.keyboard_enhancement,
-        Some(Flags::DISAMBIGUATE_ESCAPE_CODES)
+        made(app.figures.as_ref().unwrap()),
+        (Halfblocks, true, true)
     );
-    // Attached again from a terminal that cannot: both off.
-    let modes = crate::tui::fit(&mut app, picker(), false);
-    assert!(!app.shift_enter);
-    assert_eq!(modes, legume_tui::Modes::default());
+    #[allow(deprecated)]
+    let mut kitty = ratatui_image::picker::Picker::from_fontsize((10, 20).into());
+    kitty.set_protocol_type(Kitty);
+    app.repick(Repick::Changed(kitty));
+    let p = app.figures.as_ref().unwrap();
+    assert!(p.protocol(area).is_ok());
+    // Kitty again: the pictures sent again, from the figures drawn.
+    app.repick(Repick::Resend);
+    assert_eq!(app.picker().protocol_type(), Kitty);
+    assert_eq!(made(app.figures.as_ref().unwrap()), (Kitty, false, true));
 }

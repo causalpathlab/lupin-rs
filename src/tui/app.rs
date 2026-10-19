@@ -9,7 +9,7 @@ use super::figure_pane::FigureKey;
 use super::menu::{numbered, Action, Menu, Outcome};
 use super::ontology::ViewKey;
 use super::round::{decisions, Edit, RoundView};
-use super::runner;
+use super::runner::{self, Held};
 use crate::annotate::args::ProjectionMethod;
 use crate::annotate::celltype_tree::ClTerms;
 use crate::annotate::markers::label_key;
@@ -21,9 +21,10 @@ use crate::manifest::run::annotated_path;
 use crate::trajectory::prior::Relation;
 use anyhow::Context as _;
 use enrichment::UNASSIGNED_LABEL;
+use legume_tui::graphics::Repick;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ExitStatus};
+use std::process::ExitStatus;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -437,7 +438,7 @@ impl Job {
 
 /// A `lupin relabel --preview` rescoring the round against `edits`.
 pub struct Rescoring {
-    child: Child,
+    child: Held,
     out: Receiver<String>,
     edits: Vec<Edit>,
     file: PathBuf,
@@ -445,7 +446,7 @@ pub struct Rescoring {
 
 impl Rescoring {
     fn stop(mut self) {
-        let _ = self.child.kill();
+        self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_file(&self.file);
     }
@@ -456,7 +457,7 @@ impl Rescoring {
 /// first ranking (the text model fetched, the ontology encoded) takes
 /// minutes, and passes, saves and rescoring go on meanwhile.
 pub struct Ranking {
-    child: Child,
+    child: Held,
     /// Its log lines, apart from the other jobs'.
     log: Receiver<String>,
     started: Instant,
@@ -468,7 +469,7 @@ pub struct Ranking {
 
 impl Ranking {
     #[must_use]
-    pub fn new(child: Child, log: Receiver<String>, file: PathBuf, label: String) -> Self {
+    pub fn new(child: Held, log: Receiver<String>, file: PathBuf, label: String) -> Self {
         Self {
             child,
             log,
@@ -479,7 +480,7 @@ impl Ranking {
     }
 
     fn stop(mut self) {
-        let _ = self.child.kill();
+        self.child.kill();
         let _ = self.child.wait();
     }
 
@@ -516,7 +517,7 @@ enum Armed {
 
 /// A job the TUI started, with the progress it reports.
 pub struct Running {
-    pub child: Child,
+    pub child: Held,
     pub started: Instant,
     pub job: Job,
     /// As its `@progress` lines report it.
@@ -527,7 +528,7 @@ pub struct Running {
 }
 
 impl Running {
-    pub fn new(child: Child, job: Job) -> Self {
+    pub fn new(child: Held, job: Job) -> Self {
         Self {
             child,
             started: Instant::now(),
@@ -1650,7 +1651,7 @@ impl App {
                 let Some(mut r) = self.child.take() else {
                     return;
                 };
-                let _ = r.child.kill();
+                r.child.kill();
                 let _ = r.child.wait();
                 if job != Job::Pass {
                     self.status = "stopped".into();
@@ -2568,9 +2569,7 @@ impl App {
 
     /// Whether a save is running.
     pub fn saving_now(&self) -> bool {
-        self.child
-            .as_ref()
-            .is_some_and(|r| matches!(r.job, Job::Save(_)))
+        self.child.as_ref().is_some_and(|r| r.child.saves())
     }
 
     /// One line for `lupin sessions` and the resume picker: the run or round
@@ -3599,24 +3598,21 @@ impl App {
 
     /// The attached terminal's picture protocol, as the screen last asked it
     /// ([`App::repick`]); block characters until it has.
-    fn picker(&mut self) -> &ratatui_image::picker::Picker {
+    pub(super) fn picker(&mut self) -> &ratatui_image::picker::Picker {
         self.picker
             .get_or_insert_with(ratatui_image::picker::Picker::halfblocks)
     }
 
-    /// The pictures for the terminal attached now, with `picker`: each
-    /// figure's terminal picture made again (kitty's images went with the
-    /// last terminal), and with another protocol or cell size, the figure
-    /// itself drawn again.
-    pub fn repick(&mut self, picker: ratatui_image::picker::Picker) {
-        let kind = |p: &ratatui_image::picker::Picker| {
-            let f = p.font_size();
-            (p.protocol_type(), f.width, f.height)
+    /// The pictures for the terminal attached now, as `repick` says: kitty's
+    /// sent again (they went with the last terminal), each figure's terminal
+    /// picture made again from it; with another protocol or cell size, the
+    /// figures drawn again too, with the new picker.
+    pub fn repick(&mut self, repick: Repick) {
+        let (picker, changed) = match repick {
+            Repick::Changed(picker) => (picker, true),
+            Repick::Resend => (self.picker().clone(), false),
+            _ => return,
         };
-        let changed = self
-            .picker
-            .as_ref()
-            .is_none_or(|old| kind(old) != kind(&picker));
         for pane in [&mut self.figures, &mut self.cell_map]
             .into_iter()
             .flatten()
@@ -4423,8 +4419,8 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         if let Some(mut r) = self.child.take() {
-            if !matches!(r.job, Job::Save(_)) {
-                let _ = r.child.kill();
+            if !r.child.saves() {
+                r.child.kill();
             }
             let _ = r.child.wait();
         }

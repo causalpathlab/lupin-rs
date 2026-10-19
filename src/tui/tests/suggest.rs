@@ -227,7 +227,7 @@ fn c_on_a_type_with_a_term_or_with_no_ontology_says_why_not() {
 fn ranking(app: &mut App, cmd: &mut std::process::Command, file: PathBuf) {
     let (_, rx) = std::sync::mpsc::channel();
     let child = cmd.spawn().unwrap();
-    app.ranking = Some(Ranking::new(child, rx, file, "XQ".into()));
+    app.ranking = Some(Ranking::new(child.into(), rx, file, "XQ".into()));
 }
 
 /// Tick `app` until its ranking has ended.
@@ -497,7 +497,7 @@ fn a_rankings_last_log_line_reaches_the_log() {
         tx.send("[ERROR] the reason it failed".to_string()).unwrap();
     });
     app.ranking = Some(Ranking::new(
-        child,
+        child.into(),
         rx,
         dir.path().join("none.json"),
         "XQ".into(),

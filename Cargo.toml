@@ -85,8 +85,8 @@ ratatui-image = { version = "11.1", default-features = false, features = ["cross
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Detachable sessions for the TUI, its image protocol pick and the session
 # subcommands, shared with the other legume tools.
-legume-tui = "0.2"
+legume-tui = "0.3"
 
 [dev-dependencies]
 # Drives the TUI through pseudo-terminals in the session tests.
-legume-tui = { version = "0.2", features = ["testing"] }
+legume-tui = { version = "0.3", features = ["testing"] }
