@@ -460,6 +460,7 @@ fn record(
             a.celltype_units = rel(&out.celltype_units);
             a.celltype_links = rel(&out.celltype_links);
             a.term_alignment = rel(&out.term_alignment);
+            a.term_units = rel(&out.term_units);
             a.ontology_signature = rel(&out.ontology_signature);
             a.ontology_term_effect = rel(&out.ontology_term_effect);
             loaded.manifest.defaults.colour_by = Some("annotation".into());

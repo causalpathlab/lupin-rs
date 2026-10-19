@@ -218,6 +218,16 @@ fn a_pass_calls_each_cell_by_its_region_and_writes_the_units_and_links() {
         o.term_alignment.as_deref(),
         Some(format!("{out}{TERM_ALIGNMENT_PARQUET}").as_str())
     );
+    // The terms' centres, beside the cell types', in the space the cells
+    // were read in.
+    let t =
+        Mat::from_parquet_with_row_names(&format!("{out}{TERM_UNITS_PARQUET}"), Some(0)).unwrap();
+    assert_eq!(t.rows, ["TERM1".into(), "TERM2".into()] as [Box<str>; 2]);
+    assert!(t.cols.iter().any(|c| &**c == "h0"), "{:?}", t.cols);
+    assert_eq!(
+        o.term_units.as_deref(),
+        Some(format!("{out}{TERM_UNITS_PARQUET}").as_str())
+    );
 }
 
 #[test]

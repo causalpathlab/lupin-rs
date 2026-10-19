@@ -274,6 +274,10 @@ pub struct RunAnnotate {
     /// and p and q against random gene sets of its size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub term_alignment: Option<String>,
+    /// Each of those terms' genes covered and centre, in the space the
+    /// cell types' are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub term_units: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_celltype_es: Option<String>,
     /// nClusters × C SuSiE posterior inclusion probability; set when SuSiE

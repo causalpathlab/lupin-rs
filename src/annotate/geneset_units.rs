@@ -24,6 +24,8 @@ pub const UNITS_PARQUET: &str = ".celltype_units.parquet";
 pub const TYPE_LINKS_TSV: &str = ".celltype_links.tsv";
 /// Each cluster against each ontology term: score, p and q ([`align`]).
 pub const TERM_ALIGNMENT_PARQUET: &str = ".term_alignment.parquet";
+/// Each ontology term's genes in the table and given, and centre (`h0…`).
+pub const TERM_UNITS_PARQUET: &str = ".term_units.parquet";
 
 /// A run's genes and their rows (row-major, `dim` wide), in the space its
 /// cells share with them.
@@ -442,20 +444,29 @@ pub fn run_pass(
         })
         .unzip();
     graph_embedding_util::type_annotation::write_cell_labels(out, &cells.rows, &labels, &probs)?;
-    write_units(&format!("{out}{UNITS_PARQUET}"), &units, &r)?;
+    write_sets(
+        &format!("{out}{UNITS_PARQUET}"),
+        &units,
+        &r.names,
+        &[("radius", &r.radius), ("weight", &r.weight)],
+    )?;
     write_links(&format!("{out}{TYPE_LINKS_TSV}"), &r)?;
-    let term_alignment = if units.kinds.contains(&SetKind::Term) {
+    let (term_alignment, term_units) = if units.kinds.contains(&SetKind::Term) {
         let path = format!("{out}{TERM_ALIGNMENT_PARQUET}");
-        write_alignment(&path, &align(&units, SetKind::Term, &flat, groups)?)?;
-        Some(path)
+        let a = align(&units, SetKind::Term, &flat, groups)?;
+        write_alignment(&path, &a)?;
+        let sets = format!("{out}{TERM_UNITS_PARQUET}");
+        write_sets(&sets, &units, &a.terms, &[])?;
+        (Some(path), Some(sets))
     } else {
-        None
+        (None, None)
     };
     Ok(AnnotationOutputs {
         argmax: Some(labels_path(out)),
         celltype_units: Some(format!("{out}{UNITS_PARQUET}")),
         celltype_links: Some(format!("{out}{TYPE_LINKS_TSV}")),
         term_alignment,
+        term_units,
         ..AnnotationOutputs::default()
     })
 }
@@ -526,27 +537,28 @@ fn whitened(
     ))
 }
 
-fn write_units(path: &str, units: &Units, r: &Regions) -> Result<()> {
-    let at: Vec<usize> = r.names.iter().filter_map(|n| units.index(n)).collect();
+/// The `names` sets of `units` as a table: genes found and given, the
+/// `extra` columns, then the centre (`h0…`), one row per set.
+fn write_sets(path: &str, units: &Units, names: &[String], extra: &[(&str, &[f32])]) -> Result<()> {
+    let at: Vec<usize> = names.iter().filter_map(|n| units.index(n)).collect();
     let found: Vec<f32> = at.iter().map(|&i| units.covered[i].0 as f32).collect();
     let given: Vec<f32> = at.iter().map(|&i| units.covered[i].1 as f32).collect();
     let centre: Vec<Vec<f32>> = (0..units.dim)
         .map(|d| {
-            at.iter()
+            (at.iter())
                 .map(|&i| units.centres[i * units.dim + d])
                 .collect()
         })
         .collect();
-    let names: Vec<String> = (0..units.dim).map(|d| format!("h{d}")).collect();
+    let dims: Vec<String> = (0..units.dim).map(|d| format!("h{d}")).collect();
     let mut cols = vec![
         ("genes_found".into(), Column::F32(&found)),
         ("genes_given".into(), Column::F32(&given)),
-        ("radius".into(), Column::F32(&r.radius)),
-        ("weight".into(), Column::F32(&r.weight)),
     ];
-    cols.extend((names.iter().zip(&centre)).map(|(n, v)| (n.as_str().into(), Column::F32(v))));
-    let rows: Vec<Box<str>> = r.names.iter().map(|n| n.as_str().into()).collect();
-    write_named_table(path, "type", &rows, &cols)?;
+    cols.extend(extra.iter().map(|(n, v)| ((*n).into(), Column::F32(v))));
+    cols.extend((dims.iter().zip(&centre)).map(|(n, v)| (n.as_str().into(), Column::F32(v))));
+    let rows: Vec<Box<str>> = names.iter().map(|n| n.as_str().into()).collect();
+    write_named_table(path, "set", &rows, &cols)?;
     Ok(())
 }
 

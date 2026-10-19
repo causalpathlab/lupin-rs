@@ -176,6 +176,8 @@ pub struct AnnotationOutputs {
     pub celltype_links: Option<String>,
     /// Each cluster against each ontology term trained as a unit.
     pub term_alignment: Option<String>,
+    /// Each of those terms' centre, beside the cell types'.
+    pub term_units: Option<String>,
     /// Per-cell cluster ids whose values match the cluster tables' `K{id}` rows.
     pub clusters: Option<String>,
     /// The pass's sufficient statistics, for rescoring later rounds.
