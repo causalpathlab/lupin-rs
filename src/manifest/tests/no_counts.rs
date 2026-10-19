@@ -205,3 +205,17 @@ fn a_dictionary_of_weights_is_normalised_and_one_of_logs_exponentiated() {
         );
     }
 }
+
+#[test]
+fn susie_runs_on_a_cached_rounds_sums_and_may_make_the_call() {
+    use crate::annotate::rounds::Method;
+    use crate::annotate_cmd::{check_call, methods_run, route_tests::cli};
+    let root = tempfile::tempdir().unwrap();
+    let (loaded, _) = run_with_cached_round(root.path());
+    assert_eq!(
+        methods_run(&cli(&[]), Some(&loaded)),
+        [Method::Enrichment, Method::Susie],
+        "the cache's count sums are what SuSiE fits"
+    );
+    assert!(check_call(&cli(&["--call", "susie"]), Some(&loaded)).is_ok());
+}

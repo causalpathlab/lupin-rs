@@ -249,7 +249,7 @@ fn rescored_scores_replace_a_clusters_and_swap_back() {
     assert_eq!(shares.len(), 3, "every rescored type has its share");
     assert_eq!(
         candidates[0].ranks,
-        [Some(0), None, None],
+        [Some(0), None, None, None],
         "an enrichment round is ranked by the rescored enrichment"
     );
 
@@ -464,9 +464,9 @@ fn a_rounds_candidates_carry_the_scores_share_beside_the_enrichments() {
     assert_eq!((top.label.as_str(), top.score), ("A", Some(1.0)));
 }
 
-fn ranked(label: &str, share: f32, ranks: [Option<usize>; 3]) -> Candidate {
+fn ranked(label: &str, share: f32, [e, s, sc]: [Option<usize>; 3]) -> Candidate {
     Candidate {
-        ranks,
+        ranks: [e, s, sc, None],
         ..candidate(label, share)
     }
 }
@@ -513,8 +513,8 @@ fn a_rounds_candidates_know_where_each_method_ranks_them() {
     let view = RoundView::load(&round.file).unwrap();
     let k0 = &view.clusters[0].candidates;
     let ranks = |l: &str| k0.iter().find(|c| c.label == l).unwrap().ranks;
-    assert_eq!(ranks("A"), [Some(0), None, Some(0)]);
-    assert_eq!(ranks("B"), [Some(1), None, None]);
+    assert_eq!(ranks("A"), [Some(0), None, Some(0), None]);
+    assert_eq!(ranks("B"), [Some(1), None, None, None]);
 }
 
 #[test]
@@ -622,9 +622,82 @@ fn a_rescore_keeps_the_rounds_method_and_the_readings_it_did_not_redo() {
     let recorded = r.swap_scores(scores);
     let again = r.rescored(Some(&recorded), &parse_scores(&preview).unwrap());
     assert_eq!(again[&0].0[0].pip, Some(1.0));
+    // SuSiE's call stands beside the rescored enrichment's, so the cluster
+    // is flagged for the two disagreeing, not for want of a call.
+    assert!(!flagged);
+    assert!(r.clusters[0].call_evidence().is_some(), "SuSiE's call kept");
+    assert!(r.clusters[0].disagree() && r.clusters[0].flagged());
+}
+
+/// A candidate `label` that each method of `ranks` ([`Method::ALL`]'s order)
+/// puts at that place, with the score's and the units' share of cells.
+fn called(
+    label: &str,
+    ranks: [Option<usize>; 4],
+    score: Option<f32>,
+    units: Option<f32>,
+) -> Candidate {
+    let mut c = Candidate {
+        ranks,
+        ..candidate(label, 0.9)
+    };
+    (c.evidence.score, c.evidence.units) = (score, units);
+    c
+}
+
+#[test]
+fn each_methods_call_is_its_top_and_a_round_without_units_has_no_units_call() {
+    use crate::annotate::rounds::Method;
+    let c = ClusterView {
+        candidates: vec![
+            called("CT1", [Some(0), Some(0), Some(1), None], Some(0.3), None),
+            called("CT2", [Some(1), None, Some(0), None], Some(0.6), None),
+        ],
+        ..cluster(0, 10, Some("CT1"))
+    };
+    let calls: Vec<(Method, &str)> = c
+        .calls()
+        .into_iter()
+        .map(|(m, t)| (m, t.label.as_str()))
+        .collect();
     assert_eq!(
-        r.clusters[0].flagged(),
-        flagged,
-        "no flag for what was not redone"
+        calls,
+        [
+            (Method::Enrichment, "CT1"),
+            (Method::Susie, "CT1"),
+            (Method::Score, "CT2")
+        ]
     );
+}
+
+#[test]
+fn a_cluster_whose_methods_call_different_types_is_flagged() {
+    let with = |c: Vec<Candidate>| ClusterView {
+        candidates: c,
+        ..cluster(0, 10, Some("CT1"))
+    };
+    let agree = with(vec![
+        called(
+            "CT1",
+            [Some(0), None, Some(0), Some(0)],
+            Some(0.8),
+            Some(0.7),
+        ),
+        called("CT2", [Some(1), None, Some(1), None], Some(0.1), None),
+    ]);
+    assert!(
+        !agree.disagree() && !agree.flagged(),
+        "every method calls CT1"
+    );
+    let split = with(vec![
+        called(
+            "CT1",
+            [Some(0), None, Some(1), Some(0)],
+            Some(0.3),
+            Some(0.7),
+        ),
+        called("CT2", [Some(1), None, Some(0), None], Some(0.6), None),
+    ]);
+    assert!(split.disagree(), "the score calls CT2");
+    assert!(split.flagged(), "a well-held call the methods dispute");
 }

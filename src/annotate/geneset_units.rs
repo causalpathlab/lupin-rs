@@ -34,10 +34,15 @@ pub const TERM_UNITS_PARQUET: &str = ".term_units.parquet";
 /// Each cell type's and term's nearest cells ([`ANCHORS_K`]) and their
 /// cosine: where a viewer draws the unit on a layout of the cells.
 pub const UNIT_ANCHORS_PARQUET: &str = ".unit_anchors.parquet";
+/// Each cell's cluster, call and membership of the region it is called by:
+/// the units' reading, tabled by cluster as the score's is, beside the
+/// round's call or making it.
+pub const UNITS_CALL_PARQUET: &str = ".units_call.parquet";
 /// What a pass writes beside the per-cell labels, cleared before it runs so
 /// no file of an earlier pass (its terms, say) is read as this one's.
-pub const UNITS_OUTPUT_SUFFIXES: [&str; 6] = [
+pub const UNITS_OUTPUT_SUFFIXES: [&str; 7] = [
     UNITS_PARQUET,
+    UNITS_CALL_PARQUET,
     MEMBERSHIP_PARQUET,
     TYPE_LINKS_TSV,
     TERM_ALIGNMENT_PARQUET,
@@ -509,6 +514,39 @@ pub fn run_pass(
     terms: &Terms,
     cfg: &UnitConfig,
 ) -> Result<AnnotationOutputs> {
+    let (mut outputs, labels, probs) = fit(markers, out, feat, cells, groups, terms, cfg)?;
+    graph_embedding_util::type_annotation::write_cell_labels(out, &cells.rows, &labels, &probs)?;
+    outputs.argmax = Some(labels_path(out));
+    Ok(outputs)
+}
+
+/// The units as a reading beside another method's call (the default pass
+/// carries them): [`run_pass`]'s files but the per-cell labels, so the
+/// round's call is left alone; the units' own per-cell call is in their
+/// table ([`UNITS_CALL_PARQUET`]).
+pub fn alongside(
+    markers: &str,
+    out: &str,
+    feat: &MatWithNames<Mat>,
+    cells: &MatWithNames<Mat>,
+    groups: &[usize],
+    terms: &Terms,
+    cfg: &UnitConfig,
+) -> Result<AnnotationOutputs> {
+    Ok(fit(markers, out, feat, cells, groups, terms, cfg)?.0)
+}
+
+/// Train and fit the units and write every file of theirs but the per-cell
+/// labels; the outputs, and each cell's call and membership.
+fn fit(
+    markers: &str,
+    out: &str,
+    feat: &MatWithNames<Mat>,
+    cells: &MatWithNames<Mat>,
+    groups: &[usize],
+    terms: &Terms,
+    cfg: &UnitConfig,
+) -> Result<(AnnotationOutputs, Vec<Box<str>>, Vec<f32>)> {
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
     let mut panel: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (gene, t) in crate::annotate::markers::read_panel(markers)? {
@@ -541,7 +579,8 @@ pub fn run_pass(
             (r.names[best].as_str().into(), p)
         })
         .unzip();
-    graph_embedding_util::type_annotation::write_cell_labels(out, &cells.rows, &labels, &probs)?;
+    let units_call = format!("{out}{UNITS_CALL_PARQUET}");
+    write_calls(&units_call, &cells.rows, groups, &labels, &probs)?;
     write_sets(
         &format!("{out}{UNITS_PARQUET}"),
         &units,
@@ -574,8 +613,8 @@ pub fn run_pass(
         &cells.rows,
         &nearest_cells(&units, &anchored, &flat, n, ANCHORS_K),
     )?;
-    Ok(AnnotationOutputs {
-        argmax: Some(labels_path(out)),
+    let outputs = AnnotationOutputs {
+        units_call: Some(units_call),
         celltype_units: Some(format!("{out}{UNITS_PARQUET}")),
         celltype_links: Some(format!("{out}{TYPE_LINKS_TSV}")),
         celltype_membership: Some(membership),
@@ -583,7 +622,33 @@ pub fn run_pass(
         term_units,
         unit_anchors: Some(anchors),
         ..AnnotationOutputs::default()
-    })
+    };
+    Ok((outputs, labels, probs))
+}
+
+/// Each cell's cluster (`-1` for none), call and membership, by cell.
+fn write_calls(
+    path: &str,
+    cells: &[Box<str>],
+    groups: &[usize],
+    call: &[Box<str>],
+    membership: &[f32],
+) -> Result<()> {
+    let cluster: Vec<i32> = groups
+        .iter()
+        .map(|&k| i32::try_from(k).unwrap_or(-1))
+        .collect();
+    write_named_table(
+        path,
+        "cell",
+        cells,
+        &[
+            ("cluster".into(), Column::I32(&cluster)),
+            ("call".into(), Column::Str(call)),
+            ("membership".into(), Column::F32(membership)),
+        ],
+    )?;
+    Ok(())
 }
 
 /// The genes (from their mean) and the cells (from the balanced centre of

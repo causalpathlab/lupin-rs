@@ -61,7 +61,7 @@ fn the_stage_reports_its_tables_under_their_own_keys_and_leaves_q_alone() {
         cluster_celltype_q: Some("the enrichment's softmax Q".into()),
         ..Default::default()
     };
-    run(&out, &cfg, &inputs(), &mut outputs).unwrap();
+    run(&out, &cfg, &inputs(), &mut outputs, true).unwrap();
 
     assert_eq!(
         outputs.cluster_celltype_q.as_deref(),

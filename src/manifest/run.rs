@@ -263,6 +263,10 @@ pub struct RunAnnotate {
     /// margin. Not a posterior, so not `annotation`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marker_score: Option<String>,
+    /// The gene-set units' per-cell table beside another method's call:
+    /// each cell's cluster, call and membership of its region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub units_call: Option<String>,
     /// The cell types as gene-set units: genes covered, radius, share of
     /// the cells and centre, by type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,7 +314,8 @@ pub struct RunAnnotate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_summary: Option<String>,
     /// Long table: every cluster's types with every method's statistic
-    /// (share, nes, p, q, pip, fold, explained, score; NaN where none).
+    /// (share, nes, p, q, pip, fold, explained, score, units; NaN where
+    /// none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_evidence: Option<String>,
     /// The method whose reading made the round's call.
@@ -394,6 +399,14 @@ impl RunAnnotate {
     pub fn drop_marker_score(&mut self) {
         self.marker_score = None;
         if self.called_by == Some(crate::annotate::rounds::Method::Score) {
+            self.called_by = None;
+        }
+    }
+
+    /// Drop the gene-set units' per-cell table, and their call with it.
+    pub fn drop_units_call(&mut self) {
+        self.units_call = None;
+        if self.called_by == Some(crate::annotate::rounds::Method::Units) {
             self.called_by = None;
         }
     }

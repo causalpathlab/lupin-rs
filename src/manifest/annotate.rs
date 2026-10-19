@@ -16,6 +16,7 @@ use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
 use crate::annotate::marker_score;
 use crate::annotate::ontology;
 use crate::annotate::outputs::AnnotationOutputs;
+use crate::annotate::rounds::Method;
 use crate::manifest::rounds;
 use crate::manifest::run::{annotated_path, resolve, Loaded};
 
@@ -80,12 +81,22 @@ pub fn annotate_by_enrichment(
         .expression_source
         .as_ref()
         .is_some_and(|e| e["from"] == "decoder");
+    // Unless another method's reading is asked to make the call (`--call`).
+    let susie_calls = matches!(args.call, None | Some(Method::Susie));
     match (&args.susie, plan.ontology_mode, from_decoder) {
         (Some(cfg), false, false) => {
-            if let Err(e) = crate::annotate::by_susie::run(&args.out, cfg, &inputs, &mut outputs) {
-                log::error!(
+            let fit =
+                crate::annotate::by_susie::run(&args.out, cfg, &inputs, &mut outputs, susie_calls);
+            match fit {
+                Err(e) if args.call == Some(Method::Susie) => {
+                    return Err(
+                        e.context("--call susie: the SuSiE stage, which makes the call, failed")
+                    );
+                }
+                Err(e) => log::error!(
                     "SuSiE stage failed ({e:#}); the call is the enrichment's softmax share"
-                );
+                ),
+                Ok(()) => {}
             }
         }
         (Some(_), false, true) => {
@@ -93,20 +104,45 @@ pub fn annotate_by_enrichment(
         }
         _ => {}
     }
-    // The score's reading beside the enrichment's, as auto asks, where the
-    // run decodes cells; NON-FATAL, as the enrichment's call stands without it.
-    if args.score_beside && !plan.ontology_mode && !args.markers.is_empty() {
-        match score_beside(
-            loaded,
-            &args.markers,
-            &args.out,
-            &inputs.cell_names,
-            &inputs.cluster_labels,
-        ) {
+    // The other methods' readings beside the enrichment's, as auto asks,
+    // where the run has the gene table each reads: the score where it
+    // decodes cells, the units where its genes are placed among the cells.
+    // NON-FATAL, as the enrichment's call stands without them, unless the
+    // method failing is the one asked to make the call.
+    let beside = !plan.ontology_mode && !args.markers.is_empty();
+    let (cells, groups) = (&inputs.cell_names, &inputs.cluster_labels);
+    if args.score_beside && beside {
+        match score_beside(loaded, &args.markers, &args.out, cells, groups) {
             Ok(table) => outputs.marker_score = table,
+            Err(e) if args.call == Some(Method::Score) => {
+                return Err(
+                    e.context("--call score: the projection score, which makes the call, failed")
+                );
+            }
             Err(e) => log::warn!("no projection score beside the enrichment: {e:#}"),
         }
     }
+    if args.units_beside && beside {
+        match units_beside(loaded, &args.units_beside(), cells, groups) {
+            Ok(Some(u)) => {
+                outputs.units_call = u.units_call;
+                outputs.celltype_units = u.celltype_units;
+                outputs.celltype_links = u.celltype_links;
+                outputs.celltype_membership = u.celltype_membership;
+                outputs.term_alignment = u.term_alignment;
+                outputs.term_units = u.term_units;
+                outputs.unit_anchors = u.unit_anchors;
+            }
+            Ok(None) => {}
+            Err(e) if args.call == Some(Method::Units) => {
+                return Err(
+                    e.context("--call units: the gene-set units, which make the call, failed")
+                );
+            }
+            Err(e) => log::warn!("no gene-set units beside the enrichment: {e:#}"),
+        }
+    }
+    take_call(args.call, &mut outputs, &args.out, cells)?;
     // The ids the cluster tables' `K{id}` rows refer to, so later rounds and
     // viewers key on the same clusters.
     let clusters_path = format!("{}{}", args.out, rounds::CLUSTERS);
@@ -123,7 +159,15 @@ pub fn annotate_by_enrichment(
     let pass = if plan.ontology_mode {
         Pass::GeneSets
     } else {
-        Pass::Markers(&args.markers)
+        let called = args.call.or(if outputs.cluster_celltype_pip.is_some() {
+            Some(Method::Susie)
+        } else {
+            outputs
+                .cluster_celltype_q
+                .as_ref()
+                .map(|_| Method::Enrichment)
+        });
+        Pass::Markers(&args.markers, called)
     };
     // Which nulls actually ran: the sample permutation is skipped when there
     // are too few batches to shuffle.
@@ -177,7 +221,7 @@ pub fn annotate_by_marker_score(args: &MarkerScoreArgs, loaded: &Loaded) -> Resu
     record(
         loaded,
         &args.out,
-        Pass::Markers(&args.markers),
+        Pass::Markers(&args.markers, Some(Method::Score)),
         &outputs,
         "projection",
         projection_settings(args, ProjectionMethod::Score)?,
@@ -208,7 +252,7 @@ pub fn annotate_by_units(args: &UnitsArgs, loaded: &Loaded) -> Result<()> {
     record(
         loaded,
         &args.out,
-        Pass::Markers(&args.markers),
+        Pass::Markers(&args.markers, Some(Method::Units)),
         &outputs,
         "projection",
         projection_settings(args, ProjectionMethod::Units)?,
@@ -242,10 +286,55 @@ pub fn score_beside(
         return Ok(None);
     }
     let (feat, embedding) = score_tables(loaded)?;
-    // The pass's cells in its order: the embedding as it is when they are
-    // its rows already.
+    let (picked, kept) = pass_rows(embedding, cells, groups)?;
+    marker_score::alongside(markers, out, &feat, &picked, &kept).map(Some)
+}
+
+/// The gene-set units as a reading beside another pass: when the run has
+/// the gene table they read, train them on `args`' panel (and terms) and fit
+/// them to those of `cells` the cell embedding has, the terms aligned with
+/// `groups` (that pass's clusters); every file of theirs but the per-cell
+/// labels is written under `args.out`. `None` when the run has no such table.
+pub fn units_beside(
+    loaded: &Loaded,
+    args: &UnitsArgs,
+    cells: &[Box<str>],
+    groups: &[usize],
+) -> Result<Option<AnnotationOutputs>> {
+    if crate::marker_embedding::projection_gene_table(&loaded.manifest, ProjectionMethod::Units)
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let run = loaded.file.display().to_string();
+    let feat = load_marker_feature_embedding(&loaded.manifest, &loaded.dir, &run)?;
+    let cell_path = loaded.geometry_latent_path()?;
+    let embedding = Mat::from_parquet(&cell_path)
+        .with_context(|| format!("reading cell embedding {cell_path}"))?;
+    let (picked, kept) = pass_rows(embedding, cells, groups)?;
+    let terms = args.terms(&feat.rows)?;
+    crate::annotate::geneset_units::alongside(
+        &args.markers,
+        &args.out,
+        &feat,
+        &picked,
+        &kept,
+        &terms,
+        &args.config()?,
+    )
+    .map(Some)
+}
+
+/// The rows of `embedding` that are the pass's `cells`, in its order, with
+/// their clusters of `groups`; the embedding as it is when they are its
+/// rows already.
+fn pass_rows(
+    embedding: MatWithNames<Mat>,
+    cells: &[Box<str>],
+    groups: &[usize],
+) -> Result<(MatWithNames<Mat>, Vec<usize>)> {
     if embedding.rows.as_slice() == cells {
-        return marker_score::alongside(markers, out, &feat, &embedding, groups).map(Some);
+        return Ok((embedding, groups.to_vec()));
     }
     let row: HashMap<&str, usize> = embedding
         .rows
@@ -267,7 +356,64 @@ pub fn score_beside(
         rows: rows.iter().map(|&i| embedding.rows[i].clone()).collect(),
         cols: embedding.cols,
     };
-    marker_score::alongside(markers, out, &feat, &picked, &kept).map(Some)
+    Ok((picked, kept))
+}
+
+/// Make the round's call `call`'s when it is a reading beside the
+/// enrichment's (`--call score` or `units`): its per-cell calls become the
+/// round's labels over the pass's `cells` (a cell it has no row for is
+/// unassigned), with the units' membership as the probability (the score
+/// has none). The enrichment's per-cell posterior goes from the record, as
+/// it is not the call's. SuSiE's call was made by its stage; `--call susie`
+/// only checks it was.
+fn take_call(
+    call: Option<Method>,
+    outputs: &mut AnnotationOutputs,
+    out: &str,
+    cells: &[Box<str>],
+) -> Result<()> {
+    use legume_numeric::matrix::parquet::read_table_columns;
+    let (table, column) = match call {
+        Some(Method::Score) => (&outputs.marker_score, "margin"),
+        Some(Method::Units) => (&outputs.units_call, "membership"),
+        Some(Method::Susie) => {
+            anyhow::ensure!(
+                outputs.cluster_celltype_pip.is_some(),
+                "--call susie: the SuSiE stage did not run on this pass (decoder expression, \
+                 or --no-susie)"
+            );
+            return Ok(());
+        }
+        Some(Method::Enrichment) | None => return Ok(()),
+    };
+    let name = call.map_or("", Method::name);
+    let path = table
+        .as_deref()
+        .with_context(|| format!("--call {name}: the {name} gave no reading on this run"))?;
+    let (strings, nums) = read_table_columns(path, &["cell", "call"], &[column])
+        .with_context(|| format!("reading {path}"))?;
+    let by: HashMap<&str, (&str, f32)> = (strings[0].iter().zip(&strings[1]).zip(&nums[0]))
+        .map(|((c, l), &v)| (c.as_ref(), (l.as_ref(), v as f32)))
+        .collect();
+    let (labels, probs): (Vec<Box<str>>, Vec<f32>) = cells
+        .iter()
+        .map(|c| match by.get(c.as_ref()) {
+            Some(&(l, v)) => (
+                l.into(),
+                if call == Some(Method::Units) {
+                    v
+                } else {
+                    f32::NAN
+                },
+            ),
+            None => (enrichment::UNASSIGNED_LABEL.into(), f32::NAN),
+        })
+        .unzip();
+    graph_embedding_util::type_annotation::write_cell_labels(out, cells, &labels, &probs)?;
+    info!("the round's call is the {name}'s");
+    outputs.argmax = Some(crate::annotate::outputs::labels_path(out));
+    outputs.annotation = None;
+    Ok(())
 }
 
 /// A projection pass's settings, naming the way it called.
@@ -309,20 +455,6 @@ pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &Loaded) -> Result
     )
 }
 
-/// The method whose reading made a `method` pass's call, by what it wrote:
-/// a projection pass with the score's per-cell table is the score's; SuSiE's
-/// tables, the enrichment's share, or nothing named (the units).
-fn called_by(method: &str, out: &AnnotationOutputs) -> Option<crate::annotate::rounds::Method> {
-    use crate::annotate::rounds::Method;
-    if method == "projection" {
-        out.marker_score.as_ref().map(|_| Method::Score)
-    } else if out.cluster_celltype_pip.is_some() {
-        Some(Method::Susie)
-    } else {
-        out.cluster_celltype_q.as_ref().map(|_| Method::Enrichment)
-    }
-}
-
 /// A pass's effective settings: its own arguments plus the fixed constants.
 fn settings(args: &impl serde::Serialize) -> Result<serde_json::Value> {
     let mut v = serde_json::to_value(args)?;
@@ -340,8 +472,9 @@ fn settings(args: &impl serde::Serialize) -> Result<serde_json::Value> {
 /// owns. A pass writes every slot it owns — `None` clears a stale pointer
 /// left by an earlier run — and leaves the rest alone.
 enum Pass<'a> {
-    /// Per-cell cell-type labels from a marker panel (enrichment or projection).
-    Markers(&'a str),
+    /// Per-cell cell-type labels from a marker panel (enrichment or
+    /// projection), and the method whose reading made the call.
+    Markers(&'a str, Option<Method>),
     /// GO/GMT gene-set signature per cluster.
     GeneSets,
     /// CL ontology walk over an earlier enrichment.
@@ -367,19 +500,20 @@ fn record(
     };
     let a = &mut loaded.manifest.annotate;
     match pass {
-        Pass::Markers(markers) => {
+        Pass::Markers(markers, called) => {
             // Stored like every other path here, relative to the manifest,
             // so it still resolves when read from another directory.
             a.markers = Some(crate::manifest::run::rel_to_manifest(dir, markers));
             a.argmax = rel(&out.argmax);
             a.annotation = rel(&out.annotation);
             a.marker_score = rel(&out.marker_score);
+            a.units_call = rel(&out.units_call);
             a.cluster_celltype_q = rel(&out.cluster_celltype_q);
             a.cluster_celltype_es = rel(&out.cluster_celltype_es);
             a.cluster_celltype_pip = rel(&out.cluster_celltype_pip);
             a.cluster_celltype_effect = rel(&out.cluster_celltype_effect);
             a.cluster_celltype_explained = rel(&out.cluster_celltype_explained);
-            a.called_by = called_by(method, out);
+            a.called_by = called;
             a.cluster_expression = rel(&out.cluster_expression);
             a.ontology_assignment = rel(&out.ontology_assignment);
             a.ontology_node_mass = rel(&out.ontology_node_mass);
@@ -420,7 +554,7 @@ fn record(
     loaded.manifest.annotate.log = None;
     // A fresh pass: its statistics are not post-selection.
     loaded.manifest.annotate.stats = None;
-    if matches!(pass, Pass::Markers(_)) {
+    if matches!(pass, Pass::Markers(..)) {
         // Enrichment caches its statistics; projection has none to cache.
         loaded.manifest.annotate.stats_cache = out.stats_cache.clone().map(|c| {
             let rel = |p: &str| crate::manifest::run::rel_to_manifest(&loaded.dir, p);
@@ -898,6 +1032,9 @@ fn build_batch_labels(labels: Vec<Box<str>>, n_cells: usize) -> Result<(Vec<usiz
     Ok(data_beans::alg::dc_poisson::compact_labels(&names))
 }
 
+#[cfg(test)]
+#[path = "tests/all_methods.rs"]
+pub(crate) mod all_methods_tests;
 #[cfg(test)]
 #[path = "tests/projection_score.rs"]
 pub(crate) mod projection_score_tests;

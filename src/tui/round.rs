@@ -9,7 +9,9 @@ use crate::annotate::rounds::{
     digest, parse_cluster_id, Action, ClusterId, DecidedBy, Decision, Evidence, Term,
 };
 use crate::annotate::rounds::{Method, TypeEvidence};
-use crate::manifest::rounds::{called_by, read_cells, read_score_cells, read_type_tables};
+use crate::manifest::rounds::{
+    called_by, read_cells, read_score_cells, read_type_tables, read_units_cells, CellShares,
+};
 use crate::manifest::run::{self, resolve};
 use anyhow::Result;
 use enrichment::UNASSIGNED_LABEL;
@@ -30,13 +32,13 @@ pub struct Candidate {
     pub evidence: TypeEvidence,
     /// Its share of the cluster's evidence, as [`Method::reading`] gives it
     /// for the round's method: in a SuSiE round, of the log-likelihood the
-    /// types explain; in a projection score round, of the cluster's cells the
-    /// score called the type; otherwise the enrichment's Q, a softmax of
-    /// z = Φ⁻¹(1 − p) over the types that pass FDR.
+    /// types explain; in a round the projection score or the units call, of
+    /// the cluster's cells they called the type; otherwise the enrichment's
+    /// Q, a softmax of z = Φ⁻¹(1 − p) over the types that pass FDR.
     pub share: f32,
     /// Where each method ([`Method::ALL`], in order) ranks the type among
     /// those it puts forward; 0 is its top.
-    pub ranks: [Option<usize>; 3],
+    pub ranks: [Option<usize>; Method::ALL.len()],
 }
 
 impl std::ops::Deref for Candidate {
@@ -56,7 +58,7 @@ impl Candidate {
                 ..TypeEvidence::default()
             },
             share,
-            ranks: [None; 3],
+            ranks: [None; Method::ALL.len()],
         }
     }
 
@@ -78,7 +80,7 @@ impl Candidate {
 #[must_use]
 pub fn ranked_view(evidence: &[TypeEvidence], by: Method) -> (Vec<Candidate>, Vec<(String, f32)>) {
     let ranked = Method::ALL.map(|m| m.ranked(evidence));
-    let place: [HashMap<&str, usize>; 3] = ranked.each_ref().map(|r| {
+    let place: [HashMap<&str, usize>; Method::ALL.len()] = ranked.each_ref().map(|r| {
         r.iter()
             .enumerate()
             .map(|(k, e)| (e.label.as_str(), k))
@@ -257,12 +259,40 @@ impl ClusterView {
         self.candidates.first().and_then(Candidate::susie)
     }
 
-    /// Needs a look: unassigned; or, in a SuSiE round, its call is unsure
-    /// (PIP under 0.95) or close (a runner-up explains at least half as
-    /// much); otherwise its top candidate holds too little of the evidence.
+    /// Each method's call on the cluster, in [`Method::ALL`]'s order: the
+    /// type it ranks first, for the methods that rank any.
+    #[must_use]
+    pub fn calls(&self) -> Vec<(Method, &Candidate)> {
+        Method::ALL
+            .into_iter()
+            .filter_map(|m| {
+                let top = self
+                    .candidates
+                    .iter()
+                    .find(|c| c.ranks[m.index()] == Some(0))?;
+                Some((m, top))
+            })
+            .collect()
+    }
+
+    /// The methods call different types.
+    #[must_use]
+    pub fn disagree(&self) -> bool {
+        let tops: BTreeSet<String> = self
+            .calls()
+            .into_iter()
+            .map(|(_, c)| label_key(&c.label))
+            .collect();
+        tops.len() > 1
+    }
+
+    /// Needs a look: unassigned, or its methods call different types; or,
+    /// in a SuSiE round, its call is unsure (PIP under 0.95) or close (a
+    /// runner-up explains at least half as much); otherwise its top
+    /// candidate holds too little of the evidence.
     #[must_use]
     pub fn flagged(&self) -> bool {
-        if self.label.is_none() {
+        if self.label.is_none() || self.disagree() {
             return true;
         }
         match self.call_evidence() {
@@ -340,7 +370,11 @@ impl RoundView {
         let at = |rel: &Option<String>| rel.as_deref().map(|r| resolve(&loaded.dir, r));
 
         let score = read_score_cells(&loaded, &cells)?;
-        let tables = read_type_tables(&loaded, score.as_ref().map(|s| s.shares(&cells)))?;
+        let shares = CellShares {
+            score: score.as_ref().map(|s| s.shares(&cells)),
+            units: read_units_cells(&loaded, &cells)?.map(|u| u.shares(&cells)),
+        };
+        let tables = read_type_tables(&loaded, shares)?;
         let by = called_by(a);
         let expression = at(&a.cluster_expression)
             .map(|p| Mat::from_parquet_with_row_names(&p, Some(0)))
@@ -523,7 +557,7 @@ pub fn parse_scores(preview: &serde_json::Value) -> Option<Rescored> {
 impl RoundView {
     /// The clusters' candidates and shares with `rescored`'s enrichment in
     /// place of theirs, listed by the round's method as the round lists
-    /// them. SuSiE's and the score's readings, which were made on the panel
+    /// them. SuSiE's, the score's and the units' readings, which were made on the panel
     /// before the edits and a rescoring does not redo, stay as the round's
     /// own candidates (`recorded`'s, while a rescoring is shown) have them:
     /// out of date, but no call is dropped or flagged for want of them.
@@ -710,7 +744,8 @@ pub fn decisions(edits: &[Edit], round: &RoundView, recorded: Option<&Scores>) -
             .into_iter()
             .map(|c| {
                 json!({"kind": "marker", "term": c.label, "share": c.share, "nes": c.nes,
-                       "p": c.p, "q": c.q, "pip": c.pip, "fold": c.fold, "score": c.score})
+                       "p": c.p, "q": c.q, "pip": c.pip, "fold": c.fold, "score": c.score,
+                       "units": c.units})
             })
             .collect();
         let (action, label, reason) = match e {

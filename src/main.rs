@@ -94,10 +94,14 @@ enum Commands {
                       with --go/--gaf/--gmt, trained as gene sets on the run's fixed genes).\n\
                       `--feature-embedding` + `--cell-embedding` run projection on those files directly\n\
                       (the units unless `--projection score`).\n\
-                      `--method auto` (default) calls by enrichment and, where the run decodes cells,\n\
-                      adds the projection score beside it as a second reading; projection's own call\n\
-                      needs `--projection score`, or a run with only the co-embedding (the units).\n\
-                      GO terms and runs without a panel are the enrichment's, unless `--projection units`.\n\
+                      `--method auto` (default) runs every method the run supports, their readings in\n\
+                      one round: the enrichment (with SuSiE on raw counts), the projection score where\n\
+                      the run decodes cells, and the units where its genes are placed among the cells\n\
+                      (aligning the GO terms the enrichment tests). `--call` picks whose reading makes\n\
+                      the round's labels (default: SuSiE's, else the enrichment's); a method that does\n\
+                      not run is refused. `--projection` under auto runs that projection alone; a run\n\
+                      with nothing for the enrichment to read (no counts, cache or decoder) is projected.\n\
+                      Runs without a panel are the enrichment's.\n\
                       Ontology-only follow-up: `--from` + `--obo` + `--label-cl` without markers.\n\
                       \n\
                       Without `-o` it opens the TUI, which asks for what is missing.\n\

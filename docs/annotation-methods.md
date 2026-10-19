@@ -12,13 +12,44 @@ ways (`--projection`):
   on the run's genes, kept fixed, §1. The default for other runs with a gene embedding, and for
   embedding files given directly (`--feature-embedding`), whose table lupin cannot tell.
 
-Under `--method auto` (the default) a run that decodes cells is called by the enrichment, and
-the score rides beside it as a second reading (an explicit `--method enrichment` skips it): the
-round records the score's per-cell table
-(`annotate.marker_score`), the round view and `review --json` show both, and every type's
-evidence from every method goes to `{out}.cluster_evidence.parquet`
-(`annotate.cluster_evidence`). The score's own call needs `--method projection` or
-`--projection score`.
+## Every method in one round (`--method auto`)
+
+Under `--method auto` (the default) every method the run supports runs, and their readings go
+into one round, on the enrichment's clusters:
+
+- the enrichment, with its SuSiE stage where it has count sums (the raw counts here, or an
+  earlier pass's cache of them; not a decoder's expectation);
+- the projection score (§0) where the run decodes cells;
+- the gene-set units (§1) where the run's genes are placed among the cells (its co-embedding,
+  or a ρ that shares the cells' space). GO terms asked for (`--go`, `--gaf`, `--gmt`) are then
+  both tested by the enrichment and aligned by the units.
+
+A projection beside the enrichment is non-fatal: if it fails, the round goes on without its
+reading, with a warning. The round records the score's per-cell table
+(`annotate.marker_score`) and the units' (`{out}.units_call.parquet`, `annotate.units_call`:
+each cell's cluster, call and membership of its region), with the units' other files (§1).
+The round view and `review --json` show every reading, and every type's evidence from every
+method goes to `{out}.cluster_evidence.parquet` (`annotate.cluster_evidence`), whose `score`
+and `units` columns are each method's share of the cluster's cells called the type.
+In the round view, `S` lists a cluster's candidates by each method in turn (enrichment, SuSiE,
+score, units, the ones the cluster has), and 1-9 take that method's candidates; above them, each
+method's call stands side by side (its type, its strength, and the share of the cluster's cells
+called it). A cluster whose methods call different types is flagged `?`, so `]` reaches it.
+
+**Which reading makes the call.** `--call {enrichment, susie, score, units}` picks the method
+whose reading becomes the round's per-cell labels (`annotate.argmax`), and so its cluster
+labels; the others stay beside it as evidence. Under `--call score` or `units` the round
+records no `annotate.annotation`: the enrichment's per-cell posterior is not the call's. By default it is SuSiE's where it ran, else the
+enrichment's. A `--call` naming a method that does not run on the pass is refused before
+anything is read, and a pass whose calling method fails is an error, not a fallback. The
+round records the method as `annotate.called_by`. The TUI's form sets it as `call by`, under
+auto.
+
+**One method alone.** `--method enrichment` (what senna and pinto run) runs the enrichment
+alone; `--method projection`, or `--projection` under auto, runs that projection alone, with
+its own call. Under auto, a run whose enrichment has no expression to read (no raw counts here,
+no earlier pass's cache, no decoder to stand in) is projected instead: by the score where it
+decodes cells, else by the units.
 
 ---
 
@@ -100,7 +131,10 @@ centre; p is the normal tail of the decoys' scores of that size, and q is Benjam
 within the cluster.
 
 **Outputs** (recorded under `annotate`):
-- the per-cell call and membership, as every pass writes them;
+- the per-cell call and membership, as every pass writes them (beside another method's call,
+  only the units' own table below holds them);
+- `{out}.units_call.parquet` (`units_call`): each cell's cluster, call and membership, which a
+  round tables by cluster as it does the score's;
 - `{out}.celltype_units.parquet` (`celltype_units`): each type's genes found and given, radius,
   share and centre;
 - `{out}.celltype_membership.parquet` (`celltype_membership`): each cell's membership of each

@@ -124,9 +124,45 @@ pub struct AnnotateArgs {
     /// the run decodes cells: what `--method auto` asks for.
     #[serde(default)]
     pub score_beside: bool,
+
+    /// Train the panel (and the GO/GMT terms asked for) as gene-set units
+    /// too, beside the call, where the run has the gene table they read:
+    /// what `--method auto` asks for.
+    #[serde(default)]
+    pub units_beside: bool,
+
+    /// The device the units beside train on, and its ordinal.
+    #[serde(default)]
+    pub device: crate::gene_text::cli::ComputeDevice,
+    #[serde(default)]
+    pub device_no: usize,
+
+    /// The method whose reading makes the round's call (`--call`); `None`
+    /// for SuSiE's where it ran, else the enrichment's.
+    #[serde(default)]
+    pub call: Option<crate::annotate::rounds::Method>,
 }
 
 impl AnnotateArgs {
+    /// The units' settings beside this pass: its panel, terms, seed and
+    /// device, writing under its prefix (the pass cleared it already).
+    #[must_use]
+    pub fn units_beside(&self) -> UnitsArgs {
+        UnitsArgs {
+            seed: self.seed,
+            device: self.device,
+            device_no: self.device_no,
+            go: self.go,
+            gaf: self.gaf.clone(),
+            gmt: self.gmt.clone(),
+            go_obo: self.go_obo.clone(),
+            go_min: self.go_min_overlap,
+            go_max: self.go_max_overlap,
+            no_clean: true,
+            ..UnitsArgs::new(&self.markers, &self.out)
+        }
+    }
+
     /// The internal Leiden settings, for a run whose clusters are not given.
     #[must_use]
     pub fn leiden(&self) -> crate::manifest::annotate::LeidenArgs {

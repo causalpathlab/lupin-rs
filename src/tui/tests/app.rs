@@ -2183,6 +2183,45 @@ fn a_label_is_recorded_in_its_canonical_form() {
 }
 
 #[test]
+fn under_auto_the_form_picks_which_reading_makes_the_call() {
+    use crate::annotate::rounds::Method;
+    use crate::annotate_cmd::AnnotateMethod;
+    let mut a = cli(&[]);
+    assert_eq!(a.method, AnnotateMethod::Auto);
+    assert!(settings(&a).contains(&Setting::Call));
+    assert_eq!(
+        Setting::Call.value(&a),
+        "default (SuSiE, else the enrichment)"
+    );
+    let seen: Vec<Option<Method>> = (0..5)
+        .map(|_| {
+            Setting::Call.adjust(&mut a, true);
+            a.call
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            Some(Method::Enrichment),
+            Some(Method::Susie),
+            Some(Method::Score),
+            Some(Method::Units),
+            None
+        ]
+    );
+    Setting::Call.adjust(&mut a, false);
+    assert_eq!(a.call, Some(Method::Units));
+    assert_eq!(Setting::Call.value(&a), "units");
+    Setting::Method.adjust(&mut a, true);
+    assert_ne!(a.method, AnnotateMethod::Auto);
+    assert!(
+        !settings(&a).contains(&Setting::Call),
+        "one method makes its own call"
+    );
+    assert_eq!(a.call, None, "a call no method left to make is dropped");
+}
+
+#[test]
 fn the_form_lists_the_rows_of_its_method() {
     use crate::annotate_cmd::AnnotateMethod;
     let mut a = cli(&[]);
@@ -2517,11 +2556,11 @@ fn capital_s_sorts_the_candidates_by_the_next_method_and_a_number_picks_what_is_
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     c.candidates = vec![
         Candidate {
-            ranks: [Some(0), None, Some(1)],
+            ranks: [Some(0), None, Some(1), None],
             ..Candidate::new("CT1", 0.6)
         },
         Candidate {
-            ranks: [Some(1), None, Some(0)],
+            ranks: [Some(1), None, Some(0), None],
             ..Candidate::new("CT2", 0.3)
         },
     ];
@@ -2544,12 +2583,12 @@ fn app_with_two_readings() -> App {
     use super::super::round::Candidate;
     let mut app = app_with_terms(false);
     let c = &mut app.round.as_mut().unwrap().clusters[0];
-    let cand = |label: &str, share, ranks: [Option<usize>; 3]| {
+    let cand = |label: &str, share, [e, s, sc]: [Option<usize>; 3]| {
         let mut c = Candidate {
-            ranks,
+            ranks: [e, s, sc, None],
             ..Candidate::new(label, share)
         };
-        (c.evidence.enrichment, c.evidence.score) = (Some(share), ranks[2].map(|_| 0.5));
+        (c.evidence.enrichment, c.evidence.score) = (Some(share), sc.map(|_| 0.5));
         c
     };
     c.candidates = vec![
@@ -3274,7 +3313,7 @@ fn app_with_candidates(n: usize) -> App {
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     c.candidates = (0..n)
         .map(|k| Candidate {
-            ranks: [Some(k), None, None],
+            ranks: [Some(k), None, None, None],
             ..Candidate::new(&format!("CT{}", k + 1), 0.5 / (k + 1) as f32)
         })
         .collect();
@@ -3390,7 +3429,7 @@ fn the_candidates_value_column_follows_the_method_they_are_sorted_by() {
     let mut app = app_with_terms(false);
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     let mut cand = Candidate {
-        ranks: [Some(0), Some(0), None],
+        ranks: [Some(0), Some(0), None, None],
         ..Candidate::new("CT1", 0.61)
     };
     (
@@ -3964,4 +4003,143 @@ fn on_a_round_without_units_g_and_r_keep_their_meaning() {
     press(&mut app, KeyCode::Char('l'));
     assert_eq!(app.cell_map.as_ref().unwrap().style, before);
     assert!(!super::super::ui::help(&app).contains("g GO terms"));
+}
+
+/// The app with cluster 0 called by every method of `ranks` (rows CT1, CT2;
+/// columns [`Method::ALL`]'s order): each with an enrichment share and q, a
+/// PIP, and the score's and units' share of cells where they rank it.
+fn app_with_calls(ranks: [[Option<usize>; 4]; 2]) -> App {
+    use super::super::round::Candidate;
+    let mut app = app_with_terms(false);
+    let c = &mut app.round.as_mut().unwrap().clusters[0];
+    c.candidates = ["CT1", "CT2"]
+        .into_iter()
+        .zip(ranks)
+        .map(|(label, ranks)| {
+            let mut t = Candidate {
+                ranks,
+                ..Candidate::new(label, 0.9)
+            };
+            let e = &mut t.evidence;
+            let at = |m: usize, v: f32| ranks[m].map(|r| if r == 0 { v } else { v / 4.0 });
+            (e.enrichment, e.q) = (at(0, 0.9), at(0, 0.001));
+            (e.pip, e.explained) = (at(1, 0.99), at(1, 0.5));
+            (e.score, e.units) = (at(2, 0.8), at(3, 0.6));
+            t
+        })
+        .collect();
+    app.focus = Focus::Clusters;
+    app
+}
+
+/// The rows of the block of each method's call, inside its borders.
+fn calls_block(app: &App) -> Vec<String> {
+    let screen = drawn_in(app, 160, 45);
+    let Some(top) = screen
+        .iter()
+        .position(|r| r.contains("┌ each method's call"))
+    else {
+        return Vec::new();
+    };
+    let at = screen[top].find("┌ each method's call").unwrap();
+    let left = screen[top][..at].chars().count();
+    screen[top + 1..]
+        .iter()
+        .map(|r| r.chars().skip(left).collect::<String>())
+        .take_while(|r| !r.starts_with('└'))
+        .map(|r| r.chars().skip(1).take_while(|&c| c != '│').collect())
+        .collect()
+}
+
+#[test]
+fn s_cycles_the_methods_the_cluster_has_units_last_and_only_when_present() {
+    let order = |app: &mut App| -> Vec<String> {
+        (0..4)
+            .map(|_| {
+                press(app, KeyCode::Char('S'));
+                app.cand_method().name().to_string()
+            })
+            .collect()
+    };
+    let all = [[Some(0); 4], [Some(1), None, Some(1), Some(1)]];
+    assert_eq!(
+        order(&mut app_with_calls(all)),
+        ["susie", "score", "units", "enrichment"]
+    );
+    let no_units = [
+        [Some(0), Some(0), Some(0), None],
+        [Some(1), None, Some(1), None],
+    ];
+    assert_eq!(
+        order(&mut app_with_calls(no_units)),
+        ["susie", "score", "enrichment", "susie"]
+    );
+}
+
+#[test]
+fn the_calls_block_lists_each_methods_call_side_by_side() {
+    let mut app = app_with_calls([
+        [Some(0), Some(0), Some(1), Some(0)],
+        [Some(1), None, Some(0), Some(1)],
+    ]);
+    let rows = calls_block(&app);
+    let row = |m: &str| {
+        rows.iter()
+            .find(|r| r.contains(m))
+            .unwrap_or_else(|| panic!("no {m} row in {rows:#?}"))
+            .clone()
+    };
+    assert!(row("enrichment").contains("CT1") && row("enrichment").contains("q 0.001"));
+    assert!(row("SuSiE").contains("CT1") && row("SuSiE").contains("PIP 0.99"));
+    assert!(row("score").contains("CT2") && row("score").contains("0.80"));
+    assert!(row("units").contains("CT1") && row("units").contains("0.60"));
+    // Ten cells, 0.80 of them called CT2 by the score.
+    assert!(row("score").contains("8 cells"), "{}", row("score"));
+    // The method in view is marked.
+    assert!(row("enrichment").contains('▸'), "{rows:#?}");
+    press(&mut app, KeyCode::Char('S'));
+    assert!(calls_block(&app)
+        .iter()
+        .any(|r| r.contains('▸') && r.contains("SuSiE")));
+}
+
+#[test]
+fn a_round_without_units_shows_no_units_call() {
+    let app = app_with_calls([
+        [Some(0), Some(0), Some(0), None],
+        [Some(1), None, Some(1), None],
+    ]);
+    let rows = calls_block(&app);
+    assert!(rows.iter().any(|r| r.contains("score")), "{rows:#?}");
+    assert!(!rows.iter().any(|r| r.contains("units")), "{rows:#?}");
+}
+
+#[test]
+fn methods_that_disagree_flag_the_cluster_and_the_next_flagged_key_reaches_it() {
+    let mut app = app_with_calls([
+        [Some(0), None, Some(0), None],
+        [Some(1), None, Some(1), None],
+    ]);
+    // K1: the enrichment calls CT1, the score CT2.
+    let r = app.round.as_mut().unwrap();
+    let mut k1 = super::super::round::ClusterView {
+        id: 1,
+        label: Some("CT1".into()),
+        candidates: r.clusters[0].candidates.clone(),
+        shares: Vec::new(),
+        genes: Vec::new(),
+        terms: Vec::new(),
+        cells: 10,
+    };
+    k1.candidates[0].ranks[2] = Some(1);
+    k1.candidates[1].ranks[2] = Some(0);
+    r.clusters.push(k1);
+    assert!(
+        !app.round.as_ref().unwrap().clusters[0].flagged(),
+        "K0 agrees"
+    );
+    press(&mut app, KeyCode::Char(']'));
+    assert_eq!(app.cluster_sel, 1, "] goes to K1");
+    let screen = drawn(&app);
+    assert!(screen.contains("they disagree"), "{screen}");
 }

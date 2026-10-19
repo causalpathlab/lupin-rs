@@ -157,6 +157,8 @@ pub struct AnnotationOutputs {
     pub annotation: Option<String>,
     /// The projection score's per-cell cluster, call and margin.
     pub marker_score: Option<String>,
+    /// The gene-set units' per-cell cluster, call and membership.
+    pub units_call: Option<String>,
     pub cluster_celltype_q: Option<String>,
     pub cluster_celltype_es: Option<String>,
     /// The SuSiE stage's PIP, effect and explained-share tables, when it made the call.
