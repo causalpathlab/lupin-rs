@@ -82,6 +82,9 @@ fn draw_overlays(f: &mut Frame, app: &App, menu_area: Rect) {
         draw_guide(f, app);
     }
     draw_progress(f, app);
+    for pane in [&app.figures, &app.cell_map].into_iter().flatten() {
+        pane.draw_save(f, f.area());
+    }
     if app.prompt.is_some() {
         draw_prompt(f, app);
     }
@@ -620,7 +623,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("← →", "fold / unfold; → on a panel leaf or an open branch goes on into the Cell Ontology at its term (ontology: up / into a term; in the data: → opens a folded chain, then the term in place on all its Cell Ontology children, ▸ more to show, ← closes)"),
             ("h", "in the data's tree: hide / show the terms not in the data below the selected term (◈ hiding)"),
             ("o", "panel tree ↔ the Cell Ontology; from the cell map, the Cell Ontology and o back to the map"),
-            ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, o the Cell Ontology, w all figures, p export, f the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, R re-check) / the tree again"),
+            ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, o the Cell Ontology, w all figures, p save the map as a PDF, f the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, R re-check) / the tree again"),
             ("mouse", "on the cell map: drag to pan, the wheel zooms where it points, a click selects the cluster under it, the pointer names it; a label pressed is dragged. The map takes the mouse only while it is shown: elsewhere the terminal selects text as ever"),
             ("E", "on the cell map: move its labels from the keys: tab / shift+tab the next / previous label, arrows move it half a line (shift: two), ⌫ back on its cells, esc done. Labels moved (here or by the mouse) are kept per round and layout in {round}.lupin_labels.json beside the run, never in its manifest; a file there that cannot be read is left as it is and the labels stay put"),
             ("d", "Cell Ontology: the terms in the data (the labels, under their common ancestor) ↔ all"),
@@ -682,10 +685,10 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("m", "the scatter's layout: each layout the run has (PHATE first), then the diffusion map"),
             (", .", "the diffusion map's y axis: the previous or next component"),
             ("[ ]", "the diffusion map's x axis: the previous or next component"),
-            ("w", "all figures as thumbnails: arrows choose, enter, space or 1-9 opens, p exports the tile, V the table, esc or w closes"),
+            ("w", "all figures as thumbnails: arrows choose, enter, space or 1-9 opens, p exports the tile (a scatter's whole map through the save dialog), V the table, esc or w closes"),
             ("+ - 0", "zoom the scatter in / out / show it whole (m, , . and [ ] also show it whole)"),
             ("arrows", "pan a zoomed scatter (with the exports strip open, ↑↓ move in the strip)"),
-            ("p", "export the figure as on screen (zoomed too) as {run}.trajectory.{figure}.pdf (+ .svg but for a scatter) and log it"),
+            ("p", "a scatter: the save dialog, as senna's (what: the map as on screen, zoomed too, or whole; width 3.5-14 in; dpi 150-1200 for the points, the text stays text; the file, {run}.trajectory.{figure}.pdf numbered past saved ones; enter saves, a second enter replaces a file there, esc cancels). The other figures: exported at once as on screen as .pdf + .svg. Each is logged with a thumbnail"),
             ("f", "the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, esc closes"),
             ("R", "re-read the log and check every export against its files"),
             ("", "keys act on the figures while the ordering column has the focus; p exports figures (senna view: s), s saves the round"),
@@ -2444,7 +2447,7 @@ fn draw_exports(f: &mut Frame, area: Rect, x: &super::figure_pane::Exports, focu
     let now = super::gallery::now();
     let mut rows: Vec<Row> = x
         .gallery
-        .entries
+        .entries()
         .iter()
         .zip(&x.statuses)
         .map(|(e, s)| {
@@ -2467,7 +2470,7 @@ fn draw_exports(f: &mut Frame, area: Rect, x: &super::figure_pane::Exports, focu
         ])
         .style(Style::default().add_modifier(Modifier::DIM))
     }));
-    let note = x.gallery.set_aside.as_ref().map_or(String::new(), |p| {
+    let note = x.gallery.set_aside().map_or(String::new(), |p| {
         format!(" · unreadable log set aside as {}", p.display())
     });
     let table = Table::new(
@@ -2481,7 +2484,7 @@ fn draw_exports(f: &mut Frame, area: Rect, x: &super::figure_pane::Exports, focu
     .block(pane(
         format!(
             " exports ({}){note} · enter list · M move · d unlist · D D delete ",
-            x.gallery.entries.len()
+            x.gallery.entries().len()
         ),
         focused,
     ))

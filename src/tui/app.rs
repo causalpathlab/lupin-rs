@@ -2457,6 +2457,11 @@ impl App {
         if self.prompt.is_some() {
             return self.prompt_key(k);
         }
+        // A figure's save dialog takes every key while it is open.
+        if let Some((k, cells)) = self.save_dialog_key(&k) {
+            self.took_figure_key(k, cells);
+            return;
+        }
         let beside = self.focus == Focus::Tree && self.in_order();
         let view = match &mut self.tree_mode {
             TreeMode::Ontology(v) => Some(v.as_mut()),
@@ -4060,7 +4065,10 @@ impl App {
     /// own text selection.
     pub fn wants_mouse(&self) -> bool {
         matches!(self.tree_mode, TreeMode::Cells)
-            && self.cell_map.as_ref().is_some_and(|m| m.grid.is_none())
+            && self
+                .cell_map
+                .as_ref()
+                .is_some_and(|m| m.grid.is_none() && !m.saving())
             && !self.help_open
             && self.form.is_none()
             && self.prompt.is_none()
@@ -4177,6 +4185,17 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// Key `k` for the save dialog open over a figure pane, and whether
+    /// that pane is the round's cell map; `None` with no dialog open.
+    fn save_dialog_key(&mut self, k: &KeyEvent) -> Option<(FigureKey, bool)> {
+        for (pane, cells) in [(&mut self.figures, false), (&mut self.cell_map, true)] {
+            if let Some(p) = pane.as_mut().filter(|p| p.saving()) {
+                return Some((p.save_key(k), cells));
+            }
+        }
+        None
     }
 
     /// Act on what a figure pane's key did, the round's cell map's when

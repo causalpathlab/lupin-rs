@@ -374,17 +374,27 @@ Images are drawn as senna view draws them, so both viewers behave alike:
 {auto,kitty,sixel,iterm2,blocks}`, querying the terminal on `auto` and falling
 back to half-blocks.
 
-**Export.** `p` on a panel writes it 7 in wide at 200 dpi, with the labels,
-colouring, layout and zoom on screen: a scatter as senna exports its map, a
-PDF of the raster with its text set over it in Helvetica (`legume_tui::export`);
-the order and connectivity panels through legume-plot's `write_figure` as SVG
-and PDF; the log notes a zoomed export. An export is a set of files sharing one base name, handled as a
-unit: the name `{out}.trajectory.{panel}` (`layout_phate`, `layout_umap`, …
-for a layout) moves to
-`-2`, `-3` … while any file of the set exists.
+**Export.** `p` on a scatter opens senna's save dialog (`legume_tui::save`):
+the map as on screen (labels, colouring, layout and zoom, in the screen's
+shape) or whole, 3.5 to 14 in wide, the points at 150 to 1200 dpi, and the
+file name, offered as `{out}.trajectory.{panel}` (`layout_phate`,
+`layout_umap`, … for a layout; `{round}.cells.{panel}` for a round's cell
+map) and moved to `-2`, `-3` … past saved files; a name typed over a file
+asks for a second Enter. It writes a PDF only, as senna saves its map: the
+raster as one image with its text set over it in Helvetica
+(`legume_tui::export`). The order and connectivity panels are written at once,
+7 in wide at 200 dpi, through legume-plot's `write_figure` as SVG and PDF,
+named the same way. The log notes a zoomed export. An export is a set of files
+sharing one base name, handled as a unit.
 
-**What was exported.** Each export is listed in `./.lupin-view/saved.json` in
-the directory lupin runs from (newest first; an existing PDF path replaces
+`lupin annotate -f ROUND --pdf FILE [--width IN] [--dpi DPI]` saves the
+round's cell map as the TUI opens on it (its first layout, whole, in its first
+colouring, with the labels as they were moved) to `FILE` without a terminal,
+`--width` 7 in and `--dpi` 300 unless given, as `senna view --pdf` does.
+
+**What was exported.** Each export is listed, with a thumbnail in
+`./.lupin-view/thumbs/`, in `./.lupin-view/saved.json` in the directory lupin
+runs from, kept by `legume_tui::gallery` under its traced policy (newest first; an existing PDF path replaces
 its entry; reloaded from disk before every change, and a change finds its
 entry by path, not by row). The list is written to a temporary file and
 renamed into place, and a list that cannot be read is set aside as

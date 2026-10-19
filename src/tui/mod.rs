@@ -35,6 +35,7 @@ use crate::annotate_cmd::AnnotateCliArgs;
 use crate::manifest::run::{self, annotated_path, resolve};
 use anyhow::{Context, Result};
 use app::App;
+pub use figure_pane::round_pdf;
 pub use legume_tui::graphics::Graphics;
 use legume_tui::{cli::SessionArgs, Keyboard, Modes, Mouse, Round, Session};
 use ratatui::crossterm::event::{Event, KeyEventKind, KeyboardEnhancementFlags};

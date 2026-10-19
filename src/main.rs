@@ -19,7 +19,7 @@ mod tui;
 
 use crate::annotate_cmd::{run_annotate, AnnotateCliArgs};
 use crate::gene_text::cli::{run_knn_graph, run_qc, KnnGraphCmd, QcCmd};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use describe::{run_describe, DescribeArgs};
 use legume_tui::cli::SessionArgs;
@@ -101,6 +101,9 @@ enum Commands {
                       Ontology-only follow-up: `--from` + `--obo` + `--label-cl` without markers.\n\
                       \n\
                       Without `-o` it opens the TUI, which asks for what is missing.\n\
+                      With `-f` on a round and `--pdf`, it saves the round's cell map, as the\n\
+                      TUI opens on it, to a PDF instead (`--width` inches, the points at\n\
+                      `--dpi`, the labels as text), without a terminal.\n\
                       \n\
                       {}",
             session_help("a pass or a save goes on", "`lupin annotate` with no --from")
@@ -111,6 +114,8 @@ enum Commands {
         args: AnnotateCliArgs,
         #[command(flatten)]
         session: SessionArgs,
+        #[command(flatten)]
+        pdf: legume_tui::export::PdfArgs,
     },
     #[command(
         name = "describe",
@@ -239,6 +244,40 @@ fn session_help(what_goes_on: &str, resume_hint: &str) -> String {
     )
 }
 
+impl Commands {
+    /// Whether the command opens the TUI.
+    fn opens_tui(&self) -> bool {
+        match self {
+            Self::Annotate { args, pdf, .. } => args.opens_tui() && pdf.pdf.is_none(),
+            Self::Trajectory { args, .. } => args.opens_tui(),
+            _ => false,
+        }
+    }
+}
+
+/// `lupin annotate`: with `--pdf`, the round's cell map saved without the
+/// TUI; else a pass or the TUI.
+fn annotate_command(
+    args: &AnnotateCliArgs,
+    session: &SessionArgs,
+    pdf: &legume_tui::export::PdfArgs,
+) -> Result<()> {
+    if pdf.pdf.is_none() {
+        return run_annotate(args, session);
+    }
+    let from = args
+        .from
+        .as_deref()
+        .context("--pdf draws a round's cell map: give the round with -f")?;
+    anyhow::ensure!(
+        args.out.is_empty(),
+        "--pdf draws a round's cell map and runs no pass: drop -o"
+    );
+    let wrote = tui::round_pdf(from, pdf)?;
+    log::info!("wrote {}", wrote.display());
+    Ok(())
+}
+
 fn main() -> Result<()> {
     // A session's host runs this binary again: it serves the session and
     // exits here, before any of lupin's own work.
@@ -247,11 +286,7 @@ fn main() -> Result<()> {
     if cli.overwrite {
         manifest::run::allow_overwrite();
     }
-    let interactive = match &cli.cmd {
-        Commands::Annotate { args, .. } => args.opens_tui(),
-        Commands::Trajectory { args, .. } => args.opens_tui(),
-        _ => false,
-    };
+    let interactive = cli.cmd.opens_tui();
     // On stderr, as RUST_LOG says; the TUI's log pane takes it too.
     let mut stderr = env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or(if cli.verbose { "debug" } else { "info" }),
@@ -264,7 +299,7 @@ fn main() -> Result<()> {
     match cli.cmd {
         Commands::TextQc(c) => run_qc(&c),
         Commands::WordGraph(c) => run_knn_graph(&c),
-        Commands::Annotate { args, session } => run_annotate(&args, &session),
+        Commands::Annotate { args, session, pdf } => annotate_command(&args, &session, &pdf),
         Commands::Describe(c) => run_describe(&c),
         Commands::Review(c) => manifest::rounds::run_review(&c),
         Commands::Relabel(c) => manifest::rounds::run_relabel(&c),

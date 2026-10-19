@@ -425,11 +425,13 @@ pub(crate) struct TypeOrder {
     pub(crate) q3: f32,
 }
 
-/// An export: its base name, the files written and a line for the log.
+/// An export: its base name, the files written, a line for the log and
+/// the figure's pixels for its thumbnail.
 pub(crate) struct Export {
     pub(crate) base: PathBuf,
     pub(crate) files: Vec<PathBuf>,
     pub(crate) what: String,
+    pub(crate) picture: Option<image::RgbaImage>,
 }
 
 /// A run's per-cell outputs, aligned to its cells: a trajectory run's
@@ -841,16 +843,10 @@ impl CellFigures {
         ));
         let size = export_size(frame);
         let b = base.to_string_lossy();
-        let files = if panel.is_scatter() {
-            let mut m = self.cell_map(panel, size, style, view, true, moved)?;
+        let (files, picture) = if panel.is_scatter() {
             let pdf = PathBuf::from(format!("{b}.pdf"));
-            let page = Page {
-                img: m.frame.to_image(),
-                text: std::mem::take(&mut m.text),
-            };
-            write_pdf(&[page], EXPORT_DPI, &pdf)
-                .with_context(|| format!("writing {}", pdf.display()))?;
-            vec![pdf]
+            let img = self.write_map(panel, size, EXPORT_DPI, style, view, moved, &pdf)?;
+            (vec![pdf], Some(img))
         } else {
             let Picture::Svg(fig) = self.figure(panel, size, style, view, moved)? else {
                 unreachable!("only a scatter is a map")
@@ -861,10 +857,13 @@ impl CellFigures {
                 pdf: true,
             };
             legume_plot::write_figure(&fig.svg, fig.w, fig.h, &b, formats)?;
-            vec![
+            let files = vec![
                 PathBuf::from(format!("{b}.svg")),
                 PathBuf::from(format!("{b}.pdf")),
-            ]
+            ];
+            // The thumbnail is a nicety: a figure resvg cannot draw is
+            // still exported.
+            (files, render_svg(&fig).ok())
         };
         let zoomed = if panel.is_scatter() && !view.is_whole() {
             format!(" · zoomed ×{:.1}", view.factor())
@@ -878,7 +877,33 @@ impl CellFigures {
                 "{}{zoomed} · {EXPORT_WIDTH_IN:.0} in · {EXPORT_DPI:.0} dpi",
                 self.title(panel, style),
             ),
+            picture,
         })
+    }
+
+    /// The scatter `panel` as a PDF at `path`, as senna saves its map: the
+    /// points as one image of `size` at `dpi`, the legend and labels set
+    /// over it as text; its labels moved by `moved`. The image, for a
+    /// thumbnail.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_map(
+        &self,
+        panel: Panel,
+        size: Size,
+        dpi: f32,
+        style: &Style,
+        view: View,
+        moved: &Offsets<String>,
+        path: &Path,
+    ) -> Result<image::RgbaImage> {
+        let mut m = self.cell_map(panel, size, style, view, true, moved)?;
+        let img = m.frame.to_image();
+        let page = Page {
+            img: img.clone(),
+            text: std::mem::take(&mut m.text),
+        };
+        write_pdf(&[page], dpi, path).with_context(|| format!("writing {}", path.display()))?;
+        Ok(img)
     }
 
     /// The scatter `panel` as a map, as senna draws its own: the cells in

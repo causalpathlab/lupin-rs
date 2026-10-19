@@ -262,7 +262,7 @@ fn a_file_just_listed_stays_selected_when_the_strip_resorts() {
     write("run.trajectory.b");
     let mut x = Exports {
         prefix: dir.join("run.trajectory").to_string_lossy().into_owned(),
-        gallery: Gallery::open(&dir.join(super::super::gallery::DIR)),
+        gallery: super::super::gallery::open(&dir.join(super::super::gallery::DIR)),
         open: true,
         sel: 0,
         statuses: Vec::new(),
@@ -271,14 +271,19 @@ fn a_file_just_listed_stays_selected_when_the_strip_resorts() {
         fits: std::cell::Cell::new(true),
     };
     x.gallery
-        .add(&[listed], "a", "a", &dir.join("run.senna.json"))
+        .add(
+            &[listed],
+            "a",
+            None,
+            Trace::of("a", &dir.join("run.senna.json")),
+        )
         .unwrap();
     x.refresh();
-    assert_eq!((x.gallery.entries.len(), x.not_listed.len()), (1, 1));
+    assert_eq!((x.gallery.entries().len(), x.not_listed.len()), (1, 1));
     // The not-listed row is the second; listing it puts it first.
     x.sel = 1;
     x.adopt(&dir.join("run.senna.json")).unwrap();
-    let on = &x.gallery.entries[x.sel].path;
+    let on = &x.gallery.entries()[x.sel].path;
     assert!(on.ends_with("run.trajectory.b.pdf"), "{}", on.display());
 }
 
@@ -607,4 +612,129 @@ pub(crate) fn screen_at(p: &FigurePane, xy: [f32; 2]) -> (u16, u16) {
         area.x + (x / cw as f32) as u16,
         area.y + (y / ch as f32) as u16,
     )
+}
+
+/// [`map_in`], its exports logged in `dir`'s gallery.
+fn saving_in(dir: &Path) -> FigurePane {
+    let mut p = map_in(dir);
+    p.exports.gallery = super::super::gallery::open(&dir.join(super::super::gallery::DIR));
+    p
+}
+
+#[test]
+fn p_on_the_map_asks_how_to_save_it_and_esc_saves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().canonicalize().unwrap();
+    let mut p = saving_in(&dir);
+    assert!(!p.saving());
+    assert_ne!(p.key(KeyCode::Char('p')), FigureKey::Ignored);
+    assert!(p.saving(), "the save dialog is open");
+    assert_eq!(
+        p.save_key(&key(KeyCode::Esc, KeyModifiers::NONE)),
+        FigureKey::Took
+    );
+    assert!(!p.saving());
+    assert!(std::fs::read_dir(&dir).unwrap().all(|f| f
+        .unwrap()
+        .path()
+        .extension()
+        .is_none_or(|e| e != "pdf")));
+}
+
+#[test]
+fn a_saved_map_is_a_pdf_whose_text_is_text_logged_with_a_thumbnail() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().canonicalize().unwrap();
+    let mut p = saving_in(&dir);
+    p.key(KeyCode::Char('p'));
+    let FigureKey::Say(said) = p.save_key(&key(KeyCode::Enter, KeyModifiers::NONE)) else {
+        panic!("a save says where it went");
+    };
+    assert!(!p.saving(), "{said}");
+    let pdf = dir.join("run.L1.cells.layout_phate.pdf");
+    assert!(said.contains(&pdf.display().to_string()), "{said}");
+    let bytes = std::fs::read(&pdf).unwrap();
+    let s = String::from_utf8_lossy(&bytes);
+    assert!(s.starts_with("%PDF-"));
+    // The label CT1 set as text over the points' image.
+    assert!(s.contains("(CT1) Tj"), "the labels are text: {}", tj(&s));
+    assert!(s.contains("/Subtype /Image"));
+    // 7 in wide, as the dialog opens.
+    assert!(s.contains("/MediaBox [0 0 504 "), "7 in is 504 pt");
+    assert!(
+        !pdf.with_extension("svg").exists(),
+        "a PDF only, as senna's"
+    );
+
+    let g = &p.exports.gallery;
+    let e = &g.entries()[0];
+    assert_eq!(e.path, pdf);
+    assert_eq!(e.extra.panel, "layout_phate");
+    assert_eq!(e.extra.manifest, dir.join("run.L1.senna.json"));
+    assert_eq!(e.files.len(), 1, "the file traced");
+    let thumb = image::open(g.thumb(e).expect("a thumbnail")).unwrap();
+    assert!((1..=240).contains(&thumb.width()));
+    assert_eq!(p.exports.statuses, vec![Status::Intact]);
+
+    // The next save is offered a free name.
+    p.key(KeyCode::Char('p'));
+    p.save_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(dir.join("run.L1.cells.layout_phate-2.pdf").is_file());
+    assert_eq!(p.exports.gallery.entries().len(), 2);
+}
+
+#[test]
+fn the_other_panels_still_export_at_once_as_svg_and_pdf_with_a_thumbnail() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().canonicalize().unwrap();
+    let mut data = figures();
+    data.manifest = dir.join("run.senna.json");
+    let mut p = FigurePane::showing(data, &Picker::halfblocks());
+    p.exports.gallery = super::super::gallery::open(&dir.join(super::super::gallery::DIR));
+    while p.current() != Panel::Order {
+        p.next_panel();
+    }
+    assert!(matches!(p.key(KeyCode::Char('p')), FigureKey::Say(_)));
+    assert!(!p.saving(), "no dialog");
+    let file = |ext: &str| dir.join(format!("run.trajectory.order.{ext}"));
+    assert!(file("svg").is_file() && file("pdf").is_file());
+    let g = &p.exports.gallery;
+    assert!(g.thumb(&g.entries()[0]).is_some_and(|t| t.is_file()));
+}
+
+#[test]
+fn a_rounds_cell_map_is_saved_without_the_tui() {
+    let dir = tempfile::tempdir().unwrap();
+    let loaded = crate::figures::tests::round(dir.path(), true);
+    let out = dir.path().join("map.pdf");
+    let pdf = legume_tui::export::PdfArgs {
+        pdf: Some(out.clone()),
+        width: 3.5,
+        dpi: 150,
+    };
+    let before = std::fs::read(&loaded.file).unwrap();
+    assert_eq!(
+        round_pdf(&loaded.file.to_string_lossy(), &pdf).unwrap(),
+        out
+    );
+    let bytes = std::fs::read(&out).unwrap();
+    let s = String::from_utf8_lossy(&bytes);
+    assert!(s.starts_with("%PDF-"));
+    // 3.5 in at 150 dpi: 525 px, 252 pt.
+    assert!(s.contains("/MediaBox [0 0 252 "), "3.5 in wide");
+    // Its labels, the round's types, are text.
+    assert!(s.contains("(A) Tj"), "the labels are text: {}", tj(&s));
+    assert_eq!(
+        std::fs::read(&loaded.file).unwrap(),
+        before,
+        "the manifest is left"
+    );
+}
+
+/// The text a PDF sets, as its `Tj` lines.
+fn tj(pdf: &str) -> String {
+    pdf.lines()
+        .filter(|l| l.ends_with("Tj"))
+        .collect::<Vec<_>>()
+        .join(" | ")
 }

@@ -21,7 +21,7 @@ fn long_help(name: &str) -> String {
 #[test]
 fn the_session_flags_sit_beside_annotate_and_stay_out_of_its_child_passes() {
     let cli = parse(&["annotate", "--no-detach", "--session", "work", "-o", "x"]);
-    let Commands::Annotate { args, session } = cli.cmd else {
+    let Commands::Annotate { args, session, .. } = cli.cmd else {
         panic!("annotate");
     };
     assert!(session.no_detach);
@@ -97,4 +97,38 @@ fn the_tui_commands_help_ends_with_their_session_in_lupins_words() {
     let kill = long_help("kill");
     let flat = kill.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(flat.contains("unsaved edits are dropped"), "{kill}");
+}
+
+#[test]
+fn annotate_with_pdf_draws_the_rounds_map_without_a_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let loaded = crate::figures::tests::round(dir.path(), true);
+    let out = dir.path().join("map.pdf");
+    let (from, to) = (loaded.file.to_string_lossy(), out.to_string_lossy());
+    let cli = parse(&["annotate", "-f", &from, "--pdf", &to, "--width", "3.5"]);
+    assert!(!cli.cmd.opens_tui(), "no screen for a PDF");
+    let Commands::Annotate { args, session, pdf } = cli.cmd else {
+        panic!("annotate");
+    };
+    assert_eq!(
+        (pdf.width, pdf.dpi),
+        (3.5, 300),
+        "senna's flags and default"
+    );
+    // A pass started from the TUI takes none of them.
+    assert!(!args.to_argv().iter().any(|a| a == "--pdf" || a == "--dpi"));
+    annotate_command(&args, &session, &pdf).unwrap();
+    assert!(std::fs::read(&out).unwrap().starts_with(b"%PDF-"));
+
+    // A PDF is of a round: one to draw, and no pass beside it.
+    let cli = parse(&["annotate", "--pdf", &to]);
+    let Commands::Annotate { args, session, pdf } = cli.cmd else {
+        panic!("annotate");
+    };
+    assert!(annotate_command(&args, &session, &pdf).is_err(), "no -f");
+    let cli = parse(&["annotate", "-f", &from, "-o", "x", "--pdf", &to]);
+    let Commands::Annotate { args, session, pdf } = cli.cmd else {
+        panic!("annotate");
+    };
+    assert!(annotate_command(&args, &session, &pdf).is_err(), "with -o");
 }

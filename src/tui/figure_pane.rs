@@ -1,22 +1,25 @@
 //! The figure pane of the order view: a trajectory run's figures drawn in the
-//! terminal, a scatter as senna draws its map, exported (a scatter as a PDF,
-//! the other panels as SVG + PDF) and logged in the gallery
-//! (`docs/trajectory-plan.md` §6). The round's cell map is one too, with the
+//! terminal, a scatter as senna draws its map, exported (a scatter as a PDF
+//! through senna's save dialog, the other panels at once as SVG + PDF) and
+//! logged in the gallery with a thumbnail (`docs/trajectory-plan.md` §6). The round's cell map is one too, with the
 //! mouse: a drag pans, the wheel zooms, a click picks the cluster under it,
 //! and a label pressed is dragged. Labels moved (by the mouse or `E`) are kept
 //! beside the run in lupin's own `{prefix}.lupin_labels.json`.
 
 use super::app::step;
-use super::gallery::{Gallery, Status};
+use super::gallery::{Gallery, Status, Trace};
 use crate::figures::{self, CellFigures, CellMap, Colouring, Panel, Picture, Size, Style, View};
 use crate::manifest::run::load;
 use anyhow::{Context, Result};
 use image::RgbaImage;
+use legume_tui::export::{PageSize, PdfArgs};
+use legume_tui::look::Look as Chrome;
 use legume_tui::map::display::fit_protocol;
 use legume_tui::map::labels::{Hits, Placed};
 use legume_tui::map::offsets::{OffsetBook, Offsets};
 use legume_tui::map::pointer::{EditKey, LabelEdit, MapAction, MapArea, Pointer, PointerOpts};
 use legume_tui::map::viewport::Viewport;
+use legume_tui::save::{Numbering, SaveDialog, SaveKey, SaveRequest, SaveTarget};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
@@ -48,7 +51,7 @@ impl Exports {
     fn new(prefix: String) -> Self {
         let mut e = Self {
             prefix,
-            gallery: Gallery::here(),
+            gallery: super::gallery::here(),
             open: false,
             sel: 0,
             statuses: Vec::new(),
@@ -62,24 +65,21 @@ impl Exports {
 
     /// Re-read the gallery and check every entry against its files.
     pub fn refresh(&mut self) {
-        let set_aside = self.gallery.set_aside.take();
-        let dir = self.gallery.dir().to_path_buf();
-        self.gallery = Gallery::open(&dir);
-        self.gallery.set_aside = self.gallery.set_aside.take().or(set_aside);
+        self.gallery.reload();
         self.statuses = self.gallery.check();
-        self.not_listed = self.gallery.not_listed(&self.prefix);
+        self.not_listed = super::gallery::not_listed(&self.gallery, &self.prefix);
         self.sel = self.sel.min(self.rows().saturating_sub(1));
     }
 
     /// Rows of the strip: the entries, then the files not listed.
     pub fn rows(&self) -> usize {
-        self.gallery.entries.len() + self.not_listed.len()
+        self.gallery.entries().len() + self.not_listed.len()
     }
 
     /// The selected listed export's PDF.
     fn selected_pdf(&self) -> Result<PathBuf> {
         self.gallery
-            .entries
+            .entries()
             .get(self.sel)
             .map(|e| e.path.clone())
             .context("the selected row is not a listed export")
@@ -90,7 +90,7 @@ impl Exports {
     pub fn adopt(&mut self, manifest: &Path) -> Result<String> {
         let i = self
             .sel
-            .checked_sub(self.gallery.entries.len())
+            .checked_sub(self.gallery.entries().len())
             .context("the selected row is already listed")?;
         let pdf = self.not_listed.get(i).context("nothing selected")?.clone();
         let mut files = vec![pdf.clone()];
@@ -103,11 +103,12 @@ impl Exports {
             .map_or(String::new(), |s| s.to_string_lossy().into_owned());
         let stem = super::gallery::figure_stem(&self.prefix);
         let panel = name.strip_prefix(&stem).unwrap_or(&name);
-        self.gallery.add(&files, &name, panel, manifest)?;
+        self.gallery
+            .add(&files, &name, None, Trace::of(panel, manifest))?;
         self.refresh();
         // The list is newest first: the selection follows the file.
         let listed = crate::manifest::data_files::absolute(&pdf);
-        if let Some(i) = self.gallery.entries.iter().position(|e| e.path == listed) {
+        if let Some(i) = self.gallery.entries().iter().position(|e| e.path == listed) {
             self.sel = i;
         }
         Ok(format!("listed {}", pdf.display()))
@@ -325,6 +326,8 @@ pub struct FigurePane {
     /// The scatter on screen, as drawn, and where on the screen.
     pub(crate) on_screen: RefCell<Option<Arc<OnMap>>>,
     pub(crate) area: Cell<Option<Rect>>,
+    /// The save dialog, while it is open.
+    save: Option<Saving>,
 }
 
 impl FigurePane {
@@ -345,7 +348,7 @@ impl FigurePane {
     fn new(data: CellFigures, picker: &Picker) -> Self {
         let exports = Exports::new(format!("{}.{}", data.prefix(), data.kind()));
         let style = Style::opening(&data);
-        let path = PathBuf::from(format!("{}.{LABELS_SUFFIX}", data.prefix()));
+        let path = labels_file(&data);
         let book = OffsetBook::load(&path).map_err(|e| {
             format!(
                 "the moved labels in {} cannot be read ({e}): the labels stay where they are and the file is left as it is",
@@ -378,6 +381,7 @@ impl FigurePane {
             edit: None,
             on_screen: RefCell::new(None),
             area: Cell::new(None),
+            save: None,
         }
     }
 
@@ -455,9 +459,12 @@ impl FigurePane {
                 }
                 KeyCode::Char('t') => Say(self.style.cycle_labels()),
                 KeyCode::Char('c') => Say(self.style.cycle_colouring(&self.data.colourings())),
-                KeyCode::Char('p') => Say(self
-                    .export()
-                    .unwrap_or_else(|e| format!("export failed: {e:#}"))),
+                KeyCode::Char('p') => match self.selected_tile() {
+                    Some(tile) if tile.is_scatter() => self.ask_save(tile, true),
+                    _ => Say(self
+                        .export()
+                        .unwrap_or_else(|e| format!("export failed: {e:#}"))),
+                },
                 // The strip is drawn under a figure, never over the grid.
                 KeyCode::Char('f') => {
                     Say("f lists the exports under a figure: enter opens the tile".into())
@@ -533,6 +540,9 @@ impl FigurePane {
                     Say(note)
                 }
             }
+            KeyCode::Char('p') if shown && self.current().is_scatter() => {
+                self.ask_save(self.current(), false)
+            }
             KeyCode::Char('p') if shown => Say(self
                 .export()
                 .unwrap_or_else(|e| format!("export failed: {e:#}"))),
@@ -549,7 +559,7 @@ impl FigurePane {
                 x.refresh();
                 Say(format!(
                     "{} export(s) checked, {} not listed",
-                    x.gallery.entries.len(),
+                    x.gallery.entries().len(),
                     x.not_listed.len()
                 ))
             }
@@ -569,7 +579,7 @@ impl FigurePane {
                 })
             }
             KeyCode::Char('M') if strip => {
-                match self.exports.gallery.entries.get(self.exports.sel) {
+                match self.exports.gallery.entries().get(self.exports.sel) {
                     Some(e) => Relocate(e.path.clone()),
                     None => Took,
                 }
@@ -969,18 +979,7 @@ impl FigurePane {
         };
         let moved = self.moved(panel);
         let e = self.data.export(panel, &self.style, view, frame, &moved)?;
-        let logged = self
-            .exports
-            .gallery
-            .add(
-                &e.files,
-                &e.what,
-                &self.data.slug(panel),
-                &self.data.manifest,
-            )
-            .map(|()| String::new())
-            .unwrap_or_else(|e| format!(" (not listed: {e:#})"));
-        self.exports.refresh();
+        let logged = self.log(&e.files, &e.what, e.picture.as_ref(), panel);
         let exts: Vec<String> = e
             .files
             .iter()
@@ -995,6 +994,123 @@ impl FigurePane {
 }
 
 impl FigurePane {
+    /// Log `files`, an export of `panel` showing `picture`, in the gallery
+    /// and check the strip again; why it is not listed, if it is not.
+    fn log(
+        &mut self,
+        files: &[PathBuf],
+        what: &str,
+        picture: Option<&RgbaImage>,
+        panel: Panel,
+    ) -> String {
+        let trace = Trace::of(&self.data.slug(panel), &self.data.manifest);
+        let logged = self
+            .exports
+            .gallery
+            .add(files, what, picture, trace)
+            .map(|()| String::new())
+            .unwrap_or_else(|e| format!(" (not listed: {e:#})"));
+        self.exports.refresh();
+        logged
+    }
+
+    /// Whether the save dialog is open.
+    pub fn saving(&self) -> bool {
+        self.save.is_some()
+    }
+
+    /// `p` on a scatter: the save dialog, for the map on screen or, from
+    /// the grid, its tile's map.
+    fn ask_save(&mut self, panel: Panel, tile: bool) -> FigureKey {
+        let target = MapTarget {
+            panel,
+            view: if tile { View::default() } else { self.view },
+            frame: self.frame(),
+            tile,
+            stem: format!(
+                "{}.{}.{}",
+                self.data.prefix(),
+                self.data.kind(),
+                self.data.slug(panel)
+            ),
+            title: self.title(panel),
+        };
+        let first = target.scopes()[0];
+        let dialog = SaveDialog::new(&target, first, Numbering::Suffix);
+        self.save = Some(Saving { target, dialog });
+        FigureKey::Took
+    }
+
+    /// A key for the save dialog: it takes every key while it is open.
+    pub fn save_key(&mut self, k: &KeyEvent) -> FigureKey {
+        let Some(mut s) = self.save.take() else {
+            return FigureKey::Ignored;
+        };
+        match s.dialog.key(*k, &s.target) {
+            SaveKey::Open => {
+                self.save = Some(s);
+                FigureKey::Took
+            }
+            SaveKey::Cancelled => FigureKey::Took,
+            SaveKey::Save(req) => match self.save_map(&s.target, &req) {
+                Ok(said) => FigureKey::Say(said),
+                // The dialog stays, saying why, for another name or size.
+                Err(e) => {
+                    s.dialog.say(format!("not saved: {e:#}"));
+                    self.save = Some(s);
+                    FigureKey::Took
+                }
+            },
+        }
+    }
+
+    /// Write the map `req` asks for and log it with its thumbnail.
+    fn save_map(&mut self, t: &MapTarget, req: &SaveRequest<MapScope>) -> Result<String> {
+        let page = PageSize {
+            width_in: req.width_in,
+            dpi: req.dpi,
+        };
+        let size = Size {
+            w: req.px.0 as u32,
+            h: req.px.1 as u32,
+            text_px: page.cell_px(),
+        };
+        let view = match req.scope {
+            MapScope::Shown => t.view,
+            MapScope::Whole => View::default(),
+        };
+        let moved = self.moved(t.panel);
+        let img = self.data.write_map(
+            t.panel,
+            size,
+            req.dpi as f32,
+            &self.style,
+            view,
+            &moved,
+            &req.path,
+        )?;
+        let zoomed = if view.is_whole() {
+            String::new()
+        } else {
+            format!(" · zoomed ×{:.1}", view.factor())
+        };
+        let what = format!(
+            "{}{zoomed} · {} in · {} dpi",
+            self.title(t.panel),
+            req.width_in,
+            req.dpi
+        );
+        let logged = self.log(&req.files, &what, Some(&img), t.panel);
+        Ok(format!("wrote {}{logged}", req.path.display()))
+    }
+
+    /// Draw the save dialog, when it is open, in the middle of `area`.
+    pub fn draw_save(&self, f: &mut ratatui::Frame, area: Rect) {
+        if let Some(s) = &self.save {
+            s.dialog.render(f, area, &s.target, &Chrome::terminal());
+        }
+    }
+
     /// The labels moved on `panel`, by name: none when the book cannot be
     /// read.
     fn moved(&self, panel: Panel) -> Offsets<String> {
@@ -1004,14 +1120,8 @@ impl FigurePane {
         }
     }
 
-    /// `panel`'s key in the book: the round and the layout, so a label
-    /// moved on one round's UMAP stays off the next round's and the PHATE.
     fn layout_id(&self, panel: Panel) -> String {
-        let prefix = self.data.prefix();
-        let round = Path::new(&prefix)
-            .file_name()
-            .map_or(prefix.clone(), |n| n.to_string_lossy().into_owned());
-        format!("{round}:{}", self.data.slug(panel))
+        layout_id(&self.data, panel)
     }
 
     /// The scatter on screen as drawn, when it is the panel shown.
@@ -1212,6 +1322,139 @@ impl FigurePane {
         self.edit = Some(edit);
         FigureKey::Say(editing_note(&on, edit))
     }
+}
+
+/// `panel`'s key in the labels' book: the round and the layout, so a label
+/// moved on one round's UMAP stays off the next round's and the PHATE.
+fn layout_id(data: &CellFigures, panel: Panel) -> String {
+    let prefix = data.prefix();
+    let round = Path::new(&prefix)
+        .file_name()
+        .map_or(prefix.clone(), |n| n.to_string_lossy().into_owned());
+    format!("{round}:{}", data.slug(panel))
+}
+
+/// The file beside the run of `data` that keeps its moved labels.
+fn labels_file(data: &CellFigures) -> PathBuf {
+    PathBuf::from(format!("{}.{LABELS_SUFFIX}", data.prefix()))
+}
+
+/// What a save of a scatter takes in: the map as it is on screen (zoomed
+/// and panned, in the screen's shape), or the whole map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapScope {
+    Shown,
+    Whole,
+}
+
+/// The scatter a save is of, as the save dialog asks about it: its view
+/// and the shape on screen when `p` was pressed.
+struct MapTarget {
+    panel: Panel,
+    view: View,
+    frame: (u32, u32),
+    /// From the grid, whose tile shows the scatter whole.
+    tile: bool,
+    /// `{prefix}.{kind}.{panel}`, numbered past saved files.
+    stem: String,
+    title: String,
+}
+
+impl SaveTarget for MapTarget {
+    type Scope = MapScope;
+
+    fn scopes(&self) -> Vec<MapScope> {
+        if self.tile {
+            vec![MapScope::Whole]
+        } else {
+            vec![MapScope::Shown, MapScope::Whole]
+        }
+    }
+
+    fn scope_name(&self, s: MapScope) -> String {
+        match s {
+            MapScope::Shown if self.view.is_whole() => format!("{} as on screen", self.title),
+            MapScope::Shown => format!(
+                "{} as on screen, zoomed ×{:.1}",
+                self.title,
+                self.view.factor()
+            ),
+            MapScope::Whole => format!("{}, the whole map", self.title),
+        }
+    }
+
+    fn default_stem(&self, _: MapScope) -> String {
+        self.stem.clone()
+    }
+
+    /// A PDF only, as senna saves its map.
+    fn exts(&self, _: MapScope) -> Vec<String> {
+        vec!["pdf".into()]
+    }
+
+    /// The screen's shape, so the page shows the data the screen shows;
+    /// the whole map at 4:3.
+    fn aspect(&self, s: MapScope) -> f32 {
+        match (s, self.frame) {
+            (MapScope::Shown, (w, h)) if w > 0 && h > 0 => w as f32 / h as f32,
+            _ => 4.0 / 3.0,
+        }
+    }
+}
+
+/// The save dialog open on a scatter.
+struct Saving {
+    target: MapTarget,
+    dialog: SaveDialog<MapScope>,
+}
+
+/// `lupin annotate -f ROUND --pdf FILE`: the round's cell map as the TUI
+/// opens on it (its first layout, whole, in its first colouring, the
+/// labels where they were moved), saved as a PDF at `pdf`'s size without
+/// the TUI. Where it went.
+pub fn round_pdf(from: &str, pdf: &PdfArgs) -> Result<PathBuf> {
+    let path = pdf.pdf.clone().context("no --pdf file")?;
+    let loaded = load(from)?;
+    let cells = crate::manifest::rounds::read_cells(&loaded)?;
+    let score = crate::manifest::rounds::read_score_cells(&loaded, &cells)?;
+    let data = CellFigures::of_round(&loaded, &cells, score);
+    if data.layouts.is_empty() {
+        anyhow::bail!(
+            "{} has no layout to draw its cells on{}",
+            loaded.file.display(),
+            data.layout_hint
+                .as_deref()
+                .map_or(String::new(), |h| format!(": {h}"))
+        );
+    }
+    let page = pdf.size();
+    // Height over width, as the page sizes it.
+    let (w, h) = page
+        .check(3.0 / 4.0)
+        .map_err(|e| anyhow::anyhow!("--width {} --dpi {}: {e}", pdf.width, pdf.dpi))?;
+    let panel = data.panels()[0];
+    let moved = match OffsetBook::load(&labels_file(&data)) {
+        Ok(b) => b.layout(&layout_id(&data, panel)),
+        Err(e) => {
+            log::warn!("the moved labels cannot be read ({e}): drawn where they fall");
+            Offsets::default()
+        }
+    };
+    let size = Size {
+        w: w as u32,
+        h: h as u32,
+        text_px: page.cell_px(),
+    };
+    data.write_map(
+        panel,
+        size,
+        page.dpi as f32,
+        &Style::opening(&data),
+        View::default(),
+        &moved,
+        &path,
+    )?;
+    Ok(path)
 }
 
 /// The status while labels are moved from the keys: the one chosen, and
