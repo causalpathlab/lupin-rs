@@ -266,8 +266,8 @@ fn four_groups() -> (GeneTable, Vec<f32>, Vec<usize>) {
     for g in 0..40 {
         let mut r = [0.0f32; 8];
         r[g / 10] = 1.0;
-        for d in 4..8 {
-            r[d] = offset(g, d);
+        for (d, x) in r.iter_mut().enumerate().skip(4) {
+            *x = offset(g, d);
         }
         rows.extend(r);
     }
@@ -277,8 +277,8 @@ fn four_groups() -> (GeneTable, Vec<f32>, Vec<usize>) {
         let k = c / 20;
         let mut v = [0.0f32; 8];
         v[k] = 2.0;
-        for d in 4..8 {
-            v[d] = offset(c, d);
+        for (d, x) in v.iter_mut().enumerate().skip(4) {
+            *x = offset(c, d);
         }
         cells.extend(v);
         groups.push(k);
