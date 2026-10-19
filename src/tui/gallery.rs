@@ -1,5 +1,5 @@
-//! What the TUI exported: a log of each figure set (`.svg` + `.pdf` sharing a
-//! base name) in `.lupin-view/saved.json` in the directory lupin runs from,
+//! What the TUI exported: a log of each figure set (a `.pdf`, with an `.svg`
+//! beside it but for a cell map, sharing a base name) in `.lupin-view/saved.json` in the directory lupin runs from,
 //! with what lupin needs to trace a figure back and to check it against the
 //! files on disk (`docs/trajectory-plan.md` §6). The runs' own directories
 //! are not touched.

@@ -329,3 +329,19 @@ fn a_quick_frame_shows_the_figure_last_drawn_while_the_new_one_is_drawn_apart() 
     }
     assert!(p.drawn_so_far(area).0.is_some_and(|d| d.is_ok()));
 }
+
+#[test]
+fn the_scatter_on_screen_is_the_cell_map_on_the_paper_page() {
+    let p = pane();
+    let area = Rect::new(0, 0, 30, 10);
+    let look = p.look(p.current(), p.view);
+    let (cw, ch) = p.cell_px();
+    let img = FigurePane::rasterised(&p.data, look, &p.style, (cw, ch), area).unwrap();
+    assert_eq!((img.width(), img.height()), (30 * cw, 10 * ch));
+    let [r, g, b] = legume_tui::map::theme::Theme::PAPER.background;
+    assert_eq!(
+        img.get_pixel(img.width() - 1, 0).0,
+        [r, g, b, 255],
+        "the page, not white"
+    );
+}

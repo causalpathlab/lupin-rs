@@ -1,18 +1,19 @@
 //! The figure pane of the order view: a trajectory run's figures drawn in the
-//! terminal, exported as SVG + PDF, and logged in the gallery
+//! terminal, a scatter as senna draws its map, exported (a scatter as a PDF,
+//! the other panels as SVG + PDF) and logged in the gallery
 //! (`docs/trajectory-plan.md` §6).
 
 use super::app::step;
 use super::gallery::{Gallery, Status};
-use crate::figures::{self, CellFigures, Panel, Style, View};
+use crate::figures::{self, CellFigures, Panel, Size, Style, View};
 use crate::manifest::run::load;
 use anyhow::{Context, Result};
-use image::DynamicImage;
+use image::RgbaImage;
+use legume_tui::map::display::fit_protocol;
 use ratatui::crossterm::event::KeyCode;
-use ratatui::layout::{Rect, Size};
+use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
-use ratatui_image::{FilterType, Resize};
 use rayon::prelude::*;
 use std::cell::{Ref, RefCell};
 use std::path::{Path, PathBuf};
@@ -138,7 +139,7 @@ impl Exports {
     pub fn relocate(&mut self, pdf: &Path, new_base: &str) -> Result<String> {
         self.gallery.relocate(pdf, Path::new(new_base))?;
         self.refresh();
-        Ok(format!("moved to {new_base}.svg and .pdf"))
+        Ok(format!("moved to {new_base}"))
     }
 }
 
@@ -158,7 +159,7 @@ type Drawn = Result<Protocol, String>;
 type Sized = (Look, (u16, u16));
 
 /// A look being rasterised, and where its pixels will come.
-type Rasterising = (Look, Receiver<Result<DynamicImage, String>>);
+type Rasterising = (Look, Receiver<Result<RgbaImage, String>>);
 
 /// Why a figure rasterised off the screen's thread never came.
 const NOT_DRAWN: &str = "the figure was not drawn";
@@ -237,7 +238,7 @@ pub struct FigurePane {
     /// The figure on screen, drawn for the pane.
     rendered: RefCell<Option<(Sized, Drawn)>>,
     /// The figure on screen rasterised once; a new pane size only re-fits it.
-    image: RefCell<Option<(Look, Result<DynamicImage, String>)>>,
+    image: RefCell<Option<(Look, Result<RgbaImage, String>)>>,
     /// A figure being rasterised off the screen's thread, for a quick frame.
     pending: RefCell<Option<Rasterising>>,
     /// Thumbnails drawn, kept while the grid closes and opens again.
@@ -465,7 +466,7 @@ impl FigurePane {
             KeyCode::Char('D') if strip => {
                 let x = &mut self.exports;
                 Say(match x.arm_delete() {
-                    Some(name) => format!("D again deletes {name} (svg and pdf)"),
+                    Some(name) => format!("D again deletes {name} and its files"),
                     None => x.remove(true).unwrap_or_else(|e| format!("{e:#}")),
                 })
             }
@@ -628,14 +629,17 @@ impl FigurePane {
         if missing.is_empty() {
             return;
         }
-        let (data, px) = (&self.data, self.picker.font_size());
-        let images: Vec<Result<image::RgbaImage, String>> = missing
+        let (data, px) = (&self.data, self.cell_px());
+        let images: Vec<Result<RgbaImage, String>> = missing
             .par_iter()
             .map(|((look, _), area)| {
-                let w = (u32::from(area.width) * u32::from(px.width)).max(32);
-                let h = (u32::from(area.height) * u32::from(px.height)).max(32);
+                let size = Size {
+                    w: (u32::from(area.width) * px.0).max(32),
+                    h: (u32::from(area.height) * px.1).max(32),
+                    text_px: px.1 as f32,
+                };
                 let style = look.style.unwrap_or_default();
-                data.figure(look.panel, w, h, &style, View::default())
+                data.figure(look.panel, size, &style, View::default())
                     .and_then(|f| figures::render(&f))
                     .map_err(|e| format!("{e:#}"))
             })
@@ -645,16 +649,7 @@ impl FigurePane {
             tiles.clear();
         }
         for ((key, area), img) in missing.into_iter().zip(images) {
-            let drawn = img.and_then(|img| {
-                self.picker
-                    .new_protocol(
-                        DynamicImage::ImageRgba8(img),
-                        Size::new(area.width, area.height),
-                        Resize::Fit(Some(FilterType::Triangle)),
-                    )
-                    .map_err(|e| format!("{e:#}"))
-            });
-            tiles.push((key, drawn));
+            tiles.push((key, self.fit(img, area)));
         }
     }
 
@@ -732,43 +727,39 @@ impl FigurePane {
         (drawn, behind)
     }
 
-    /// `img` fitted to `area` as the terminal draws it.
-    fn fit(&self, img: Result<DynamicImage, String>, area: Rect) -> Drawn {
-        img.and_then(|img| {
-            self.picker
-                .new_protocol(
-                    img,
-                    Size::new(area.width, area.height),
-                    Resize::Fit(Some(FilterType::Triangle)),
-                )
-                .map_err(|e| format!("{e:#}"))
-        })
+    /// `img` fitted to `area` as the terminal draws it, as senna fits its
+    /// map.
+    fn fit(&self, img: Result<RgbaImage, String>, area: Rect) -> Drawn {
+        img.and_then(|img| fit_protocol(&self.picker, img, area).map_err(|e| format!("{e:#}")))
     }
 
-    /// `look` rasterised from `data` for `area`, at its pixel size.
+    /// `look` rasterised from `data` for `area`, at its pixel size, its
+    /// text a cell high.
     fn rasterised(
         data: &CellFigures,
         look: Look,
         style: &Style,
         px: (u32, u32),
         area: Rect,
-    ) -> Result<DynamicImage, String> {
-        let w = (u32::from(area.width) * px.0).max(64);
-        let h = (u32::from(area.height) * px.1).max(64);
-        data.figure(look.panel, w, h, style, look.view)
+    ) -> Result<RgbaImage, String> {
+        let size = Size {
+            w: (u32::from(area.width) * px.0).max(64),
+            h: (u32::from(area.height) * px.1).max(64),
+            text_px: px.1 as f32,
+        };
+        data.figure(look.panel, size, style, look.view)
             .and_then(|f| figures::render(&f))
-            .map(DynamicImage::ImageRgba8)
             .map_err(|e| format!("{e:#}"))
     }
 
-    /// The terminal cell's size in pixels.
+    /// The terminal cell's size in frame pixels.
     fn cell_px(&self) -> (u32, u32) {
-        let px = self.picker.font_size();
-        (u32::from(px.width), u32::from(px.height))
+        let (w, h) = legume_tui::map::display::cell(&self.picker);
+        (w as u32, h as u32)
     }
 
     /// `look` rasterised, when it is the one last drawn.
-    fn cached(&self, look: Look) -> Option<Result<DynamicImage, String>> {
+    fn cached(&self, look: Look) -> Option<Result<RgbaImage, String>> {
         let cache = self.image.borrow();
         cache
             .as_ref()
@@ -778,7 +769,7 @@ impl FigurePane {
 
     /// `look` rasterised, from the cache when it is the one last drawn;
     /// else waiting for the one being rasterised, or drawing it here.
-    fn image(&self, look: Look, area: Rect) -> Result<DynamicImage, String> {
+    fn image(&self, look: Look, area: Rect) -> Result<RgbaImage, String> {
         if let Some(img) = self.cached(look) {
             return img;
         }
@@ -794,7 +785,7 @@ impl FigurePane {
     /// `look` rasterised when it is, without waiting: from the cache, or
     /// from the one being rasterised; else that is started (off the
     /// screen's thread) and `None` said.
-    fn image_ready(&self, look: Look, area: Rect) -> Option<Result<DynamicImage, String>> {
+    fn image_ready(&self, look: Look, area: Rect) -> Option<Result<RgbaImage, String>> {
         if let Some(img) = self.cached(look) {
             return Some(img);
         }
@@ -843,7 +834,16 @@ impl FigurePane {
             .map(|()| String::new())
             .unwrap_or_else(|e| format!(" (not listed: {e:#})"));
         self.exports.refresh();
-        Ok(format!("wrote {}.svg and .pdf{logged}", e.base.display()))
+        let exts: Vec<String> = e
+            .files
+            .iter()
+            .filter_map(|f| Some(format!(".{}", f.extension()?.to_string_lossy())))
+            .collect();
+        Ok(format!(
+            "wrote {} {}{logged}",
+            e.base.display(),
+            exts.join(" and ")
+        ))
     }
 }
 

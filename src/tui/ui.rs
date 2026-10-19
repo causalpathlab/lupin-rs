@@ -669,7 +669,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("w", "all figures as thumbnails: arrows choose, enter, space or 1-9 opens, p exports the tile, V the table, esc or w closes"),
             ("+ - 0", "zoom the scatter in / out / show it whole (m, , . and [ ] also show it whole)"),
             ("arrows", "pan a zoomed scatter (with the exports strip open, ↑↓ move in the strip)"),
-            ("p", "export the figure as on screen (zoomed too) as {run}.trajectory.{figure}.svg + .pdf and log it"),
+            ("p", "export the figure as on screen (zoomed too) as {run}.trajectory.{figure}.pdf (+ .svg but for a scatter) and log it"),
             ("f", "the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, esc closes"),
             ("R", "re-read the log and check every export against its files"),
             ("", "keys act on the figures while the ordering column has the focus; p exports figures (senna view: s), s saves the round"),

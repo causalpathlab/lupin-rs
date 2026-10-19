@@ -85,9 +85,10 @@ ratatui = { version = "0.30.2", default-features = false, features = ["crossterm
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Detachable sessions for the TUI, its image protocol pick and the session
-# subcommands, shared with the other legume tools.
-legume-tui = "0.3.1"
+# subcommands, shared with the other legume tools; the cell map drawn as
+# senna draws its map, on the terminal and as a PDF page.
+legume-tui = { version = "0.3.8", features = ["map-display", "export"] }
 
 [dev-dependencies]
 # Drives the TUI through pseudo-terminals in the session tests.
-legume-tui = { version = "0.3.2", features = ["testing"] }
+legume-tui = { version = "0.3.8", features = ["testing"] }
