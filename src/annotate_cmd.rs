@@ -117,14 +117,14 @@ pub struct AnnotateCliArgs {
     pub go_obo: Option<Box<str>>,
     #[arg(
         long = "go-min-overlap",
-        default_value_t = 20,
-        help = "Report GO/GMT terms sharing at least this many genes with the data's features (the overlap, not the term's own size); every term is tested"
+        default_value_t = crate::annotate::args::GO_MIN_OVERLAP,
+        help = "GO/GMT terms sharing at least this many genes with the data's features (the overlap, not the term's own size): the enrichment tests every term and reports these; the units train only these"
     )]
     pub go_min_overlap: usize,
     #[arg(
         long = "go-max-overlap",
-        default_value_t = 500,
-        help = "Report GO/GMT terms sharing at most this many genes with the data's features; every term is tested"
+        default_value_t = crate::annotate::args::GO_MAX_OVERLAP,
+        help = "GO/GMT terms sharing at most this many genes with the data's features: the enrichment tests every term and reports these; the units train only these"
     )]
     pub go_max_overlap: usize,
 
@@ -218,6 +218,12 @@ pub struct AnnotateCliArgs {
 }
 
 impl AnnotateCliArgs {
+    /// Gene sets asked for: `--go`, `--gaf` or `--gmt`.
+    #[must_use]
+    pub fn wants_gene_sets(&self) -> bool {
+        self.go || self.gaf.is_some() || self.gmt.is_some()
+    }
+
     /// Without an output prefix, annotate opens its TUI, which asks for one.
     #[must_use]
     pub fn opens_tui(&self) -> bool {
@@ -415,7 +421,7 @@ fn run_pass(
         Route::EmbeddingFiles { feat, cell } => run_projection_from_files(args, feat, cell)?,
         Route::Enrichment => {
             anyhow::ensure!(
-                !args.markers.is_empty() || args.go || args.gaf.is_some() || args.gmt.is_some(),
+                !args.markers.is_empty() || args.wants_gene_sets(),
                 "enrichment needs --markers, --go, --gaf, or --gmt"
             );
             let loaded = loaded.context("--from is required for enrichment annotation")?;
@@ -490,7 +496,7 @@ fn resolve_go(
     loaded: Option<&crate::manifest::run::Loaded>,
 ) -> Result<()> {
     let dir = loaded.map(|l| l.dir.as_path());
-    if (args.go || args.gaf.is_some() || args.gmt.is_some()) && args.go_obo.is_none() {
+    if args.wants_gene_sets() && args.go_obo.is_none() {
         args.go_obo = match args.obo.take() {
             Some(obo) if args.markers.is_empty() => Some(obo),
             cl => {
@@ -586,17 +592,18 @@ pub fn resolve_method(args: &AnnotateCliArgs, manifest: Option<&RunManifest>) ->
 /// units by `--projection units`, scored by the enrichment pass otherwise.
 fn check_projection_gene_sets(args: &AnnotateCliArgs, projection: ProjectionMethod) -> Result<()> {
     anyhow::ensure!(
-        projection == ProjectionMethod::Units
-            || (!args.go && args.gaf.is_none() && args.gmt.is_none()),
+        projection == ProjectionMethod::Units || !args.wants_gene_sets(),
         "GO terms are scored by the enrichment pass, or trained as units by \
          --projection units; add --method enrichment or --projection units"
     );
     Ok(())
 }
 
-/// GO terms asked for, or no panel: what only the enrichment does.
+/// No panel, or GO terms the units are not asked to align: what only the
+/// enrichment does.
 fn enrichment_only(args: &AnnotateCliArgs) -> bool {
-    args.go || args.gaf.is_some() || args.gmt.is_some() || args.markers.is_empty()
+    args.markers.is_empty()
+        || (args.wants_gene_sets() && args.projection != Some(ProjectionMethod::Units))
 }
 
 /// How a projection pass calls: the `--projection` given, else the score
@@ -635,32 +642,18 @@ fn run_projection_from_files(
         .with_context(|| format!("reading feature embedding {feat_path}"))?;
     let cell = DMatrix::<f32>::from_parquet(cell_path)
         .with_context(|| format!("reading cell embedding {cell_path}"))?;
+    // Without a run there are no clusters but `--clusters`: else one group,
+    // centred at the mean cell.
+    let groups = match args.clusters.as_deref() {
+        Some(p) => crate::annotate::inputs::load_cluster_labels(p, &cell.rows)?.0,
+        None => vec![0; cell.rows.len()],
+    };
     match resolve_projection(args, None) {
-        // Without a run there are no clusters but `--clusters`: else the
-        // score is centred at the mean cell, one group.
         ProjectionMethod::Score => {
-            let groups = match args.clusters.as_deref() {
-                Some(p) => crate::annotate::inputs::load_cluster_labels(p, &cell.rows)?.0,
-                None => vec![0; cell.rows.len()],
-            };
             crate::annotate::marker_score::run(&build_score_args(args)?, &feat, &cell, &groups)?;
         }
         ProjectionMethod::Units => {
-            let a = build_units_args(args);
-            let groups = match args.clusters.as_deref() {
-                Some(p) => crate::annotate::inputs::load_cluster_labels(p, &cell.rows)?.0,
-                None => vec![0; cell.rows.len()],
-            };
-            let terms = a.terms(&feat.rows)?;
-            crate::annotate::geneset_units::run_pass(
-                &a.markers,
-                &a.out,
-                &feat,
-                &cell,
-                &groups,
-                &terms,
-                &a.config()?,
-            )?;
+            crate::annotate::geneset_units::run(&build_units_args(args), &feat, &cell, &groups)?;
         }
     }
     Ok(())
@@ -756,27 +749,26 @@ fn build_score_args(args: &AnnotateCliArgs) -> Result<MarkerScoreArgs> {
         markers: args.markers.clone(),
         out: args.out.clone(),
         clusters: args.clusters.clone(),
-        leiden: LeidenArgs {
-            knn: args.knn.unwrap_or(PROJECTION_KNN),
-            resolution: args.resolution,
-            num_clusters: args.num_clusters,
-            min_cluster_size: args.min_cluster_size,
-            seed: args.cluster_seed,
-        },
+        leiden: projection_leiden(args),
         no_clean: args.no_clean,
     })
+}
+
+/// Internal Leiden for a projection pass, from the command line's settings.
+fn projection_leiden(args: &AnnotateCliArgs) -> LeidenArgs {
+    LeidenArgs {
+        knn: args.knn.unwrap_or(PROJECTION_KNN),
+        resolution: args.resolution,
+        num_clusters: args.num_clusters,
+        min_cluster_size: args.min_cluster_size,
+        seed: args.cluster_seed,
+    }
 }
 
 fn build_units_args(args: &AnnotateCliArgs) -> crate::annotate::args::UnitsArgs {
     crate::annotate::args::UnitsArgs {
         clusters: args.clusters.clone(),
-        leiden: LeidenArgs {
-            knn: args.knn.unwrap_or(PROJECTION_KNN),
-            resolution: args.resolution,
-            num_clusters: args.num_clusters,
-            min_cluster_size: args.min_cluster_size,
-            seed: args.cluster_seed,
-        },
+        leiden: projection_leiden(args),
         seed: args.seed,
         device: args.device,
         device_no: args.device_no,
@@ -857,6 +849,26 @@ mod route_tests {
             resolve_method(&cli(&["--method", "enrichment"]), Some(&bge)),
             AnnotateMethod::Enrichment,
             "a choice stands"
+        );
+    }
+
+    #[test]
+    fn gene_sets_go_to_the_units_when_they_are_asked_for() {
+        let fne = run_with(RunKind::Fne, true, false);
+        let units_go = cli(&["--projection", "units", "--go"]);
+        assert_eq!(
+            resolve_method(&units_go, Some(&fne)),
+            AnnotateMethod::Projection,
+            "the units align GO terms themselves"
+        );
+        assert!(
+            matches!(route(&units_go, None), Route::Enrichment),
+            "no run"
+        );
+        assert_eq!(
+            resolve_method(&cli(&["--go"]), Some(&fne)),
+            AnnotateMethod::Enrichment,
+            "unasked, GO terms stay the enrichment's"
         );
     }
 

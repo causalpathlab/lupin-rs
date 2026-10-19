@@ -185,6 +185,11 @@ pub struct MarkerScoreArgs {
 /// Random gene sets per size a units pass trains as its terms' null: 99, so
 /// the smallest p is one in a hundred.
 pub const DECOYS: usize = 99;
+/// The genes a GO/GMT term must share with the data's features, at least
+/// and at most: the terms the enrichment reports, and the ones the units
+/// train.
+pub const GO_MIN_OVERLAP: usize = 20;
+pub const GO_MAX_OVERLAP: usize = 500;
 
 /// `lupin annotate --method projection --projection units`: the panel's
 /// cell types as gene-set units ([`crate::annotate::geneset_units`]).
@@ -287,8 +292,8 @@ impl UnitsArgs {
             gaf: None,
             gmt: None,
             go_obo: None,
-            go_min: 20,
-            go_max: 500,
+            go_min: GO_MIN_OVERLAP,
+            go_max: GO_MAX_OVERLAP,
             decoys: DECOYS,
             no_clean: false,
         }

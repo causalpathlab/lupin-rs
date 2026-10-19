@@ -201,23 +201,7 @@ pub fn annotate_by_units(args: &UnitsArgs, loaded: &Loaded) -> Result<()> {
         &loaded.dir,
         &cells.rows,
     )?;
-    let cfg = args.config()?;
-    if !args.no_clean {
-        crate::annotate::outputs::clean_outputs(
-            &args.out,
-            graph_embedding_util::type_annotation::CELL_LABEL_FILE_SUFFIXES,
-        );
-    }
-    let terms = args.terms(&feat.rows)?;
-    let mut outputs = crate::annotate::geneset_units::run_pass(
-        &args.markers,
-        &args.out,
-        &feat,
-        &cells,
-        &groups,
-        &terms,
-        &cfg,
-    )?;
+    let mut outputs = crate::annotate::geneset_units::run(args, &feat, &cells, &groups)?;
     let clusters = format!("{}{}", args.out, rounds::CLUSTERS);
     rounds::write_clusters(&clusters, &cells.rows, &rounds::cluster_ids(&groups))?;
     outputs.clusters = Some(clusters);
@@ -402,8 +386,6 @@ fn record(
             a.cluster_celltype_q_values = rel(&out.cluster_celltype_q_values);
             a.cluster_celltype_p = rel(&out.cluster_celltype_p);
             a.cluster_celltype_nes = rel(&out.cluster_celltype_nes);
-            a.cluster_term_q = rel(&out.cluster_term_q);
-            a.marker_embedding = rel(&out.marker_embedding);
             a.celltype_units = rel(&out.celltype_units);
             a.celltype_links = rel(&out.celltype_links);
             a.term_alignment = rel(&out.term_alignment);

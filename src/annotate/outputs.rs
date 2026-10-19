@@ -52,11 +52,13 @@ pub fn labels_under(out: &str) -> Option<String> {
         .into_iter()
         .find(|p| Path::new(p).exists())
 }
-/// `{out}.annot.parquet`: projection's per-cell table (`community`, `coarse_label`, …).
+/// `{out}.annot.parquet`: the retired term-ORA projection's per-cell table
+/// (`community`, `coarse_label`, …), read back from older rounds.
 pub const ANNOT_PARQUET: &str = ".annot.parquet";
 /// Projection score pass: each cell's cluster, call and margin.
 pub const MARKER_SCORE_PARQUET: &str = ".marker_score.parquet";
-/// `{out}.cluster_term_q.parquet`: projection's cluster × term FDR q.
+/// `{out}.cluster_term_q.parquet`: the retired term-ORA projection's cluster
+/// × term FDR q, read back from older rounds.
 pub const CLUSTER_TERM_Q: &str = ".cluster_term_q.parquet";
 /// `{out}.cluster_celltype_q_values.parquet`: enrichment's cluster × cell-type FDR q.
 pub const CLUSTER_CELLTYPE_Q_VALUES: &str = ".cluster_celltype_q_values.parquet";
@@ -169,8 +171,6 @@ pub struct AnnotationOutputs {
     pub cluster_celltype_q_values: Option<String>,
     pub cluster_celltype_p: Option<String>,
     pub cluster_celltype_nes: Option<String>,
-    pub cluster_term_q: Option<String>,
-    pub marker_embedding: Option<String>,
     /// The cell types as gene-set units, and the cells each pair shares.
     pub celltype_units: Option<String>,
     pub celltype_links: Option<String>,

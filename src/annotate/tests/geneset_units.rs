@@ -29,6 +29,10 @@ fn set(name: &str, kind: SetKind, genes: &[usize]) -> GeneSet {
     }
 }
 
+fn centre<'a>(u: &'a Units, name: &str) -> Option<&'a [f32]> {
+    u.names.iter().position(|n| n == name).map(|i| u.centre(i))
+}
+
 fn cos(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
     let n = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -53,7 +57,7 @@ fn a_set_is_trained_toward_its_genes_while_the_genes_stay_fixed() {
         set("TERM2", SetKind::Term, &[7, 8, 9]),
     ];
     // Training checks the gene table came back as it went in.
-    let u = train_units(&g, &sets, &quick()).unwrap();
+    let u = train_units(&g, &sets, &[], &quick()).unwrap();
     let (a, b) = ([1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]);
     for (name, near, far) in [
         ("CT1", a, b),
@@ -61,7 +65,7 @@ fn a_set_is_trained_toward_its_genes_while_the_genes_stay_fixed() {
         ("TERM1", a, b),
         ("TERM2", b, a),
     ] {
-        let c = u.centre(name).unwrap();
+        let c = centre(&u, name).unwrap();
         assert!(
             cos(c, &near) > cos(c, &far) + 0.5,
             "{name} at {c:?} is not toward its genes"
@@ -77,10 +81,10 @@ fn coverage_counts_the_genes_the_table_has_and_too_few_drop_the_set() {
     let mut part = set("CT1", SetKind::CellType, &[0, 1, 2]);
     part.genes.push("GENE98".into());
     let sets = [part, set("CT2", SetKind::CellType, &[6, 7, 8]), thin];
-    let u = train_units(&g, &sets, &quick()).unwrap();
+    let u = train_units(&g, &sets, &[], &quick()).unwrap();
     assert_eq!(u.coverage("CT1"), Some((3, 4)));
     assert!(
-        u.centre("CT3").is_none(),
+        centre(&u, "CT3").is_none(),
         "one gene in the table is too few"
     );
     assert_eq!(u.dropped, [("CT3".to_string(), 1, 2)]);
@@ -298,7 +302,7 @@ fn a_term_aligned_with_a_cluster_beats_random_sets_of_its_size_and_others_do_not
         decoys: 99,
         ..quick()
     };
-    let u = train_units(&g, &sets, &cfg).unwrap();
+    let u = train_units(&g, &sets, &[], &cfg).unwrap();
     assert_eq!(
         u.names,
         ["TERM1", "TERM2"],
@@ -364,7 +368,7 @@ fn decoys_are_drawn_from_the_pool_their_kind_is_annotated_from() {
         decoys: 20,
         ..quick()
     };
-    let u = train_units_from(&g, &sets, &[(SetKind::Term, pool)], &cfg).unwrap();
+    let u = train_units(&g, &sets, &pool, &cfg).unwrap();
     assert_eq!(u.decoys.len(), 20, "one size bin of twenty");
     assert!(
         u.decoys.iter().flat_map(|d| &d.genes).all(|&r| r < 9),
@@ -434,4 +438,39 @@ fn a_wide_axis_every_type_shares_does_not_decide_the_calls() {
         })
         .collect();
     assert!(wrong.len() <= 3, "{} miscalled: {wrong:?}", wrong.len());
+}
+
+#[test]
+fn markers_find_their_rows_as_the_other_passes_find_them() {
+    // Rows named by gene ID and symbol, as a 10x load names them.
+    let mut g = genes();
+    g.names = (g.names.iter().enumerate())
+        .map(|(i, s)| {
+            data_beans::utilities::name_matching::id_name(&format!("ENSG{i:011}"), s).into()
+        })
+        .collect();
+    let sets = [
+        set("CT1", SetKind::CellType, &[0, 1, 2]),
+        set("CT2", SetKind::CellType, &[6, 7, 8]),
+    ];
+    let u = train_units(&g, &sets, &[], &quick()).unwrap();
+    assert_eq!(u.coverage("CT1"), Some((3, 3)), "{:?}", u.dropped);
+}
+
+#[test]
+fn a_pass_clears_the_unit_files_an_earlier_pass_left() {
+    use crate::annotate::marker_score::toy;
+    let dir = tempfile::tempdir().unwrap();
+    let (feat, cells, groups) = toy::matrices();
+    let panel = toy::panel(dir.path());
+    let out = dir.path().join("p").to_string_lossy().into_owned();
+    let stale = format!("{out}{TERM_ALIGNMENT_PARQUET}");
+    std::fs::write(&stale, "from an earlier pass with terms").unwrap();
+    let args = crate::annotate::args::UnitsArgs {
+        epochs: 60,
+        seed: 7,
+        ..crate::annotate::args::UnitsArgs::new(&panel, &out)
+    };
+    run(&args, &feat, &cells, &groups).unwrap();
+    assert!(!std::path::Path::new(&stale).exists(), "a stale alignment");
 }

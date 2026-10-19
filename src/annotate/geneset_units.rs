@@ -6,6 +6,7 @@
 //! `graph_embedding_util::fne` implements it; gene rows are pinned with its
 //! preset rows, as `senna fne --freeze-feature-embedding` does.
 
+use crate::annotate::gene_rows::GeneRows;
 use crate::annotate::markers::label_key;
 use crate::annotate::outputs::{labels_path, AnnotationOutputs};
 use anyhow::Result;
@@ -15,7 +16,8 @@ use graph_embedding_util::fne::{
 };
 use legume_numeric::matrix::dense_mat_io::{Mat, MatWithNames};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
-use std::collections::HashMap;
+use rayon::prelude::*;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Each cell type's genes in the table and given, radius, share of the
 /// cells and centre (`h0…`), by type.
@@ -26,6 +28,14 @@ pub const TYPE_LINKS_TSV: &str = ".celltype_links.tsv";
 pub const TERM_ALIGNMENT_PARQUET: &str = ".term_alignment.parquet";
 /// Each ontology term's genes in the table and given, and centre (`h0…`).
 pub const TERM_UNITS_PARQUET: &str = ".term_units.parquet";
+/// What a pass writes beside the per-cell labels, cleared before it runs so
+/// no file of an earlier pass (its terms, say) is read as this one's.
+pub const UNITS_OUTPUT_SUFFIXES: [&str; 4] = [
+    UNITS_PARQUET,
+    TYPE_LINKS_TSV,
+    TERM_ALIGNMENT_PARQUET,
+    TERM_UNITS_PARQUET,
+];
 
 /// A run's genes and their rows (row-major, `dim` wide), in the space its
 /// cells share with them.
@@ -79,7 +89,7 @@ pub struct UnitConfig {
     pub seed: u64,
     /// EM rounds fitting the regions to the cells.
     pub region_iters: usize,
-    /// Random gene sets per kind and size bin, trained as the null.
+    /// Random gene sets per size bin of the terms, trained as their null.
     pub decoys: usize,
     /// Where training runs.
     pub device: legume_numeric::candle::candle_core::Device,
@@ -116,68 +126,71 @@ pub struct Units {
     pub decoys: Vec<Decoy>,
 }
 
-/// A random gene set trained as a `kind` set is: its gene rows and centre.
+/// A random gene set trained as a term is: its gene rows and centre.
 #[derive(Debug, Clone)]
 pub struct Decoy {
-    pub kind: SetKind,
     pub genes: Vec<u32>,
     pub centre: Vec<f32>,
 }
 
 impl Units {
-    fn index(&self, name: &str) -> Option<usize> {
-        self.names.iter().position(|n| n == name)
+    /// Set `i`'s centre.
+    #[must_use]
+    pub fn centre(&self, i: usize) -> &[f32] {
+        &self.centres[i * self.dim..(i + 1) * self.dim]
     }
 
-    #[cfg(test)]
-    pub fn centre(&self, name: &str) -> Option<&[f32]> {
-        let i = self.index(name)?;
-        Some(&self.centres[i * self.dim..(i + 1) * self.dim])
+    /// The sets of `kind`, by index.
+    fn of_kind(&self, kind: SetKind) -> Vec<usize> {
+        (0..self.names.len())
+            .filter(|&i| self.kinds[i] == kind)
+            .collect()
     }
 
     #[cfg(test)]
     pub fn coverage(&self, name: &str) -> Option<(usize, usize)> {
-        self.index(name).map(|i| self.covered[i])
+        let i = self.names.iter().position(|n| n == name)?;
+        Some(self.covered[i])
     }
 }
 
-/// Train `sets` against `genes`, whose rows stay as they are, with
-/// `cfg.decoys` random gene sets per kind and size bin ([`size_bin`]) trained
-/// beside them as nodes of the same type, the null [`align`] reads.
-#[cfg(test)]
-pub fn train_units(genes: &GeneTable, sets: &[GeneSet], cfg: &UnitConfig) -> Result<Units> {
-    train_units_from(genes, sets, &[], cfg)
-}
-
-/// [`train_units`], each kind's decoys drawn from its `pools` of genes (the
-/// genes its sets could be annotated from: real sets are not random genes,
-/// so a null drawn from every gene sits apart from all of them); a kind
-/// without a pool draws from the whole table.
-pub fn train_units_from(
+/// Train `sets` against `genes`, whose rows stay as they are. A set's genes
+/// are found as the other passes find markers ([`GeneRows`]). The terms get
+/// `cfg.decoys` random gene sets per size bin ([`size_bin`]), trained beside
+/// them as nodes of their type: the null [`align`] reads. Decoys are drawn
+/// from `term_pool`, the genes terms could be annotated from (real sets are
+/// not random genes, so a null drawn from every gene sits apart from all of
+/// them), or from the whole table when it is empty.
+pub fn train_units(
     genes: &GeneTable,
     sets: &[GeneSet],
-    pools: &[(SetKind, Vec<String>)],
+    term_pool: &[String],
     cfg: &UnitConfig,
 ) -> Result<Units> {
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
-    let row_of: HashMap<&str, u32> = (genes.names.iter().enumerate())
-        .map(|(i, g)| (g.as_str(), i as u32))
-        .collect();
+    let names: Vec<Box<str>> = genes.names.iter().map(|g| g.as_str().into()).collect();
+    let index = GeneRows::build(&names);
+    let rows_of = |given: &[String]| -> Vec<u32> {
+        let mut rows: Vec<u32> = (given.iter())
+            .filter_map(|g| index.match_rows(g))
+            .flatten()
+            .map(|&r| r as u32)
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        rows
+    };
     let n_genes = genes.names.len();
     let mut dropped = Vec::new();
     let mut rng = SmallRng::seed_from_u64(cfg.seed);
     // Every node to train, kind by kind in node-type order: the kept sets,
-    // then their decoys. `None` for a decoy.
+    // then the terms' decoys. `None` for a decoy.
     let mut nodes: Vec<(SetKind, Vec<u32>, Option<&GeneSet>)> = Vec::new();
     for kind in SetKind::ALL {
         let mut bins = std::collections::BTreeSet::new();
         for s in sets.iter().filter(|s| s.kind == kind) {
-            let mut found: Vec<u32> = (s.genes.iter())
-                .filter_map(|g| row_of.get(g.as_str()).copied())
-                .collect();
-            found.sort_unstable();
-            found.dedup();
+            let found = rows_of(&s.genes);
             if found.len() < cfg.min_genes {
                 dropped.push((s.name.clone(), found.len(), s.genes.len()));
             } else {
@@ -185,16 +198,13 @@ pub fn train_units_from(
                 nodes.push((kind, found, Some(s)));
             }
         }
-        let pool: Vec<u32> = match pools.iter().find(|(k, _)| *k == kind) {
-            Some((_, names)) => {
-                let mut rows: Vec<u32> = (names.iter())
-                    .filter_map(|g| row_of.get(g.as_str()).copied())
-                    .collect();
-                rows.sort_unstable();
-                rows.dedup();
-                rows
-            }
-            None => (0..n_genes as u32).collect(),
+        if kind != SetKind::Term {
+            continue;
+        }
+        let pool: Vec<u32> = if term_pool.is_empty() {
+            (0..n_genes as u32).collect()
+        } else {
+            rows_of(term_pool)
         };
         for bin in bins {
             for _ in 0..cfg.decoys {
@@ -270,18 +280,17 @@ pub fn train_units_from(
         dropped,
         decoys: Vec::new(),
     };
-    for (id, (kind, rows, set)) in nodes.iter().enumerate() {
+    for (id, (kind, rows, set)) in nodes.into_iter().enumerate() {
         match set {
             Some(s) => {
                 units.names.push(s.name.clone());
-                units.kinds.push(*kind);
+                units.kinds.push(kind);
                 units.centres.extend(row(id));
                 units.covered.push((rows.len(), s.genes.len()));
                 units.bins.push(size_bin(rows.len()).min(n_genes));
             }
             None => units.decoys.push(Decoy {
-                kind: *kind,
-                genes: rows.clone(),
+                genes: rows,
                 centre: row(id),
             }),
         }
@@ -332,21 +341,26 @@ pub fn fit_regions(
 ) -> Result<Regions> {
     let dim = units.dim;
     anyhow::ensure!(cells.len() == n * dim, "cells are not {n} rows of {dim}");
-    let picked: Vec<usize> = (0..units.names.len())
-        .filter(|&i| units.kinds[i] == kind)
-        .collect();
+    let picked = units.of_kind(kind);
     let k = picked.len();
     anyhow::ensure!(k > 0, "no {} sets to fit", kind.name());
-    let centres: Vec<Vec<f32>> = (picked.iter())
-        .map(|&i| unit(&units.centres[i * dim..(i + 1) * dim]))
-        .collect();
-    // Squared chord distances, cell by region.
-    let dist: Vec<f32> = (0..n)
-        .flat_map(|c| {
-            let u = unit(&cells[c * dim..(c + 1) * dim]);
-            (centres.iter())
-                .map(move |m| u.iter().zip(m).map(|(a, b)| (a - b) * (a - b)).sum())
-                .collect::<Vec<f32>>()
+    let centres: Vec<f32> = picked.iter().flat_map(|&i| unit(units.centre(i))).collect();
+    // Squared chord distances, cell by region: 2 − 2 u·m between unit
+    // vectors (a zero cell is at chord² 1 from every centre).
+    let dist: Vec<f32> = cells
+        .par_chunks(dim)
+        .flat_map_iter(|cell| {
+            let norm = cell.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let scale = if norm > 0.0 { 1.0 / norm } else { 0.0 };
+            let zero = norm == 0.0;
+            centres.chunks(dim).map(move |m| {
+                if zero {
+                    1.0
+                } else {
+                    let dot: f32 = cell.iter().zip(m).map(|(a, b)| a * b).sum();
+                    (2.0 - 2.0 * dot * scale).max(0.0)
+                }
+            })
         })
         .collect();
     // The sphere's own dimension.
@@ -355,29 +369,63 @@ pub fn fit_regions(
     let mut weight = vec![1.0 / k as f32; k];
     let mut w = vec![0.0f32; n * k];
     for _ in 0..iters.max(1) {
-        for c in 0..n {
-            let row = &mut w[c * k..(c + 1) * k];
-            for j in 0..k {
-                row[j] =
-                    weight[j].ln() - 0.5 * d_eff * var[j].ln() - dist[c * k + j] / (2.0 * var[j]);
-            }
-            let top = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            let z: f32 = row.iter().map(|x| (x - top).exp()).sum();
-            row.iter_mut().for_each(|x| *x = (*x - top).exp() / z);
-        }
+        // Each region's log prior and normaliser, and the scale of its
+        // distances, once per round.
+        let base: Vec<f32> = (0..k)
+            .map(|j| weight[j].ln() - 0.5 * d_eff * var[j].ln())
+            .collect();
+        let inv: Vec<f32> = var.iter().map(|v| 0.5 / v).collect();
+        let (mass, spread) = w
+            .par_chunks_mut(k)
+            .zip(dist.par_chunks(k))
+            .fold(
+                || (vec![0.0f32; k], vec![0.0f32; k]),
+                |(mut mass, mut spread), (row, d)| {
+                    for j in 0..k {
+                        row[j] = base[j] - d[j] * inv[j];
+                    }
+                    let top = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                    let mut z = 0.0;
+                    for x in row.iter_mut() {
+                        *x = (*x - top).exp();
+                        z += *x;
+                    }
+                    for j in 0..k {
+                        row[j] /= z;
+                        mass[j] += row[j];
+                        spread[j] += row[j] * d[j];
+                    }
+                    (mass, spread)
+                },
+            )
+            .reduce(|| (vec![0.0f32; k], vec![0.0f32; k]), add_pair);
         for j in 0..k {
-            let mass: f32 = (0..n).map(|c| w[c * k + j]).sum();
-            let spread: f32 = (0..n).map(|c| w[c * k + j] * dist[c * k + j]).sum();
-            weight[j] = (mass / n as f32).max(f32::MIN_POSITIVE);
-            var[j] = (spread / (d_eff * mass.max(f32::MIN_POSITIVE))).max(1e-8);
+            weight[j] = (mass[j] / n as f32).max(f32::MIN_POSITIVE);
+            var[j] = (spread[j] / (d_eff * mass[j].max(f32::MIN_POSITIVE))).max(1e-8);
         }
     }
-    let mass: Vec<f32> = (0..k).map(|j| (0..n).map(|c| w[c * k + j]).sum()).collect();
+    // Each region's mass and Wᵀ W, in one pass over the cells.
+    let (mass, shared) = w
+        .par_chunks(k)
+        .fold(
+            || (vec![0.0f32; k], vec![0.0f32; k * k]),
+            |(mut mass, mut shared), row| {
+                for a in 0..k {
+                    mass[a] += row[a];
+                    for b in a..k {
+                        shared[a * k + b] += row[a] * row[b];
+                    }
+                }
+                (mass, shared)
+            },
+        )
+        .reduce(|| (vec![0.0f32; k], vec![0.0f32; k * k]), add_pair);
     let mut links = vec![0.0f32; k * k];
     for a in 0..k {
-        for b in 0..k {
-            let shared: f32 = (0..n).map(|c| w[c * k + a] * w[c * k + b]).sum();
-            links[a * k + b] = shared / (mass[a] * mass[b]).sqrt().max(f32::MIN_POSITIVE);
+        for b in a..k {
+            let v = shared[a * k + b] / (mass[a] * mass[b]).sqrt().max(f32::MIN_POSITIVE);
+            links[a * k + b] = v;
+            links[b * k + a] = v;
         }
     }
     Ok(Regions {
@@ -387,6 +435,34 @@ pub fn fit_regions(
         membership: w,
         links,
     })
+}
+
+/// `lupin annotate --projection units` on loaded tables: `args`' panel and
+/// ontology terms trained on the gene table `feat`, its outputs under
+/// `args.out` cleared first unless `--no-clean` ([`run_pass`]).
+pub fn run(
+    args: &crate::annotate::args::UnitsArgs,
+    feat: &MatWithNames<Mat>,
+    cells: &MatWithNames<Mat>,
+    groups: &[usize],
+) -> Result<AnnotationOutputs> {
+    if !args.no_clean {
+        crate::annotate::outputs::clean_outputs(
+            &args.out,
+            graph_embedding_util::type_annotation::CELL_LABEL_FILE_SUFFIXES,
+        );
+        crate::annotate::outputs::clean_outputs(&args.out, &UNITS_OUTPUT_SUFFIXES);
+    }
+    let terms = args.terms(&feat.rows)?;
+    run_pass(
+        &args.markers,
+        &args.out,
+        feat,
+        cells,
+        groups,
+        &terms,
+        &args.config()?,
+    )
 }
 
 /// A projection pass by gene-set units: the panel's cell types, and the
@@ -405,29 +481,22 @@ pub fn run_pass(
     cfg: &UnitConfig,
 ) -> Result<AnnotationOutputs> {
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
-    let mut by_type: Vec<GeneSet> = Vec::new();
+    let mut panel: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (gene, t) in crate::annotate::markers::read_panel(markers)? {
-        let name = label_key(&t);
-        match by_type.iter_mut().find(|s| s.name == name) {
-            Some(s) => s.genes.push(gene),
-            None => by_type.push(GeneSet {
-                name,
-                kind: SetKind::CellType,
-                genes: vec![gene],
-            }),
-        }
+        panel.entry(label_key(&t)).or_default().insert(gene);
     }
-    by_type.extend_from_slice(&terms.sets);
-    let pools = [(SetKind::Term, terms.pool.clone())];
-    let pools = if terms.pool.is_empty() {
-        &[][..]
-    } else {
-        &pools[..]
-    };
+    let mut sets: Vec<GeneSet> = (panel.into_iter())
+        .map(|(name, genes)| GeneSet {
+            name,
+            kind: SetKind::CellType,
+            genes: genes.into_iter().collect(),
+        })
+        .collect();
+    sets.extend_from_slice(&terms.sets);
     // Both sides read per unit of the cells' spread, so an axis every type
     // spreads along does not outweigh the ones that tell types apart.
     let (gene_rows, flat) = whitened(feat, cells, groups)?;
-    let units = train_units_from(&gene_rows, &by_type, pools, cfg)?;
+    let units = train_units(&gene_rows, &sets, &terms.pool, cfg)?;
     for (name, found, given) in &units.dropped {
         log::warn!("{name}: {found} of its {given} markers are in the gene table; not trained");
     }
@@ -447,7 +516,7 @@ pub fn run_pass(
     write_sets(
         &format!("{out}{UNITS_PARQUET}"),
         &units,
-        &r.names,
+        &units.of_kind(SetKind::CellType),
         &[("radius", &r.radius), ("weight", &r.weight)],
     )?;
     write_links(&format!("{out}{TYPE_LINKS_TSV}"), &r)?;
@@ -456,7 +525,7 @@ pub fn run_pass(
         let a = align(&units, SetKind::Term, &flat, groups)?;
         write_alignment(&path, &a)?;
         let sets = format!("{out}{TERM_UNITS_PARQUET}");
-        write_sets(&sets, &units, &a.terms, &[])?;
+        write_sets(&sets, &units, &units.of_kind(SetKind::Term), &[])?;
         (Some(path), Some(sets))
     } else {
         (None, None)
@@ -482,33 +551,35 @@ fn whitened(
     cells: &MatWithNames<Mat>,
     groups: &[usize],
 ) -> Result<(GeneTable, Vec<f32>)> {
-    use nalgebra::{DMatrix, DVector};
-    let x = cells.mat.map(f64::from);
+    use graph_embedding_util::type_annotation::embedding_score::balanced_centre;
+    use nalgebra::{DMatrix, DVector, RowDVector};
+    let mut x = cells.mat.map(f64::from);
     let (n, dim) = x.shape();
     anyhow::ensure!(feat.mat.ncols() == dim, "genes and cells differ in width");
     anyhow::ensure!(groups.len() == n, "a cluster per cell");
-    let mut by: std::collections::BTreeMap<usize, (DVector<f64>, usize)> = Default::default();
-    for (c, &g) in groups.iter().enumerate().filter(|(_, g)| **g != usize::MAX) {
-        let e = by.entry(g).or_insert_with(|| (DVector::zeros(dim), 0));
-        e.0 += x.row(c).transpose();
+    let centre = balanced_centre(&x, groups)?.transpose();
+    let mut by: BTreeMap<usize, (RowDVector<f64>, usize)> = BTreeMap::new();
+    for (row, &g) in x.row_iter().zip(groups).filter(|(_, g)| **g != usize::MAX) {
+        let e = by.entry(g).or_insert_with(|| (RowDVector::zeros(dim), 0));
+        e.0 += row;
         e.1 += 1;
     }
-    anyhow::ensure!(!by.is_empty(), "no cell is in a cluster");
-    let means: std::collections::BTreeMap<usize, DVector<f64>> =
-        by.iter().map(|(g, (s, k))| (*g, s / *k as f64)).collect();
-    let centre: DVector<f64> = means.values().sum::<DVector<f64>>() / means.len() as f64;
-    let xc = DMatrix::from_fn(n, dim, |i, j| x[(i, j)] - centre[j]);
-    // Pooled within the clusters: the spread that tells no cluster apart.
-    let mut within = DMatrix::<f64>::zeros(dim, dim);
+    let means: BTreeMap<usize, RowDVector<f64>> = by
+        .into_iter()
+        .map(|(g, (s, k))| (g, s / k as f64))
+        .collect();
+    // Pooled within the clusters: the spread that tells no cluster apart,
+    // as Dᵀ D over each cell's offset from its cluster's mean.
+    let mut offsets = DMatrix::<f64>::zeros(n, dim);
     let mut counted = 0usize;
     for (c, g) in groups.iter().enumerate() {
         if let Some(m) = means.get(g) {
-            let d = x.row(c).transpose() - m;
-            within += &d * d.transpose();
+            offsets.set_row(c, &(x.row(c) - m));
             counted += 1;
         }
     }
-    let cov = within / counted.saturating_sub(means.len()).max(1) as f64;
+    let cov = offsets.tr_mul(&offsets) / counted.saturating_sub(means.len()).max(1) as f64;
+    drop(offsets);
     let eig = cov.symmetric_eigen();
     let floor = eig.eigenvalues.max() * 1e-6;
     let inv_sqrt = DVector::from_iterator(
@@ -518,37 +589,35 @@ fn whitened(
             .map(|&l| 1.0 / l.max(floor).max(f64::MIN_POSITIVE).sqrt()),
     );
     let w = &eig.eigenvectors * DMatrix::from_diagonal(&inv_sqrt) * eig.eigenvectors.transpose();
-    let g = feat.mat.map(f64::from);
+    for mut row in x.row_iter_mut() {
+        row -= &centre;
+    }
+    let mut g = feat.mat.map(f64::from);
     let mean = g.row_mean();
-    let gc = DMatrix::from_fn(g.nrows(), dim, |i, j| g[(i, j)] - mean[j]);
+    for mut row in g.row_iter_mut() {
+        row -= &mean;
+    }
+    // Row-major: the transpose's column-major storage.
     let row_major = |m: DMatrix<f64>| -> Vec<f32> {
-        (0..m.nrows())
-            .flat_map(|i| (0..m.ncols()).map(move |j| (i, j)))
-            .map(|(i, j)| m[(i, j)] as f32)
-            .collect()
+        m.transpose().as_slice().iter().map(|&v| v as f32).collect()
     };
     Ok((
         GeneTable {
             names: feat.rows.iter().map(ToString::to_string).collect(),
-            rows: row_major(gc * &w),
+            rows: row_major(g * &w),
             dim,
         },
-        row_major(xc * &w),
+        row_major(x * &w),
     ))
 }
 
-/// The `names` sets of `units` as a table: genes found and given, the
-/// `extra` columns, then the centre (`h0…`), one row per set.
-fn write_sets(path: &str, units: &Units, names: &[String], extra: &[(&str, &[f32])]) -> Result<()> {
-    let at: Vec<usize> = names.iter().filter_map(|n| units.index(n)).collect();
+/// The sets `at` of `units` as a table: genes found and given, the `extra`
+/// columns, then the centre (`h0…`), one row per set.
+fn write_sets(path: &str, units: &Units, at: &[usize], extra: &[(&str, &[f32])]) -> Result<()> {
     let found: Vec<f32> = at.iter().map(|&i| units.covered[i].0 as f32).collect();
     let given: Vec<f32> = at.iter().map(|&i| units.covered[i].1 as f32).collect();
     let centre: Vec<Vec<f32>> = (0..units.dim)
-        .map(|d| {
-            (at.iter())
-                .map(|&i| units.centres[i * units.dim + d])
-                .collect()
-        })
+        .map(|d| (at.iter()).map(|&i| units.centre(i)[d]).collect())
         .collect();
     let dims: Vec<String> = (0..units.dim).map(|d| format!("h{d}")).collect();
     let mut cols = vec![
@@ -557,7 +626,7 @@ fn write_sets(path: &str, units: &Units, names: &[String], extra: &[(&str, &[f32
     ];
     cols.extend(extra.iter().map(|(n, v)| ((*n).into(), Column::F32(v))));
     cols.extend((dims.iter().zip(&centre)).map(|(n, v)| (n.as_str().into(), Column::F32(v))));
-    let rows: Vec<Box<str>> = names.iter().map(|n| n.as_str().into()).collect();
+    let rows: Vec<Box<str>> = at.iter().map(|&i| units.names[i].as_str().into()).collect();
     write_named_table(path, "set", &rows, &cols)?;
     Ok(())
 }
@@ -631,42 +700,49 @@ pub fn align(units: &Units, kind: SetKind, cells: &[f32], groups: &[usize]) -> R
             .collect();
         set.into_iter().collect()
     };
-    // Each cluster's mean unit vector.
-    let means: Vec<Vec<f32>> = (clusters.iter())
-        .map(|&k| {
-            let mut m = vec![0.0f32; dim];
-            let members = (0..n).filter(|&c| groups[c] == k);
-            let mut count = 0usize;
-            for c in members {
-                let u = unit(&cells[c * dim..(c + 1) * dim]);
-                m.iter_mut().zip(u).for_each(|(a, b)| *a += b);
-                count += 1;
-            }
-            m.iter_mut().for_each(|a| *a /= count.max(1) as f32);
-            m
-        })
-        .collect();
+    // Each cluster's mean unit vector, in one pass over the cells.
+    let at: BTreeMap<usize, usize> = clusters.iter().enumerate().map(|(i, &k)| (k, i)).collect();
+    let mut means = vec![vec![0.0f32; dim]; clusters.len()];
+    let mut counts = vec![0usize; clusters.len()];
+    for (cell, g) in cells.chunks(dim).zip(groups) {
+        if let Some(&i) = at.get(g) {
+            means[i]
+                .iter_mut()
+                .zip(unit(cell))
+                .for_each(|(a, b)| *a += b);
+            counts[i] += 1;
+        }
+    }
+    for (m, &c) in means.iter_mut().zip(&counts) {
+        m.iter_mut().for_each(|a| *a /= c.max(1) as f32);
+    }
     let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
-    let picked: Vec<usize> = (0..units.names.len())
-        .filter(|&i| units.kinds[i] == kind)
+    let picked = units.of_kind(kind);
+    let dirs: Vec<Vec<f32>> = picked.iter().map(|&i| unit(units.centre(i))).collect();
+    let decoy_dirs: Vec<(usize, Vec<f32>)> = (units.decoys.iter())
+        .map(|d| (d.genes.len(), unit(&d.centre)))
         .collect();
-    let decoys: Vec<&Decoy> = units.decoys.iter().filter(|d| d.kind == kind).collect();
-    let decoy_dirs: Vec<Vec<f32>> = decoys.iter().map(|d| unit(&d.centre)).collect();
     let t = picked.len();
     let mut score = Vec::with_capacity(clusters.len() * t);
     let mut p = Vec::with_capacity(clusters.len() * t);
     let mut q = Vec::with_capacity(clusters.len() * t);
     for m in &means {
-        let mut row_p = Vec::with_capacity(t);
-        for &i in &picked {
-            let s = dot(m, &unit(&units.centres[i * dim..(i + 1) * dim]));
-            let null: Vec<f32> = (decoys.iter().zip(&decoy_dirs))
-                .filter(|(d, _)| d.genes.len() == units.bins[i])
-                .map(|(_, dir)| dot(m, dir))
-                .collect();
-            score.push(s);
-            row_p.push(upper_tail(s, &null));
+        // The cluster's null per decoy size: its scores' mean and spread.
+        let mut by_bin: BTreeMap<usize, Vec<f32>> = BTreeMap::new();
+        for (bin, dir) in &decoy_dirs {
+            by_bin.entry(*bin).or_default().push(dot(m, dir));
         }
+        let nulls: BTreeMap<usize, Null> =
+            by_bin.into_iter().map(|(b, v)| (b, Null::of(&v))).collect();
+        let row_p: Vec<f32> = (picked.iter().zip(&dirs))
+            .map(|(&i, dir)| {
+                let s = dot(m, dir);
+                score.push(s);
+                nulls
+                    .get(&units.bins[i])
+                    .map_or(f32::NAN, |n| n.upper_tail(s))
+            })
+            .collect();
         q.extend(legume_numeric::matrix::hypothesis::benjamini_hochberg(
             &row_p,
         ));
@@ -681,22 +757,43 @@ pub fn align(units: &Units, kind: SetKind, cells: &[f32], groups: &[usize]) -> R
     })
 }
 
-/// `P(Z ≥ z)` for `s` among `null`, `z` standardised by the null's mean and
-/// sample standard deviation.
-fn upper_tail(s: f32, null: &[f32]) -> f32 {
-    use statrs::distribution::{ContinuousCDF, Normal};
-    let n = null.len() as f64;
-    if n < 2.0 {
-        return f32::NAN;
+/// Decoy scores as a normal: their mean and sample standard deviation;
+/// `None` for the spread of fewer than two.
+struct Null {
+    mean: f64,
+    sd: Option<f64>,
+}
+
+impl Null {
+    fn of(scores: &[f32]) -> Self {
+        let n = scores.len() as f64;
+        let mean = scores.iter().map(|&x| f64::from(x)).sum::<f64>() / n.max(1.0);
+        let sd = (n >= 2.0).then(|| {
+            let ss: f64 = scores.iter().map(|&x| (f64::from(x) - mean).powi(2)).sum();
+            (ss / (n - 1.0)).sqrt()
+        });
+        Self { mean, sd }
     }
-    let mean = null.iter().map(|&x| f64::from(x)).sum::<f64>() / n;
-    let var = null
-        .iter()
-        .map(|&x| (f64::from(x) - mean).powi(2))
-        .sum::<f64>()
-        / (n - 1.0);
-    let z = (f64::from(s) - mean) / var.sqrt().max(f64::MIN_POSITIVE);
-    Normal::standard().sf(z) as f32
+
+    /// `P(Z ≥ z)`, `s` standardised by the null; NaN without a spread.
+    fn upper_tail(&self, s: f32) -> f32 {
+        use statrs::distribution::{ContinuousCDF, Normal};
+        let Some(sd) = self.sd else {
+            return f32::NAN;
+        };
+        let z = (f64::from(s) - self.mean) / sd.max(f64::MIN_POSITIVE);
+        Normal::standard().sf(z) as f32
+    }
+}
+
+/// Two pairs of sums, added.
+fn add_pair(
+    (mut a, mut b): (Vec<f32>, Vec<f32>),
+    (c, d): (Vec<f32>, Vec<f32>),
+) -> (Vec<f32>, Vec<f32>) {
+    a.iter_mut().zip(c).for_each(|(x, y)| *x += y);
+    b.iter_mut().zip(d).for_each(|(x, y)| *x += y);
+    (a, b)
 }
 
 /// `v` scaled to unit length (zero stays zero).
