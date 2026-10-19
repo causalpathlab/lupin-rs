@@ -217,8 +217,8 @@ fn screens(
     let mut args = args.clone();
     crate::annotate_cmd::apply_level(&mut args, &loaded.file)?;
     // The screen's genes, NES, p and q, GO terms and live rescoring all come
-    // from an enrichment pass, so auto opens on it (with the score beside it
-    // where the run decodes cells) unless projection was asked for;
+    // from an enrichment pass, so auto opens on it (every other method the
+    // run supports beside it) unless projection was asked for;
     // projection is a choice in the form.
     use crate::annotate_cmd::{resolve_method, AnnotateMethod};
     let asked_projection = args.projection.is_some() || args.feature_embedding.is_some();

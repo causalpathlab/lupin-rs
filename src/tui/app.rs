@@ -91,6 +91,8 @@ pub enum Setting {
     /// The output prefix of passes; Enter edits it.
     Output,
     Method,
+    /// Under auto, which method's reading makes the round's call (`--call`).
+    Call,
     /// Projection's way of calling: the embedding marker score or the units.
     Projection,
     Knn,
@@ -111,7 +113,8 @@ pub enum Setting {
 #[must_use]
 pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
     use Setting::{
-        Go, Knn, Markers, Method, NumClusters, NumPerm, Output, Projection, Resolution, Run, Susie,
+        Call, Go, Knn, Markers, Method, NumClusters, NumPerm, Output, Projection, Resolution, Run,
+        Susie,
     };
     let enrichment = a.method != AnnotateMethod::Projection;
     let projection = a.method != AnnotateMethod::Enrichment;
@@ -120,6 +123,7 @@ pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
         (Markers, true),
         (Output, true),
         (Method, true),
+        (Call, a.method == AnnotateMethod::Auto),
         (Projection, projection),
         (Knn, true),
         (Resolution, true),
@@ -153,6 +157,7 @@ impl Setting {
             Self::Run => "▶ run",
             Self::Output => "output",
             Self::Method => "method",
+            Self::Call => "call by",
             Self::Projection => "projection",
             Self::Knn => "knn",
             Self::Resolution => "resolution",
@@ -177,6 +182,10 @@ impl Setting {
                 AnnotateMethod::Enrichment => "enrichment".into(),
                 AnnotateMethod::Projection => "projection".into(),
             },
+            Self::Call => a
+                .call
+                .map_or("default (SuSiE, else the enrichment)", |m| m.name())
+                .into(),
             Self::Projection => a
                 .projection
                 .map_or(
@@ -218,6 +227,19 @@ impl Setting {
                     (Enrichment, true) | (Auto, false) => Projection,
                     (Projection, true) | (Enrichment, false) => Auto,
                 };
+                // One method makes its own call.
+                if a.method != Auto {
+                    a.call = None;
+                }
+            }
+            Self::Call => {
+                let all = crate::annotate::rounds::Method::ALL;
+                // The default, then each method in turn.
+                let at = a.call.and_then(|m| all.iter().position(|&x| x == m));
+                let n = all.len() + 1;
+                let i = at.map_or(0, |i| i + 1);
+                let next = if up { (i + 1) % n } else { (i + n - 1) % n };
+                a.call = next.checked_sub(1).map(|j| all[j]);
             }
             Self::Projection => {
                 use ProjectionMethod::{Score, Units};
@@ -258,7 +280,8 @@ impl Setting {
         match self {
             Self::Markers => "the marker panel the pass scores the clusters' cell types with; enter picks a file",
             Self::Output => "the prefix the new round is written under; enter edits it",
-            Self::Method => "how clusters get their cell types: enrichment of the panel's markers, projection, or auto",
+            Self::Method => "how clusters get their cell types: enrichment of the panel's markers, projection, or auto (every method the run supports, in one round)",
+            Self::Call => "which method's reading makes the round's labels when several run; one that does not run on the run is refused",
             Self::Projection => "projection calls each cell: the marker score on the run's embedding (with its margin), or the gene-set units trained on the run's genes",
             Self::Knn => "neighbours per cell in the clustering graph",
             Self::Resolution => "Leiden resolution: higher gives more, smaller clusters",
@@ -1178,8 +1201,9 @@ impl App {
         }
         if !round.rescorable {
             self.scored_for = want;
-            self.status = if round.by == Some(crate::annotate::rounds::Method::Score) {
-                "a projection score round has no statistics to rescore: a new pass scores the edited panel"
+            use crate::annotate::rounds::Method;
+            self.status = if matches!(round.by, Some(Method::Score | Method::Units)) {
+                "a projection round has no statistics to rescore: a new pass scores the edited panel"
             } else {
                 "this round cached no statistics: marker edits are scored on save"
             }
@@ -1898,6 +1922,12 @@ impl App {
             lines.push(format!(
                 "score: {s:.2} of the cluster's cells{}",
                 place(Method::Score)
+            ));
+        }
+        if let Some(s) = t.units {
+            lines.push(format!(
+                "units: {s:.2} of the cluster's cells{}",
+                place(Method::Units)
             ));
         }
         if let Some(r) = &self.round {

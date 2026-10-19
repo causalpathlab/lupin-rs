@@ -170,9 +170,12 @@ pub struct QcCmd {
     pub out: String,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, Default, ValueEnum, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ComputeDevice {
+    #[default]
     Cpu,
     Cuda,
     Metal,

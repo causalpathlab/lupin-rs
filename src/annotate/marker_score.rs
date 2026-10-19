@@ -215,6 +215,35 @@ pub(crate) mod toy {
         (at("run.senna.json"), panel(dir))
     }
 
+    /// The toy run of [`write_run`] with its raw counts beside it (the
+    /// toy's genes and six background genes g6..g11 over its cells, each
+    /// cluster's three markers high) and its genes doubling as the ones
+    /// placed among the cells: a run every method reads. Returns the
+    /// manifest's path and the panel's.
+    pub(crate) fn write_run_with_counts(dir: &std::path::Path) -> (String, String) {
+        use data_beans::sparse_io::{create_sparse_from_dmatrix, SparseIoBackend};
+        let (manifest, panel) = write_run(dir);
+        let (_, cells, _) = matrices();
+        let genes: Vec<Box<str>> = (0..12).map(|g| format!("g{g}").into()).collect();
+        let counts = nalgebra::DMatrix::<f32>::from_fn(12, 20, |g, i| match g {
+            0..=5 if g / 3 == i / 10 => 20.0 + ((g + i) % 5) as f32,
+            0..=5 => ((g + i) % 2) as f32,
+            _ => 5.0 + ((g * i) % 3) as f32,
+        });
+        let path = dir.join("counts.zarr").to_string_lossy().into_owned();
+        let mut backend =
+            create_sparse_from_dmatrix(&counts, Some(&path), Some(&SparseIoBackend::Zarr)).unwrap();
+        backend.register_row_names_vec(&genes);
+        backend.register_column_names_vec(&cells.rows);
+        drop(backend);
+        let mut m: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+        m["data"] = serde_json::json!({"input": ["counts.zarr"]});
+        m["outputs"]["feature_coembedding"] = "run.feature_embedding.parquet".into();
+        std::fs::write(&manifest, m.to_string()).unwrap();
+        (manifest, panel)
+    }
+
     /// Score arguments writing under `out`, clustered as the run is.
     pub(crate) fn args(markers: &str, out: &str) -> MarkerScoreArgs {
         MarkerScoreArgs {

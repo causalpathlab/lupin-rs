@@ -24,13 +24,16 @@ use log::{info, warn};
 use std::path::Path;
 
 /// Fit the clusters in `inputs` (raw count sums, not a decoder's expectation)
-/// and write the stage's outputs under `out`, pointing `outputs`' label and
-/// annotation at what it rewrote and its PIP, effect and share tables at theirs.
+/// and write the stage's outputs under `out`, pointing its PIP, effect and
+/// share tables at theirs; when it makes the call (`calls`), `outputs`' label
+/// and annotation too, at what it rewrote. Otherwise its reading stands
+/// beside another method's call, whose labels it leaves alone.
 pub fn run(
     out: &str,
     cfg: &SusieConfig,
     inputs: &EnrichmentInputs,
     outputs: &mut AnnotationOutputs,
+    calls_too: bool,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(!inputs.celltype_names.is_empty(), "no marker panel");
     let (n_genes, n_clusters) = (inputs.gene_names.len(), inputs.n_clusters);
@@ -116,6 +119,18 @@ pub fn run(
     write_lines(&sets, &sets_path)?;
     info!("wrote {sets_path}");
 
+    // Pointed at once the files it stands for are all written.
+    let point = |outputs: &mut AnnotationOutputs| {
+        let mut written = written.into_iter();
+        outputs.cluster_celltype_pip = written.next();
+        outputs.cluster_celltype_effect = written.next();
+        outputs.cluster_celltype_explained = written.next();
+    };
+    if !calls_too {
+        point(outputs);
+        return Ok(());
+    }
+
     // Each cell takes its cluster's PIPs and call.
     let n_cells = inputs.cell_names.len();
     let mut annotation = Mat::zeros(n_cells, n_types);
@@ -173,10 +188,7 @@ pub fn run(
 
     outputs.argmax = Some(super::outputs::labels_path(out));
     outputs.annotation = Some(annotation_path);
-    let mut written = written.into_iter();
-    outputs.cluster_celltype_pip = written.next();
-    outputs.cluster_celltype_effect = written.next();
-    outputs.cluster_celltype_explained = written.next();
+    point(outputs);
     Ok(())
 }
 

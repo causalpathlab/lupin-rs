@@ -27,9 +27,18 @@ pub struct AnnotateCliArgs {
         long,
         value_enum,
         default_value_t = AnnotateMethod::Auto,
-        help = "Annotation backend: enrichment (raw counts), projection (the run's embeddings; see --projection), or auto (enrichment, with the projection score beside it where the run decodes cells)"
+        help = "Annotation backend: enrichment (raw counts), projection (the run's embeddings; see --projection), or auto (every method the run supports, their readings in one round: the enrichment with SuSiE, the projection score where the run decodes cells, the gene-set units where its genes are placed among the cells; see --call)"
     )]
     pub method: AnnotateMethod,
+
+    #[arg(
+        long,
+        value_enum,
+        help = "Which method's reading makes the round's call (its labels) when several run; \
+                default: SuSiE's where it ran, else the enrichment's. A method that does not \
+                run on this pass is refused"
+    )]
+    pub call: Option<crate::annotate::rounds::Method>,
 
     #[arg(
         long,
@@ -175,7 +184,7 @@ pub struct AnnotateCliArgs {
         long,
         value_enum,
         default_value_t = crate::gene_text::cli::ComputeDevice::Cpu,
-        help = "Device training the gene-set units (--projection units)"
+        help = "Device training the gene-set units (--projection units, and beside the enrichment under auto)"
     )]
     pub device: crate::gene_text::cli::ComputeDevice,
     #[arg(long, default_value_t = 0, help = "Device ordinal (for cuda/metal)")]
@@ -247,6 +256,9 @@ impl AnnotateCliArgs {
         val("method", method.into());
         if let Some(p) = self.projection {
             val("projection", p.as_str().into());
+        }
+        if let Some(c) = self.call {
+            val("call", c.name().into());
         }
         val("markers", self.markers.to_string());
         val("out", self.out.to_string());
@@ -354,6 +366,7 @@ pub fn run_annotate(args: &AnnotateCliArgs, session: &legume_tui::cli::SessionAr
         args.markers = markers.into_boxed_str();
     }
 
+    check_call(&args, loaded.as_ref())?;
     let Some(l) = &loaded else {
         return run_pass(args, None);
     };
@@ -546,7 +559,7 @@ enum Route<'a> {
 }
 
 /// Pick the backend. An explicit embedding pair wins; otherwise the run
-/// manifest decides between co-embed projection and enrichment.
+/// decides between projection and enrichment ([`resolve_method_on`]).
 fn route<'a>(
     args: &'a AnnotateCliArgs,
     loaded: Option<&crate::manifest::run::Loaded>,
@@ -561,33 +574,136 @@ fn route<'a>(
             return Route::EmbeddingFiles { feat, cell };
         }
     }
-    if resolve_method(args, loaded.map(|l| &l.manifest)) == AnnotateMethod::Projection {
+    if resolve_method_on(args, loaded) == AnnotateMethod::Projection {
         Route::Projection
     } else {
         Route::Enrichment
     }
 }
 
-/// The method a pass runs: the one chosen; for `auto`, enrichment when GO
-/// terms are asked for or no panel is given (both the enrichment's), and on
-/// a run that decodes cells, where the projection score rides beside the
-/// enrichment's call unless `--projection score` asks for the score's own;
-/// else projection when the run has the gene table its projection method
-/// reads, else enrichment (and without a run).
+/// The method a pass runs: the one chosen; for `auto`, the enrichment, with
+/// every other method the run supports beside it (the projection score, the
+/// units), unless `--projection` asks for that projection's own call on a
+/// run with its gene table (GO terms or no panel staying the enrichment's,
+/// unless the units are asked to align them).
 #[must_use]
 pub fn resolve_method(args: &AnnotateCliArgs, manifest: Option<&RunManifest>) -> AnnotateMethod {
-    let projects = |m: &RunManifest| {
-        let projection = resolve_projection(args, Some(m));
-        let beside = projection == ProjectionMethod::Score && args.projection.is_none();
-        !beside && manifest_prefers_projection(m, projection)
-    };
+    let projects =
+        |m: &RunManifest| manifest_prefers_projection(m, resolve_projection(args, Some(m)));
     match args.method {
-        AnnotateMethod::Auto if !enrichment_only(args) && manifest.is_some_and(projects) => {
+        AnnotateMethod::Auto
+            if args.projection.is_some()
+                && !enrichment_only(args)
+                && manifest.is_some_and(projects) =>
+        {
             AnnotateMethod::Projection
         }
         AnnotateMethod::Auto => AnnotateMethod::Enrichment,
         chosen => chosen,
     }
+}
+
+/// [`resolve_method`] on a run as it is on disk: `auto` on a run whose
+/// enrichment has no expression to read (no raw counts here, no earlier
+/// pass's cache, no decoder to stand in) projects instead, as the run's gene
+/// table allows: the score where it decodes cells, else the units (which
+/// align the GO terms asked for; the score cannot take them).
+#[must_use]
+pub fn resolve_method_on(
+    args: &AnnotateCliArgs,
+    loaded: Option<&crate::manifest::run::Loaded>,
+) -> AnnotateMethod {
+    let method = resolve_method(args, loaded.map(|l| &l.manifest));
+    let Some(l) = loaded else { return method };
+    let projection = resolve_projection(args, Some(&l.manifest));
+    let projects = args.method == AnnotateMethod::Auto
+        && method == AnnotateMethod::Enrichment
+        && !args.markers.is_empty()
+        && (projection == ProjectionMethod::Units || !args.wants_gene_sets())
+        && manifest_prefers_projection(&l.manifest, projection)
+        && !enrichment_reads(l);
+    if projects {
+        log::info!(
+            "no expression for the enrichment (no raw counts, cache or decoder): \
+             the {} alone",
+            projection.as_str()
+        );
+        AnnotateMethod::Projection
+    } else {
+        method
+    }
+}
+
+/// Whether the enrichment has expression to read on `l`: its raw counts, or
+/// what stands in for them ([`crate::manifest::no_counts`]).
+fn enrichment_reads(l: &crate::manifest::run::Loaded) -> bool {
+    use crate::manifest::no_counts::{source, Source};
+    !l.manifest.data.input.is_empty() && !matches!(source(l), Source::Nothing)
+}
+
+/// The methods whose readings a pass of `args` on `loaded` records, in
+/// [`Method::ALL`]'s order: a projection pass its own; an enrichment pass
+/// the enrichment, SuSiE (on raw counts, unless `--no-susie`) and, under
+/// `auto`, each projection the run has the gene table for.
+///
+/// [`Method::ALL`]: crate::annotate::rounds::Method::ALL
+#[must_use]
+pub fn methods_run(
+    args: &AnnotateCliArgs,
+    loaded: Option<&crate::manifest::run::Loaded>,
+) -> Vec<crate::annotate::rounds::Method> {
+    use crate::annotate::rounds::Method;
+    let manifest = loaded.map(|l| &l.manifest);
+    let of = |p: ProjectionMethod| match p {
+        ProjectionMethod::Score => Method::Score,
+        ProjectionMethod::Units => Method::Units,
+    };
+    if let Route::EmbeddingFiles { .. } | Route::Projection = route(args, loaded) {
+        return vec![of(resolve_projection(args, manifest))];
+    }
+    if args.markers.is_empty() {
+        return vec![Method::Enrichment];
+    }
+    let counts = loaded.is_some_and(|l| {
+        matches!(
+            crate::manifest::no_counts::source(l),
+            crate::manifest::no_counts::Source::Counts
+        )
+    });
+    let beside = |p: ProjectionMethod| {
+        args.method == AnnotateMethod::Auto
+            && manifest.is_some_and(|m| manifest_prefers_projection(m, p))
+    };
+    Method::ALL
+        .into_iter()
+        .filter(|m| match m {
+            Method::Enrichment => true,
+            Method::Susie => !args.no_susie && counts,
+            Method::Score => beside(ProjectionMethod::Score),
+            Method::Units => beside(ProjectionMethod::Units),
+        })
+        .collect()
+}
+
+/// Refuse a `--call` naming a method that does not run on this pass
+/// ([`methods_run`]), before anything is read or written.
+pub fn check_call(
+    args: &AnnotateCliArgs,
+    loaded: Option<&crate::manifest::run::Loaded>,
+) -> Result<()> {
+    let Some(call) = args.call else {
+        return Ok(());
+    };
+    let run = methods_run(args, loaded);
+    let names: Vec<&str> = run.iter().map(|m| m.name()).collect();
+    anyhow::ensure!(
+        run.contains(&call),
+        "--call {}: {} does not run on this pass (it runs {}); drop --call, or name one of those",
+        call.name(),
+        call.name(),
+        names.join(", ")
+    );
+    Ok(())
 }
 
 /// Gene sets (`--go`, `--gaf`, `--gmt`) on a projection pass: trained as
@@ -716,6 +832,10 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
         ontology_by: args.ontology_by,
         susie: (!args.no_susie).then(|| build_susie_config(args)),
         score_beside: args.method == AnnotateMethod::Auto,
+        units_beside: args.method == AnnotateMethod::Auto,
+        device: args.device,
+        device_no: args.device_no,
+        call: args.call,
     }
 }
 
@@ -933,7 +1053,113 @@ mod route_tests {
         );
         assert_eq!(
             resolve_method(&cli(&[]), Some(&pinto)),
-            AnnotateMethod::Projection
+            AnnotateMethod::Enrichment,
+            "auto runs every method, the units beside the enrichment"
+        );
+    }
+
+    #[test]
+    fn auto_runs_every_method_and_a_chosen_one_runs_alone() {
+        let auto = build_enrichment_args(&cli(&[]));
+        assert!(auto.score_beside && auto.units_beside);
+        assert_eq!(
+            auto.call, None,
+            "SuSiE's call where it ran, else the enrichment's"
+        );
+        let go = build_enrichment_args(&cli(&["--go"]));
+        assert!(
+            go.units_beside,
+            "the units align the GO terms the enrichment tests"
+        );
+        let alone = build_enrichment_args(&cli(&["--method", "enrichment"]));
+        assert!(!alone.score_beside && !alone.units_beside);
+        let call = build_enrichment_args(&cli(&["--call", "units"]));
+        assert_eq!(call.call, Some(crate::annotate::rounds::Method::Units));
+    }
+
+    /// A run in a fresh directory: `kind`, its gene tables as `outputs`
+    /// says, its counts `here` or not.
+    fn loaded_run(
+        dir: &std::path::Path,
+        kind: &str,
+        outputs: serde_json::Value,
+        here: bool,
+    ) -> crate::manifest::run::Loaded {
+        let at = |n: &str| dir.join(n).to_string_lossy().into_owned();
+        if here {
+            std::fs::write(at("counts.zarr.zip"), "").unwrap();
+        }
+        let m = serde_json::json!({
+            "version": 2, "kind": kind, "prefix": "run",
+            "data": {"input": ["counts.zarr.zip"]},
+            "outputs": outputs,
+        });
+        std::fs::write(at("run.senna.json"), m.to_string()).unwrap();
+        crate::manifest::run::load(&at("run.senna.json")).unwrap()
+    }
+
+    #[test]
+    fn auto_without_counts_projects_where_the_run_has_a_gene_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let fne = serde_json::json!({"feature_embedding": "run.feature_embedding.parquet"});
+        let gone = loaded_run(dir.path(), "fne", fne.clone(), false);
+        assert_eq!(
+            resolve_method_on(&cli(&[]), Some(&gone)),
+            AnnotateMethod::Projection,
+            "the units alone: no counts for the enrichment"
+        );
+        assert_eq!(
+            resolve_method_on(&cli(&["--method", "enrichment"]), Some(&gone)),
+            AnnotateMethod::Enrichment,
+            "a choice stands"
+        );
+        let here = tempfile::tempdir().unwrap();
+        let counted = loaded_run(here.path(), "fne", fne, true);
+        assert_eq!(
+            resolve_method_on(&cli(&[]), Some(&counted)),
+            AnnotateMethod::Enrichment
+        );
+        let bare = tempfile::tempdir().unwrap();
+        let svd = loaded_run(bare.path(), "svd", serde_json::json!({}), false);
+        assert_eq!(
+            resolve_method_on(&cli(&[]), Some(&svd)),
+            AnnotateMethod::Enrichment,
+            "nothing to project on: the enrichment says why it cannot run"
+        );
+    }
+
+    #[test]
+    fn a_call_by_a_method_that_does_not_run_is_refused() {
+        use crate::annotate::rounds::Method;
+        let dir = tempfile::tempdir().unwrap();
+        // Decodes cells (the score), but no co-embedding (no units).
+        let bge = loaded_run(
+            dir.path(),
+            "bge",
+            serde_json::json!({"feature_embedding": "run.feature_embedding.parquet"}),
+            true,
+        );
+        let ok = |more: &[&str]| check_call(&cli(more), Some(&bge));
+        assert!(ok(&["--call", "score"]).is_ok());
+        assert!(ok(&["--call", "susie"]).is_ok());
+        assert!(ok(&["--call", "enrichment"]).is_ok());
+        assert!(ok(&[]).is_ok());
+        for (more, named) in [
+            (&["--call", "units"][..], "units"),
+            (&["--call", "susie", "--no-susie"][..], "susie"),
+            (&["--call", "score", "--method", "enrichment"][..], "score"),
+            (
+                &["--call", "enrichment", "--projection", "score"][..],
+                "enrichment",
+            ),
+        ] {
+            let e = ok(more).unwrap_err();
+            let e = format!("{e:#}");
+            assert!(e.contains(&format!("--call {named}")), "{more:?}: {e}");
+        }
+        assert_eq!(
+            methods_run(&cli(&[]), Some(&bge)),
+            [Method::Enrichment, Method::Susie, Method::Score]
         );
     }
 }

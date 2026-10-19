@@ -249,7 +249,7 @@ fn rescored_scores_replace_a_clusters_and_swap_back() {
     assert_eq!(shares.len(), 3, "every rescored type has its share");
     assert_eq!(
         candidates[0].ranks,
-        [Some(0), None, None],
+        [Some(0), None, None, None],
         "an enrichment round is ranked by the rescored enrichment"
     );
 
@@ -464,9 +464,9 @@ fn a_rounds_candidates_carry_the_scores_share_beside_the_enrichments() {
     assert_eq!((top.label.as_str(), top.score), ("A", Some(1.0)));
 }
 
-fn ranked(label: &str, share: f32, ranks: [Option<usize>; 3]) -> Candidate {
+fn ranked(label: &str, share: f32, [e, s, sc]: [Option<usize>; 3]) -> Candidate {
     Candidate {
-        ranks,
+        ranks: [e, s, sc, None],
         ..candidate(label, share)
     }
 }
@@ -513,8 +513,8 @@ fn a_rounds_candidates_know_where_each_method_ranks_them() {
     let view = RoundView::load(&round.file).unwrap();
     let k0 = &view.clusters[0].candidates;
     let ranks = |l: &str| k0.iter().find(|c| c.label == l).unwrap().ranks;
-    assert_eq!(ranks("A"), [Some(0), None, Some(0)]);
-    assert_eq!(ranks("B"), [Some(1), None, None]);
+    assert_eq!(ranks("A"), [Some(0), None, Some(0), None]);
+    assert_eq!(ranks("B"), [Some(1), None, None, None]);
 }
 
 #[test]

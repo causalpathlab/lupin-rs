@@ -154,10 +154,12 @@ pub enum Stat {
     Explained,
     /// The projection score's share of the cluster's cells called the type.
     Score,
+    /// The gene-set units' share of the cluster's cells called the type.
+    Units,
 }
 
 impl Stat {
-    pub const ALL: [Stat; 8] = [
+    pub const ALL: [Stat; 9] = [
         Stat::Share,
         Stat::Nes,
         Stat::P,
@@ -166,6 +168,7 @@ impl Stat {
         Stat::Fold,
         Stat::Explained,
         Stat::Score,
+        Stat::Units,
     ];
 
     /// Its column in `cluster_evidence.parquet` and its key in `review --json`.
@@ -180,6 +183,7 @@ impl Stat {
             Stat::Fold => "fold",
             Stat::Explained => "explained",
             Stat::Score => "score",
+            Stat::Units => "units",
         }
     }
 }
@@ -209,6 +213,8 @@ pub struct TypeEvidence {
     pub explained: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub units: Option<f32>,
 }
 
 impl TypeEvidence {
@@ -228,6 +234,7 @@ impl TypeEvidence {
             Stat::Fold => &self.fold,
             Stat::Explained => &self.explained,
             Stat::Score => &self.score,
+            Stat::Units => &self.units,
         }
     }
 
@@ -241,6 +248,7 @@ impl TypeEvidence {
             Stat::Fold => &mut self.fold,
             Stat::Explained => &mut self.explained,
             Stat::Score => &mut self.score,
+            Stat::Units => &mut self.units,
         }
     }
 }
@@ -278,8 +286,9 @@ impl TypeTables {
 /// Below this PIP SuSiE does not put a type forward.
 pub const MIN_CANDIDATE_PIP: f32 = 0.05;
 
-/// A method whose reading a round may carry.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// A method whose reading a round may carry, and which may make its call
+/// (`lupin annotate --call`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Method {
     /// The enrichment's softmax share.
@@ -289,10 +298,17 @@ pub enum Method {
     Susie,
     /// The projection score's share of the cluster's cells.
     Score,
+    /// The gene-set units' share of the cluster's cells.
+    Units,
 }
 
 impl Method {
-    pub const ALL: [Method; 3] = [Method::Enrichment, Method::Susie, Method::Score];
+    pub const ALL: [Method; 4] = [
+        Method::Enrichment,
+        Method::Susie,
+        Method::Score,
+        Method::Units,
+    ];
 
     /// Its place in [`Method::ALL`].
     #[must_use]
@@ -306,17 +322,20 @@ impl Method {
             Method::Enrichment => "enrichment",
             Method::Susie => "susie",
             Method::Score => "score",
+            Method::Units => "units",
         }
     }
 
     /// The share of a cluster's evidence this method gives `e`: the
-    /// enrichment's Q, SuSiE's explained share, the score's share of cells.
+    /// enrichment's Q, SuSiE's explained share, the score's or the units'
+    /// share of cells.
     #[must_use]
     pub fn reading(self, e: &TypeEvidence) -> Option<f32> {
         match self {
             Method::Enrichment => e.enrichment,
             Method::Susie => e.explained,
             Method::Score => e.score,
+            Method::Units => e.units,
         }
     }
 
@@ -405,8 +424,8 @@ pub struct Evidence<'a> {
 }
 
 /// Calls tied on q go by the round's method's reading of each type (the
-/// enrichment's share, SuSiE's explained share, the score's share of
-/// cells), then by its NES.
+/// enrichment's share, SuSiE's explained share, the score's or the units'
+/// share of cells), then by its NES.
 pub struct TieBreak {
     pub tables: TypeTables,
     pub method: Method,

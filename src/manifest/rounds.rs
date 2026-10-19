@@ -285,14 +285,17 @@ fn read_evidence(loaded: &Loaded) -> Result<Evidence<'static>> {
     Ok(ev)
 }
 
-/// The projection score's per-cell reading, aligned to a round's cells.
+/// A per-cell reading (the projection score's, the gene-set units'),
+/// aligned to a round's cells.
 #[derive(Default)]
 pub(crate) struct ScoreCells {
     /// The types it called, in order of first call.
     pub(crate) types: Vec<Box<str>>,
     /// Per cell: its call, an index into `types`; `None` for no row or no call.
     pub(crate) call: Vec<Option<usize>>,
-    /// Per cell: how far its call leads the runner-up; NaN for no row.
+    /// Per cell: the score's lead of its call over the runner-up, or the
+    /// cell's membership of the units' region it is called by; NaN for no
+    /// row.
     pub(crate) margin: Vec<f32>,
 }
 
@@ -314,13 +317,30 @@ impl ScoreCells {
 /// The score's per-cell table the round records, aligned to `cells`; `None`
 /// when it records none or the file is gone.
 pub(crate) fn read_score_cells(loaded: &Loaded, cells: &Cells) -> Result<Option<ScoreCells>> {
+    let rel = loaded.manifest.annotate.marker_score.as_deref();
+    read_call_cells(loaded, rel, "margin", cells)
+}
+
+/// The units' per-cell table the round records (`annotate.units_call`),
+/// aligned to `cells`; `None` when it records none or the file is gone.
+pub(crate) fn read_units_cells(loaded: &Loaded, cells: &Cells) -> Result<Option<ScoreCells>> {
+    let rel = loaded.manifest.annotate.units_call.as_deref();
+    read_call_cells(loaded, rel, "membership", cells)
+}
+
+/// A per-cell table (`cell`, `call` and the number `column`) at `rel`,
+/// aligned to `cells`.
+fn read_call_cells(
+    loaded: &Loaded,
+    rel: Option<&str>,
+    column: &str,
+    cells: &Cells,
+) -> Result<Option<ScoreCells>> {
     use legume_numeric::matrix::parquet::read_table_columns;
-    let Some(path) =
-        (loaded.manifest.annotate.marker_score.as_deref()).and_then(|rel| loaded.recorded(rel))
-    else {
+    let Some(path) = rel.and_then(|rel| loaded.recorded(rel)) else {
         return Ok(None);
     };
-    let (strings, nums) = read_table_columns(&path, &["cell", "call"], &["margin"])
+    let (strings, nums) = read_table_columns(&path, &["cell", "call"], &[column])
         .with_context(|| format!("reading {path}"))?;
     let row: HashMap<&str, usize> = strings[0]
         .iter()
@@ -348,10 +368,29 @@ pub(crate) fn read_score_cells(loaded: &Loaded, cells: &Cells) -> Result<Option<
     Ok(Some(out))
 }
 
+/// The per-cell readings' shares of each of `cells`' clusters
+/// ([`ScoreCells::shares`]): the score's and the units', where recorded.
+#[derive(Default)]
+pub(crate) struct CellShares {
+    pub(crate) score: Option<Table>,
+    pub(crate) units: Option<Table>,
+}
+
+impl CellShares {
+    /// Each per-cell reading `loaded` records, tabled over `cells`'
+    /// clusters.
+    pub(crate) fn read(loaded: &Loaded, cells: &Cells) -> Result<Self> {
+        Ok(Self {
+            score: read_score_cells(loaded, cells)?.map(|s| s.shares(cells)),
+            units: read_units_cells(loaded, cells)?.map(|s| s.shares(cells)),
+        })
+    }
+}
+
 /// Every cluster × type table the round records, read once: the
-/// enrichment's and SuSiE's, with `score`'s shares ([`ScoreCells::shares`])
-/// beside them. A table recorded but gone from disk is skipped.
-pub(crate) fn read_type_tables(loaded: &Loaded, mut score: Option<Table>) -> Result<TypeTables> {
+/// enrichment's and SuSiE's, with the per-cell readings' `shares` beside
+/// them. A table recorded but gone from disk is skipped.
+pub(crate) fn read_type_tables(loaded: &Loaded, mut shares: CellShares) -> Result<TypeTables> {
     let a = &loaded.manifest.annotate;
     let mut tables = Vec::new();
     for stat in Stat::ALL {
@@ -364,7 +403,11 @@ pub(crate) fn read_type_tables(loaded: &Loaded, mut score: Option<Table>) -> Res
             Stat::Fold => &a.cluster_celltype_effect,
             Stat::Explained => &a.cluster_celltype_explained,
             Stat::Score => {
-                tables.extend(score.take().map(|t| (stat, t)));
+                tables.extend(shares.score.take().map(|t| (stat, t)));
+                continue;
+            }
+            Stat::Units => {
+                tables.extend(shares.units.take().map(|t| (stat, t)));
                 continue;
             }
         };
@@ -380,7 +423,7 @@ pub(crate) fn read_type_tables(loaded: &Loaded, mut score: Option<Table>) -> Res
 /// The method whose reading made the round's call, as the round records it
 /// (`annotate.called_by`); for a round from before that, by the tables it
 /// records: SuSiE's, else the enrichment's share, else the score's per-cell
-/// table. `None` for a round with none of them.
+/// table, else the units'. `None` for a round with none of them.
 pub(crate) fn called_by(a: &super::run::RunAnnotate) -> Option<Method> {
     if a.called_by.is_some() {
         return a.called_by;
@@ -393,7 +436,8 @@ pub(crate) fn called_by(a: &super::run::RunAnnotate) -> Option<Method> {
     } else if a.cluster_celltype_q.is_some() {
         Some(Method::Enrichment)
     } else {
-        a.marker_score.is_some().then_some(Method::Score)
+        (a.marker_score.as_ref().map(|_| Method::Score))
+            .or_else(|| a.units_call.as_ref().map(|_| Method::Units))
     }
 }
 
@@ -441,15 +485,15 @@ fn write_type_evidence(path: &str, rows: &[TypeEvidence]) -> Result<()> {
 }
 
 /// What orders the round's calls tied on q: its type tables (with the
-/// score's shares over `cells`' clusters, when given) under the method that
-/// made its call.
+/// per-cell readings' shares over `cells`' clusters, when given) under the
+/// method that made its call.
 fn tie_break(loaded: &Loaded, cells: Option<&Cells>) -> Result<TieBreak> {
-    let score = match cells {
-        Some(c) => read_score_cells(loaded, c)?.map(|s| s.shares(c)),
-        None => None,
+    let shares = match cells {
+        Some(c) => CellShares::read(loaded, c)?,
+        None => CellShares::default(),
     };
     Ok(TieBreak {
-        tables: read_type_tables(loaded, score)?,
+        tables: read_type_tables(loaded, shares)?,
         method: called_by(&loaded.manifest.annotate).unwrap_or_default(),
     })
 }
@@ -972,10 +1016,11 @@ fn relabel(
     if regrouped || p.marker_history.is_some() {
         next.manifest.annotate.drop_susie_tables();
     }
-    // The score's per-cell calls hold over new clusters, but not over a new
-    // panel: they were made on the old one.
+    // The score's and the units' per-cell calls hold over new clusters, but
+    // not over a new panel: they were made on the old one.
     if p.marker_history.is_some() {
         next.manifest.annotate.drop_marker_score();
+        next.manifest.annotate.drop_units_call();
     }
     let rel = |p: &str| Some(rel_to_manifest(&next.dir, p));
     if let Some(t) = &tables {
@@ -1726,13 +1771,14 @@ impl Reviewed {
     /// The round as review shows it; `every_type` when the types' evidence
     /// is wanted too (`--json`).
     fn read(loaded: &Loaded, every_type: bool) -> Result<Self> {
-        // The cells give the score's shares over the current clusters: for
-        // the types' evidence, the digests when no summary was written, and
-        // the order of tied calls when the score made the call. A round
+        // The cells give the score's and the units' shares over the current
+        // clusters: for the types' evidence, the digests when no summary was
+        // written, and the order of tied calls when either made the call. A round
         // whose cells cannot be read is still reviewed from its summary.
         let a = &loaded.manifest.annotate;
         let summary = (a.cluster_summary.as_deref()).and_then(|rel| loaded.recorded(rel));
-        let wants_cells = every_type || summary.is_none() || called_by(a) == Some(Method::Score);
+        let by_cells = matches!(called_by(a), Some(Method::Score | Method::Units));
+        let wants_cells = every_type || summary.is_none() || by_cells;
         let cells = wants_cells
             .then(|| {
                 read_cells(loaded)

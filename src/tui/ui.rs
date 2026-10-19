@@ -1228,20 +1228,22 @@ enum CandColumn {
     P,
     Q,
     Score,
+    Units,
 }
 
 impl CandColumn {
     /// The columns the pane keeps when it has room, most wanted first (it
     /// shows them in [`CandColumn`]'s order): the sorting method's reading,
-    /// FDR's q, the NES, SuSiE's PIP and fold, the score, the p-value and
-    /// the reading's bar.
-    const WANTED: [Self; 8] = [
+    /// FDR's q, the NES, SuSiE's PIP and fold, the score, the units, the
+    /// p-value and the reading's bar.
+    const WANTED: [Self; 9] = [
         Self::Value,
         Self::Q,
         Self::Nes,
         Self::Pip,
         Self::Fold,
         Self::Score,
+        Self::Units,
         Self::P,
         Self::Bar,
     ];
@@ -1256,6 +1258,7 @@ impl CandColumn {
             Self::P => "p",
             Self::Q => "q",
             Self::Score => "score",
+            Self::Units => "units",
         }
     }
 
@@ -1273,6 +1276,7 @@ impl CandColumn {
             Self::P => cand.p,
             Self::Q => cand.q,
             Self::Score => cand.score,
+            Self::Units => cand.units,
         }
     }
 
@@ -1287,11 +1291,12 @@ impl CandColumn {
     }
 
     /// Read from the panel before the marker edits, while a rescoring is
-    /// shown: SuSiE's and the score's (the value too, when it is theirs).
+    /// shown: SuSiE's, the score's and the units' (the value too, when it is
+    /// theirs).
     fn before_the_edit(self, by: crate::annotate::rounds::Method) -> bool {
         match self {
             Self::Value | Self::Bar => by != crate::annotate::rounds::Method::Enrichment,
-            Self::Pip | Self::Fold | Self::Score => true,
+            Self::Pip | Self::Fold | Self::Score | Self::Units => true,
             Self::Nes | Self::P | Self::Q => false,
         }
     }
@@ -1309,7 +1314,8 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     // The value column is the reading of the method the list is sorted by.
     let by = app.cand_method();
     // While a rescoring is shown, only the enrichment's readings are of the
-    // edited panel: SuSiE's and the score's are dimmed, from before the edit.
+    // edited panel: SuSiE's, the score's and the units' are dimmed, from
+    // before the edit.
     let stale = app.recorded.is_some();
     // Only the rows that fit are built, from the one that keeps the
     // selection in sight; the pinned label stays on top.
@@ -1358,10 +1364,12 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
             .max()
             .unwrap_or(0)
     };
-    // Sorted by the score, the value column is its reading already.
+    // Sorted by the score or the units, the value column is their reading
+    // already.
     let has = |col: CandColumn| match col {
         CandColumn::Value => true,
         CandColumn::Score if by == crate::annotate::rounds::Method::Score => false,
+        CandColumn::Units if by == crate::annotate::rounds::Method::Units => false,
         _ => shown.iter().any(|t| col.reading(t, by).is_some()),
     };
     let longest = shown
@@ -1541,14 +1549,15 @@ fn fitted_title(parts: &[(u8, String)], width: usize) -> String {
 }
 
 /// The candidates' value column's header: the method whose reading it is
-/// (the enrichment's share, SuSiE's explained share, the score's share of
-/// cells), in its six columns.
+/// (the enrichment's share, SuSiE's explained share, the score's or the
+/// units' share of cells), in its six columns.
 fn value_header(by: crate::annotate::rounds::Method) -> &'static str {
     use crate::annotate::rounds::Method;
     match by {
         Method::Enrichment => "enrich",
         Method::Susie => "susie",
         Method::Score => "score",
+        Method::Units => "units",
     }
 }
 

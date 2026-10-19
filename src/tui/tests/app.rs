@@ -2183,6 +2183,45 @@ fn a_label_is_recorded_in_its_canonical_form() {
 }
 
 #[test]
+fn under_auto_the_form_picks_which_reading_makes_the_call() {
+    use crate::annotate::rounds::Method;
+    use crate::annotate_cmd::AnnotateMethod;
+    let mut a = cli(&[]);
+    assert_eq!(a.method, AnnotateMethod::Auto);
+    assert!(settings(&a).contains(&Setting::Call));
+    assert_eq!(
+        Setting::Call.value(&a),
+        "default (SuSiE, else the enrichment)"
+    );
+    let seen: Vec<Option<Method>> = (0..5)
+        .map(|_| {
+            Setting::Call.adjust(&mut a, true);
+            a.call
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            Some(Method::Enrichment),
+            Some(Method::Susie),
+            Some(Method::Score),
+            Some(Method::Units),
+            None
+        ]
+    );
+    Setting::Call.adjust(&mut a, false);
+    assert_eq!(a.call, Some(Method::Units));
+    assert_eq!(Setting::Call.value(&a), "units");
+    Setting::Method.adjust(&mut a, true);
+    assert_ne!(a.method, AnnotateMethod::Auto);
+    assert!(
+        !settings(&a).contains(&Setting::Call),
+        "one method makes its own call"
+    );
+    assert_eq!(a.call, None, "a call no method left to make is dropped");
+}
+
+#[test]
 fn the_form_lists_the_rows_of_its_method() {
     use crate::annotate_cmd::AnnotateMethod;
     let mut a = cli(&[]);
@@ -2517,11 +2556,11 @@ fn capital_s_sorts_the_candidates_by_the_next_method_and_a_number_picks_what_is_
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     c.candidates = vec![
         Candidate {
-            ranks: [Some(0), None, Some(1)],
+            ranks: [Some(0), None, Some(1), None],
             ..Candidate::new("CT1", 0.6)
         },
         Candidate {
-            ranks: [Some(1), None, Some(0)],
+            ranks: [Some(1), None, Some(0), None],
             ..Candidate::new("CT2", 0.3)
         },
     ];
@@ -2544,12 +2583,12 @@ fn app_with_two_readings() -> App {
     use super::super::round::Candidate;
     let mut app = app_with_terms(false);
     let c = &mut app.round.as_mut().unwrap().clusters[0];
-    let cand = |label: &str, share, ranks: [Option<usize>; 3]| {
+    let cand = |label: &str, share, [e, s, sc]: [Option<usize>; 3]| {
         let mut c = Candidate {
-            ranks,
+            ranks: [e, s, sc, None],
             ..Candidate::new(label, share)
         };
-        (c.evidence.enrichment, c.evidence.score) = (Some(share), ranks[2].map(|_| 0.5));
+        (c.evidence.enrichment, c.evidence.score) = (Some(share), sc.map(|_| 0.5));
         c
     };
     c.candidates = vec![
@@ -3274,7 +3313,7 @@ fn app_with_candidates(n: usize) -> App {
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     c.candidates = (0..n)
         .map(|k| Candidate {
-            ranks: [Some(k), None, None],
+            ranks: [Some(k), None, None, None],
             ..Candidate::new(&format!("CT{}", k + 1), 0.5 / (k + 1) as f32)
         })
         .collect();
@@ -3390,7 +3429,7 @@ fn the_candidates_value_column_follows_the_method_they_are_sorted_by() {
     let mut app = app_with_terms(false);
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     let mut cand = Candidate {
-        ranks: [Some(0), Some(0), None],
+        ranks: [Some(0), Some(0), None, None],
         ..Candidate::new("CT1", 0.61)
     };
     (
