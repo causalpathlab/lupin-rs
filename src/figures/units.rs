@@ -256,10 +256,11 @@ fn read_alignment(
 }
 
 /// The ontology the pass read its terms from (`go_obo` in its settings,
-/// as given or beside the manifest); none when it is gone.
+/// kept under the pass's method, as given or beside the manifest); none
+/// when it is gone.
 fn go_ontology(loaded: &Loaded) -> Option<data_beans::aux::ontology::Ontology> {
     let settings = loaded.manifest.annotate.settings.as_ref();
-    let obo = settings.and_then(|s| s.get("go_obo")?.as_str())?;
+    let obo = settings.and_then(|s| s.get("projection")?.get("go_obo")?.as_str())?;
     let path = if Path::new(obo).is_file() {
         obo.to_string()
     } else {

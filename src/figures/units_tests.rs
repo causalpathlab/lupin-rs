@@ -93,14 +93,15 @@ pub(crate) fn units_round(dir: &Path, obo: bool) -> crate::manifest::run::Loaded
         ],
     )
     .unwrap();
-    let mut settings = serde_json::json!({ "projection": "units" });
+    // Nested under the pass's method, as `record` writes it.
+    let mut settings = serde_json::json!({ "projection": { "projection": "units" } });
     if obo {
         std::fs::write(
             at("go.obo"),
             "format-version: 1.2\n\n[Term]\nid: GO:0000001\nname: first process\n",
         )
         .unwrap();
-        settings["go_obo"] = at("go.obo").into();
+        settings["projection"]["go_obo"] = at("go.obo").into();
     }
     let a = &mut l.manifest.annotate;
     a.unit_anchors = Some("r.unit_anchors.parquet".into());
