@@ -150,3 +150,62 @@ fn another_panel_asks_its_questions_though_the_last_were_paused() {
     app.tick();
     assert!(app.menu.is_some(), "asked on the new panel");
 }
+
+#[test]
+fn none_of_these_is_kept_so_the_label_is_not_asked_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    app.tick();
+    press(&mut app, KeyCode::Char('2'));
+    app.tick();
+    press(&mut app, KeyCode::Char('n'));
+    let file = dir.path().join("config").join("cl_groups.tsv");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("XQ\tnone"), "{text}");
+    app.forget_questions();
+    app.tick();
+    assert!(app.menu.is_none(), "nothing left to ask");
+}
+
+#[test]
+fn a_term_is_found_by_search_when_no_suggestion_fits() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    app.tick();
+    press(&mut app, KeyCode::Char('2'));
+    app.tick();
+    press(&mut app, KeyCode::Char('s'));
+    for c in "group1".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    press(&mut app, KeyCode::Enter);
+    let m = app.menu.as_ref().expect("the terms found");
+    assert!(
+        m.choices[0].label.contains("group1"),
+        "{}",
+        m.choices[0].label
+    );
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let aliases = dir.path().join("config").join("cl_aliases.tsv");
+    let text = std::fs::read_to_string(&aliases).unwrap();
+    assert!(text.contains("XQ\tCL:1"), "{text}");
+}
+
+#[test]
+fn esc_on_the_confirmation_keeps_the_question_for_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    app.tick();
+    press(&mut app, KeyCode::Char('2'));
+    app.tick();
+    press(&mut app, KeyCode::Char('1'));
+    assert!(app.prompt.is_some(), "the confirmation");
+    press(&mut app, KeyCode::Esc);
+    app.tick();
+    assert!(app.menu.is_none(), "paused");
+    assert!(app.status.contains('Q'), "{}", app.status);
+    press(&mut app, KeyCode::Char('Q'));
+    app.tick();
+    assert!(app.menu.as_ref().is_some_and(|m| m.question.contains("XQ")));
+}

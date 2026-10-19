@@ -158,7 +158,11 @@ fn c_offers_the_top_three_with_scores_and_a_confirmed_one_is_written_and_placed(
     app.suggestions = Some(Suggestions::read(&suggested(dir.path())).unwrap());
     press(&mut app, KeyCode::Char('c'));
     let m = app.menu.as_ref().expect("the suggestions");
-    assert_eq!(m.choices.len(), 4, "three terms and none of them");
+    assert_eq!(
+        m.choices.len(),
+        5,
+        "three terms, a search, and none of them"
+    );
     assert!(
         m.choices[0].label.contains("CT3 cell"),
         "{}",

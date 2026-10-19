@@ -4,7 +4,7 @@
 //! the ontology has none for, from its suggestions. Answers are written where
 //! the next run reads them (`cl_groups.tsv`, the user's alias table), so each
 //! is asked once and every pass records it ([`crate::annotate::provenance`]);
-//! "none of these" for a term is kept for the session only.
+//! "none of these" for a term is kept with the answers too.
 
 use super::menu::{Action, Choice, Menu};
 use crate::annotate::celltype_tree::{ClTerms, JoinQuestion, TypeTree};
@@ -34,8 +34,8 @@ pub fn queue(cl: &ClTerms, tree: &PanelTree, panel: &[(String, String)]) -> VecD
     (TypeTree::join_questions(cl, panel).into_iter())
         .map(Question::Join)
         .chain(
-            super::suggest::unmatched(cl, tree)
-                .into_iter()
+            (super::suggest::unmatched(cl, tree).into_iter())
+                .filter(|l| !cl.declined(l))
                 .map(Question::Term),
         )
         .collect()
@@ -64,7 +64,7 @@ pub fn join_menu(q: &JoinQuestion, class_name: &str, file: &Path) -> Menu {
             choice('1', format!("join them under {class_name}"), format!("writes {}<TAB>join to {to}", q.label), true),
             choice('2', "stand alone".into(), format!("writes {}<TAB>alone to {to}", q.label), false),
         ],
-        "questions paused: Q on the panel tree takes them up again",
+        format!("no answer for {}", q.label),
     )
 }
 

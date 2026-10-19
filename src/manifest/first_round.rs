@@ -62,7 +62,8 @@ pub fn prepare(
     mkdir_parent(out)?;
     fs::write(format!("{out}{TREE}"), serde_json::to_string_pretty(&tree)?)?;
     if let Some(terms) = data.terms()? {
-        let record = crate::annotate::provenance::Record::of(terms, &panel);
+        let mut record = crate::annotate::provenance::Record::of(terms, &panel);
+        record.data_files = Some(data.record(terms.release.as_deref()));
         fs::write(
             format!("{out}{RECORD}"),
             serde_json::to_string_pretty(&record)?,

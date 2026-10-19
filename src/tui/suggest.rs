@@ -90,22 +90,68 @@ pub fn menu(label: &str, suggested: &[Suggestion], file: &Path) -> Menu {
             )
         })
         .collect();
-    let mut choices = numbered_but(items, "n");
-    choices.push(Choice {
-        key: Some('n'),
-        label: "none of these".into(),
-        detail: "write nothing; the type stays without a term".into(),
-        action: Action::NoneSuggested {
-            label: label.to_string(),
-        },
-    });
     Menu::new(
         format!(
             "{label} has no Cell Ontology term. Its nearest by text embedding (a suggestion: you decide):"
         ),
-        choices,
+        with_search_and_none(label, items, file),
         format!("no term taken for {label}"),
     )
+}
+
+/// The terms a search for `query` found for `label` (`(id, name)`), to
+/// confirm one into `file` as a suggested one is.
+#[must_use]
+pub fn found_menu(label: &str, query: &str, found: &[(String, String)], file: &Path) -> Menu {
+    let items = (found.iter())
+        .map(|(id, name)| {
+            (
+                format!("{name} ({id})"),
+                format!(
+                    "enter, then confirm, writes {label} → {id} to {}",
+                    super::app::file_name(file)
+                ),
+                Action::Suggested {
+                    label: label.to_string(),
+                    id: id.clone(),
+                    note: format!("found by searching \"{query}\", confirmed in the lupin TUI"),
+                    file: file.to_path_buf(),
+                },
+            )
+        })
+        .collect();
+    Menu::new(
+        format!("Cell Ontology terms for \"{query}\": which is {label}?"),
+        with_search_and_none(label, items, file),
+        format!("no term taken for {label}"),
+    )
+}
+
+/// `items` numbered, then a search of the ontology and none of them.
+fn with_search_and_none(
+    label: &str,
+    items: Vec<(String, String, Action)>,
+    file: &Path,
+) -> Vec<Choice> {
+    let mut choices = numbered_but(items, "sn");
+    choices.push(Choice {
+        key: Some('s'),
+        label: "search the ontology…".into(),
+        detail: "type words of the term's name to find it".into(),
+        action: Action::SearchTerm {
+            label: label.to_string(),
+            file: file.to_path_buf(),
+        },
+    });
+    choices.push(Choice {
+        key: Some('n'),
+        label: "none of these".into(),
+        detail: "no term fits: kept with the answers, so it is not asked again".into(),
+        action: Action::NoneSuggested {
+            label: label.to_string(),
+        },
+    });
+    choices
 }
 
 #[cfg(test)]

@@ -752,7 +752,7 @@ fn the_record_drafts_a_methods_paragraph() {
     let text = crate::annotate::provenance::methods(&r);
     for want in [
         "9 cell-type labels",
-        "release corpus/2026-01-01",
+        "release 2026-01-01",
         "1 by a curated alias",
         "3 by completing the word \"tisa\"",
         "1 was placed under",
@@ -875,4 +875,19 @@ fn the_methods_text_counts_only_what_placed_labels() {
     let text = crate::annotate::provenance::methods(&none);
     assert!(!text.contains(" 0 "), "{text}");
     assert!(text.contains("no label matched"), "{text}");
+}
+
+#[test]
+fn a_type_the_user_found_no_term_for_is_kept_and_said() {
+    let mut terms = terms();
+    assert_eq!(terms.add_joins("XQ\tnone\n"), 1);
+    assert!(terms.declined("xq"));
+    assert!(!terms.declined("YZ"));
+    let r = crate::annotate::provenance::Record::of(&terms, &panel_of(["CT1 cell", "XQ", "YZ"]));
+    assert_eq!(r.declined, ["XQ"]);
+    let text = crate::annotate::provenance::methods(&r);
+    assert!(
+        text.contains("the user found no fitting term for XQ"),
+        "{text}"
+    );
 }

@@ -19,7 +19,7 @@ use crate::annotate::cl_rules::{Aliases, MatchRules};
 use crate::annotate::markers::label_key;
 use data_beans::alg::union_find::UnionFind;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 
 /// The Cell Ontology terms a panel is placed on: names, the synonyms the
@@ -34,6 +34,8 @@ pub struct ClTerms {
     /// The user's answers on types left alone (see [`JoinQuestion`]): join
     /// (`true`) or stand alone, by label as names are compared.
     joins: HashMap<String, bool>,
+    /// The types the user found no fitting term for, likewise.
+    declined: HashSet<String>,
     /// [`MatchRules::qualifier_words`].
     qualifiers: Vec<Vec<String>>,
     /// Normalised name or counted synonym → term ids.
@@ -561,22 +563,29 @@ impl ClTerms {
         n
     }
 
-    /// Layer the user's answers on types left alone: `label<TAB>join` or
-    /// `label<TAB>alone` rows, read as every two-column table is; a later
-    /// row wins. How many rows it took.
+    /// Layer the user's answers on the panel's types: `label<TAB>join` or
+    /// `label<TAB>alone` for a type left alone, `label<TAB>none` for one no
+    /// term fits; read as every two-column table is, a later row winning.
+    /// How many rows it took.
     pub fn add_joins(&mut self, text: &str) -> usize {
         let rows = legume_numeric::matrix::common_io::TwoFieldRows::from_text(text);
         let mut n = 0;
         for (label, answer) in &rows.rows {
+            let key = self.rules.normalise(label);
             let join = match answer.trim().to_lowercase().as_str() {
                 "join" => true,
                 "alone" => false,
+                "none" => {
+                    self.declined.insert(key);
+                    n += 1;
+                    continue;
+                }
                 other => {
-                    log::warn!("{label}: answer {other:?} is neither join nor alone; skipped");
+                    log::warn!("{label}: answer {other:?} is not join, alone or none; skipped");
                     continue;
                 }
             };
-            self.joins.insert(self.rules.normalise(label), join);
+            self.joins.insert(key, join);
             n += 1;
         }
         n
@@ -585,6 +594,12 @@ impl ClTerms {
     /// The user's answer for type `label` left alone, if any.
     pub(crate) fn joined(&self, label: &str) -> Option<bool> {
         self.joins.get(&self.rules.normalise(label)).copied()
+    }
+
+    /// Whether the user found no fitting term for type `label`.
+    #[must_use]
+    pub fn declined(&self, label: &str) -> bool {
+        self.declined.contains(&self.rules.normalise(label))
     }
 
     /// Whether labels `a` and `b` are one label as names are compared.

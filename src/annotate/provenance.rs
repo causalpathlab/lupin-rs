@@ -30,6 +30,11 @@ pub struct Record {
     pub answers: Vec<(String, bool)>,
     /// The questions still open.
     pub questions: Vec<JoinQuestion>,
+    /// The types the user found no fitting term for.
+    pub declined: Vec<String>,
+    /// The data files read (`ClData::record`), when the caller has them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_files: Option<serde_json::Value>,
 }
 
 impl Record {
@@ -63,6 +68,11 @@ impl Record {
                 .filter_map(|(q, a)| Some((q.label, a?)))
                 .collect(),
             questions: open.into_iter().map(|(q, _)| q).collect(),
+            declined: (types.iter())
+                .filter(|l| terms.declined(l))
+                .cloned()
+                .collect(),
+            data_files: None,
         }
     }
 }
@@ -89,7 +99,7 @@ pub fn methods(r: &Record) -> String {
     let was = |n: usize| if n == 1 { "was" } else { "were" };
     let release = (r.ontology_release.as_deref()).map_or_else(
         || "release not stated".to_string(),
-        |v| format!("release {v}"),
+        |v| format!("release {}", release_date(v).unwrap_or(v)),
     );
     let mut parts = Vec::new();
     if names > 0 {
@@ -150,6 +160,12 @@ pub fn methods(r: &Record) -> String {
             text += &format!(" kept alone: {}.", alone.join(", "));
         }
     }
+    if !r.declined.is_empty() {
+        text += &format!(
+            " Asked to pick a term from suggestions or a search, the user found no fitting term for {}.",
+            r.declined.join(", ")
+        );
+    }
     if !r.questions.is_empty() {
         let open: Vec<&str> = r.questions.iter().map(|q| q.label.as_str()).collect();
         text += &format!(
@@ -158,4 +174,16 @@ pub fn methods(r: &Record) -> String {
         );
     }
     text
+}
+
+/// The date in an ontology's version (`…/releases/2026-01-31/…`), as its
+/// release is cited.
+fn release_date(version: &str) -> Option<&str> {
+    let b = version.as_bytes();
+    (0..b.len().saturating_sub(9)).find_map(|i| {
+        let w = &b[i..i + 10];
+        let digits = |r: std::ops::Range<usize>| w[r].iter().all(u8::is_ascii_digit);
+        (digits(0..4) && w[4] == b'-' && digits(5..7) && w[7] == b'-' && digits(8..10))
+            .then(|| &version[i..i + 10])
+    })
 }

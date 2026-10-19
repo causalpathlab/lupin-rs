@@ -333,6 +333,9 @@ pub enum Pending {
     Relocate { pdf: PathBuf, cells: bool },
     /// The output prefix (the text) for passes.
     Output,
+    /// Search the ontology (the text) for `label`'s term, to confirm into
+    /// the alias table `file`.
+    SearchTerm { label: String, file: PathBuf },
     /// Run `lupin trajectory` with the output prefix typed; `replace` is the
     /// prefix whose existing manifest the user has agreed to replace.
     TrajectoryOut { replace: Option<String> },
@@ -2189,24 +2192,15 @@ impl App {
             Outcome::Cancel => {
                 let note = self.menu.take().map(|m| m.on_cancel).unwrap_or_default();
                 // A question closed unanswered is asked again after `Q`.
-                let asked = self.questions.as_mut().and_then(|qs| {
-                    let q = qs.asking.take()?;
-                    qs.left.push_front(q);
-                    Some(())
-                });
-                if asked.is_some() {
-                    self.questions_paused = true;
-                } else {
+                self.status = note;
+                if !self.question_unanswered() {
                     // Nothing follows a pass the menu was asked about.
                     self.after_pass = AfterPass::Nothing;
                 }
-                self.status = note;
             }
             Outcome::Chosen(a) => {
+                // A question stays asked until its answer is written.
                 self.menu = None;
-                if let Some(qs) = self.questions.as_mut() {
-                    qs.asking = None;
-                }
                 self.choose(a);
             }
         }
@@ -2215,7 +2209,10 @@ impl App {
     fn prompt_key(&mut self, k: KeyEvent) {
         let Some(p) = &mut self.prompt else { return };
         match k.code {
-            KeyCode::Esc => self.prompt = None,
+            KeyCode::Esc => {
+                self.prompt = None;
+                self.question_unanswered();
+            }
             KeyCode::Enter => {
                 let edits_clusters = matches!(
                     p.pending,
@@ -2306,6 +2303,22 @@ impl App {
                         };
                         self.reload_order();
                     }
+                    Pending::SearchTerm { label, file } => {
+                        let Some(cl) = &self.cl else { return };
+                        let found: Vec<(String, String)> = (cl.search(&reason, 9).into_iter())
+                            .map(|id| {
+                                let name = cl.name(&id).unwrap_or(&id).to_string();
+                                (id, name)
+                            })
+                            .collect();
+                        if found.is_empty() {
+                            self.status = format!("no term's name matches \"{reason}\"");
+                            self.question_unanswered();
+                        } else {
+                            self.menu =
+                                Some(super::suggest::found_menu(&label, &reason, &found, &file));
+                        }
+                    }
                     Pending::Output => {
                         self.set_output(&reason);
                         if let Some(f) = &mut self.form {
@@ -2345,7 +2358,11 @@ impl App {
                         };
                     }
                     Pending::Remember { label, id, file } => {
-                        self.status = match remember_alias(&file, &label, &id, &reason) {
+                        let written = remember_alias(&file, &label, &id, &reason);
+                        if written.is_ok() {
+                            self.question_answered(&format!("{label} → {id}"));
+                        }
+                        self.status = match written {
                             Ok(()) => match self.learn_alias(&label, &id, &file) {
                                 None => {
                                     format!("remembered {label} → {id} in {}", file.display())
@@ -3345,8 +3362,15 @@ impl App {
                     pending: Pending::Remember { label, id, file },
                 });
             }
-            Action::NoneSuggested { label } => {
-                self.status = format!("none taken: {label} stays without a Cell Ontology term");
+            Action::NoneSuggested { label } => self.answer_none(&label),
+            Action::SearchTerm { label, file } => {
+                self.prompt = Some(Prompt {
+                    title: format!(
+                        " search the Cell Ontology for {label}'s term (words of its name): "
+                    ),
+                    text: String::new(),
+                    pending: Pending::SearchTerm { label, file },
+                });
             }
             Action::Join { label, join, file } => self.answer_join(&label, join, &file),
             Action::LabelByName { cluster } => {
@@ -4203,6 +4227,8 @@ impl App {
             left: super::ask::queue(cl, &self.tree, &self.panel),
             ..Default::default()
         });
+        // Nothing open asks it any more: it ended without an answer.
+        qs.asking = None;
         // A term's question waits on its ranking.
         if self.ranking.is_some() && matches!(qs.left.front(), Some(Question::Term(_))) {
             return;
@@ -4225,7 +4251,7 @@ impl App {
                 }
                 Question::Term(label) => {
                     let Some(cl) = &self.cl else { return };
-                    if !super::suggest::needs_term(cl, &self.tree, &label) {
+                    if !super::suggest::needs_term(cl, &self.tree, &label) || cl.declined(&label) {
                         continue;
                     }
                     if self.offer_suggestions(&label) {
@@ -4260,6 +4286,54 @@ impl App {
         }
     }
 
+    /// The open question was closed unanswered: asked again after `Q`.
+    /// Whether there was one.
+    fn question_unanswered(&mut self) -> bool {
+        let Some(qs) = self.questions.as_mut() else {
+            return false;
+        };
+        let Some(q) = qs.asking.take() else {
+            return false;
+        };
+        qs.left.push_front(q);
+        self.questions_paused = true;
+        self.status += " · questions paused: Q on the panel tree takes them up again";
+        true
+    }
+
+    /// The open question is answered (`what`), into the log, where it stays
+    /// in sight as the next is asked.
+    fn question_answered(&mut self, what: &str) {
+        if let Some(qs) = self.questions.as_mut() {
+            if qs.asking.take().is_some() {
+                log::info!("answered: {what}");
+            }
+        }
+    }
+
+    /// No term fits type `label`: kept with the answers (`label<TAB>none`).
+    fn answer_none(&mut self, label: &str) {
+        let Some(file) = self.data_search.user_groups() else {
+            self.status =
+                format!("none taken for {label}; no user or project folder to keep it in");
+            return;
+        };
+        let header = "Answers on panel types: label<TAB>join|alone|none (lupin TUI)";
+        match crate::manifest::data_files::append_row(&file, header, &[label, "none"]) {
+            Ok(()) => {
+                if let Some(cl) = self.cl.as_mut() {
+                    cl.add_joins(&format!("{label}\tnone\n"));
+                }
+                self.question_answered(&format!("{label} has no fitting term"));
+                self.status = format!(
+                    "none taken: {label} stays without a Cell Ontology term (kept in {})",
+                    file_name(&file)
+                );
+            }
+            Err(e) => self.status = format!("{e:#}"),
+        }
+    }
+
     /// Work the questions out again, for another panel or ontology.
     pub(super) fn forget_questions(&mut self) {
         self.questions = None;
@@ -4270,12 +4344,13 @@ impl App {
     /// build the tree again with it.
     fn answer_join(&mut self, label: &str, join: bool, file: &Path) {
         let answer = if join { "join" } else { "alone" };
-        let header = "Answers on types left alone: label<TAB>join|alone (lupin TUI)";
+        let header = "Answers on panel types: label<TAB>join|alone|none (lupin TUI)";
         match crate::manifest::data_files::append_row(file, header, &[label, answer]) {
             Ok(()) => {
                 if let Some(cl) = self.cl.as_mut() {
                     cl.add_joins(&format!("{label}\t{answer}\n"));
                 }
+                self.question_answered(&format!("{label}: {answer}"));
                 self.rebuild_tree_keeping(Some(label));
                 self.status = format!(
                     "{label}: {answer} (written to {}); the next pass groups it so",

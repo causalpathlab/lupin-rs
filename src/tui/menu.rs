@@ -49,6 +49,12 @@ pub enum Action {
     },
     /// None of the terms suggested for `label`.
     NoneSuggested { label: String },
+    /// Search the ontology for `label`'s term, a found one confirmed into
+    /// the user's alias table `file` as a suggested one is.
+    SearchTerm {
+        label: String,
+        file: std::path::PathBuf,
+    },
     /// The user's answer for type `label` left alone: join its siblings, or
     /// stand alone; written to `file` (`cl_groups.tsv`).
     Join {

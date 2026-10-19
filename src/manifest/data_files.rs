@@ -43,7 +43,7 @@ use std::time::Duration;
 
 pub const RULES: &str = "cl_matching.json";
 pub const ALIASES: &str = "cl_aliases.tsv";
-/// The user's answers on types left alone (`label<TAB>join|alone`), in the
+/// The user's answers on panel types (`label<TAB>join|alone|none`), in the
 /// user's and the project's layers.
 pub const GROUPS: &str = "cl_groups.tsv";
 /// Which cell types precede which, for `lupin trajectory` and the TUI's order view.
@@ -804,7 +804,7 @@ fn where_report(search: &SearchPath) -> Vec<String> {
         out.push(format!("  {}", p.display()));
     }
     out.push(format!(
-        "{GROUPS}: answers on types left alone (label<TAB>join|alone), the user's, then the project's"
+        "{GROUPS}: answers on panel types (label<TAB>join|alone for a type left alone, none for no fitting term), the user's, then the project's"
     ));
     for (_, p) in search.user_and_project_files(GROUPS) {
         out.push(format!("  {}", p.display()));
