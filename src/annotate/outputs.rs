@@ -178,6 +178,8 @@ pub struct AnnotationOutputs {
     pub term_alignment: Option<String>,
     /// Each of those terms' centre, beside the cell types'.
     pub term_units: Option<String>,
+    /// Each cell type's and term's nearest cells, where a layout draws it.
+    pub unit_anchors: Option<String>,
     /// Per-cell cluster ids whose values match the cluster tables' `K{id}` rows.
     pub clusters: Option<String>,
     /// The pass's sufficient statistics, for rescoring later rounds.

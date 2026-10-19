@@ -3,7 +3,7 @@
 //! read as the genes placed among the cells.
 
 use super::*;
-use crate::annotate::geneset_units::{TYPE_LINKS_TSV, UNITS_PARQUET};
+use crate::annotate::geneset_units::{TYPE_LINKS_TSV, UNITS_PARQUET, UNIT_ANCHORS_PARQUET};
 use crate::annotate::marker_score::toy;
 use crate::manifest::rounds::read_argmax;
 use crate::manifest::run;
@@ -45,6 +45,10 @@ fn the_units_pass_calls_each_cell_and_records_its_round() {
         .celltype_links
         .as_deref()
         .is_some_and(|p| p.ends_with(TYPE_LINKS_TSV)));
+    assert!(a
+        .unit_anchors
+        .as_deref()
+        .is_some_and(|p| p.ends_with(UNIT_ANCHORS_PARQUET)));
     assert!(
         round.manifest.cluster.clusters.is_some(),
         "the round's cluster table"

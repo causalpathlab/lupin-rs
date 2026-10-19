@@ -105,7 +105,9 @@ within the cluster.
   share and centre;
 - `{out}.celltype_links.tsv` (`celltype_links`): the linked types;
 - with terms, `{out}.term_alignment.parquet` (`term_alignment`), cluster × term score, p and q,
-  and `{out}.term_units.parquet` (`term_units`), each term's centre.
+  and `{out}.term_units.parquet` (`term_units`), each term's centre;
+- `{out}.unit_anchors.parquet` (`unit_anchors`): each type's and term's 30 nearest cells by
+  cosine (unit, kind, cell, weight), which place them on the TUI's cell map.
 
 `--device cuda` (with `--device-no`) trains on a GPU in a CUDA build.
 

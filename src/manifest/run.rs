@@ -278,6 +278,10 @@ pub struct RunAnnotate {
     /// cell types' are.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub term_units: Option<String>,
+    /// Each cell type's and term's nearest cells by cosine (unit, kind,
+    /// cell, weight), which place them on the run's layouts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_anchors: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_celltype_es: Option<String>,
     /// nClusters × C SuSiE posterior inclusion probability; set when SuSiE

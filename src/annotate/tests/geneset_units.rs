@@ -156,6 +156,41 @@ fn types_that_share_cells_are_connected_and_apart_ones_are_not() {
 }
 
 #[test]
+fn a_units_anchors_are_its_nearest_cells_by_cosine_nearest_first() {
+    let (units, cells, n) = planted_regions();
+    let a = nearest_cells(&units, &cells, n, 5);
+    let cos = |u: usize, c: usize| {
+        let x = unit(&cells[c * 4..(c + 1) * 4]);
+        x.iter()
+            .zip(units.centre(u))
+            .map(|(a, b)| a * b)
+            .sum::<f32>()
+    };
+    for u in 0..3 {
+        let mine: Vec<&Anchor> = a.iter().filter(|x| x.unit == u).collect();
+        assert_eq!(mine.len(), 5, "k per unit");
+        // Every other cell is no nearer than the farthest anchor.
+        let last = mine.last().unwrap().weight;
+        assert!(mine.windows(2).all(|w| w[0].weight >= w[1].weight));
+        for c in (0..n).filter(|c| !mine.iter().any(|x| x.cell == *c)) {
+            assert!(cos(u, c) <= last + 1e-6, "unit {u}, cell {c}");
+        }
+        for x in &mine {
+            assert!((x.weight - cos(u, x.cell)).abs() < 1e-5);
+        }
+    }
+    // The planted types' cells come in blocks of forty.
+    assert!(a.iter().filter(|x| x.unit == 0).all(|x| x.cell < 40));
+}
+
+#[test]
+fn fewer_cells_than_k_are_all_anchors() {
+    let (units, cells, _) = planted_regions();
+    let a = nearest_cells(&units, &cells[..3 * 4], 3, 30);
+    assert_eq!(a.len(), 3 * 3, "each unit's three cells");
+}
+
+#[test]
 fn a_pass_calls_each_cell_by_its_region_and_writes_the_units_and_links() {
     use crate::annotate::marker_score::toy;
     let dir = tempfile::tempdir().unwrap();
@@ -231,6 +266,30 @@ fn a_pass_calls_each_cell_by_its_region_and_writes_the_units_and_links() {
     assert_eq!(
         o.term_units.as_deref(),
         Some(format!("{out}{TERM_UNITS_PARQUET}").as_str())
+    );
+    // Each cell type's and term's nearest cells, the toy's twenty each.
+    let (strings, nums) = legume_numeric::matrix::parquet::read_table_columns(
+        &format!("{out}{UNIT_ANCHORS_PARQUET}"),
+        &["unit", "kind", "cell"],
+        &["weight"],
+    )
+    .unwrap();
+    let rows = |unit: &str, kind: &str| {
+        (0..strings[0].len())
+            .filter(|&i| &*strings[0][i] == unit && &*strings[1][i] == kind)
+            .count()
+    };
+    assert_eq!(rows("A", "cell_type"), 20);
+    assert_eq!(rows("TERM2", "term"), 20);
+    assert_eq!(strings[0].len(), 4 * 20, "two types and two terms");
+    assert!(nums[0].iter().all(|w| (-1.0..=1.0 + 1e-5).contains(w)));
+    assert!(
+        strings[2].iter().all(|c| c.starts_with('c')),
+        "cells by name"
+    );
+    assert_eq!(
+        o.unit_anchors.as_deref(),
+        Some(format!("{out}{UNIT_ANCHORS_PARQUET}").as_str())
     );
 }
 
