@@ -772,3 +772,127 @@ fn tj(pdf: &str) -> String {
         .collect::<Vec<_>>()
         .join(" | ")
 }
+
+/// A round of four cells in K0 and K1 with a posterior per cell, its
+/// exports logged in `dir`'s gallery.
+fn charts_in(dir: &Path) -> FigurePane {
+    use crate::figures::charts::tests::{charted, posterior};
+    posterior(dir);
+    let data = charted(dir, |m| {
+        m["annotate"]["annotation"] = "r.annotation.parquet".into();
+    });
+    let mut p = FigurePane::showing(data, &Picker::halfblocks());
+    p.exports.gallery = super::super::gallery::open(&dir.join(super::super::gallery::DIR));
+    drawn(&p);
+    p
+}
+
+#[test]
+fn h_steps_from_the_map_to_the_structure_plot_and_the_heatmap_and_esc_returns() {
+    use crate::figures::charts::{HeatKind, Mixture};
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = charts_in(dir.path());
+    let map = p.current();
+    assert!(map.is_scatter());
+    let FigureKey::Say(said) = p.key(KeyCode::Char('H')) else {
+        panic!("H says what it shows");
+    };
+    assert_eq!(p.current(), Panel::Structure { of: Mixture::Types });
+    assert!(said.contains("esc"), "{said}");
+    drawn(&p);
+    // The heatmap next; this round records no expression, which it says.
+    let FigureKey::Say(said) = p.key(KeyCode::Char('H')) else {
+        panic!("H says what it shows");
+    };
+    assert_eq!(
+        p.current(),
+        Panel::Heatmap {
+            of: HeatKind::Markers
+        }
+    );
+    assert!(said.contains("cluster_expression"), "{said}");
+    drawn(&p);
+    // Then the map again.
+    p.key(KeyCode::Char('H'));
+    assert_eq!(p.current(), map);
+    // Esc leaves a chart for the map, then is not the pane's.
+    p.key(KeyCode::Char('H'));
+    assert!(p.current().is_chart());
+    assert_ne!(p.key(KeyCode::Esc), FigureKey::Ignored);
+    assert_eq!(p.current(), map);
+    assert_eq!(p.key(KeyCode::Esc), FigureKey::Ignored);
+}
+
+#[test]
+fn c_on_a_chart_steps_what_it_shows() {
+    use crate::figures::charts::{HeatKind, Mixture};
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = charts_in(dir.path());
+    p.key(KeyCode::Char('H'));
+    // Not a topic run: the cell types are all a structure plot stacks.
+    let FigureKey::Say(said) = p.key(KeyCode::Char('c')) else {
+        panic!("c says why");
+    };
+    assert_eq!(p.current(), Panel::Structure { of: Mixture::Types });
+    assert!(said.contains("topics"), "{said}");
+    p.key(KeyCode::Char('H'));
+    let mut seen = vec![p.current()];
+    for _ in 0..3 {
+        p.key(KeyCode::Char('c'));
+        seen.push(p.current());
+    }
+    let heat = |of| Panel::Heatmap { of };
+    assert_eq!(
+        seen,
+        [
+            heat(HeatKind::Markers),
+            heat(HeatKind::Terms),
+            heat(HeatKind::Types),
+            heat(HeatKind::Markers)
+        ]
+    );
+    // The map, H later, opens on the heatmap chosen.
+    p.key(KeyCode::Char('c'));
+    p.key(KeyCode::Esc);
+    p.key(KeyCode::Char('H'));
+    p.key(KeyCode::Char('H'));
+    assert_eq!(p.current(), heat(HeatKind::Terms));
+}
+
+#[test]
+fn a_saved_chart_is_a_pdf_whose_text_is_text_logged_with_a_thumbnail() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().canonicalize().unwrap();
+    let mut p = charts_in(&dir);
+    p.key(KeyCode::Char('H'));
+    assert_ne!(p.key(KeyCode::Char('p')), FigureKey::Ignored);
+    assert!(p.saving(), "the save dialog is open");
+    let FigureKey::Say(said) = p.save_key(&key(KeyCode::Enter, KeyModifiers::NONE)) else {
+        panic!("a save says where it went");
+    };
+    let pdf = dir.join("r.cells.structure_types.pdf");
+    assert!(said.contains(&pdf.display().to_string()), "{said}");
+    let s = String::from_utf8_lossy(&std::fs::read(&pdf).unwrap()).into_owned();
+    assert!(s.starts_with("%PDF-"));
+    assert!(
+        s.contains("(K0) Tj"),
+        "the panels' names are text: {}",
+        tj(&s)
+    );
+    let g = &p.exports.gallery;
+    let e = &g.entries()[0];
+    assert_eq!(e.path, pdf);
+    assert_eq!(e.extra.panel, "structure_types");
+    assert!(g.thumb(e).is_some_and(|t| t.is_file()));
+}
+
+#[test]
+fn a_trajectorys_figures_have_no_charts() {
+    let mut p = pane();
+    let before = p.current();
+    let FigureKey::Say(said) = p.key(KeyCode::Char('H')) else {
+        panic!("H says why not");
+    };
+    assert!(said.contains("round"), "{said}");
+    assert_eq!(p.current(), before);
+}

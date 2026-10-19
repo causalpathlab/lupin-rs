@@ -4,11 +4,16 @@
 //! logged in the gallery with a thumbnail (`docs/trajectory-plan.md` §6). The round's cell map is one too, with the
 //! mouse: a drag pans, the wheel zooms, a click picks the cluster under it,
 //! and a label pressed is dragged. Labels moved (by the mouse or `E`) are kept
-//! beside the run in lupin's own `{prefix}.lupin_labels.json`.
+//! beside the run in lupin's own `{prefix}.lupin_labels.json`. On a round,
+//! `H` steps from the map to its structure plot and heatmap and back, as
+//! senna steps through its charts, each saved through the same dialog.
 
 use super::app::step;
 use super::gallery::{Gallery, Status, Trace};
-use crate::figures::{self, CellFigures, CellMap, Colouring, Panel, Picture, Size, Style, View};
+use crate::figures::charts::{HeatKind, Mixture};
+use crate::figures::{
+    self, CellFigures, CellMap, Colouring, Panel, Picture, Size, Source, Style, View,
+};
 use crate::manifest::run::load;
 use anyhow::{Context, Result};
 use image::RgbaImage;
@@ -328,6 +333,12 @@ pub struct FigurePane {
     pub(crate) area: Cell<Option<Rect>>,
     /// The save dialog, while it is open.
     save: Option<Saving>,
+    /// A round's chart shown in place of the panel (`H`).
+    chart: Option<Panel>,
+    /// What the structure plot and the heatmap show when `H` reaches them
+    /// (`c` on them).
+    mixture: Mixture,
+    heat: HeatKind,
 }
 
 impl FigurePane {
@@ -382,6 +393,9 @@ impl FigurePane {
             on_screen: RefCell::new(None),
             area: Cell::new(None),
             save: None,
+            chart: None,
+            mixture: Mixture::Types,
+            heat: HeatKind::Markers,
         }
     }
 
@@ -401,6 +415,7 @@ impl FigurePane {
         }
         self.view = before.view;
         self.exports.open = before.exports.open;
+        (self.chart, self.mixture, self.heat) = (before.chart, before.mixture, before.heat);
     }
 
     /// Draw for the terminal `picker` is for: every terminal picture made
@@ -495,6 +510,14 @@ impl FigurePane {
                 self.exports.open = false;
                 Took
             }
+            // A round's charts, as senna's: H steps, Esc the map again.
+            KeyCode::Char('H') if shown => Say(self.step_chart()),
+            KeyCode::Esc if self.chart.is_some() => {
+                self.chart = None;
+                Say("the map · H its charts".into())
+            }
+            KeyCode::Char('c') if self.chart.is_some() => Say(self.step_shown()),
+            KeyCode::Char('p') if self.chart.is_some() => self.ask_save(self.current(), false),
             // The strip and its check belong to the figures.
             KeyCode::Char('f' | 'R') if !shown => {
                 Say("v shows the figures, then f lists their exports".into())
@@ -603,9 +626,87 @@ impl FigurePane {
             && self.current().is_scatter()
     }
 
-    /// The panel on screen; the diffusion map at the pair chosen.
+    /// The panel on screen: a chart, else the panel chosen, the diffusion
+    /// map at the pair chosen.
     pub fn current(&self) -> Panel {
-        self.at_pair(self.panels[self.sel])
+        self.chart
+            .unwrap_or_else(|| self.at_pair(self.panels[self.sel]))
+    }
+
+    /// Whether a chart is shown in place of the map.
+    pub fn charting(&self) -> bool {
+        self.chart.is_some()
+    }
+
+    /// `H`: the map, then the structure plot, then the heatmap, then the
+    /// map again; what is shown.
+    fn step_chart(&mut self) -> String {
+        if self.data.source != Source::Round {
+            return "charts are a round's: H on its cell map".into();
+        }
+        self.chart = match self.chart {
+            None => {
+                // Topics when the cell types are not there to stack.
+                let other = match self.mixture {
+                    Mixture::Types => Mixture::Topics,
+                    Mixture::Topics => Mixture::Types,
+                };
+                if !self.data.has_mixture(self.mixture) && self.data.has_mixture(other) {
+                    self.mixture = other;
+                }
+                Some(Panel::Structure { of: self.mixture })
+            }
+            Some(Panel::Structure { .. }) => Some(Panel::Heatmap { of: self.heat }),
+            Some(_) => None,
+        };
+        match self.chart {
+            Some(c) => self.chart_note(c),
+            None => "the map · H its charts".into(),
+        }
+    }
+
+    /// `c` on a chart: the other mixture, or the next heatmap.
+    fn step_shown(&mut self) -> String {
+        match self.chart {
+            Some(Panel::Structure { of }) => {
+                let other = match of {
+                    Mixture::Types => Mixture::Topics,
+                    Mixture::Topics => Mixture::Types,
+                };
+                if let Some(why) = self.data.chart_missing(Panel::Structure { of: other }) {
+                    return format!("{} only: no {} ({why})", of.title(), other.title());
+                }
+                self.mixture = other;
+            }
+            Some(Panel::Heatmap { of }) => {
+                let all = HeatKind::ALL;
+                let at = all.iter().position(|&h| h == of).unwrap_or(0);
+                self.heat = all[(at + 1) % all.len()];
+            }
+            _ => return String::new(),
+        }
+        let c = match self.chart {
+            Some(Panel::Structure { .. }) => Panel::Structure { of: self.mixture },
+            _ => Panel::Heatmap { of: self.heat },
+        };
+        self.chart = Some(c);
+        self.chart_note(c)
+    }
+
+    /// What the status says of chart `c`: its keys, or why it has no
+    /// table to draw.
+    fn chart_note(&self, c: Panel) -> String {
+        let keys = "H next · esc the map";
+        match self.data.chart_missing(c) {
+            Some(why) => format!("no {}: {why} · {keys}", c.title()),
+            None => {
+                let what = match c {
+                    Panel::Structure { .. } => "c topics or types",
+                    _ => "c the next heatmap",
+                };
+                format!("{} · {what} · p save · {keys}", c.title())
+            }
+        }
     }
 
     /// `panel`, a diffusion map at the pair chosen.
@@ -626,6 +727,7 @@ impl FigurePane {
 
     /// Show the figures, or move to the next panel when they are shown.
     pub fn next_panel(&mut self) {
+        self.chart = None;
         if self.shown {
             self.sel = (self.sel + 1) % self.panels.len();
             self.view = View::default();
@@ -700,6 +802,7 @@ impl FigurePane {
 
     /// Open the thumbnail grid on the figure on screen (`w`).
     pub fn open_grid(&mut self) {
+        self.chart = None;
         let mut tiles: Vec<Panel> = self
             .data
             .scatters()
@@ -888,7 +991,7 @@ impl FigurePane {
             .map_err(|e| format!("{e:#}"))?;
         let on = match &fig {
             Picture::Map(m) => Some(Arc::new(OnMap::of(look.panel, m))),
-            Picture::Svg(_) => None,
+            Picture::Svg(_) | Picture::Chart(_) => None,
         };
         let img = figures::render(&fig).map_err(|e| format!("{e:#}"))?;
         Ok((img, on))
@@ -1042,6 +1145,7 @@ impl FigurePane {
             view: if tile { View::default() } else { self.view },
             frame: self.frame(),
             tile,
+            chart: panel.is_chart(),
             stem: format!(
                 "{}.{}.{}",
                 self.data.prefix(),
@@ -1090,6 +1194,12 @@ impl FigurePane {
             h: req.px.1 as u32,
             text_px: page.cell_px(),
         };
+        if t.chart {
+            let img = (self.data).write_chart(t.panel, size, req.dpi as f32, &req.path)?;
+            let what = format!("{} · {} in · {} dpi", t.title, req.width_in, req.dpi);
+            let logged = self.log(&req.files, &what, Some(&img), t.panel);
+            return Ok(format!("wrote {}{logged}", req.path.display()));
+        }
         let view = match req.scope {
             MapScope::Shown => t.view,
             MapScope::Whole => View::default(),
@@ -1370,6 +1480,8 @@ struct MapTarget {
     frame: (u32, u32),
     /// From the grid, whose tile shows the scatter whole.
     tile: bool,
+    /// A round's chart, saved as it is drawn.
+    chart: bool,
     /// `{prefix}.{kind}.{panel}`, numbered past saved files.
     stem: String,
     title: String,
@@ -1379,7 +1491,9 @@ impl SaveTarget for MapTarget {
     type Scope = MapScope;
 
     fn scopes(&self) -> Vec<MapScope> {
-        if self.tile {
+        if self.chart {
+            vec![MapScope::Shown]
+        } else if self.tile {
             vec![MapScope::Whole]
         } else {
             vec![MapScope::Shown, MapScope::Whole]
@@ -1388,6 +1502,7 @@ impl SaveTarget for MapTarget {
 
     fn scope_name(&self, s: MapScope) -> String {
         match s {
+            MapScope::Shown if self.chart => self.title.clone(),
             MapScope::Shown if self.view.is_whole() => format!("{} as on screen", self.title),
             MapScope::Shown => format!(
                 "{} as on screen, zoomed ×{:.1}",

@@ -3877,6 +3877,37 @@ fn the_mouse_is_the_maps_while_it_is_shown_and_a_click_picks_a_cluster() {
 }
 
 #[test]
+fn capital_h_on_the_rounds_map_shows_its_charts_and_esc_the_map_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    drawn(&app);
+    let charting = |app: &App| app.cell_map.as_ref().unwrap().charting();
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("H charts"), "{bar}");
+    app.key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(charting(&app), "{}", app.status);
+    // The round records no posterior: the status says which table.
+    assert!(app.status.contains("annotate.annotation"), "{}", app.status);
+    assert!(
+        !app.wants_mouse(),
+        "a chart leaves the terminal its selection"
+    );
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("H next chart"), "{bar}");
+    drawn(&app);
+    press(&mut app, KeyCode::Esc);
+    assert!(!charting(&app));
+    assert_eq!(app.focus, Focus::Tree, "esc left the chart, not the map");
+    assert!(app.wants_mouse());
+    let guide: String = super::super::ui::guide(false)
+        .flat_map(|(_, keys)| keys)
+        .map(|(k, what)| format!("{k} {what}\n"))
+        .collect();
+    assert!(guide.contains("structure plot"), "{guide}");
+}
+
+#[test]
 fn capital_e_on_the_map_edits_its_labels_until_esc() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = map_app(dir.path(), true);

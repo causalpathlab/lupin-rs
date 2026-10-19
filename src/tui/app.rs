@@ -4072,7 +4072,7 @@ impl App {
             && self
                 .cell_map
                 .as_ref()
-                .is_some_and(|m| m.grid.is_none() && !m.saving())
+                .is_some_and(|m| m.grid.is_none() && !m.saving() && !m.charting())
             && !self.help_open
             && self.form.is_none()
             && self.prompt.is_none()
