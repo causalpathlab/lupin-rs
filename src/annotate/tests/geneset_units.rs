@@ -389,3 +389,67 @@ fn decoys_are_drawn_from_the_pool_their_kind_is_annotated_from() {
         "a decoy drew a gene outside its pool"
     );
 }
+
+/// Three dimensions: the first a nuisance axis every gene and cell spreads
+/// widely along, the other two telling types A and B apart by a little.
+fn nuisance_axis() -> (MatWithNames<Mat>, MatWithNames<Mat>, Vec<usize>) {
+    let wide = |i: usize| 5.0 * (((i * 7) % 11) as f32 / 5.0 - 1.0);
+    let mut feat = Mat::zeros(20, 3);
+    for g in 0..20 {
+        feat[(g, 0)] = 3.0 + wide(g);
+        feat[(g, 1 + g / 10)] = 0.4;
+    }
+    let mut cells = Mat::zeros(60, 3);
+    for c in 0..60 {
+        cells[(c, 0)] = wide(c + 3);
+        cells[(c, 1 + c / 30)] = 0.3;
+    }
+    let names =
+        |p: &str, n: usize| -> Vec<Box<str>> { (0..n).map(|i| format!("{p}{i}").into()).collect() };
+    let h: Vec<Box<str>> = names("h", 3);
+    (
+        MatWithNames {
+            mat: feat,
+            rows: names("GENE", 20),
+            cols: h.clone(),
+        },
+        MatWithNames {
+            mat: cells,
+            rows: names("c", 60),
+            cols: h,
+        },
+        (0..60).map(|c| c / 30).collect(),
+    )
+}
+
+#[test]
+fn a_wide_axis_every_type_shares_does_not_decide_the_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let (feat, cells, groups) = nuisance_axis();
+    let panel = dir.path().join("panel.tsv");
+    let rows: String = (0..20)
+        .map(|g| format!("GENE{g}\t{}\n", if g < 10 { "A" } else { "B" }))
+        .collect();
+    std::fs::write(&panel, rows).unwrap();
+    let out = dir.path().join("w").to_string_lossy().into_owned();
+    run_pass(
+        &panel.to_string_lossy(),
+        &out,
+        &feat,
+        &cells,
+        &groups,
+        &Terms::default(),
+        &quick(),
+    )
+    .unwrap();
+    let labels = std::fs::read_to_string(format!("{out}.argmax.tsv")).unwrap();
+    let wrong: Vec<&str> = (labels.lines())
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            let (cell, label) = (f.next()?, f.next()?);
+            let i: usize = cell.strip_prefix('c')?.parse().ok()?;
+            (label != if i < 30 { "A" } else { "B" }).then_some(cell)
+        })
+        .collect();
+    assert!(wrong.len() <= 3, "{} miscalled: {wrong:?}", wrong.len());
+}

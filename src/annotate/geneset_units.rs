@@ -437,12 +437,14 @@ pub fn run_pass(
     } else {
         &pools[..]
     };
-    let units = train_units_from(&table_of(feat), &by_type, pools, cfg)?;
+    // Both sides read per unit of the cells' spread, so an axis every type
+    // spreads along does not outweigh the ones that tell types apart.
+    let (gene_rows, flat) = whitened(feat, cells, groups)?;
+    let units = train_units_from(&gene_rows, &by_type, pools, cfg)?;
     for (name, found, given) in &units.dropped {
         log::warn!("{name}: {found} of its {given} markers are in the gene table; not trained");
     }
     let n = cells.rows.len();
-    let flat = table_of(cells).rows;
     let r = fit_regions(&units, SetKind::CellType, &flat, n, cfg.region_iters)?;
     let k = r.names.len();
     let (labels, probs): (Vec<Box<str>>, Vec<f32>) = (0..n)
@@ -471,6 +473,63 @@ pub fn run_pass(
         term_alignment,
         ..AnnotationOutputs::default()
     })
+}
+
+/// The genes (from their mean) and the cells (from the balanced centre of
+/// `groups`, each cluster's mean weighed alike) of `feat` and `cells`, both
+/// whitened by the cells' covariance about that centre (`Σ^{-1/2}`; axes the
+/// cells barely spread along are floored, not inflated), as the embedding
+/// marker score reads them. Genes as a [`GeneTable`], cells row-major.
+fn whitened(
+    feat: &MatWithNames<Mat>,
+    cells: &MatWithNames<Mat>,
+    groups: &[usize],
+) -> Result<(GeneTable, Vec<f32>)> {
+    use nalgebra::{DMatrix, DVector};
+    let x = cells.mat.map(f64::from);
+    let (n, dim) = x.shape();
+    anyhow::ensure!(feat.mat.ncols() == dim, "genes and cells differ in width");
+    anyhow::ensure!(groups.len() == n, "a cluster per cell");
+    let mut by: std::collections::BTreeMap<usize, (DVector<f64>, usize)> = Default::default();
+    for (c, &g) in groups.iter().enumerate().filter(|(_, g)| **g != usize::MAX) {
+        let e = by.entry(g).or_insert_with(|| (DVector::zeros(dim), 0));
+        e.0 += x.row(c).transpose();
+        e.1 += 1;
+    }
+    anyhow::ensure!(!by.is_empty(), "no cell is in a cluster");
+    let centre: DVector<f64> = by
+        .values()
+        .map(|(s, k)| s / *k as f64)
+        .sum::<DVector<f64>>()
+        / by.len() as f64;
+    let xc = DMatrix::from_fn(n, dim, |i, j| x[(i, j)] - centre[j]);
+    let cov = (xc.transpose() * &xc) / (n.max(2) - 1) as f64;
+    let eig = cov.symmetric_eigen();
+    let floor = eig.eigenvalues.max() * 1e-6;
+    let inv_sqrt = DVector::from_iterator(
+        dim,
+        eig.eigenvalues
+            .iter()
+            .map(|&l| 1.0 / l.max(floor).max(f64::MIN_POSITIVE).sqrt()),
+    );
+    let w = &eig.eigenvectors * DMatrix::from_diagonal(&inv_sqrt) * eig.eigenvectors.transpose();
+    let g = feat.mat.map(f64::from);
+    let mean = g.row_mean();
+    let gc = DMatrix::from_fn(g.nrows(), dim, |i, j| g[(i, j)] - mean[j]);
+    let row_major = |m: DMatrix<f64>| -> Vec<f32> {
+        (0..m.nrows())
+            .flat_map(|i| (0..m.ncols()).map(move |j| (i, j)))
+            .map(|(i, j)| m[(i, j)] as f32)
+            .collect()
+    };
+    Ok((
+        GeneTable {
+            names: feat.rows.iter().map(ToString::to_string).collect(),
+            rows: row_major(gc * &w),
+            dim,
+        },
+        row_major(xc * &w),
+    ))
 }
 
 /// `m`'s rows as a [`GeneTable`] (row-major).
