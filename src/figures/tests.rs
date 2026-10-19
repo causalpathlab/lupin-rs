@@ -100,6 +100,7 @@ fn every_panel_renders_to_pixels() {
                     assert_eq!((f.w, f.h), (320, 240), "{}", p.slug());
                 }
             }
+            Picture::Chart(_) => panic!("a trajectory's panels are no chart"),
         }
     }
 }
@@ -562,7 +563,7 @@ fn a_zoomed_scatter_labels_only_the_types_on_screen() {
     };
     let svg = |p: Picture| match p {
         Picture::Svg(f) => f.svg,
-        Picture::Map(_) => panic!("the order panel is no map"),
+        Picture::Map(_) | Picture::Chart(_) => panic!("the order panel is an SVG"),
     };
     assert_eq!(
         svg(t

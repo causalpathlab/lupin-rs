@@ -13,6 +13,7 @@ use crate::manifest::rounds::{Cells, ScoreCells};
 use crate::manifest::run::{derive_out_prefix, resolve, Loaded, RunManifest};
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
 use anyhow::{Context, Result};
+use charts::{Charts, HeatKind, Mixture};
 use enrichment::UNASSIGNED_LABEL;
 use legume_numeric::matrix::dense_mat_io::Mat;
 use legume_numeric::matrix::parquet::{peek_parquet_field_names, read_table_columns};
@@ -39,6 +40,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use units::{GoTerm, Marks, UnitMap};
 
+pub(crate) mod charts;
 pub(crate) mod units;
 
 /// Pairs outside the prior on the connectivity panel, and the pairs it
@@ -337,6 +339,10 @@ pub(crate) enum Panel {
     Order,
     /// PAGA connectivity between the node types, in pseudotime order.
     Connectivity,
+    /// A round's cells' mixtures stacked, a panel per cluster ([`charts`]).
+    Structure { of: Mixture },
+    /// A round's features × clusters ([`charts`]).
+    Heatmap { of: HeatKind },
 }
 
 impl Panel {
@@ -353,6 +359,7 @@ impl Panel {
             Self::Diffusion { x, y } => format!("diffusion_dc{x}_dc{y}"),
             Self::Order => "order".into(),
             Self::Connectivity => "connectivity".into(),
+            Self::Structure { .. } | Self::Heatmap { .. } => self.chart_slug().expect("a chart"),
         }
     }
 
@@ -362,6 +369,8 @@ impl Panel {
             Self::Diffusion { x, y } => format!("diffusion map · DC{x} × DC{y}"),
             Self::Order => "types by median pseudotime".into(),
             Self::Connectivity => "connectivity between types".into(),
+            Self::Structure { of } => of.title().into(),
+            Self::Heatmap { of } => of.title().into(),
         }
     }
 }
@@ -373,9 +382,11 @@ pub(crate) struct Figure {
     pub(crate) h: u32,
 }
 
-/// A figure as drawn: a scatter as a cell map, the other panels as SVG.
+/// A figure as drawn: a scatter as a cell map, a chart as its frame, the
+/// other panels as SVG.
 pub(crate) enum Picture {
     Map(Box<CellMap>),
+    Chart(Box<Frame>),
     Svg(Figure),
 }
 
@@ -510,6 +521,8 @@ pub(crate) struct CellFigures {
     /// A units round's cell types and GO terms, when it records their
     /// anchors.
     pub(crate) units: Option<UnitMap>,
+    /// The tables a round's charts read, read when first drawn.
+    pub(crate) charts: Charts,
 }
 
 /// Each cell's colour (`None` for grey) and the legend of a categorical
@@ -623,6 +636,7 @@ impl CellFigures {
         });
         Self {
             source: Source::Round,
+            charts: Charts::of(loaded, &cells.names),
             units,
             manifest: loaded.file.clone(),
             types: cells
@@ -815,6 +829,9 @@ impl CellFigures {
             )),
             Panel::Order => Picture::Svg(self.order_figure(size.w, size.h)),
             Panel::Connectivity => Picture::Svg(self.connectivity_figure(size.w, size.h)),
+            Panel::Structure { .. } | Panel::Heatmap { .. } => {
+                Picture::Chart(Box::new(self.chart_frame(panel, size, false)))
+            }
         })
     }
 
@@ -889,6 +906,10 @@ impl CellFigures {
         let (files, picture) = if panel.is_scatter() {
             let pdf = PathBuf::from(format!("{b}.pdf"));
             let img = self.write_map(panel, size, EXPORT_DPI, style, view, moved, &pdf)?;
+            (vec![pdf], Some(img))
+        } else if panel.is_chart() {
+            let pdf = PathBuf::from(format!("{b}.pdf"));
+            let img = self.write_chart(panel, size, EXPORT_DPI, &pdf)?;
             (vec![pdf], Some(img))
         } else {
             let Picture::Svg(fig) = self.figure(panel, size, style, view, moved)? else {
@@ -2011,6 +2032,7 @@ fn free_base(base: &str) -> PathBuf {
 pub(crate) fn render(picture: &Picture) -> Result<image::RgbaImage> {
     match picture {
         Picture::Map(m) => Ok(m.frame.to_image()),
+        Picture::Chart(f) => Ok(f.to_image()),
         Picture::Svg(fig) => render_svg(fig),
     }
 }
