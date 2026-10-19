@@ -403,7 +403,7 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "u unassign",
             "⌫ undo",
             "] next flagged",
-            "S sort",
+            "S method",
             "a all",
             "r run",
             "A annotate",
@@ -420,7 +420,7 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "u unassign",
             "⌫ undo",
             "] next flagged",
-            "S sort",
+            "S method",
             "a all",
             "r form",
             "g runs",
@@ -584,7 +584,7 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
         Focus::Candidates => &[
             "↑↓ candidate",
             "⏎ or 1-9 take",
-            "S sort",
+            "S method",
             "a all",
             "tab pane",
             "esc clusters",
@@ -624,13 +624,13 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("↑↓", "select a cluster"),
             ("1-9", "label it with that candidate"),
             ("enter", "the label choices: each method's top types, the tree, or a name"),
-            ("S", "list the candidates by the next method: enrichment, SuSiE, score"),
+            ("S", "list the candidates by the next method the cluster has: enrichment, SuSiE, score, units; 1-9 then take that method's candidates (▸ in the block of each method's call)"),
             ("a", "list every candidate, not only the first ten and each method's top"),
             ("k", "keep its label (✓ = decided)"),
             ("u", "unassign it"),
             ("A", "annotate again: the annotation form"),
             ("⌫", "undo its edit"),
-            ("]", "next flagged (?) cluster not yet decided"),
+            ("]", "next flagged (?) cluster not yet decided: unassigned, an unsure call, or methods that call different types"),
         ],
     ),
     (
@@ -639,6 +639,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("↑↓", "select a candidate; the list scrolls with it"),
             ("enter / 1-9", "label the cluster with the selected / that candidate"),
             ("S / a", "as in the clusters: the next method's order / every candidate"),
+            ("each method's call", "the block above the candidates, when two or more methods call the cluster: each one's type, its strength (the enrichment's q, SuSiE's PIP, the score's or the units' share of cells) and the share of the cluster's cells called it (for the enrichment and SuSiE, by the score, else the units); ▸ the method in view, a type other than its call in yellow"),
         ],
     ),
     (
@@ -1214,7 +1215,98 @@ fn pinned_label(app: &App) -> Option<String> {
 fn candidates_height(app: &App, room: u16) -> u16 {
     let pinned = if pinned_label(app).is_some() { 2 } else { 0 };
     let rows = app.listed_candidates().len().max(super::round::LISTED) + pinned;
-    u16::try_from(rows + 3).unwrap_or(u16::MAX).min(room).max(4)
+    let calls = usize::from(calls_height(app));
+    u16::try_from(rows + 3 + calls)
+        .unwrap_or(u16::MAX)
+        .min(room)
+        .max(4)
+}
+
+/// The height of the block of each method's call above the candidates: a
+/// row per call with its header and borders, when two or more methods
+/// call the selected cluster; else none.
+fn calls_height(app: &App) -> u16 {
+    match app.selected().map_or(0, |c| c.calls().len()) {
+        n if n >= 2 => u16::try_from(n + 3).unwrap_or(u16::MAX),
+        _ => 0,
+    }
+}
+
+/// A method as the block of calls names it.
+fn method_label(m: crate::annotate::rounds::Method) -> &'static str {
+    use crate::annotate::rounds::Method;
+    match m {
+        Method::Enrichment => "enrichment",
+        Method::Susie => "SuSiE",
+        Method::Score => "score",
+        Method::Units => "units",
+    }
+}
+
+/// Each method's call on the selected cluster side by side: the type, how
+/// strongly the method calls it (the enrichment's q, SuSiE's PIP, the
+/// score's or the units' share of cells), and the share of the cluster's
+/// cells called it, with how many: the method's own for the score and the
+/// units; for the enrichment and SuSiE, which call the cluster whole, the
+/// score's per-cell reading of the type, else the units'. The method the
+/// candidates are listed by is marked ▸; a type other than its call is
+/// yellow.
+fn draw_calls(f: &mut Frame, area: Rect, app: &App, c: &super::round::ClusterView) {
+    use crate::annotate::rounds::Method;
+    let by = app.cand_method();
+    let calls = c.calls();
+    let in_view = calls
+        .iter()
+        .find(|(m, _)| *m == by)
+        .map(|(_, t)| label_key(&t.label));
+    let rows: Vec<Row> = calls
+        .iter()
+        .map(|&(m, t)| {
+            let strength = match m {
+                Method::Enrichment => format!("q {}", pval(t.q)),
+                Method::Susie => format!("PIP {}", num(t.pip, 2)),
+                Method::Score | Method::Units => format!("share {}", num(m.reading(t), 2)),
+            };
+            let of_cells = match m {
+                Method::Score | Method::Units => m.reading(t),
+                Method::Enrichment | Method::Susie => t.score.or(t.units),
+            };
+            let cells = of_cells.map_or_else(
+                || "—".to_string(),
+                |s| format!("{s:.2} · {} cells", (s * c.cells as f32).round()),
+            );
+            let other = in_view.as_ref().is_some_and(|k| *k != label_key(&t.label));
+            let ty = Cell::from(t.label.clone());
+            let row = Row::new(vec![
+                Cell::from(if m == by { "▸" } else { " " }).cyan(),
+                Cell::from(method_label(m)),
+                if other { ty.fg(Color::Yellow) } else { ty },
+                Cell::from(strength),
+                Cell::from(cells),
+            ]);
+            if m == by {
+                row.bold()
+            } else {
+                row
+            }
+        })
+        .collect();
+    let title = if c.disagree() {
+        " each method's call · they disagree "
+    } else {
+        " each method's call "
+    };
+    let widths = [
+        Constraint::Length(1),
+        Constraint::Length(10),
+        Constraint::Min(8),
+        Constraint::Length(10),
+        Constraint::Length(16),
+    ];
+    let t = Table::new(rows, widths)
+        .header(Row::new(["", "method", "call", "strength", "cells"]).bold())
+        .block(pane(title.into(), false));
+    f.render_widget(t, area);
 }
 
 /// A column of the candidates pane after the key and the type.
@@ -1307,6 +1399,16 @@ fn draw_candidates(f: &mut Frame, area: Rect, app: &App) {
     let Some(c) = app.selected() else {
         f.render_widget(pane(" cluster ".into(), focused), area);
         return;
+    };
+    // Each method's call above the candidates, while they keep a row.
+    let calls = calls_height(app);
+    let area = if calls > 0 && area.height >= calls + 4 {
+        let [top, rest] =
+            Layout::vertical([Constraint::Length(calls), Constraint::Min(4)]).areas(area);
+        draw_calls(f, top, app, c);
+        rest
+    } else {
+        area
     };
     let now = app.current_label();
     let listed = app.listed_candidates();

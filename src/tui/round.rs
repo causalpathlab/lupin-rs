@@ -259,12 +259,40 @@ impl ClusterView {
         self.candidates.first().and_then(Candidate::susie)
     }
 
-    /// Needs a look: unassigned; or, in a SuSiE round, its call is unsure
-    /// (PIP under 0.95) or close (a runner-up explains at least half as
-    /// much); otherwise its top candidate holds too little of the evidence.
+    /// Each method's call on the cluster, in [`Method::ALL`]'s order: the
+    /// type it ranks first, for the methods that rank any.
+    #[must_use]
+    pub fn calls(&self) -> Vec<(Method, &Candidate)> {
+        Method::ALL
+            .into_iter()
+            .filter_map(|m| {
+                let top = self
+                    .candidates
+                    .iter()
+                    .find(|c| c.ranks[m.index()] == Some(0))?;
+                Some((m, top))
+            })
+            .collect()
+    }
+
+    /// The methods call different types.
+    #[must_use]
+    pub fn disagree(&self) -> bool {
+        let tops: BTreeSet<String> = self
+            .calls()
+            .into_iter()
+            .map(|(_, c)| label_key(&c.label))
+            .collect();
+        tops.len() > 1
+    }
+
+    /// Needs a look: unassigned, or its methods call different types; or,
+    /// in a SuSiE round, its call is unsure (PIP under 0.95) or close (a
+    /// runner-up explains at least half as much); otherwise its top
+    /// candidate holds too little of the evidence.
     #[must_use]
     pub fn flagged(&self) -> bool {
-        if self.label.is_none() {
+        if self.label.is_none() || self.disagree() {
             return true;
         }
         match self.call_evidence() {

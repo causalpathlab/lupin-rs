@@ -31,6 +31,10 @@ each cell's cluster, call and membership of its region), with the units' other f
 The round view and `review --json` show every reading, and every type's evidence from every
 method goes to `{out}.cluster_evidence.parquet` (`annotate.cluster_evidence`), whose `score`
 and `units` columns are each method's share of the cluster's cells called the type.
+In the round view, `S` lists a cluster's candidates by each method in turn (enrichment, SuSiE,
+score, units, the ones the cluster has), and 1-9 take that method's candidates; above them, each
+method's call stands side by side (its type, its strength, and the share of the cluster's cells
+called it). A cluster whose methods call different types is flagged `?`, so `]` reaches it.
 
 **Which reading makes the call.** `--call {enrichment, susie, score, units}` picks the method
 whose reading becomes the round's per-cell labels (`annotate.argmax`), and so its cluster
