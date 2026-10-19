@@ -103,6 +103,8 @@ within the cluster.
 - the per-cell call and membership, as every pass writes them;
 - `{out}.celltype_units.parquet` (`celltype_units`): each type's genes found and given, radius,
   share and centre;
+- `{out}.celltype_membership.parquet` (`celltype_membership`): each cell's membership of each
+  type's region, cells × types, which the TUI's structure plot stacks;
 - `{out}.celltype_links.tsv` (`celltype_links`): the linked types;
 - with terms, `{out}.term_alignment.parquet` (`term_alignment`), cluster × term score, p and q,
   and `{out}.term_units.parquet` (`term_units`), each term's centre;
