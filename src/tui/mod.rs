@@ -48,22 +48,10 @@ pub const TOOL: legume_tui::Tool = legume_tui::Tool::new("lupin");
 
 /// The detach and switch keys for the `?` guide, each with what it does,
 /// in lower case as the guide shows keys; none when the screen runs plain.
-/// The guide's own words for the two it knows, the crate's for any other.
 pub(crate) fn session_keys() -> Vec<(String, String)> {
     legume_tui::help_keys()
         .into_iter()
-        .map(|k| {
-            let what = match k.short.as_str() {
-                "detach" => format!(
-                    "leave it running (named on the first detach); \
-                     `{} attach` (or starting it again) returns",
-                    TOOL.name()
-                ),
-                "switch" => "leave it running and pick another session".into(),
-                _ => return (k.key.to_lowercase(), k.long),
-            };
-            (k.key.to_lowercase(), format!("{}: {what}", k.short))
-        })
+        .map(|k| (k.key.to_lowercase(), k.long))
         .collect()
 }
 
@@ -168,27 +156,18 @@ pub fn run(
     let mut terminal =
         session.terminal_with(legume_tui::Modes::new().keyboard_enhancement(keys))?;
     let latest = screens(&session, &mut terminal, args, trajectory);
-    // The latest round is said on the terminal attached as the screen
-    // ends; detached, it is left for whoever looks next.
-    let said_here = session.attached();
-    let round = match &latest {
-        Ok(m) => m
-            .as_ref()
-            .map(|m| format!("lupin: latest round {}", m.display())),
+    // The latest round is left: said on the terminal attached as the
+    // session ends, else kept for whoever looks next.
+    match &latest {
+        Ok(Some(m)) => session.leave(&format!("lupin: latest round {}", m.display())),
+        Ok(None) => {}
         // Seen before the session ends, then said as main says it.
         Err(e) => {
             let _ = session.hold_error(&mut terminal, e);
-            None
         }
-    };
-    if let (Some(r), false) = (&round, said_here) {
-        session.leave(r);
     }
     session.restore();
     drop(quiet);
-    if let (Some(r), true) = (round, said_here) {
-        eprintln!("{r}");
-    }
     latest.map(|_| ())
 }
 

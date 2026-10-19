@@ -188,7 +188,8 @@ fn the_latest_round_is_said_where_it_is_seen() {
     t.wait_screen("X.L0.senna.json");
     assert!(dir.is_empty(), "left behind in {:?}", dir.path());
 
-    // Killed while attached: said on the attached terminal, not by kill.
+    // Killed while attached: left, and handed to the attached terminal,
+    // not said by kill.
     let mut t = start();
     t.wait_screen("CT2");
     let said = dir.run(&["kill"]);
