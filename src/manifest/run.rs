@@ -270,6 +270,10 @@ pub struct RunAnnotate {
     /// Each pair of those types and the cells they share.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub celltype_links: Option<String>,
+    /// Each cell's membership of each of those types' regions, cells ×
+    /// types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub celltype_membership: Option<String>,
     /// Each cluster against each ontology term trained as a unit: score,
     /// and p and q against random gene sets of its size.
     #[serde(default, skip_serializing_if = "Option::is_none")]

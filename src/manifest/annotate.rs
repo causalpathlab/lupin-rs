@@ -391,6 +391,7 @@ fn record(
             a.marker_embedding = None;
             a.celltype_units = rel(&out.celltype_units);
             a.celltype_links = rel(&out.celltype_links);
+            a.celltype_membership = rel(&out.celltype_membership);
             a.term_alignment = rel(&out.term_alignment);
             a.term_units = rel(&out.term_units);
             a.unit_anchors = rel(&out.unit_anchors);

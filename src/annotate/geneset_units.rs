@@ -22,6 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Each cell type's genes in the table and given, radius, share of the
 /// cells and centre (`h0…`), by type.
 pub const UNITS_PARQUET: &str = ".celltype_units.parquet";
+/// Each cell's membership of each cell type's region, cells × types: what a
+/// viewer's structure plot stacks.
+pub const MEMBERSHIP_PARQUET: &str = ".celltype_membership.parquet";
 /// Each pair of cell types and the cells they share (`Regions::links`).
 pub const TYPE_LINKS_TSV: &str = ".celltype_links.tsv";
 /// Each cluster against each ontology term: score, p and q ([`align`]).
@@ -33,8 +36,9 @@ pub const TERM_UNITS_PARQUET: &str = ".term_units.parquet";
 pub const UNIT_ANCHORS_PARQUET: &str = ".unit_anchors.parquet";
 /// What a pass writes beside the per-cell labels, cleared before it runs so
 /// no file of an earlier pass (its terms, say) is read as this one's.
-pub const UNITS_OUTPUT_SUFFIXES: [&str; 5] = [
+pub const UNITS_OUTPUT_SUFFIXES: [&str; 6] = [
     UNITS_PARQUET,
+    MEMBERSHIP_PARQUET,
     TYPE_LINKS_TSV,
     TERM_ALIGNMENT_PARQUET,
     TERM_UNITS_PARQUET,
@@ -545,6 +549,8 @@ pub fn run_pass(
         &[("radius", &r.radius), ("weight", &r.weight)],
     )?;
     write_links(&format!("{out}{TYPE_LINKS_TSV}"), &r)?;
+    let membership = format!("{out}{MEMBERSHIP_PARQUET}");
+    write_membership(&membership, &r, &cells.rows)?;
     // Anchored: every cell type, and only the terms some cluster stars, as
     // only those are drawn; the pool's other terms would cost a pass over
     // the cells each.
@@ -572,6 +578,7 @@ pub fn run_pass(
         argmax: Some(labels_path(out)),
         celltype_units: Some(format!("{out}{UNITS_PARQUET}")),
         celltype_links: Some(format!("{out}{TYPE_LINKS_TSV}")),
+        celltype_membership: Some(membership),
         term_alignment,
         term_units,
         unit_anchors: Some(anchors),
@@ -803,6 +810,16 @@ fn write_anchors(
             ("weight".into(), Column::F32(&weight)),
         ],
     )?;
+    Ok(())
+}
+
+/// `r`'s membership as a table: a row per cell (by name), a column per
+/// type.
+fn write_membership(path: &str, r: &Regions, cell_names: &[Box<str>]) -> Result<()> {
+    use legume_numeric::matrix::traits::IoOps;
+    let m = Mat::from_row_slice(cell_names.len(), r.names.len(), &r.membership);
+    let cols: Vec<Box<str>> = r.names.iter().map(|n| n.as_str().into()).collect();
+    m.to_parquet_with_names(path, (Some(cell_names), Some("cell")), Some(&cols))?;
     Ok(())
 }
 

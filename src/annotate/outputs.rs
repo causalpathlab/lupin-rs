@@ -174,6 +174,8 @@ pub struct AnnotationOutputs {
     /// The cell types as gene-set units, and the cells each pair shares.
     pub celltype_units: Option<String>,
     pub celltype_links: Option<String>,
+    /// Each cell's membership of each type's region (cells × types).
+    pub celltype_membership: Option<String>,
     /// Each cluster against each ontology term trained as a unit.
     pub term_alignment: Option<String>,
     /// Each of those terms' centre, beside the cell types'.

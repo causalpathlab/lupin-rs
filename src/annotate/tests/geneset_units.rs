@@ -285,6 +285,25 @@ fn a_pass_calls_each_cell_by_its_region_and_writes_the_units_and_links() {
     assert!(t.cols.iter().any(|c| &**c == "radius"), "{:?}", t.cols);
     let links = std::fs::read_to_string(format!("{out}{TYPE_LINKS_TSV}")).unwrap();
     assert!(links.lines().any(|l| l.starts_with("A\tB\t")), "{links}");
+    // Each cell's membership of each type's region, by cell and type.
+    let m =
+        Mat::from_parquet_with_row_names(&format!("{out}{MEMBERSHIP_PARQUET}"), Some(0)).unwrap();
+    assert_eq!(m.cols, ["A".into(), "B".into()] as [Box<str>; 2]);
+    assert_eq!(m.rows.len(), 20);
+    assert!(m.rows.iter().all(|c| c.starts_with('c')), "cells by name");
+    for r in 0..m.rows.len() {
+        let row = m.mat.row(r);
+        assert!(
+            (row.sum() - 1.0).abs() < 1e-4,
+            "a cell's memberships sum to one"
+        );
+    }
+    let a = m.rows.iter().position(|c| &**c == "c00").unwrap();
+    assert!(m.mat[(a, 0)] > m.mat[(a, 1)], "c00 is most in A's region");
+    assert_eq!(
+        o.celltype_membership.as_deref(),
+        Some(format!("{out}{MEMBERSHIP_PARQUET}").as_str())
+    );
 
     // Every cluster against every term, with its decoys' p and q.
     let (strings, nums) = legume_numeric::matrix::parquet::read_table_columns(
