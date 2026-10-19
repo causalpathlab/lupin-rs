@@ -766,9 +766,10 @@ impl Placed {
     /// `label` on term `id`, put there as `how` says.
     fn put(&mut self, label: String, id: String, how: How) {
         let to = match how {
+            How::Alias | How::Name | How::PanelWord(_) => &mut self.mapped,
             How::Under => &mut self.under,
             How::Kept => &mut self.kept,
-            _ => &mut self.mapped,
+            How::Nowhere => unreachable!("a label on term {id} is somewhere"),
         };
         to.insert(label.clone(), id);
         self.by.insert(label, how);
@@ -914,26 +915,35 @@ impl TypeTree {
         let on = placed.on_terms()?;
         let (mut groups, lone) = class_groups(terms, &on);
         // A lone type the user said to join goes with the group its sharers
-        // took, under the class they all share; a second joining the same
-        // group goes where the first took it.
+        // took, under the class they all share. A second joining the same
+        // group goes where the first took it, under the broader of the two
+        // classes when one is in the other; else it stays alone, the two
+        // sharing no class to group under.
         let mut moved: BTreeMap<String, String> = BTreeMap::new();
         for l in &lone {
-            if let (Some(true), Some(target)) = (terms.joined(&l.label), &l.target) {
-                match moved.get(target) {
-                    Some(to) if *to != l.class => {
-                        if let Some(alone) = groups.remove(&l.class) {
-                            groups.entry(to.clone()).or_default().extend(alone);
-                        }
-                    }
-                    Some(_) => {}
-                    None => {
-                        if let Some(siblings) = groups.remove(target) {
-                            groups.entry(l.class.clone()).or_default().extend(siblings);
-                        }
-                        moved.insert(target.clone(), l.class.clone());
-                    }
+            let (Some(true), Some(target)) = (terms.joined(&l.label), &l.target) else {
+                continue;
+            };
+            let (from, to) = match moved.get(target) {
+                None => (target.clone(), l.class.clone()),
+                Some(to) if terms.ancestors_or_self(to).contains(&l.class) => {
+                    (to.clone(), l.class.clone())
                 }
+                Some(to) if terms.ancestors_or_self(&l.class).contains(to) => {
+                    (l.class.clone(), to.clone())
+                }
+                Some(to) => {
+                    log::warn!(
+                        "{}: joins a group already under {to}, a class it is not in; left alone",
+                        l.label
+                    );
+                    continue;
+                }
+            };
+            if let Some(members) = groups.remove(&from) {
+                groups.entry(to.clone()).or_default().extend(members);
             }
+            moved.insert(target.clone(), to);
         }
         let mut groups: Vec<TypeGroup> = groups
             .into_iter()

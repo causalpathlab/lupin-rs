@@ -672,7 +672,7 @@ pub struct App {
     /// The file browser, open in a popup over the form or menu that asked.
     pub browser: Option<(FileWant, super::picker::Picker)>,
     /// What follows the pass running now (or the form about to start one).
-    after_pass: AfterPass,
+    pub(super) after_pass: AfterPass,
     /// The terminal's picture protocol, asked for once.
     picker: Option<ratatui_image::picker::Picker>,
     /// The frame being drawn goes out at once: the figures show as last
@@ -2188,14 +2188,17 @@ impl App {
             Outcome::Cancel => {
                 let note = self.menu.take().map(|m| m.on_cancel).unwrap_or_default();
                 // A question closed unanswered is asked again after `Q`.
-                if let Some(qs) = self.questions.as_mut() {
-                    if let Some(q) = qs.asking.take() {
-                        self.questions_paused = true;
-                        qs.left.push_front(q);
-                    }
+                let asked = self.questions.as_mut().and_then(|qs| {
+                    let q = qs.asking.take()?;
+                    qs.left.push_front(q);
+                    Some(())
+                });
+                if asked.is_some() {
+                    self.questions_paused = true;
+                } else {
+                    // Nothing follows a pass the menu was asked about.
+                    self.after_pass = AfterPass::Nothing;
                 }
-                // Nothing follows a pass the menu was asked about.
-                self.after_pass = AfterPass::Nothing;
                 self.status = note;
             }
             Outcome::Chosen(a) => {
@@ -4200,8 +4203,9 @@ impl App {
     }
 
     /// Work the questions out again, for another panel or ontology.
-    fn forget_questions(&mut self) {
+    pub(super) fn forget_questions(&mut self) {
         self.questions = None;
+        self.questions_paused = false;
     }
 
     /// Write the user's answer for type `label` left alone to `file`, and
@@ -4215,7 +4219,10 @@ impl App {
                     cl.add_joins(&format!("{label}\t{answer}\n"));
                 }
                 self.rebuild_tree_keeping(Some(label));
-                self.status = format!("{label}: {answer} (written to {})", file_name(file));
+                self.status = format!(
+                    "{label}: {answer} (written to {}); the next pass groups it so",
+                    file_name(file)
+                );
             }
             Err(e) => self.status = format!("{e:#}"),
         }

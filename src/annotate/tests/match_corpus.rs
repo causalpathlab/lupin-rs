@@ -796,3 +796,83 @@ fn the_methods_paragraph_says_when_groups_came_from_markers_and_reads_without_a_
     assert!(text.contains("shared marker genes"), "{text}");
     assert!(text.contains("too few"), "{text}");
 }
+
+/// Two lineages (classes) over one class with two types, and a type alone
+/// under each lineage: both left alone, their sharers under the class.
+const TWO_LINEAGES: &str = "format-version: 1.2
+
+[Term]
+id: CL:9200000
+name: root cell
+
+[Term]
+id: CL:9200001
+name: CTA lineage cell
+subset: general_cell_types_upper_slim
+is_a: CL:9200000
+
+[Term]
+id: CL:9200002
+name: CTB lineage cell
+subset: general_cell_types_upper_slim
+is_a: CL:9200000
+
+[Term]
+id: CL:9200003
+name: CTD cell
+subset: cellxgene_subset
+is_a: CL:9200001
+is_a: CL:9200002
+
+[Term]
+id: CL:9200004
+name: CT21 cell
+is_a: CL:9200003
+
+[Term]
+id: CL:9200005
+name: CT22 cell
+is_a: CL:9200003
+
+[Term]
+id: CL:9200006
+name: CT23 cell
+is_a: CL:9200001
+
+[Term]
+id: CL:9200007
+name: CT24 cell
+is_a: CL:9200002
+";
+
+#[test]
+fn a_joined_type_never_goes_under_a_class_it_is_not_in() {
+    let mut terms = ClTerms::parse(TWO_LINEAGES, &shipped());
+    let panel = panel_of(["CT21 cell", "CT22 cell", "CT23 cell", "CT24 cell"]);
+    let asked = TypeTree::join_questions(&terms, &panel);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    terms.add_joins("CT23 cell\tjoin\nCT24 cell\tjoin\n");
+    let t = TypeTree::from_ontology(&terms, &panel).unwrap();
+    for g in &t.groups {
+        let class = g.cl_id.as_deref().unwrap();
+        for m in &g.members {
+            let id = terms.map_labels([m.as_str()]).0[m].clone();
+            assert!(
+                terms.ancestors_or_self(&id).contains(class),
+                "{m} grouped under {class}, which it is not in: {:?}",
+                t.groups
+            );
+        }
+    }
+    // The first to join takes the siblings under its lineage.
+    assert_eq!(t.group_of("CT21 cell"), t.group_of("CT23 cell"));
+}
+
+#[test]
+fn the_methods_text_counts_only_what_placed_labels() {
+    let terms = terms();
+    let none = crate::annotate::provenance::Record::of(&terms, &panel_of(["XQ", "YZ"]));
+    let text = crate::annotate::provenance::methods(&none);
+    assert!(!text.contains(" 0 "), "{text}");
+    assert!(text.contains("no label matched"), "{text}");
+}

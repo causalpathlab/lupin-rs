@@ -3,7 +3,8 @@
 //! siblings went under a nearer class) joins them, then a term for each type
 //! the ontology has none for, from its suggestions. Answers are written where
 //! the next run reads them (`cl_groups.tsv`, the user's alias table), so each
-//! is asked once and every pass records it ([`crate::annotate::provenance`]).
+//! is asked once and every pass records it ([`crate::annotate::provenance`]);
+//! "none of these" for a term is kept for the session only.
 
 use super::menu::{Action, Choice, Menu};
 use crate::annotate::celltype_tree::{ClTerms, JoinQuestion, TypeTree};
