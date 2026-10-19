@@ -555,8 +555,9 @@ pub struct Alignment {
     /// The mean cosine of a cluster's cells (from the genes' origin) to the
     /// set's centre.
     pub score: Vec<f32>,
-    /// The share of the set's decoys aligned as well or better (with one
-    /// added to each count); NaN without decoys.
+    /// The normal upper tail of the score among its decoys' scores (their
+    /// mean and spread), so it is not floored at one over their count; NaN
+    /// without two decoys.
     pub p: Vec<f32>,
     /// `p` adjusted by Benjamini–Hochberg within each cluster.
     pub q: Vec<f32>,
@@ -614,11 +615,7 @@ pub fn align(units: &Units, kind: SetKind, cells: &[f32], groups: &[usize]) -> R
                 .map(|(_, dir)| dot(m, dir))
                 .collect();
             score.push(s);
-            row_p.push(if null.is_empty() {
-                f32::NAN
-            } else {
-                (1 + null.iter().filter(|&&x| x >= s).count()) as f32 / (1 + null.len()) as f32
-            });
+            row_p.push(upper_tail(s, &null));
         }
         q.extend(legume_numeric::matrix::hypothesis::benjamini_hochberg(
             &row_p,
@@ -632,6 +629,24 @@ pub fn align(units: &Units, kind: SetKind, cells: &[f32], groups: &[usize]) -> R
         p,
         q,
     })
+}
+
+/// `P(Z ≥ z)` for `s` among `null`, `z` standardised by the null's mean and
+/// sample standard deviation.
+fn upper_tail(s: f32, null: &[f32]) -> f32 {
+    use statrs::distribution::{ContinuousCDF, Normal};
+    let n = null.len() as f64;
+    if n < 2.0 {
+        return f32::NAN;
+    }
+    let mean = null.iter().map(|&x| f64::from(x)).sum::<f64>() / n;
+    let var = null
+        .iter()
+        .map(|&x| (f64::from(x) - mean).powi(2))
+        .sum::<f64>()
+        / (n - 1.0);
+    let z = (f64::from(s) - mean) / var.sqrt().max(f64::MIN_POSITIVE);
+    Normal::standard().sf(z) as f32
 }
 
 /// `v` scaled to unit length (zero stays zero).

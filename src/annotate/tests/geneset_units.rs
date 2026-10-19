@@ -269,16 +269,18 @@ fn cells_are_read_from_the_genes_origin_as_the_sets_are() {
     }
 }
 
-/// Forty genes in 8 dimensions, ten along each of the first four axes, with
-/// small planted offsets on the other four; and cells in four clusters, one
-/// along each of those axes.
+/// Two hundred genes in 24 dimensions, ten along each of the first twenty
+/// axes, with small planted offsets on the other four; and cells in four
+/// clusters, one along each of the first four axes. Random sets of these
+/// genes average out, as in a real gene table.
 fn four_groups() -> (GeneTable, Vec<f32>, Vec<usize>) {
+    const DIM: usize = 24;
     let offset = |i: usize, d: usize| 0.1 * (((i * 7 + d * 3) % 5) as f32 - 2.0);
     let mut rows = Vec::new();
-    for g in 0..40 {
-        let mut r = [0.0f32; 8];
+    for g in 0..200 {
+        let mut r = [0.0f32; DIM];
         r[g / 10] = 1.0;
-        for (d, x) in r.iter_mut().enumerate().skip(4) {
+        for (d, x) in r.iter_mut().enumerate().skip(20) {
             *x = offset(g, d);
         }
         rows.extend(r);
@@ -287,18 +289,18 @@ fn four_groups() -> (GeneTable, Vec<f32>, Vec<usize>) {
     let mut groups = Vec::new();
     for c in 0..80 {
         let k = c / 20;
-        let mut v = [0.0f32; 8];
+        let mut v = [0.0f32; DIM];
         v[k] = 2.0;
-        for (d, x) in v.iter_mut().enumerate().skip(4) {
+        for (d, x) in v.iter_mut().enumerate().skip(20) {
             *x = offset(c, d);
         }
         cells.extend(v);
         groups.push(k);
     }
     let table = GeneTable {
-        names: (0..40).map(|g| format!("GENE{g}")).collect(),
+        names: (0..200).map(|g| format!("GENE{g}")).collect(),
         rows,
-        dim: 8,
+        dim: DIM,
     };
     (table, cells, groups)
 }
@@ -325,8 +327,10 @@ fn a_term_aligned_with_a_cluster_beats_random_sets_of_its_size_and_others_do_not
         let t = a.terms.iter().position(|x| x == term).unwrap();
         a.p[cluster * a.terms.len() + t]
     };
-    assert!(p(0, "TERM1") < 0.05, "{:?}", a.p);
-    assert!(p(1, "TERM2") < 0.05, "{:?}", a.p);
+    // Read from the decoys' spread, not their count: a clear alignment
+    // goes below one in a hundred, the floor of 99 decoys counted.
+    assert!(p(0, "TERM1") < 0.001, "{:?}", a.p);
+    assert!(p(1, "TERM2") < 0.001, "{:?}", a.p);
     assert!(p(0, "TERM2") > 0.5, "{:?}", a.p);
     assert!(p(1, "TERM1") > 0.5, "{:?}", a.p);
     assert_eq!(a.q.len(), a.p.len());
