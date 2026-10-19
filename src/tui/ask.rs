@@ -16,6 +16,17 @@ pub enum Question {
     Term(String),
 }
 
+/// A panel's questions while they are asked.
+#[derive(Default)]
+pub struct Questions {
+    /// Those left, in the order they are asked ([`queue`]).
+    pub left: VecDeque<Question>,
+    /// The one the open menu asks.
+    pub asking: Option<Question>,
+    /// A ranking was started for their terms: one per panel.
+    pub ranked: bool,
+}
+
 /// The panel's questions, in the order they are asked.
 #[must_use]
 pub fn queue(cl: &ClTerms, tree: &PanelTree, panel: &[(String, String)]) -> VecDeque<Question> {

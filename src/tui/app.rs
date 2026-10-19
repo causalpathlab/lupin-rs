@@ -595,13 +595,9 @@ pub struct App {
     pub suggestions: Option<super::suggest::Suggestions>,
     /// The questions left to ask on this panel ([`super::ask`]); `None`
     /// until they are worked out.
-    questions: Option<std::collections::VecDeque<super::ask::Question>>,
+    questions: Option<super::ask::Questions>,
     /// Esc on a question pauses them until `Q`.
     questions_paused: bool,
-    /// The question the open menu asks.
-    asked_now: Option<super::ask::Question>,
-    /// The questions have started a ranking for their terms: one per panel.
-    questions_ranked: bool,
     /// The ranking those come from, while it runs.
     pub ranking: Option<Ranking>,
     /// The files jobs hand to their child: a folder only the user can
@@ -729,8 +725,6 @@ impl App {
             suggestions: None,
             questions: None,
             questions_paused: false,
-            asked_now: None,
-            questions_ranked: false,
             ranking: None,
             jobs_dir: None,
             order_shown: None,
@@ -2194,9 +2188,11 @@ impl App {
             Outcome::Cancel => {
                 let note = self.menu.take().map(|m| m.on_cancel).unwrap_or_default();
                 // A question closed unanswered is asked again after `Q`.
-                if let Some(q) = self.asked_now.take() {
-                    self.questions_paused = true;
-                    self.questions.get_or_insert_default().push_front(q);
+                if let Some(qs) = self.questions.as_mut() {
+                    if let Some(q) = qs.asking.take() {
+                        self.questions_paused = true;
+                        qs.left.push_front(q);
+                    }
                 }
                 // Nothing follows a pass the menu was asked about.
                 self.after_pass = AfterPass::Nothing;
@@ -2204,7 +2200,9 @@ impl App {
             }
             Outcome::Chosen(a) => {
                 self.menu = None;
-                self.asked_now = None;
+                if let Some(qs) = self.questions.as_mut() {
+                    qs.asking = None;
+                }
                 self.choose(a);
             }
         }
@@ -2857,9 +2855,6 @@ impl App {
                 if code == KeyCode::Char('Q') && matches!(self.tree_mode, TreeMode::Panel) =>
             {
                 self.questions_paused = false;
-                if self.questions.as_ref().is_some_and(|q| q.is_empty()) {
-                    self.questions = None;
-                }
                 self.status = "questions: answered one at a time; esc pauses them".into();
             }
             // A search is of the ontology: open it there.
@@ -4143,10 +4138,15 @@ impl App {
             return;
         }
         let Some(cl) = &self.cl else { return };
-        if self.questions.is_none() {
-            self.questions = Some(super::ask::queue(cl, &self.tree, &self.panel));
+        let qs = self.questions.get_or_insert_with(|| super::ask::Questions {
+            left: super::ask::queue(cl, &self.tree, &self.panel),
+            ..Default::default()
+        });
+        // A term's question waits on its ranking.
+        if self.ranking.is_some() && matches!(qs.left.front(), Some(Question::Term(_))) {
+            return;
         }
-        while let Some(q) = self.questions.as_mut().and_then(|q| q.pop_front()) {
+        while let Some(q) = self.questions.as_mut().and_then(|qs| qs.left.pop_front()) {
             match q {
                 Question::Join(j) => {
                     let Some(cl) = &self.cl else { return };
@@ -4157,9 +4157,9 @@ impl App {
                         self.status = "no user or project folder to write an answer to".into();
                         return;
                     };
-                    let class = cl.name(&j.class).unwrap_or(&j.class).to_string();
+                    let class = super::ontology::term_label(cl, &self.tree, &j.class);
                     self.menu = Some(super::ask::join_menu(&j, &class, &file));
-                    self.asked_now = Some(Question::Join(j));
+                    self.ask(Question::Join(j));
                     return;
                 }
                 Question::Term(label) => {
@@ -4167,36 +4167,41 @@ impl App {
                     if !super::suggest::needs_term(cl, &self.tree, &label) {
                         continue;
                     }
-                    let labels = super::suggest::unmatched(cl, &self.tree);
                     if self.offer_suggestions(&label) {
                         if self.menu.is_some() {
-                            self.asked_now = Some(Question::Term(label));
+                            self.ask(Question::Term(label));
                         }
                         return;
                     }
                     // Not ranked yet: rank once, and ask once it is; a
                     // ranking that gave this one nothing passes it by.
-                    if self.ranking.is_none() {
-                        if self.questions_ranked {
-                            continue;
-                        }
-                        self.questions_ranked = true;
-                        self.start_ranking(labels, label.clone());
+                    let Some(qs) = self.questions.as_mut() else {
+                        return;
+                    };
+                    if qs.ranked {
+                        continue;
                     }
-                    if let Some(q) = self.questions.as_mut() {
-                        q.push_front(Question::Term(label));
-                    }
+                    qs.ranked = true;
+                    qs.left.push_front(Question::Term(label.clone()));
+                    let Some(cl) = &self.cl else { return };
+                    let labels = super::suggest::unmatched(cl, &self.tree);
+                    self.start_ranking(labels, label);
                     return;
                 }
             }
         }
     }
 
+    /// `q` is the one the open menu asks.
+    fn ask(&mut self, q: super::ask::Question) {
+        if let Some(qs) = self.questions.as_mut() {
+            qs.asking = Some(q);
+        }
+    }
+
     /// Work the questions out again, for another panel or ontology.
     fn forget_questions(&mut self) {
         self.questions = None;
-        self.asked_now = None;
-        self.questions_ranked = false;
     }
 
     /// Write the user's answer for type `label` left alone to `file`, and
@@ -4303,9 +4308,14 @@ impl App {
                 self.status = format!(
                     "Cell Ontology terms ranked in {secs}s: c on a type without a term offers them"
                 );
+                // A question waiting on this ranking asks it itself.
+                let waits = !self.questions_paused
+                    && (self.questions.as_ref()).is_some_and(|qs| {
+                    matches!(qs.left.front(), Some(super::ask::Question::Term(l)) if l == label)
+                });
                 if !self.idle_on_panel_tree() {
                     self.status = format!("suggestions for {label} ready: press c on it");
-                } else {
+                } else if !waits {
                     self.offer_suggestions(label);
                 }
             }

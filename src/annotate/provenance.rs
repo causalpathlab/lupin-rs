@@ -5,10 +5,6 @@
 //! paragraph a methods section needs. The same record gives the same text.
 
 use crate::annotate::celltype_tree::{panel_types, ClTerms, How, JoinQuestion, TypeTree};
-
-/// The fewest labels on terms for the groups to come from the ontology, as
-/// [`TypeTree::from_placed`] needs.
-const FEWEST_ON_TERMS: usize = 2;
 use serde::Serialize;
 
 /// One label: what placed it, and on which term.
@@ -44,10 +40,7 @@ impl Record {
         let placed = terms.place_labels(types.iter().map(String::as_str));
         let labels = (types.iter())
             .map(|l| {
-                let term = (placed.on())
-                    .chain(&placed.kept)
-                    .find(|(m, _)| *m == l)
-                    .map(|(_, id)| id.clone());
+                let term = placed.term(l).cloned();
                 LabelRecord {
                     label: l.clone(),
                     how: placed.how(l),
@@ -59,18 +52,17 @@ impl Record {
                 }
             })
             .collect();
-        let alone = TypeTree::left_alone(terms, &placed);
+        let (answered, open): (Vec<_>, Vec<_>) =
+            (TypeTree::left_alone(terms, &placed).into_iter()).partition(|(_, a)| a.is_some());
         Self {
             ontology_release: terms.release.clone(),
-            groups_from_ontology: placed.on().count() >= FEWEST_ON_TERMS,
+            // As `TypeTree::from_placed` decides.
+            groups_from_ontology: placed.on_terms().is_some(),
             labels,
-            answers: (alone.iter())
-                .filter_map(|(q, a)| Some((q.label.clone(), (*a)?)))
+            answers: (answered.into_iter())
+                .filter_map(|(q, a)| Some((q.label, a?)))
                 .collect(),
-            questions: (alone.into_iter())
-                .filter(|(_, a)| a.is_none())
-                .map(|(q, _)| q)
-                .collect(),
+            questions: open.into_iter().map(|(q, _)| q).collect(),
         }
     }
 }
@@ -78,17 +70,23 @@ impl Record {
 /// A methods paragraph drafted from `r`, by code.
 #[must_use]
 pub fn methods(r: &Record) -> String {
-    let count = |f: &dyn Fn(&How) -> bool| r.labels.iter().filter(|l| f(&l.how)).count();
-    let names = count(&|h| *h == How::Name);
-    let aliases = count(&|h| *h == How::Alias);
-    let word = r.labels.iter().find_map(|l| match &l.how {
-        How::PanelWord(w) => Some(w.clone()),
-        _ => None,
-    });
-    let by_word = count(&|h| matches!(h, How::PanelWord(_)));
-    let under = count(&|h| *h == How::Under);
-    let kept = count(&|h| *h == How::Kept);
-    let nowhere = count(&|h| *h == How::Nowhere);
+    let (mut names, mut aliases, mut by_word, mut under, mut kept, mut nowhere) =
+        (0, 0, 0, 0, 0, 0);
+    let mut word = None;
+    for l in &r.labels {
+        match &l.how {
+            How::Name => names += 1,
+            How::Alias => aliases += 1,
+            How::PanelWord(w) => {
+                by_word += 1;
+                word = Some(w.as_str());
+            }
+            How::Under => under += 1,
+            How::Kept => kept += 1,
+            How::Nowhere => nowhere += 1,
+        }
+    }
+    let was = |n: usize| if n == 1 { "was" } else { "were" };
     let release = (r.ontology_release.as_deref()).map_or_else(
         || "release not stated".to_string(),
         |v| format!("release {v}"),
@@ -114,19 +112,19 @@ pub fn methods(r: &Record) -> String {
     if under > 0 {
         text += &format!(
             " Of the labels no term matched, {under} {} placed under the term named by the longest run of its words, the words left off being ones the ontology uses for kinds of a term.",
-            if under == 1 { "was" } else { "were" }
+            was(under)
         );
     }
     if kept > 0 {
         text += &format!(
             " {kept} {} kept to the lineage of the term its longest run of words names and grouped by shared markers.",
-            if kept == 1 { "was" } else { "were" }
+            was(kept)
         );
     }
     if nowhere > 0 {
         text += &format!(
             " {nowhere} matched no term and {} grouped by shared marker genes.",
-            if nowhere == 1 { "was" } else { "were" }
+            was(nowhere)
         );
     }
     if !r.answers.is_empty() {

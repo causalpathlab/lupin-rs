@@ -221,20 +221,22 @@ impl SearchPath {
     /// project's.
     #[must_use]
     pub fn user_aliases(&self) -> Option<PathBuf> {
-        self.user
-            .as_ref()
-            .or(self.project.as_ref())
-            .map(|d| d.join(ALIASES))
+        self.user_file(ALIASES)
     }
 
     /// The user's own answers on types left alone: the user layer's
     /// `cl_groups.tsv`, else the project's.
     #[must_use]
     pub fn user_groups(&self) -> Option<PathBuf> {
+        self.user_file(GROUPS)
+    }
+
+    /// The user's own file `name`: in the user layer, else the project's.
+    fn user_file(&self, name: &str) -> Option<PathBuf> {
         self.user
             .as_ref()
             .or(self.project.as_ref())
-            .map(|d| d.join(GROUPS))
+            .map(|d| d.join(name))
     }
 
     /// Where a label's alias chosen in the TUI is written: the panel's
@@ -429,21 +431,16 @@ impl ClData {
             .get("ontology")
             .and_then(Value::as_str)
             .map(PathBuf::from);
+        // Records from before the answers were kept have none.
+        let groups = paths("groups").unwrap_or_default();
         let all_there = rules
             .iter()
             .chain(&aliases)
+            .chain(&groups)
             .chain(&ontology)
             .all(|p| p.is_file());
         if !all_there {
             warn!("files the pass recorded are gone; finding the Cell Ontology data afresh");
-            return Ok(None);
-        }
-        // Records from before the answers were kept have none.
-        let groups = paths("groups").unwrap_or_default();
-        if !groups.iter().all(|p| p.is_file()) {
-            warn!(
-                "answers files the pass recorded are gone; finding the Cell Ontology data afresh"
-            );
             return Ok(None);
         }
         Self::from_files(rules, aliases, groups, ontology, search).map(Some)

@@ -502,11 +502,7 @@ fn rule_words_are_compared_as_names_are() {
 fn tree(types: &[&str]) -> TypeTree {
     let mut rules = shipped();
     rules.classes.states = vec!["CL:9100003".into()];
-    let panel: Vec<(String, String)> = types
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (format!("GENE{i}"), (*t).to_string()))
-        .collect();
+    let panel = panel_of(types);
     TypeTree::from_ontology(&ClTerms::parse(OBO, &rules), &panel).expect("the types match terms")
 }
 
@@ -541,11 +537,16 @@ fn a_word_the_panel_leaves_off_completes_its_labels() {
     );
 }
 
+/// A panel of `types`, each with its own marker.
+fn panel_of(types: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<(String, String)> {
+    (types.into_iter().enumerate())
+        .map(|(i, t)| (format!("GENE{i}"), t.as_ref().to_string()))
+        .collect()
+}
+
 /// A panel whose types each have their own marker, and `shared` markers.
 fn tree_of(types: &[&str], shared: &[(&str, &str)]) -> TypeTree {
-    let mut panel: Vec<(String, String)> = (types.iter().enumerate())
-        .map(|(i, t)| (format!("GENE{i}"), (*t).to_string()))
-        .collect();
+    let mut panel = panel_of(types);
     panel.extend(
         shared
             .iter()
@@ -633,11 +634,7 @@ fn a_label_kept_to_a_lineage_and_alone_keeps_its_term() {
 
 #[test]
 fn the_panel_tree_puts_a_placed_label_with_its_lineage() {
-    let panel: Vec<(String, String)> = ["Mature CT16", "CT17 cell", "CT7 cell", "CT10 cell"]
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (format!("GENE{i}"), (*t).to_string()))
-        .collect();
+    let panel = panel_of(["Mature CT16", "CT17 cell", "CT7 cell", "CT10 cell"]);
     let p = crate::annotate::panel_tree::PanelTree::from_ontology(&terms(), &panel).unwrap();
     let parent = |i: usize| p.nodes[i].parent;
     let up = |l: &str| {
@@ -692,9 +689,7 @@ const LONE: [&str; 3] = [
 fn a_type_its_siblings_left_alone_is_a_question() {
     let t = tree_of(&LONE, &[]);
     assert_ne!(t.group_of("CT2 cell"), t.group_of(LONE[0]));
-    let panel: Vec<(String, String)> = (LONE.iter().enumerate())
-        .map(|(i, l)| (format!("GENE{i}"), (*l).to_string()))
-        .collect();
+    let panel = panel_of(LONE.iter());
     let terms = terms();
     let asked = TypeTree::join_questions(&terms, &panel);
     assert_eq!(
@@ -709,9 +704,7 @@ fn a_type_its_siblings_left_alone_is_a_question() {
 
 #[test]
 fn an_answer_joins_the_lone_type_under_the_class_it_shares() {
-    let panel: Vec<(String, String)> = (LONE.iter().enumerate())
-        .map(|(i, l)| (format!("GENE{i}"), (*l).to_string()))
-        .collect();
+    let panel = panel_of(LONE.iter());
     let mut terms = terms();
     terms.add_joins("CT2 cell\tjoin\n");
     let t = TypeTree::from_ontology(&terms, &panel).unwrap();
@@ -752,9 +745,7 @@ fn the_record_drafts_a_methods_paragraph() {
         "Mature CT14",
         "CT6",
     ];
-    let panel: Vec<(String, String)> = (labels.iter().enumerate())
-        .map(|(i, l)| (format!("GENE{i}"), (*l).to_string()))
-        .collect();
+    let panel = panel_of(labels.iter());
     let r = crate::annotate::provenance::Record::of(&terms, &panel);
     assert_eq!(r.labels.len(), 9);
     assert_eq!(r.answers, [("CT2 cell".to_string(), true)]);
@@ -784,9 +775,7 @@ fn an_answer_is_read_in_any_case_and_only_answers_that_apply_are_recorded() {
         terms.add_joins("CT2 cell\tJoin\nCT7 cell\tjoin\nCT1 cell\tmaybe\n"),
         2
     );
-    let panel: Vec<(String, String)> = (LONE.iter().chain(["CT7 cell"].iter()).enumerate())
-        .map(|(i, l)| (format!("GENE{i}"), (*l).to_string()))
-        .collect();
+    let panel = panel_of(LONE.iter().chain(["CT7 cell"].iter()));
     let r = crate::annotate::provenance::Record::of(&terms, &panel);
     assert_eq!(
         r.answers,
@@ -799,11 +788,7 @@ fn an_answer_is_read_in_any_case_and_only_answers_that_apply_are_recorded() {
 fn the_methods_paragraph_says_when_groups_came_from_markers_and_reads_without_a_release() {
     let obo = "[Term]\nid: CL:1\nname: CT1 cell\n";
     let terms = ClTerms::parse(obo, &shipped());
-    let panel: Vec<(String, String)> = ["CT1 cell", "XQ", "YZ"]
-        .iter()
-        .enumerate()
-        .map(|(i, l)| (format!("GENE{i}"), (*l).to_string()))
-        .collect();
+    let panel = panel_of(["CT1 cell", "XQ", "YZ"]);
     let text = crate::annotate::provenance::methods(&crate::annotate::provenance::Record::of(
         &terms, &panel,
     ));
