@@ -3853,6 +3853,13 @@ fn the_mouse_is_the_maps_while_it_is_shown_and_a_click_picks_a_cluster() {
     app.mouse(at(MouseEventKind::Down(MouseButton::Left), on_k0));
     app.mouse(at(MouseEventKind::Up(MouseButton::Left), on_k0));
     assert_eq!(app.selected().map(|c| c.id), Some(0));
+    // A press that says nothing leaves the progress free to go on.
+    app.status = "job 34%".into();
+    app.replied = None;
+    app.mouse(at(MouseEventKind::Down(MouseButton::Left), on_k1));
+    assert!(app.replied.is_none(), "the status was not the mouse's");
+    app.mouse(at(MouseEventKind::Up(MouseButton::Left), on_k1));
+    assert!(app.replied.is_some(), "a click says its cluster");
     app.focus = Focus::Tree;
     let bar = super::super::ui::help(&app);
     assert!(bar.contains("E move labels"), "{bar}");

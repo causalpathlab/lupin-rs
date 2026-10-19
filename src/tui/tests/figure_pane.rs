@@ -507,6 +507,26 @@ fn a_dragged_label_is_kept_beside_the_run_and_read_again() {
 }
 
 #[test]
+fn a_label_let_go_without_a_release_is_kept_too() {
+    use MouseButton::Left;
+    use MouseEventKind::{Down, Drag};
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = map_in(dir.path());
+    let from = label_cell(&p, "CT1");
+    p.mouse(&at(Down(Left), from));
+    assert_eq!(
+        p.mouse(&at(Drag(Left), (from.0, from.1 + 2))),
+        MapMouse::Redraw
+    );
+    assert_eq!(p.let_go(), None);
+    let file = dir.path().join("run.L1.lupin_labels.json");
+    let o = OffsetBook::load(&file)
+        .unwrap()
+        .layout("run.L1:layout_phate");
+    assert!(o.get(&"CT1".to_string()).is_some(), "kept");
+}
+
+#[test]
 fn a_labels_file_that_cannot_be_read_is_left_as_it_is_and_said() {
     use MouseButton::Left;
     use MouseEventKind::{Down, Drag, Up};

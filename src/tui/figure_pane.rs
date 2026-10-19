@@ -1025,11 +1025,9 @@ impl FigurePane {
     /// label, and a click or a hover finds the cluster under the pointer.
     pub fn mouse(&mut self, m: &MouseEvent) -> MapMouse {
         let (Some(rect), Some(on)) = (self.area.get(), self.shown_map()) else {
-            self.pointer.cancel();
-            return MapMouse::None;
+            return self.let_go().map_or(MapMouse::None, MapMouse::Say);
         };
         let cell = legume_tui::map::display::cell(&self.picker);
-        let held = self.pointer.label();
         let act = self.pointer.handle(&MapArea { rect, cell }, m, |px, py| {
             on.hits.at(&on.vp, px, py)
         });
@@ -1048,20 +1046,26 @@ impl FigurePane {
             }
             MapAction::MoveLabel { .. } => MapMouse::None,
         };
-        // A label let go is kept.
-        if held.is_some() && !self.pointer.dragging() && self.unsaved {
-            if let Err(e) = self.save_labels() {
-                return MapMouse::Say(e);
-            }
+        match self.keep_labels() {
+            Some(e) => MapMouse::Say(e),
+            None => reply,
         }
-        reply
     }
 
     /// Let go of a press and stop moving labels, as when the map goes
-    /// away.
-    pub fn let_go(&mut self) {
+    /// away. A label dragged so far is kept; what went wrong keeping it.
+    pub fn let_go(&mut self) -> Option<String> {
         self.pointer.cancel();
         self.edit = None;
+        self.keep_labels()
+    }
+
+    /// Write the labels moved by a drag once no press is held, however the
+    /// press ended; what went wrong.
+    fn keep_labels(&mut self) -> Option<String> {
+        (self.unsaved && !self.pointer.dragging())
+            .then(|| self.save_labels().err())
+            .flatten()
     }
 
     /// Move the view by `f` on the whole extent of the scatter.

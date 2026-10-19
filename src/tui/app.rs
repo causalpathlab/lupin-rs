@@ -4077,12 +4077,24 @@ impl App {
             return false;
         };
         if !wanted {
-            map.let_go();
-            return false;
+            let Some(e) = map.let_go() else {
+                return false;
+            };
+            self.status = e;
+            self.replied = Some(Instant::now());
+            return true;
         }
+        // Only what the mouse says holds the status against the progress.
+        let mut said = true;
         let changed = match map.mouse(&m) {
-            MapMouse::None => false,
-            MapMouse::Redraw => true,
+            MapMouse::None => {
+                said = false;
+                false
+            }
+            MapMouse::Redraw => {
+                said = false;
+                true
+            }
             MapMouse::Hover(k) => {
                 let note = k.and_then(|k| self.cluster_note(k));
                 let left = self.hovered.take().filter(|h| *h == self.status);
@@ -4097,7 +4109,10 @@ impl App {
                         self.status.clear();
                         true
                     }
-                    None => false,
+                    None => {
+                        said = false;
+                        false
+                    }
                 }
             }
             MapMouse::Click(Some(k)) => {
@@ -4106,13 +4121,18 @@ impl App {
                 }
                 true
             }
-            MapMouse::Click(None) => false,
+            MapMouse::Click(None) => {
+                said = false;
+                false
+            }
             MapMouse::Say(s) => {
                 self.status = s;
                 true
             }
         };
-        self.replied = (!self.status.is_empty()).then(Instant::now);
+        if said {
+            self.replied = (!self.status.is_empty()).then(Instant::now);
+        }
         self.sync_map_focus();
         changed
     }
@@ -4139,11 +4159,12 @@ impl App {
         };
         if code == KeyCode::Char('V') {
             v.exports.disarm();
-            v.let_go();
+            let lost = v.let_go();
             v.grid = None;
             self.map_off = true;
             self.tree_mode = TreeMode::Panel;
-            self.status = "the panel's tree · v shows the cells again".into();
+            self.status =
+                lost.unwrap_or_else(|| "the panel's tree · v shows the cells again".into());
             return true;
         }
         let k = v.key(code);
