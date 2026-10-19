@@ -99,10 +99,6 @@ impl Default for UnitConfig {
 /// The trained sets: each one's centre, and the genes the table had of it.
 #[derive(Debug, Clone)]
 pub struct Units {
-    /// The genes' mean row. Trained by contrast with other genes, a set's
-    /// centre is a direction from here, not a point among its genes; cells
-    /// are read from here too ([`fit_regions`]).
-    pub origin: Vec<f32>,
     pub names: Vec<String>,
     pub kinds: Vec<SetKind>,
     /// Row-major, `dim` wide, one row per name.
@@ -263,14 +259,6 @@ pub fn train_units_from(
     );
     let row = |id: usize| trained[id * genes.dim..(id + 1) * genes.dim].to_vec();
     let mut units = Units {
-        origin: (0..genes.dim)
-            .map(|d| {
-                (0..n_genes)
-                    .map(|g| genes.rows[g * genes.dim + d])
-                    .sum::<f32>()
-                    / n_genes as f32
-            })
-            .collect(),
         names: Vec::new(),
         kinds: Vec::new(),
         centres: Vec::new(),
@@ -327,7 +315,8 @@ pub struct Regions {
 }
 
 /// Fit the `kind` sets of `units` to `cells` (`[n × dim]` row-major, in the
-/// genes' space, read from the genes' origin as the centres are) as a
+/// genes' space as [`whitened`] puts both: trained by contrast with other
+/// genes, a centre is a direction from the genes' mean) as a
 /// mixture of isotropic balls on the unit sphere, with their centres fixed
 /// where training put them: the radii and the regions'
 /// shares by maximum likelihood (EM, exact for fixed centres), `iters`
@@ -352,11 +341,7 @@ pub fn fit_regions(
     // Squared chord distances, cell by region.
     let dist: Vec<f32> = (0..n)
         .flat_map(|c| {
-            let from_origin: Vec<f32> = (cells[c * dim..(c + 1) * dim].iter())
-                .zip(&units.origin)
-                .map(|(x, o)| x - o)
-                .collect();
-            let u = unit(&from_origin);
+            let u = unit(&cells[c * dim..(c + 1) * dim]);
             (centres.iter())
                 .map(move |m| u.iter().zip(m).map(|(a, b)| (a - b) * (a - b)).sum())
                 .collect::<Vec<f32>>()
@@ -477,9 +462,10 @@ pub fn run_pass(
 
 /// The genes (from their mean) and the cells (from the balanced centre of
 /// `groups`, each cluster's mean weighed alike) of `feat` and `cells`, both
-/// whitened by the cells' covariance about that centre (`Σ^{-1/2}`; axes the
-/// cells barely spread along are floored, not inflated), as the embedding
-/// marker score reads them. Genes as a [`GeneTable`], cells row-major.
+/// whitened by the cells' covariance within their clusters (`Σ_w^{-1/2}`,
+/// as linear discriminant analysis reads them; axes the cells barely spread
+/// along are floored, not inflated): spread every cluster shares then
+/// weighs no more than the axes that tell clusters apart. Genes as a [`GeneTable`], cells row-major.
 fn whitened(
     feat: &MatWithNames<Mat>,
     cells: &MatWithNames<Mat>,
@@ -497,13 +483,21 @@ fn whitened(
         e.1 += 1;
     }
     anyhow::ensure!(!by.is_empty(), "no cell is in a cluster");
-    let centre: DVector<f64> = by
-        .values()
-        .map(|(s, k)| s / *k as f64)
-        .sum::<DVector<f64>>()
-        / by.len() as f64;
+    let means: std::collections::BTreeMap<usize, DVector<f64>> =
+        by.iter().map(|(g, (s, k))| (*g, s / *k as f64)).collect();
+    let centre: DVector<f64> = means.values().sum::<DVector<f64>>() / means.len() as f64;
     let xc = DMatrix::from_fn(n, dim, |i, j| x[(i, j)] - centre[j]);
-    let cov = (xc.transpose() * &xc) / (n.max(2) - 1) as f64;
+    // Pooled within the clusters: the spread that tells no cluster apart.
+    let mut within = DMatrix::<f64>::zeros(dim, dim);
+    let mut counted = 0usize;
+    for (c, g) in groups.iter().enumerate() {
+        if let Some(m) = means.get(g) {
+            let d = x.row(c).transpose() - m;
+            within += &d * d.transpose();
+            counted += 1;
+        }
+    }
+    let cov = within / counted.saturating_sub(means.len()).max(1) as f64;
     let eig = cov.symmetric_eigen();
     let floor = eig.eigenvalues.max() * 1e-6;
     let inv_sqrt = DVector::from_iterator(
@@ -530,18 +524,6 @@ fn whitened(
         },
         row_major(xc * &w),
     ))
-}
-
-/// `m`'s rows as a [`GeneTable`] (row-major).
-fn table_of(m: &MatWithNames<Mat>) -> GeneTable {
-    GeneTable {
-        names: m.rows.iter().map(ToString::to_string).collect(),
-        rows: (0..m.mat.nrows())
-            .flat_map(|i| (0..m.mat.ncols()).map(move |j| (i, j)))
-            .map(|(i, j)| m.mat[(i, j)])
-            .collect(),
-        dim: m.mat.ncols(),
-    }
 }
 
 fn write_units(path: &str, units: &Units, r: &Regions) -> Result<()> {
@@ -611,7 +593,7 @@ fn write_links(path: &str, r: &Regions) -> Result<()> {
 pub struct Alignment {
     pub terms: Vec<String>,
     pub clusters: Vec<usize>,
-    /// The mean cosine of a cluster's cells (from the genes' origin) to the
+    /// The mean cosine of a cluster's cells (as [`whitened`] puts them) to the
     /// set's centre.
     pub score: Vec<f32>,
     /// The normal upper tail of the score among its decoys' scores (their
@@ -637,18 +619,15 @@ pub fn align(units: &Units, kind: SetKind, cells: &[f32], groups: &[usize]) -> R
             .collect();
         set.into_iter().collect()
     };
-    // Each cluster's mean unit vector, read from the genes' origin.
+    // Each cluster's mean unit vector.
     let means: Vec<Vec<f32>> = (clusters.iter())
         .map(|&k| {
             let mut m = vec![0.0f32; dim];
             let members = (0..n).filter(|&c| groups[c] == k);
             let mut count = 0usize;
             for c in members {
-                let from: Vec<f32> = (cells[c * dim..(c + 1) * dim].iter())
-                    .zip(&units.origin)
-                    .map(|(x, o)| x - o)
-                    .collect();
-                m.iter_mut().zip(unit(&from)).for_each(|(a, b)| *a += b);
+                let u = unit(&cells[c * dim..(c + 1) * dim]);
+                m.iter_mut().zip(u).for_each(|(a, b)| *a += b);
                 count += 1;
             }
             m.iter_mut().for_each(|a| *a /= count.max(1) as f32);

@@ -99,7 +99,6 @@ fn planted_regions() -> (Units, Vec<f32>, usize) {
         unit([0.0, 1.0, 0.6, 0.0]),
     ];
     let units = Units {
-        origin: vec![0.0; 4],
         names: vec!["CT1".into(), "CT2".into(), "CT3".into()],
         kinds: vec![SetKind::CellType; 3],
         centres: centres.concat(),
@@ -240,33 +239,6 @@ fn a_pass_without_terms_writes_no_alignment() {
     .unwrap();
     assert!(o.term_alignment.is_none());
     assert!(!std::path::Path::new(&format!("{out}{TERM_ALIGNMENT_PARQUET}")).exists());
-}
-
-/// Sets trained by contrast point away from the genes' common origin, not
-/// at their genes: in two dimensions with every gene in one quadrant, the
-/// cells are read from that origin too, or each sits nearer the wrong set.
-#[test]
-fn cells_are_read_from_the_genes_origin_as_the_sets_are() {
-    use crate::annotate::marker_score::toy;
-    let (feat, cells, _) = toy::matrices();
-    let sets = [
-        GeneSet {
-            name: "A".into(),
-            kind: SetKind::CellType,
-            genes: ["g0", "g1", "g2"].map(String::from).to_vec(),
-        },
-        GeneSet {
-            name: "B".into(),
-            kind: SetKind::CellType,
-            genes: ["g3", "g4", "g5"].map(String::from).to_vec(),
-        },
-    ];
-    let u = train_units(&table_of(&feat), &sets, &quick()).unwrap();
-    let r = fit_regions(&u, SetKind::CellType, &table_of(&cells).rows, 20, 100).unwrap();
-    for c in 0..20 {
-        let a = r.membership[c * 2];
-        assert_eq!(a > 0.5, c < 10, "cell {c}: membership of A {a}");
-    }
 }
 
 /// Two hundred genes in 24 dimensions, ten along each of the first twenty
