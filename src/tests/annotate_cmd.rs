@@ -37,7 +37,6 @@ fn the_argv_parses_back_to_the_same_arguments() {
         "--obo",
         "cl.obo",
         "--fine",
-        "--no-idf",
     ]);
     let argv = a.to_argv();
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
@@ -136,10 +135,10 @@ fn projection_leaves_its_method_to_the_run_unless_given_and_the_choice_parses_ba
         "projection",
     ];
     assert_eq!(parse(&base).projection, None);
-    let mut ora = base.to_vec();
-    ora.extend(["--projection", "ora"]);
-    let a = parse(&ora);
-    assert_eq!(a.projection, Some(ProjectionMethod::Ora));
+    let mut units = base.to_vec();
+    units.extend(["--projection", "units"]);
+    let a = parse(&units);
+    assert_eq!(a.projection, Some(ProjectionMethod::Units));
     let argv = a.to_argv();
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     assert_eq!(format!("{a:?}"), format!("{:?}", parse(&argv)));
@@ -194,7 +193,6 @@ fn only_the_units_projection_takes_gene_sets() {
     for (method, ok) in [
         (ProjectionMethod::Units, true),
         (ProjectionMethod::Score, false),
-        (ProjectionMethod::Ora, false),
     ] {
         let mut argv = base.to_vec();
         argv.push(method.as_str());
@@ -204,7 +202,7 @@ fn only_the_units_projection_takes_gene_sets() {
 }
 
 #[test]
-fn projection_from_embedding_files_runs_the_ora_unless_the_score_is_asked_for() {
+fn projection_from_embedding_files_trains_units_unless_the_score_is_asked_for() {
     use legume_numeric::matrix::traits::IoOps;
     let dir = tempfile::tempdir().unwrap();
     let (feat, cells, _) = crate::annotate::marker_score::toy::matrices();
@@ -245,7 +243,7 @@ fn projection_from_embedding_files_runs_the_ora_unless_the_score_is_asked_for() 
     };
     assert_eq!(
         resolve_projection(&argv(&[]), None),
-        ProjectionMethod::Ora,
+        ProjectionMethod::Units,
         "files say no table"
     );
     run_projection_from_files(
@@ -277,8 +275,6 @@ fn the_score_refuses_settings_it_cannot_honour() {
         build_score_args(&parse(&v))
     };
     assert!(with(&[]).is_ok());
-    let err = with(&["--no-idf"]).expect_err("refused").to_string();
-    assert!(err.contains("IDF"), "{err}");
     let err = with(&["--min-markers", "5"])
         .expect_err("refused")
         .to_string();
@@ -290,4 +286,30 @@ fn the_retired_susie_dispersion_flag_is_still_accepted() {
     // 0.5.0 shipped it; saved commands that pass it must keep working.
     let a = parse(&["-o", "x", "-m", "m.tsv", "--susie-dispersion", "0"]);
     assert!(!a.to_argv().iter().any(|s| s.contains("susie-dispersion")));
+}
+
+#[test]
+fn the_term_ora_projection_is_retired_and_its_flags_still_parse() {
+    use clap::Parser;
+    let base = ["lupin", "-o", "x", "-m", "m.tsv", "--projection"];
+    let ora = base.iter().chain(&["ora"]);
+    assert!(Cli::try_parse_from(ora).is_err(), "no `--projection ora`");
+    // Saved commands that pass the retired ORA's settings keep working.
+    let a = parse(&[
+        "-o",
+        "x",
+        "-m",
+        "m.tsv",
+        "--no-idf",
+        "--no-assign-qc",
+        "--assign-mad",
+        "3",
+    ]);
+    let argv = a.to_argv();
+    assert!(
+        !argv
+            .iter()
+            .any(|s| s.contains("idf") || s.contains("assign")),
+        "{argv:?}"
+    );
 }

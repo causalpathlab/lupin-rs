@@ -91,7 +91,7 @@ pub enum Setting {
     /// The output prefix of passes; Enter edits it.
     Output,
     Method,
-    /// Projection's way of calling: the embedding marker score or the ORA.
+    /// Projection's way of calling: the embedding marker score or the units.
     Projection,
     Knn,
     Resolution,
@@ -106,7 +106,8 @@ pub enum Setting {
 
 /// The form's rows for `a`'s method: the enrichment's own (GO, SuSiE) only
 /// when it may run, projection's way of calling only when projection may,
-/// and permutations when a null permutes (the enrichment's, the ORA's).
+/// permutations when the enrichment's null permutes, and GO terms where
+/// the enrichment tests them or the units align them.
 #[must_use]
 pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
     use Setting::{
@@ -114,7 +115,7 @@ pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
     };
     let enrichment = a.method != AnnotateMethod::Projection;
     let projection = a.method != AnnotateMethod::Enrichment;
-    let permutes = enrichment || a.projection != Some(ProjectionMethod::Score);
+    let units = projection && a.projection == Some(ProjectionMethod::Units);
     [
         (Markers, true),
         (Output, true),
@@ -123,8 +124,8 @@ pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
         (Knn, true),
         (Resolution, true),
         (NumClusters, true),
-        (NumPerm, permutes),
-        (Go, enrichment),
+        (NumPerm, enrichment),
+        (Go, enrichment || units),
         (Susie, enrichment),
         (Run, true),
     ]
@@ -219,11 +220,10 @@ impl Setting {
                 };
             }
             Self::Projection => {
-                use ProjectionMethod::{Ora, Score, Units};
+                use ProjectionMethod::{Score, Units};
                 a.projection = match (a.projection, up) {
-                    (None, true) | (Some(Ora), false) => Some(Score),
-                    (Some(Score), true) | (Some(Units), false) => Some(Ora),
-                    (Some(Ora), true) | (None, false) => Some(Units),
+                    (None, true) | (Some(Units), false) => Some(Score),
+                    (Some(Score), true) | (None, false) => Some(Units),
                     (Some(Units), true) | (Some(Score), false) => None,
                 };
             }
@@ -259,7 +259,7 @@ impl Setting {
             Self::Markers => "the marker panel the pass scores the clusters' cell types with; enter picks a file",
             Self::Output => "the prefix the new round is written under; enter edits it",
             Self::Method => "how clusters get their cell types: enrichment of the panel's markers, projection, or auto",
-            Self::Projection => "projection calls each cell: the marker score on the run's embedding (with its margin), or the co-embedding ORA",
+            Self::Projection => "projection calls each cell: the marker score on the run's embedding (with its margin), or the gene-set units trained on the run's genes",
             Self::Knn => "neighbours per cell in the clustering graph",
             Self::Resolution => "Leiden resolution: higher gives more, smaller clusters",
             Self::NumClusters => "a fixed number of clusters, or auto from the resolution",

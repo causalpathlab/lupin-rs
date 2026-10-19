@@ -5,7 +5,6 @@
 pub mod aggregate;
 pub mod args;
 pub mod by_enrichment;
-pub mod by_projection;
 pub mod by_susie;
 #[cfg(test)]
 mod calibration_tests;

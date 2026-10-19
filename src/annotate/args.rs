@@ -147,9 +147,6 @@ pub enum ProjectionMethod {
     /// The embedding marker score on the run's decoder gene table: each
     /// cell's best type and its margin over the runner-up.
     Score,
-    /// Term over-representation on the co-embedding (kept one release, for
-    /// comparison).
-    Ora,
     /// The panel's cell types trained as gene-set units on the genes placed
     /// among the cells, kept fixed; each cell called by the type whose
     /// fitted region it most belongs to.
@@ -162,7 +159,6 @@ impl ProjectionMethod {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Score => "score",
-            Self::Ora => "ora",
             Self::Units => "units",
         }
     }
@@ -297,67 +293,6 @@ impl UnitsArgs {
             no_clean: false,
         }
     }
-}
-
-/// `lupin annotate --method projection --projection ora` — firm marker-set
-/// annotation by projection onto a co-embedded feature space (bge / fne /
-/// resolve-embedding-space). Embedding-grounded (no raw-count re-read),
-/// complementary to `annotate --method enrichment`. Drives the shared firm
-/// term-ORA core.
-#[derive(Debug, serde::Serialize)]
-pub struct AnnotateProjectionArgs {
-    /// Marker-gene TSV: `gene<TAB>celltype` per line (tab/comma/space delimited)
-    pub markers: Box<str>,
-
-    /// Output prefix
-    pub out: Box<str>,
-
-    /// k for the cosine cell kNN graph fed to Leiden clustering
-    pub knn: usize,
-
-    /// Leiden resolution for cell clustering (higher → more, finer clusters)
-    pub resolution: f64,
-
-    /// Permutation draws calibrating the over-representation null (0 = analytic p only)
-    pub num_perm: usize,
-
-    /// RNG seed (clustering + permutation null)
-    pub seed: u64,
-
-    /// Drop a cell type with fewer than this many usable markers
-    pub min_markers: usize,
-
-    /// Disable IDF down-weighting of markers shared across many types
-    pub no_idf: bool,
-
-    /// Keep every cell→term assignment (skip the distance-outlier prune)
-    pub no_assign_qc: bool,
-
-    /// Outlier gate:
-    /// prune a cell whose distance to its centroid exceeds median + k·MAD
-    pub assign_mad: f64,
-
-    /// FDR α for the per-cluster term call + Q sparsity (BH on the permutation p)
-    pub fdr_alpha: f32,
-
-    /// Softmax temperature when row-normalizing Q over significant terms
-    pub q_temperature: f32,
-
-    /// Cell Ontology .obo, e.g. cl-basic.obo
-    pub obo: Option<Box<str>>,
-
-    /// Curated `label<TAB>CL:id` map, one row per marker celltype.
-    /// Needed with `obo`
-    pub label_cl: Option<Box<str>>,
-
-    /// Ontology TreeBH per-level FDR target (lower → descends less, abstains more)
-    pub ontology_fdr_q: f64,
-
-    /// Ontology TreeBH: Benjamini–Yekutieli within families (any dependence; more conservative)
-    pub ontology_by: bool,
-
-    /// Keep existing {out}.* projection outputs (default: erase the explicit set first)
-    pub no_clean: bool,
 }
 
 /// Ontology follow-up of `lupin annotate` — hierarchical multi-resolution cell-type calling

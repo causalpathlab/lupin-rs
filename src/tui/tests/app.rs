@@ -2197,11 +2197,13 @@ fn the_form_lists_the_rows_of_its_method() {
     for s in [Setting::Susie, Setting::Go, Setting::NumPerm] {
         assert!(!rows.contains(&s), "{s:?} is not the score's");
     }
-    a.projection = Some(crate::annotate::args::ProjectionMethod::Ora);
+    a.projection = Some(crate::annotate::args::ProjectionMethod::Units);
+    let rows = settings(&a);
     assert!(
-        settings(&a).contains(&Setting::NumPerm),
-        "the ORA's null permutes"
+        !rows.contains(&Setting::NumPerm),
+        "the units' null is decoys"
     );
+    assert!(rows.contains(&Setting::Go), "units align GO terms");
     assert_eq!(
         rows.iter().position(|&s| s == Setting::Method),
         settings(&cli(&[]))
@@ -2212,7 +2214,7 @@ fn the_form_lists_the_rows_of_its_method() {
 }
 
 #[test]
-fn the_projection_row_cycles_the_runs_choice_the_score_the_ora_and_the_units() {
+fn the_projection_row_cycles_the_runs_choice_the_score_and_the_units() {
     use crate::annotate::args::ProjectionMethod;
     let mut a = cli(&[]);
     assert!(Setting::Projection.value(&a).starts_with("auto"));
@@ -2221,8 +2223,6 @@ fn the_projection_row_cycles_the_runs_choice_the_score_the_ora_and_the_units() {
         (a.projection, Setting::Projection.value(&a).as_str()),
         (Some(ProjectionMethod::Score), "score")
     );
-    Setting::Projection.adjust(&mut a, true);
-    assert_eq!(a.projection, Some(ProjectionMethod::Ora));
     Setting::Projection.adjust(&mut a, true);
     assert_eq!(a.projection, Some(ProjectionMethod::Units));
     Setting::Projection.adjust(&mut a, true);

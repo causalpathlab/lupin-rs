@@ -8,18 +8,16 @@
 //! cluster × gene expression.
 
 use crate::annotate::args::{
-    fixed_settings, AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, MarkerScoreArgs,
-    ProjectionMethod, UnitsArgs, BLOCK_SIZE,
+    fixed_settings, AnnotateArgs, AnnotateOntologyArgs, MarkerScoreArgs, ProjectionMethod,
+    UnitsArgs, BLOCK_SIZE,
 };
 use crate::annotate::by_enrichment;
-use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
 use crate::annotate::marker_score;
 use crate::annotate::ontology;
-use crate::annotate::outputs::{AnnotationOutputs, ANNOT_PARQUET};
+use crate::annotate::outputs::AnnotationOutputs;
 use crate::manifest::rounds;
 use crate::manifest::run::{annotated_path, resolve, Loaded};
-use legume_numeric::matrix::parquet::read_table_columns;
 
 use crate::annotate::aggregate::{accumulate_gene_sum_pair, weighted_mean_profile};
 use crate::annotate::markers::build_annotation_matrix;
@@ -31,7 +29,6 @@ use data_beans::aux::data_loading::{
 use legume_numeric::matrix::dense_mat_io::Mat;
 
 use anyhow::{anyhow, Context, Result};
-use legume_numeric::matrix::dmatrix_io::DMatrix;
 use legume_numeric::matrix::traits::{IoOps, MatWithNames};
 use log::info;
 use rayon::prelude::*;
@@ -301,41 +298,6 @@ fn projection_settings(
     Ok(v)
 }
 
-/// `lupin annotate --method projection --projection ora`: score the run's
-/// co-embedded gene space and cell embedding against the marker panel, and
-/// record what it wrote (kept one release, for comparison).
-pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &Loaded) -> Result<()> {
-    let run = loaded.file.display().to_string();
-    // Genes on the cell manifold; for a `gem` run only the spliced rows,
-    // re-keyed by gene — see [`crate::marker_embedding`].
-    let feat = load_marker_feature_embedding(&loaded.manifest, &loaded.dir, &run).with_context(
-        || {
-            "projection needs a co-embedded gene space (a senna `gem` / `bge` / `fne` / \
-             `resolve-embedding-space` run). For topic/svd runs use `lupin annotate --method enrichment`."
-        },
-    )?;
-    let cell_path = loaded.geometry_latent_path()?;
-    let cell = DMatrix::<f32>::from_parquet(&cell_path)
-        .with_context(|| format!("reading cell embedding {cell_path}"))?;
-
-    let mut outputs = by_projection::run(
-        args,
-        &ProjectionInputs {
-            feature_embedding: &feat,
-            cell_embedding: &cell,
-        },
-    )?;
-    outputs.clusters = Some(projection_clusters(&args.out)?);
-    record(
-        loaded,
-        &args.out,
-        Pass::Markers(&args.markers),
-        &outputs,
-        "projection",
-        projection_settings(args, ProjectionMethod::Ora)?,
-    )
-}
-
 /// `lupin annotate` without markers: walk the CL tree over the cluster ×
 /// cell-type matrix an earlier enrichment run recorded.
 pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &Loaded) -> Result<()> {
@@ -365,7 +327,7 @@ pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &Loaded) -> Result
 
 /// The method whose reading made a `method` pass's call, by what it wrote:
 /// a projection pass with the score's per-cell table is the score's; SuSiE's
-/// tables, the enrichment's share, or nothing named (the ORA).
+/// tables, the enrichment's share, or nothing named (the units).
 fn called_by(method: &str, out: &AnnotationOutputs) -> Option<crate::annotate::rounds::Method> {
     use crate::annotate::rounds::Method;
     if method == "projection" {
@@ -400,21 +362,6 @@ enum Pass<'a> {
     GeneSets,
     /// CL ontology walk over an earlier enrichment.
     Ontology,
-}
-
-/// Projection clusters the cells itself; its per-cell `community` becomes
-/// the round's cluster table.
-fn projection_clusters(out: &str) -> Result<String> {
-    let annot = format!("{out}{ANNOT_PARQUET}");
-    let (strings, nums) = read_table_columns(&annot, &["cell"], &["community"])
-        .with_context(|| format!("reading {annot}"))?;
-    let ids: Vec<Option<u32>> = nums[0]
-        .iter()
-        .map(|&k| (k.is_finite() && k >= 0.0).then_some(k as u32))
-        .collect();
-    let path = format!("{out}{}", rounds::CLUSTERS);
-    rounds::write_clusters(&path, &strings[0], &ids)?;
-    Ok(path)
 }
 
 /// Record a pass's artifacts in the manifest, relative to its directory, plus
