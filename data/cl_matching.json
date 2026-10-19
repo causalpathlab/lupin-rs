@@ -30,5 +30,14 @@
     "negative": "-"
   },
   "_qualifiers": "Words a term's name may have that a label leaves off: a label matching no name goes to the most general term whose name it is but for these words, when one is above all the others (MK1-positive CT1 cells -> MK1-positive, alpha-beta CT1 cell).",
-  "qualifiers": ["alpha-beta", "gamma-delta", "human", "mouse", "mammalian"]
+  "qualifiers": ["alpha-beta", "gamma-delta", "human", "mouse", "mammalian"],
+  "context": {
+    "_doc": "A word the panel leaves off its labels (a tissue): the one word that, with at most an implied one, completes a term's name or counted synonym for at least min_labels of the panel's labels no name matched, and for more than any other word, completes them. null turns it off.",
+    "min_labels": 3
+  },
+  "part": {
+    "_doc": "A label nothing matches is placed by the longest run of its words that one term names: under that term when every word left off is one the ontology uses for kinds of a term (over pairs of own names X and X with the word more, the longer a kind of X in at least min_pairs pairs and min_share of them); otherwise the term only keeps the label to its lineage when it joins a group by its markers. null min_pairs turns it off.",
+    "min_pairs": 3,
+    "min_share": 0.75
+  }
 }
