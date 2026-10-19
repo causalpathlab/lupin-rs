@@ -62,6 +62,7 @@ fn data(obo: &str) -> crate::manifest::data_files::ClData {
         ontology: Some(obo.into()),
         rule_files: Vec::new(),
         alias_files: Vec::new(),
+        group_files: Vec::new(),
         search: crate::manifest::data_files::SearchPath::new(None),
         parsed: std::sync::OnceLock::new(),
     }
@@ -84,6 +85,17 @@ fn prepare_groups_the_panel_on_the_ontology_and_maps_its_labels() {
         serde_json::from_str(&fs::read_to_string(format!("{out}.celltype_tree.json")).unwrap())
             .unwrap();
     assert_eq!(tree.group_of("CT_2"), Some("group_a"));
+
+    // The record names the data files the grouping read, for any method.
+    let record: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(format!("{out}.cl_record.json")).unwrap())
+            .unwrap();
+    assert!(
+        record["data_files"]["ontology"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("cl.obo")),
+        "{record}"
+    );
 
     // The user's own map is kept, not replaced.
     let own = prepare(&markers, &out, &data(&obo), Some("mine.tsv")).unwrap();
