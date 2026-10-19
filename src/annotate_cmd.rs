@@ -334,8 +334,10 @@ pub fn run_annotate(args: &AnnotateCliArgs, session: &legume_tui::cli::SessionAr
         );
     }
     // Refused before any prompt or download, as SuSiE's settings are.
-    if args.projection == Some(ProjectionMethod::Score) {
-        build_score_args(args)?;
+    match args.projection {
+        Some(ProjectionMethod::Score) => drop(build_score_args(args)?),
+        Some(ProjectionMethod::Units) => drop(build_units_args(args)?),
+        None => {}
     }
     // One manifest load per invocation; every route below reuses it.
     let loaded = args
@@ -437,7 +439,7 @@ fn run_pass(
                     annotate_by_marker_score(&build_score_args(args)?, loaded)?
                 }
                 ProjectionMethod::Units => {
-                    crate::manifest::annotate::annotate_by_units(&build_units_args(args), loaded)?
+                    crate::manifest::annotate::annotate_by_units(&build_units_args(args)?, loaded)?
                 }
             }
         }
@@ -653,7 +655,7 @@ fn run_projection_from_files(
             crate::annotate::marker_score::run(&build_score_args(args)?, &feat, &cell, &groups)?;
         }
         ProjectionMethod::Units => {
-            crate::annotate::geneset_units::run(&build_units_args(args), &feat, &cell, &groups)?;
+            crate::annotate::geneset_units::run(&build_units_args(args)?, &feat, &cell, &groups)?;
         }
     }
     Ok(())
@@ -765,8 +767,15 @@ fn projection_leiden(args: &AnnotateCliArgs) -> LeidenArgs {
     }
 }
 
-fn build_units_args(args: &AnnotateCliArgs) -> crate::annotate::args::UnitsArgs {
-    crate::annotate::args::UnitsArgs {
+/// The units' arguments; a `--min-markers` other than the default is
+/// refused, as the units keep every type with two markers in the table.
+fn build_units_args(args: &AnnotateCliArgs) -> Result<crate::annotate::args::UnitsArgs> {
+    use graph_embedding_util::type_annotation::embedding_score::MIN_MARKERS;
+    anyhow::ensure!(
+        args.min_markers == MIN_MARKERS,
+        "the units train every type with at least two markers in the gene table; drop --min-markers"
+    );
+    Ok(crate::annotate::args::UnitsArgs {
         clusters: args.clusters.clone(),
         leiden: projection_leiden(args),
         seed: args.seed,
@@ -780,7 +789,7 @@ fn build_units_args(args: &AnnotateCliArgs) -> crate::annotate::args::UnitsArgs 
         go_max: args.go_max_overlap,
         no_clean: args.no_clean,
         ..crate::annotate::args::UnitsArgs::new(&args.markers, &args.out)
-    }
+    })
 }
 
 #[cfg(test)]

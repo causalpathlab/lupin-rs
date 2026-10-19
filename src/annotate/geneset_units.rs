@@ -129,6 +129,11 @@ pub struct Units {
 /// A random gene set trained as a term is: its gene rows and centre.
 #[derive(Debug, Clone)]
 pub struct Decoy {
+    /// The size bin it stands in for (its genes number fewer when the pool
+    /// is smaller than the bin).
+    pub bin: usize,
+    /// Its gene rows, kept for the tests that check where they came from.
+    #[cfg(test)]
     pub genes: Vec<u32>,
     pub centre: Vec<f32>,
 }
@@ -185,8 +190,8 @@ pub fn train_units(
     let mut dropped = Vec::new();
     let mut rng = SmallRng::seed_from_u64(cfg.seed);
     // Every node to train, kind by kind in node-type order: the kept sets,
-    // then the terms' decoys. `None` for a decoy.
-    let mut nodes: Vec<(SetKind, Vec<u32>, Option<&GeneSet>)> = Vec::new();
+    // then the terms' decoys (`None`), each with its size bin.
+    let mut nodes: Vec<(SetKind, Vec<u32>, Option<&GeneSet>, usize)> = Vec::new();
     for kind in SetKind::ALL {
         let mut bins = std::collections::BTreeSet::new();
         for s in sets.iter().filter(|s| s.kind == kind) {
@@ -194,8 +199,9 @@ pub fn train_units(
             if found.len() < cfg.min_genes {
                 dropped.push((s.name.clone(), found.len(), s.genes.len()));
             } else {
-                bins.insert(size_bin(found.len()).min(n_genes));
-                nodes.push((kind, found, Some(s)));
+                let bin = size_bin(found.len()).min(n_genes);
+                bins.insert(bin);
+                nodes.push((kind, found, Some(s), bin));
             }
         }
         if kind != SetKind::Term {
@@ -210,13 +216,20 @@ pub fn train_units(
             for _ in 0..cfg.decoys {
                 let pick = rand::seq::index::sample(&mut rng, pool.len(), bin.min(pool.len()));
                 let rows: Vec<u32> = pick.iter().map(|i| pool[i]).collect();
-                nodes.push((kind, rows, None));
+                nodes.push((kind, rows, None, bin));
             }
         }
     }
     anyhow::ensure!(
         nodes.iter().any(|n| n.2.is_some()),
         "no gene set has {} genes in the table",
+        cfg.min_genes
+    );
+    // Checked before training: the regions need a cell type to fit.
+    anyhow::ensure!(
+        !sets.iter().any(|s| s.kind == SetKind::CellType)
+            || nodes.iter().any(|n| n.0 == SetKind::CellType),
+        "no cell type has {} of its markers in the gene table",
         cfg.min_genes
     );
 
@@ -240,7 +253,7 @@ pub fn train_units(
         &types,
     )?;
     let mut edges = TypedEdgeList::default();
-    for (id, (kind, rows, _)) in nodes.iter().enumerate() {
+    for (id, (kind, rows, ..)) in nodes.iter().enumerate() {
         let rel = present.iter().position(|k| k == kind).unwrap_or_default();
         for &g in rows {
             edges.lhs.push(g);
@@ -280,16 +293,18 @@ pub fn train_units(
         dropped,
         decoys: Vec::new(),
     };
-    for (id, (kind, rows, set)) in nodes.into_iter().enumerate() {
+    for (id, (kind, rows, set, bin)) in nodes.into_iter().enumerate() {
         match set {
             Some(s) => {
                 units.names.push(s.name.clone());
                 units.kinds.push(kind);
                 units.centres.extend(row(id));
                 units.covered.push((rows.len(), s.genes.len()));
-                units.bins.push(size_bin(rows.len()).min(n_genes));
+                units.bins.push(bin);
             }
             None => units.decoys.push(Decoy {
+                bin,
+                #[cfg(test)]
                 genes: rows,
                 centre: row(id),
             }),
@@ -544,70 +559,96 @@ pub fn run_pass(
 /// `groups`, each cluster's mean weighed alike) of `feat` and `cells`, both
 /// whitened by the cells' covariance within their clusters (`Σ_w^{-1/2}`,
 /// as linear discriminant analysis reads them; axes the cells barely spread
-/// along are floored, not inflated): spread every cluster shares then
+/// along are floored at a millionth of the widest): spread every cluster shares then
 /// weighs no more than the axes that tell clusters apart. Genes as a [`GeneTable`], cells row-major.
 fn whitened(
     feat: &MatWithNames<Mat>,
     cells: &MatWithNames<Mat>,
     groups: &[usize],
 ) -> Result<(GeneTable, Vec<f32>)> {
-    use graph_embedding_util::type_annotation::embedding_score::balanced_centre;
-    use nalgebra::{DMatrix, DVector, RowDVector};
-    let mut x = cells.mat.map(f64::from);
-    let (n, dim) = x.shape();
+    use nalgebra::{DMatrix, DVector};
+    let (n, dim) = cells.mat.shape();
     anyhow::ensure!(feat.mat.ncols() == dim, "genes and cells differ in width");
     anyhow::ensure!(groups.len() == n, "a cluster per cell");
-    let centre = balanced_centre(&x, groups)?.transpose();
-    let mut by: BTreeMap<usize, (RowDVector<f64>, usize)> = BTreeMap::new();
-    for (row, &g) in x.row_iter().zip(groups).filter(|(_, g)| **g != usize::MAX) {
-        let e = by.entry(g).or_insert_with(|| (RowDVector::zeros(dim), 0));
-        e.0 += row;
+    let row = |c: usize| {
+        DVector::<f64>::from_iterator(dim, cells.mat.row(c).iter().map(|&v| f64::from(v)))
+    };
+    let mut by: BTreeMap<usize, (DVector<f64>, usize)> = BTreeMap::new();
+    for (c, &g) in groups.iter().enumerate().filter(|(_, g)| **g != usize::MAX) {
+        let x = row(c);
+        anyhow::ensure!(
+            x.iter().all(|v| v.is_finite()),
+            "cell {c} has a non-finite coordinate"
+        );
+        let e = by.entry(g).or_insert_with(|| (DVector::zeros(dim), 0));
+        e.0 += x;
         e.1 += 1;
     }
-    let means: BTreeMap<usize, RowDVector<f64>> = by
+    anyhow::ensure!(!by.is_empty(), "no cell is in a cluster");
+    let means: BTreeMap<usize, DVector<f64>> = by
         .into_iter()
         .map(|(g, (s, k))| (g, s / k as f64))
         .collect();
+    // The balanced centre: each cluster's mean weighed alike.
+    let centre = means.values().sum::<DVector<f64>>() / means.len() as f64;
     // Pooled within the clusters: the spread that tells no cluster apart,
-    // as Dᵀ D over each cell's offset from its cluster's mean.
-    let mut offsets = DMatrix::<f64>::zeros(n, dim);
+    // summed cell by cell into one dim × dim matrix.
+    let mut within = DMatrix::<f64>::zeros(dim, dim);
+    let mut d = DVector::<f64>::zeros(dim);
     let mut counted = 0usize;
     for (c, g) in groups.iter().enumerate() {
         if let Some(m) = means.get(g) {
-            offsets.set_row(c, &(x.row(c) - m));
+            d.copy_from(&row(c));
+            d -= m;
+            within.ger(1.0, &d, &d, 1.0);
             counted += 1;
         }
     }
-    let cov = offsets.tr_mul(&offsets) / counted.saturating_sub(means.len()).max(1) as f64;
-    drop(offsets);
+    let cov = within / counted.saturating_sub(means.len()).max(1) as f64;
     let eig = cov.symmetric_eigen();
-    let floor = eig.eigenvalues.max() * 1e-6;
+    let top = eig.eigenvalues.max();
+    anyhow::ensure!(
+        top.is_finite() && top > 0.0,
+        "the cells do not spread within their clusters: nothing to read the genes by"
+    );
+    // Axes the cells barely spread along are floored at a millionth of the
+    // widest, so they are scaled up at most a thousandfold.
+    let floor = top * 1e-6;
     let inv_sqrt = DVector::from_iterator(
         dim,
-        eig.eigenvalues
-            .iter()
-            .map(|&l| 1.0 / l.max(floor).max(f64::MIN_POSITIVE).sqrt()),
+        eig.eigenvalues.iter().map(|&l| 1.0 / l.max(floor).sqrt()),
     );
     let w = &eig.eigenvectors * DMatrix::from_diagonal(&inv_sqrt) * eig.eigenvectors.transpose();
-    for mut row in x.row_iter_mut() {
-        row -= &centre;
-    }
-    let mut g = feat.mat.map(f64::from);
-    let mean = g.row_mean();
-    for mut row in g.row_iter_mut() {
-        row -= &mean;
-    }
-    // Row-major: the transpose's column-major storage.
-    let row_major = |m: DMatrix<f64>| -> Vec<f32> {
-        m.transpose().as_slice().iter().map(|&v| v as f32).collect()
+    // Each row from `origin`, through `w`, row-major f32: one row at a time.
+    let project = |m: &Mat, origin: &DVector<f64>| -> Vec<f32> {
+        let mut out = Vec::with_capacity(m.nrows() * dim);
+        let mut x = DVector::<f64>::zeros(dim);
+        for r in 0..m.nrows() {
+            for (j, v) in m.row(r).iter().enumerate() {
+                x[j] = f64::from(*v) - origin[j];
+            }
+            out.extend(w.tr_mul(&x).iter().map(|&v| v as f32));
+        }
+        out
     };
+    let gene_mean = DVector::<f64>::from_iterator(
+        dim,
+        (0..dim).map(|j| {
+            feat.mat
+                .column(j)
+                .iter()
+                .map(|&v| f64::from(v))
+                .sum::<f64>()
+                / feat.mat.nrows().max(1) as f64
+        }),
+    );
     Ok((
         GeneTable {
             names: feat.rows.iter().map(ToString::to_string).collect(),
-            rows: row_major(g * &w),
+            rows: project(&feat.mat, &gene_mean),
             dim,
         },
-        row_major(x * &w),
+        project(&cells.mat, &centre),
     ))
 }
 
@@ -720,7 +761,7 @@ pub fn align(units: &Units, kind: SetKind, cells: &[f32], groups: &[usize]) -> R
     let picked = units.of_kind(kind);
     let dirs: Vec<Vec<f32>> = picked.iter().map(|&i| unit(units.centre(i))).collect();
     let decoy_dirs: Vec<(usize, Vec<f32>)> = (units.decoys.iter())
-        .map(|d| (d.genes.len(), unit(&d.centre)))
+        .map(|d| (d.bin, unit(&d.centre)))
         .collect();
     let t = picked.len();
     let mut score = Vec::with_capacity(clusters.len() * t);
@@ -743,9 +784,7 @@ pub fn align(units: &Units, kind: SetKind, cells: &[f32], groups: &[usize]) -> R
                     .map_or(f32::NAN, |n| n.upper_tail(s))
             })
             .collect();
-        q.extend(legume_numeric::matrix::hypothesis::benjamini_hochberg(
-            &row_p,
-        ));
+        q.extend(bh_where_finite(&row_p));
         p.extend(row_p);
     }
     Ok(Alignment {
@@ -755,6 +794,19 @@ pub fn align(units: &Units, kind: SetKind, cells: &[f32], groups: &[usize]) -> R
         p,
         q,
     })
+}
+
+/// Benjamini–Hochberg over the finite `p`; a NaN p (a term without a null)
+/// stays NaN and is not counted.
+pub(crate) fn bh_where_finite(p: &[f32]) -> Vec<f32> {
+    let at: Vec<usize> = (0..p.len()).filter(|&i| p[i].is_finite()).collect();
+    let finite: Vec<f32> = at.iter().map(|&i| p[i]).collect();
+    let adjusted = legume_numeric::matrix::hypothesis::benjamini_hochberg(&finite);
+    let mut q = vec![f32::NAN; p.len()];
+    for (&i, v) in at.iter().zip(adjusted) {
+        q[i] = v;
+    }
+    q
 }
 
 /// Decoy scores as a normal: their mean and sample standard deviation;

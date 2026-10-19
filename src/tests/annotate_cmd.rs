@@ -313,3 +313,17 @@ fn the_term_ora_projection_is_retired_and_its_flags_still_parse() {
         "{argv:?}"
     );
 }
+
+#[test]
+fn the_units_refuse_a_marker_floor_they_do_not_keep() {
+    let with = |more: &[&str]| {
+        let mut v = vec!["-o", "x", "-m", "m.tsv", "--projection", "units"];
+        v.extend(more);
+        build_units_args(&parse(&v))
+    };
+    assert!(with(&[]).is_ok());
+    let err = with(&["--min-markers", "5"])
+        .expect_err("refused")
+        .to_string();
+    assert!(err.contains("min-markers"), "{err}");
+}

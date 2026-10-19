@@ -474,3 +474,57 @@ fn a_pass_clears_the_unit_files_an_earlier_pass_left() {
     run(&args, &feat, &cells, &groups).unwrap();
     assert!(!std::path::Path::new(&stale).exists(), "a stale alignment");
 }
+
+#[test]
+fn decoys_match_their_terms_bin_when_the_pool_is_smaller_than_it() {
+    let g = genes();
+    // Nine genes found: bin 8. The pool has six, so a decoy draws six.
+    let sets = [set("TERM1", SetKind::Term, &[0, 1, 2, 3, 4, 5, 6, 7, 8])];
+    let pool: Vec<String> = (0..6).map(|i| format!("GENE{i}")).collect();
+    let cfg = UnitConfig {
+        decoys: 9,
+        ..quick()
+    };
+    let u = train_units(&g, &sets, &pool, &cfg).unwrap();
+    let cells: Vec<f32> = (0..8)
+        .flat_map(|c| g.rows[c * 4..(c + 1) * 4].to_vec())
+        .collect();
+    let a = align(&u, SetKind::Term, &cells, &[0, 0, 0, 0, 1, 1, 1, 1]).unwrap();
+    assert!(a.p.iter().all(|p| p.is_finite()), "{:?}", a.p);
+}
+
+#[test]
+fn a_term_without_a_null_has_no_q() {
+    let q = bh_where_finite(&[0.001, f32::NAN, 0.04]);
+    assert!(q[1].is_nan(), "{q:?}");
+    assert!(q[0].is_finite() && q[2].is_finite(), "{q:?}");
+    assert!(q[0] <= q[2]);
+}
+
+#[test]
+fn cells_that_do_not_spread_are_refused_not_inflated() {
+    use crate::annotate::marker_score::toy;
+    let (feat, mut cells, groups) = toy::matrices();
+    cells.mat.fill(1.0);
+    let err = whitened(&feat, &cells, &groups).unwrap_err().to_string();
+    assert!(err.contains("spread"), "{err}");
+}
+
+#[test]
+fn a_panel_with_no_type_in_the_table_fails_before_training() {
+    let g = genes();
+    let sets = [
+        set("TERM1", SetKind::Term, &[0, 1, 2]),
+        GeneSet {
+            name: "CT1".into(),
+            kind: SetKind::CellType,
+            genes: vec!["GENE99".into(), "GENE98".into()],
+        },
+    ];
+    let cfg = UnitConfig {
+        epochs: 100_000,
+        ..quick()
+    };
+    let err = train_units(&g, &sets, &[], &cfg).unwrap_err().to_string();
+    assert!(err.contains("cell type"), "{err}");
+}

@@ -16,6 +16,9 @@ fn the_units_pass_calls_each_cell_and_records_its_round() {
     let mut m: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
     m["outputs"]["feature_coembedding"] = "run.feature_embedding.parquet".into();
+    // An earlier round by the retired term ORA.
+    m["annotate"]["cluster_term_q"] = "old.cluster_term_q.parquet".into();
+    m["annotate"]["marker_embedding"] = "old.marker_embedding.parquet".into();
     std::fs::write(&manifest, m.to_string()).unwrap();
     let loaded = run::load(&manifest).unwrap();
     let out = dir.path().join("run.L1").to_string_lossy().into_owned();
@@ -45,6 +48,10 @@ fn the_units_pass_calls_each_cell_and_records_its_round() {
     assert!(
         round.manifest.cluster.clusters.is_some(),
         "the round's cluster table"
+    );
+    assert!(
+        a.cluster_term_q.is_none() && a.marker_embedding.is_none(),
+        "an earlier round's ORA tables are not this one's"
     );
     assert_eq!(
         a.settings.as_ref().unwrap()["projection"]["projection"],

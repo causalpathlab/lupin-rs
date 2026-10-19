@@ -386,6 +386,9 @@ fn record(
             a.cluster_celltype_q_values = rel(&out.cluster_celltype_q_values);
             a.cluster_celltype_p = rel(&out.cluster_celltype_p);
             a.cluster_celltype_nes = rel(&out.cluster_celltype_nes);
+            // The retired term ORA's tables are no later round's.
+            a.cluster_term_q = None;
+            a.marker_embedding = None;
             a.celltype_units = rel(&out.celltype_units);
             a.celltype_links = rel(&out.celltype_links);
             a.term_alignment = rel(&out.term_alignment);
