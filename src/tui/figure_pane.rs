@@ -644,6 +644,8 @@ impl FigurePane {
         if self.data.source != Source::Round {
             return "charts are a round's: H on its cell map".into();
         }
+        // Labels move on the map only: a chart ends the moving.
+        self.edit = None;
         self.chart = match self.chart {
             None => {
                 // Topics when the cell types are not there to stack.

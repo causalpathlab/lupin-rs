@@ -824,6 +824,32 @@ fn h_steps_from_the_map_to_the_structure_plot_and_the_heatmap_and_esc_returns() 
 }
 
 #[test]
+fn h_while_moving_labels_ends_the_moving_so_esc_on_the_chart_is_the_maps() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = charts_in(dir.path());
+    let map = p.current();
+    let shift = KeyModifiers::SHIFT;
+    assert!(matches!(
+        p.edit_key(&key(KeyCode::Char('E'), shift)),
+        FigureKey::Say(_)
+    ));
+    assert!(p.editing());
+    // H is not the labels': it passes to the pane, which opens a chart.
+    assert_eq!(
+        p.edit_key(&key(KeyCode::Char('H'), shift)),
+        FigureKey::Ignored
+    );
+    p.key(KeyCode::Char('H'));
+    assert!(p.current().is_chart());
+    assert!(!p.editing(), "the labels move on the map, not a chart");
+    // So Esc goes to the pane and returns to the map at once.
+    let esc = key(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(p.edit_key(&esc), FigureKey::Ignored);
+    p.key(KeyCode::Esc);
+    assert_eq!(p.current(), map);
+}
+
+#[test]
 fn c_on_a_chart_steps_what_it_shows() {
     use crate::figures::charts::{HeatKind, Mixture};
     let dir = tempfile::tempdir().unwrap();
