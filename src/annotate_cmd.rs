@@ -802,6 +802,8 @@ fn build_units_args(args: &AnnotateCliArgs) -> crate::annotate::args::UnitsArgs 
         gaf: args.gaf.clone(),
         gmt: args.gmt.clone(),
         go_obo: args.go_obo.clone(),
+        go_min: args.go_min_overlap,
+        go_max: args.go_max_overlap,
         no_clean: args.no_clean,
         ..crate::annotate::args::UnitsArgs::new(&args.markers, &args.out)
     }

@@ -319,3 +319,33 @@ fn a_term_aligned_with_a_cluster_beats_random_sets_of_its_size_and_others_do_not
     assert!(p(1, "TERM1") > 0.5, "{:?}", a.p);
     assert_eq!(a.q.len(), a.p.len());
 }
+
+#[test]
+fn only_terms_within_the_size_window_are_trained() {
+    let dir = tempfile::tempdir().unwrap();
+    let obo = dir.path().join("t.obo");
+    std::fs::write(&obo, "format-version: 1.2\n\n[Term]\nid: X:0\nname: root\n").unwrap();
+    // Seven terms over sixty genes, of 2, 4, 6, 8, 16, 32 and 60 genes.
+    let gene_names: Vec<Box<str>> = (0..60).map(|g| format!("GENE{g}").into()).collect();
+    let gmt: String = [2usize, 4, 6, 8, 16, 32, 60]
+        .iter()
+        .map(|&n| {
+            let genes: Vec<String> = (0..n).map(|g| format!("GENE{g}")).collect();
+            format!("TERM{n}\tdesc\t{}\n", genes.join("\t"))
+        })
+        .collect();
+    let path = dir.path().join("t.gmt");
+    std::fs::write(&path, gmt).unwrap();
+    let args = crate::annotate::args::UnitsArgs {
+        gmt: Some(path.to_string_lossy().into()),
+        go_obo: Some(obo.to_string_lossy().into()),
+        go_min: 4,
+        go_max: 32,
+        ..crate::annotate::args::UnitsArgs::new("m.tsv", "out")
+    };
+    let mut names: Vec<String> = (args.terms(&gene_names).unwrap().into_iter())
+        .map(|t| t.name)
+        .collect();
+    names.sort();
+    assert_eq!(names, ["TERM16", "TERM32", "TERM4", "TERM6", "TERM8"]);
+}

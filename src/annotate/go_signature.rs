@@ -148,12 +148,14 @@ pub fn load_go_gene_sets(
 /// The gene sets a pass asks for: `--gaf`, else (`go`) the GO Consortium's
 /// annotations for the species `gene_names` belong to, else `--gmt`; read
 /// against `obo` and reconciled to `gene_names`.
+/// Terms are kept with `sizes` of their genes among `gene_names`.
 pub fn requested_gene_sets(
     obo: &str,
     go: bool,
     gaf: Option<&str>,
     gmt: Option<&str>,
     gene_names: &[Box<str>],
+    sizes: (usize, Option<usize>),
 ) -> anyhow::Result<GeneSetInputs> {
     let gaf = match (gaf, go && gmt.is_none()) {
         (Some(g), _) => Some(g.to_string()),
@@ -173,8 +175,8 @@ pub fn requested_gene_sets(
         gaf.as_deref(),
         gmt,
         !crate::annotate::args::KEEP_IEA,
-        MIN_TESTABLE,
-        None,
+        sizes.0,
+        sizes.1,
         gene_names,
     )
 }

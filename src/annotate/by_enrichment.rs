@@ -494,6 +494,7 @@ fn gene_set_signature(
         args.gaf.as_deref(),
         args.gmt.as_deref(),
         gene_names,
+        (super::go_signature::MIN_TESTABLE, None),
     )?;
 
     ////////////////////////////////////////////////////////////

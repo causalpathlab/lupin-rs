@@ -216,6 +216,11 @@ pub struct UnitsArgs {
     pub gaf: Option<Box<str>>,
     pub gmt: Option<Box<str>>,
     pub go_obo: Option<Box<str>>,
+    /// The fewest and most of a term's genes in the table for it to be
+    /// trained: the broadest terms, propagated up the ontology, hold most
+    /// genes and tell no cluster apart
+    pub go_min: usize,
+    pub go_max: usize,
     /// Random gene sets per size, trained as the terms' null
     pub decoys: usize,
     /// Keep existing {out}.* outputs (default: erase the pass's set first)
@@ -253,6 +258,7 @@ impl UnitsArgs {
             self.gaf.as_deref(),
             self.gmt.as_deref(),
             gene_names,
+            (self.go_min, Some(self.go_max)),
         )?;
         Ok((gs.terms.into_iter())
             .map(|(id, rows)| crate::annotate::geneset_units::GeneSet {
@@ -280,6 +286,8 @@ impl UnitsArgs {
             gaf: None,
             gmt: None,
             go_obo: None,
+            go_min: 20,
+            go_max: 500,
             decoys: DECOYS,
             no_clean: false,
         }
