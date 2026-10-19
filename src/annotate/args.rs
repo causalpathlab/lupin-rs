@@ -244,9 +244,9 @@ impl UnitsArgs {
     pub fn terms(
         &self,
         gene_names: &[Box<str>],
-    ) -> anyhow::Result<Vec<crate::annotate::geneset_units::GeneSet>> {
+    ) -> anyhow::Result<crate::annotate::geneset_units::Terms> {
         if !self.go && self.gaf.is_none() && self.gmt.is_none() {
-            return Ok(Vec::new());
+            return Ok(crate::annotate::geneset_units::Terms::default());
         }
         let obo = self
             .go_obo
@@ -260,13 +260,18 @@ impl UnitsArgs {
             gene_names,
             (self.go_min, Some(self.go_max)),
         )?;
-        Ok((gs.terms.into_iter())
-            .map(|(id, rows)| crate::annotate::geneset_units::GeneSet {
-                name: id.into(),
-                kind: crate::annotate::geneset_units::SetKind::Term,
-                genes: rows.iter().map(|&r| gene_names[r].to_string()).collect(),
-            })
-            .collect())
+        Ok(crate::annotate::geneset_units::Terms {
+            sets: (gs.terms.into_iter())
+                .map(|(id, rows)| crate::annotate::geneset_units::GeneSet {
+                    name: id.into(),
+                    kind: crate::annotate::geneset_units::SetKind::Term,
+                    genes: rows.iter().map(|&r| gene_names[r].to_string()).collect(),
+                })
+                .collect(),
+            pool: (gs.universe.iter())
+                .map(|&r| gene_names[r].to_string())
+                .collect(),
+        })
     }
 
     /// The defaults for `markers`, writing under `out`.

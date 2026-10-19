@@ -159,18 +159,21 @@ fn a_pass_calls_each_cell_by_its_region_and_writes_the_units_and_links() {
     let (feat, cells, groups) = toy::matrices();
     let panel = toy::panel(dir.path());
     let out = dir.path().join("p").to_string_lossy().into_owned();
-    let terms = [
-        GeneSet {
-            name: "TERM1".into(),
-            kind: SetKind::Term,
-            genes: ["g0", "g1"].map(String::from).to_vec(),
-        },
-        GeneSet {
-            name: "TERM2".into(),
-            kind: SetKind::Term,
-            genes: ["g3", "g4"].map(String::from).to_vec(),
-        },
-    ];
+    let terms = Terms {
+        sets: vec![
+            GeneSet {
+                name: "TERM1".into(),
+                kind: SetKind::Term,
+                genes: ["g0", "g1"].map(String::from).to_vec(),
+            },
+            GeneSet {
+                name: "TERM2".into(),
+                kind: SetKind::Term,
+                genes: ["g3", "g4"].map(String::from).to_vec(),
+            },
+        ],
+        pool: Vec::new(),
+    };
     let cfg = UnitConfig {
         decoys: 9,
         ..quick()
@@ -225,7 +228,16 @@ fn a_pass_without_terms_writes_no_alignment() {
     let (feat, cells, groups) = toy::matrices();
     let panel = toy::panel(dir.path());
     let out = dir.path().join("p").to_string_lossy().into_owned();
-    let o = run_pass(&panel, &out, &feat, &cells, &groups, &[], &quick()).unwrap();
+    let o = run_pass(
+        &panel,
+        &out,
+        &feat,
+        &cells,
+        &groups,
+        &Terms::default(),
+        &quick(),
+    )
+    .unwrap();
     assert!(o.term_alignment.is_none());
     assert!(!std::path::Path::new(&format!("{out}{TERM_ALIGNMENT_PARQUET}")).exists());
 }
@@ -343,9 +355,33 @@ fn only_terms_within_the_size_window_are_trained() {
         go_max: 32,
         ..crate::annotate::args::UnitsArgs::new("m.tsv", "out")
     };
-    let mut names: Vec<String> = (args.terms(&gene_names).unwrap().into_iter())
-        .map(|t| t.name)
-        .collect();
+    let terms = args.terms(&gene_names).unwrap();
+    assert!(
+        !terms.pool.is_empty(),
+        "the genes the terms were annotated from"
+    );
+    let mut names: Vec<String> = terms.sets.into_iter().map(|t| t.name).collect();
     names.sort();
     assert_eq!(names, ["TERM16", "TERM32", "TERM4", "TERM6", "TERM8"]);
+}
+
+#[test]
+fn decoys_are_drawn_from_the_pool_their_kind_is_annotated_from() {
+    let g = genes();
+    let sets = [
+        set("TERM1", SetKind::Term, &[0, 1, 2]),
+        set("TERM2", SetKind::Term, &[6, 7, 8]),
+    ];
+    // Only the first nine genes carry annotations.
+    let pool: Vec<String> = (0..9).map(|i| format!("GENE{i}")).collect();
+    let cfg = UnitConfig {
+        decoys: 20,
+        ..quick()
+    };
+    let u = train_units_from(&g, &sets, &[(SetKind::Term, pool)], &cfg).unwrap();
+    assert_eq!(u.decoys.len(), 20, "one size bin of twenty");
+    assert!(
+        u.decoys.iter().flat_map(|d| &d.genes).all(|&r| r < 9),
+        "a decoy drew a gene outside its pool"
+    );
 }

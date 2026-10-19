@@ -54,6 +54,14 @@ impl SetKind {
     }
 }
 
+/// Ontology terms for a pass, and the genes they were annotated from: the
+/// pool their decoys are drawn from.
+#[derive(Debug, Clone, Default)]
+pub struct Terms {
+    pub sets: Vec<GeneSet>,
+    pub pool: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeneSet {
     pub name: String,
@@ -110,11 +118,11 @@ pub struct Units {
     pub decoys: Vec<Decoy>,
 }
 
-/// A random gene set of `size` genes trained as a `kind` set is.
+/// A random gene set trained as a `kind` set is: its gene rows and centre.
 #[derive(Debug, Clone)]
 pub struct Decoy {
     pub kind: SetKind,
-    pub size: usize,
+    pub genes: Vec<u32>,
     pub centre: Vec<f32>,
 }
 
@@ -138,7 +146,21 @@ impl Units {
 /// Train `sets` against `genes`, whose rows stay as they are, with
 /// `cfg.decoys` random gene sets per kind and size bin ([`size_bin`]) trained
 /// beside them as nodes of the same type, the null [`align`] reads.
+#[cfg(test)]
 pub fn train_units(genes: &GeneTable, sets: &[GeneSet], cfg: &UnitConfig) -> Result<Units> {
+    train_units_from(genes, sets, &[], cfg)
+}
+
+/// [`train_units`], each kind's decoys drawn from its `pools` of genes (the
+/// genes its sets could be annotated from: real sets are not random genes,
+/// so a null drawn from every gene sits apart from all of them); a kind
+/// without a pool draws from the whole table.
+pub fn train_units_from(
+    genes: &GeneTable,
+    sets: &[GeneSet],
+    pools: &[(SetKind, Vec<String>)],
+    cfg: &UnitConfig,
+) -> Result<Units> {
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
     let row_of: HashMap<&str, u32> = (genes.names.iter().enumerate())
@@ -165,10 +187,21 @@ pub fn train_units(genes: &GeneTable, sets: &[GeneSet], cfg: &UnitConfig) -> Res
                 nodes.push((kind, found, Some(s)));
             }
         }
+        let pool: Vec<u32> = match pools.iter().find(|(k, _)| *k == kind) {
+            Some((_, names)) => {
+                let mut rows: Vec<u32> = (names.iter())
+                    .filter_map(|g| row_of.get(g.as_str()).copied())
+                    .collect();
+                rows.sort_unstable();
+                rows.dedup();
+                rows
+            }
+            None => (0..n_genes as u32).collect(),
+        };
         for bin in bins {
             for _ in 0..cfg.decoys {
-                let pick = rand::seq::index::sample(&mut rng, n_genes, bin);
-                let rows: Vec<u32> = pick.iter().map(|g| g as u32).collect();
+                let pick = rand::seq::index::sample(&mut rng, pool.len(), bin.min(pool.len()));
+                let rows: Vec<u32> = pick.iter().map(|i| pool[i]).collect();
                 nodes.push((kind, rows, None));
             }
         }
@@ -258,7 +291,7 @@ pub fn train_units(genes: &GeneTable, sets: &[GeneSet], cfg: &UnitConfig) -> Res
             }
             None => units.decoys.push(Decoy {
                 kind: *kind,
-                size: rows.len(),
+                genes: rows.clone(),
                 centre: row(id),
             }),
         }
@@ -381,7 +414,7 @@ pub fn run_pass(
     feat: &MatWithNames<Mat>,
     cells: &MatWithNames<Mat>,
     groups: &[usize],
-    terms: &[GeneSet],
+    terms: &Terms,
     cfg: &UnitConfig,
 ) -> Result<AnnotationOutputs> {
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
@@ -397,8 +430,14 @@ pub fn run_pass(
             }),
         }
     }
-    by_type.extend_from_slice(terms);
-    let units = train_units(&table_of(feat), &by_type, cfg)?;
+    by_type.extend_from_slice(&terms.sets);
+    let pools = [(SetKind::Term, terms.pool.clone())];
+    let pools = if terms.pool.is_empty() {
+        &[][..]
+    } else {
+        &pools[..]
+    };
+    let units = train_units_from(&table_of(feat), &by_type, pools, cfg)?;
     for (name, found, given) in &units.dropped {
         log::warn!("{name}: {found} of its {given} markers are in the gene table; not trained");
     }
@@ -571,7 +610,7 @@ pub fn align(units: &Units, kind: SetKind, cells: &[f32], groups: &[usize]) -> R
         for &i in &picked {
             let s = dot(m, &unit(&units.centres[i * dim..(i + 1) * dim]));
             let null: Vec<f32> = (decoys.iter().zip(&decoy_dirs))
-                .filter(|(d, _)| d.size == units.bins[i])
+                .filter(|(d, _)| d.genes.len() == units.bins[i])
                 .map(|(_, dir)| dot(m, dir))
                 .collect();
             score.push(s);
