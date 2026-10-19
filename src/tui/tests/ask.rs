@@ -1,7 +1,7 @@
 //! The questions lupin asks on a panel's load: one at a time, as a menu,
 //! when the panel tree is idle; esc pauses them and `Q` takes them up again.
 
-use super::super::app::{App, Focus};
+use super::super::app::{AfterPass, App, Focus};
 use super::super::drive::press;
 use super::super::suggest::Suggestions;
 use crate::annotate::celltype_tree::ClTerms;
@@ -128,4 +128,25 @@ fn esc_pauses_the_questions_and_q_takes_them_up_again() {
         .menu
         .as_ref()
         .is_some_and(|m| m.question.contains("CT4")));
+}
+
+#[test]
+fn esc_on_a_question_keeps_what_follows_a_running_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    app.after_pass = AfterPass::Run;
+    app.tick();
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(app.after_pass, AfterPass::Run));
+}
+
+#[test]
+fn another_panel_asks_its_questions_though_the_last_were_paused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    app.tick();
+    press(&mut app, KeyCode::Esc);
+    app.forget_questions();
+    app.tick();
+    assert!(app.menu.is_some(), "asked on the new panel");
 }

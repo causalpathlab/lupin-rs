@@ -511,10 +511,14 @@ impl ClData {
                     fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
                 let mut terms =
                     ClTerms::parse(&text, &self.rules).with_aliases(self.aliases.clone());
+                // Answers are optional: one unreadable is passed over.
                 for p in &self.group_files {
-                    let answers = fs::read_to_string(p)
-                        .with_context(|| format!("reading {}", p.display()))?;
-                    terms.add_joins(&answers);
+                    match fs::read_to_string(p) {
+                        Ok(answers) => {
+                            terms.add_joins(&answers);
+                        }
+                        Err(e) => warn!("{}: {e}; its answers are not used", p.display()),
+                    }
                 }
                 Ok(terms)
             })

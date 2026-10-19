@@ -91,7 +91,10 @@ pub fn methods(r: &Record) -> String {
         || "release not stated".to_string(),
         |v| format!("release {v}"),
     );
-    let mut parts = vec![format!("{names} by a term's name or synonym")];
+    let mut parts = Vec::new();
+    if names > 0 {
+        parts.push(format!("{names} by a term's name or synonym"));
+    }
     if aliases > 0 {
         parts.push(format!("{aliases} by a curated alias"));
     }
@@ -100,11 +103,15 @@ pub fn methods(r: &Record) -> String {
             "{by_word} by completing the word \"{w}\" the panel leaves off its labels"
         ));
     }
+    let n = r.labels.len();
+    let matched = if parts.is_empty() {
+        "no label matched a term".to_string()
+    } else {
+        parts.join(", ")
+    };
     let mut text = format!(
         "The marker panel's {n} cell-type labels were matched to the Cell Ontology ({release}) \
-         with lupin's matching rules (cl_matching.json): {}.",
-        parts.join(", "),
-        n = r.labels.len()
+         with lupin's matching rules (cl_matching.json): {matched}."
     );
     if !r.groups_from_ontology {
         text += " With too few labels on terms to group them by the ontology, the coarse groups were formed by shared marker genes.";
