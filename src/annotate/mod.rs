@@ -12,6 +12,7 @@ mod calibration_tests;
 pub mod celltype_tree;
 pub mod cl_rules;
 pub mod gene_rows;
+pub mod geneset_units;
 pub mod go_signature;
 pub mod inputs;
 pub mod marker_score;

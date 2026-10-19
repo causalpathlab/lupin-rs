@@ -2212,7 +2212,7 @@ fn the_form_lists_the_rows_of_its_method() {
 }
 
 #[test]
-fn the_projection_row_cycles_the_runs_choice_the_score_and_the_ora() {
+fn the_projection_row_cycles_the_runs_choice_the_score_the_ora_and_the_units() {
     use crate::annotate::args::ProjectionMethod;
     let mut a = cli(&[]);
     assert!(Setting::Projection.value(&a).starts_with("auto"));
@@ -2224,7 +2224,11 @@ fn the_projection_row_cycles_the_runs_choice_the_score_and_the_ora() {
     Setting::Projection.adjust(&mut a, true);
     assert_eq!(a.projection, Some(ProjectionMethod::Ora));
     Setting::Projection.adjust(&mut a, true);
+    assert_eq!(a.projection, Some(ProjectionMethod::Units));
+    Setting::Projection.adjust(&mut a, true);
     assert_eq!(a.projection, None, "back to the run's choice");
+    Setting::Projection.adjust(&mut a, false);
+    assert_eq!(a.projection, Some(ProjectionMethod::Units), "and back");
 }
 
 #[test]

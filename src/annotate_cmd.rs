@@ -173,6 +173,15 @@ pub struct AnnotateCliArgs {
                 default: the score where the run decodes cells, else the ORA"
     )]
     pub projection: Option<ProjectionMethod>,
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = crate::gene_text::cli::ComputeDevice::Cpu,
+        help = "Device training the gene-set units (--projection units)"
+    )]
+    pub device: crate::gene_text::cli::ComputeDevice,
+    #[arg(long, default_value_t = 0, help = "Device ordinal (for cuda/metal)")]
+    pub device_no: usize,
     #[arg(long = "no-idf")]
     pub no_idf: bool,
     #[arg(long = "no-assign-qc")]
@@ -249,6 +258,8 @@ impl AnnotateCliArgs {
         val("mcmc-samples", self.mcmc_samples.to_string());
         val("mcmc-warmup", self.mcmc_warmup.to_string());
         val("mcmc-thin", self.mcmc_thin.to_string());
+        val("device", self.device.as_str().into());
+        val("device-no", self.device_no.to_string());
         let opts: [(&str, Option<String>); 15] = [
             ("from", self.from.as_deref().map(String::from)),
             (
@@ -420,6 +431,9 @@ fn run_pass(
                 }
                 ProjectionMethod::Ora => {
                     annotate_by_projection(&build_projection_args(args), loaded)?
+                }
+                ProjectionMethod::Units => {
+                    crate::manifest::annotate::annotate_by_units(&build_units_args(args), loaded)?
                 }
             }
         }
@@ -634,6 +648,11 @@ fn run_projection_from_files(
                 },
             )?;
         }
+        ProjectionMethod::Units => {
+            let a = build_units_args(args);
+            let cfg = a.config()?;
+            crate::annotate::geneset_units::run_pass(&a.markers, &a.out, &feat, &cell, &cfg)?;
+        }
     }
     Ok(())
 }
@@ -742,6 +761,24 @@ fn build_score_args(args: &AnnotateCliArgs) -> Result<MarkerScoreArgs> {
         },
         no_clean: args.no_clean,
     })
+}
+
+fn build_units_args(args: &AnnotateCliArgs) -> crate::annotate::args::UnitsArgs {
+    crate::annotate::args::UnitsArgs {
+        clusters: args.clusters.clone(),
+        leiden: LeidenArgs {
+            knn: args.knn.unwrap_or(PROJECTION_KNN),
+            resolution: args.resolution,
+            num_clusters: args.num_clusters,
+            min_cluster_size: args.min_cluster_size,
+            seed: args.cluster_seed,
+        },
+        seed: args.seed,
+        device: args.device,
+        device_no: args.device_no,
+        no_clean: args.no_clean,
+        ..crate::annotate::args::UnitsArgs::new(&args.markers, &args.out)
+    }
 }
 
 fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {

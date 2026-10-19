@@ -44,7 +44,9 @@ pub fn projection_gene_table(
             })?;
             Ok(("feature_embedding", rel))
         }
-        ProjectionMethod::Ora => match (
+        // Units align the cells with sets through the genes placed among
+        // them, as the ORA does.
+        ProjectionMethod::Ora | ProjectionMethod::Units => match (
             o.feature_coembedding.as_deref(),
             o.feature_embedding.as_deref(),
         ) {

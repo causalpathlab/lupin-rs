@@ -146,6 +146,38 @@ fn projection_leaves_its_method_to_the_run_unless_given_and_the_choice_parses_ba
 }
 
 #[test]
+fn the_units_projection_takes_a_device_and_parses_back() {
+    let argv = [
+        "-f",
+        "run.senna.json",
+        "-m",
+        "m.tsv",
+        "-o",
+        "out/x",
+        "--method",
+        "projection",
+        "--projection",
+        "units",
+        "--device",
+        "cuda",
+        "--device-no",
+        "1",
+    ];
+    let a = parse(&argv);
+    assert_eq!(a.projection, Some(ProjectionMethod::Units));
+    assert_eq!(a.device, crate::gene_text::cli::ComputeDevice::Cuda);
+    assert_eq!(a.device_no, 1);
+    let back = a.to_argv();
+    let back: Vec<&str> = back.iter().map(String::as_str).collect();
+    assert_eq!(format!("{a:?}"), format!("{:?}", parse(&back)));
+    assert_eq!(
+        parse(&argv[..10]).device,
+        crate::gene_text::cli::ComputeDevice::Cpu,
+        "the CPU unless asked"
+    );
+}
+
+#[test]
 fn projection_from_embedding_files_runs_the_ora_unless_the_score_is_asked_for() {
     use legume_numeric::matrix::traits::IoOps;
     let dir = tempfile::tempdir().unwrap();

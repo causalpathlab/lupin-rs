@@ -171,6 +171,9 @@ pub struct AnnotationOutputs {
     pub cluster_celltype_nes: Option<String>,
     pub cluster_term_q: Option<String>,
     pub marker_embedding: Option<String>,
+    /// The cell types as gene-set units, and the cells each pair shares.
+    pub celltype_units: Option<String>,
+    pub celltype_links: Option<String>,
     /// Per-cell cluster ids whose values match the cluster tables' `K{id}` rows.
     pub clusters: Option<String>,
     /// The pass's sufficient statistics, for rescoring later rounds.

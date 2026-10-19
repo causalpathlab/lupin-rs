@@ -150,6 +150,10 @@ pub enum ProjectionMethod {
     /// Term over-representation on the co-embedding (kept one release, for
     /// comparison).
     Ora,
+    /// The panel's cell types trained as gene-set units on the genes placed
+    /// among the cells, kept fixed; each cell called by the type whose
+    /// fitted region it most belongs to.
+    Units,
 }
 
 impl ProjectionMethod {
@@ -159,6 +163,7 @@ impl ProjectionMethod {
         match self {
             Self::Score => "score",
             Self::Ora => "ora",
+            Self::Units => "units",
         }
     }
 }
@@ -179,6 +184,58 @@ pub struct MarkerScoreArgs {
     pub leiden: crate::manifest::annotate::LeidenArgs,
     /// Keep existing {out}.* outputs (default: erase the pass's set first)
     pub no_clean: bool,
+}
+
+/// `lupin annotate --method projection --projection units`: the panel's
+/// cell types as gene-set units ([`crate::annotate::geneset_units`]).
+#[derive(Debug, serde::Serialize)]
+pub struct UnitsArgs {
+    /// Marker-gene TSV: `gene<TAB>celltype` per line
+    pub markers: Box<str>,
+    /// Output prefix
+    pub out: Box<str>,
+    /// Cluster parquet the round is tabled by; else the run's
+    /// `cluster.clusters`, else internal Leiden
+    pub clusters: Option<Box<str>>,
+    /// Internal Leiden, when no clusters are given
+    pub leiden: crate::manifest::annotate::LeidenArgs,
+    /// Training epochs over the gene–type edges
+    pub epochs: usize,
+    pub seed: u64,
+    /// The device training runs on, and its ordinal
+    pub device: crate::gene_text::cli::ComputeDevice,
+    pub device_no: usize,
+    /// Keep existing {out}.* outputs (default: erase the pass's set first)
+    pub no_clean: bool,
+}
+
+impl UnitsArgs {
+    /// The training settings these ask for.
+    pub fn config(&self) -> anyhow::Result<crate::annotate::geneset_units::UnitConfig> {
+        Ok(crate::annotate::geneset_units::UnitConfig {
+            epochs: self.epochs,
+            seed: self.seed,
+            device: self.device.open(self.device_no)?,
+            ..Default::default()
+        })
+    }
+
+    /// The defaults for `markers`, writing under `out`.
+    #[must_use]
+    pub fn new(markers: &str, out: &str) -> Self {
+        let d = crate::annotate::geneset_units::UnitConfig::default();
+        Self {
+            markers: markers.into(),
+            out: out.into(),
+            clusters: None,
+            leiden: crate::manifest::annotate::LeidenArgs::default(),
+            epochs: d.epochs,
+            seed: d.seed,
+            device: crate::gene_text::cli::ComputeDevice::Cpu,
+            device_no: 0,
+            no_clean: false,
+        }
+    }
 }
 
 /// `lupin annotate --method projection --projection ora` — firm marker-set

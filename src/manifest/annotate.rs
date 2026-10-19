@@ -9,7 +9,7 @@
 
 use crate::annotate::args::{
     fixed_settings, AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, MarkerScoreArgs,
-    ProjectionMethod, BLOCK_SIZE,
+    ProjectionMethod, UnitsArgs, BLOCK_SIZE,
 };
 use crate::annotate::by_enrichment;
 use crate::annotate::by_projection::{self, ProjectionInputs};
@@ -184,6 +184,45 @@ pub fn annotate_by_marker_score(args: &MarkerScoreArgs, loaded: &Loaded) -> Resu
         &outputs,
         "projection",
         projection_settings(args, ProjectionMethod::Score)?,
+    )
+}
+
+/// `lupin annotate --method projection --projection units`: the panel's
+/// cell types trained as gene-set units on the genes placed among the cells
+/// ([`crate::annotate::geneset_units`]), each cell called by its region, the
+/// round tabled by `--clusters`, else the run's, else internal Leiden.
+pub fn annotate_by_units(args: &UnitsArgs, loaded: &Loaded) -> Result<()> {
+    let run = loaded.file.display().to_string();
+    let feat = load_marker_feature_embedding(&loaded.manifest, &loaded.dir, &run)?;
+    let cell_path = loaded.geometry_latent_path()?;
+    let cells = Mat::from_parquet(&cell_path)
+        .with_context(|| format!("reading cell embedding {cell_path}"))?;
+    let (groups, _) = resolve_clusters(
+        args.clusters.as_deref(),
+        &args.leiden,
+        &loaded.manifest,
+        &loaded.dir,
+        &cells.rows,
+    )?;
+    let cfg = args.config()?;
+    if !args.no_clean {
+        crate::annotate::outputs::clean_outputs(
+            &args.out,
+            graph_embedding_util::type_annotation::CELL_LABEL_FILE_SUFFIXES,
+        );
+    }
+    let mut outputs =
+        crate::annotate::geneset_units::run_pass(&args.markers, &args.out, &feat, &cells, &cfg)?;
+    let clusters = format!("{}{}", args.out, rounds::CLUSTERS);
+    rounds::write_clusters(&clusters, &cells.rows, &rounds::cluster_ids(&groups))?;
+    outputs.clusters = Some(clusters);
+    record(
+        loaded,
+        &args.out,
+        Pass::Markers(&args.markers),
+        &outputs,
+        "projection",
+        projection_settings(args, ProjectionMethod::Units)?,
     )
 }
 
@@ -410,6 +449,8 @@ fn record(
             a.cluster_celltype_nes = rel(&out.cluster_celltype_nes);
             a.cluster_term_q = rel(&out.cluster_term_q);
             a.marker_embedding = rel(&out.marker_embedding);
+            a.celltype_units = rel(&out.celltype_units);
+            a.celltype_links = rel(&out.celltype_links);
             a.ontology_signature = rel(&out.ontology_signature);
             a.ontology_term_effect = rel(&out.ontology_term_effect);
             loaded.manifest.defaults.colour_by = Some("annotation".into());
@@ -916,3 +957,6 @@ fn build_batch_labels(labels: Vec<Box<str>>, n_cells: usize) -> Result<(Vec<usiz
 #[cfg(test)]
 #[path = "tests/projection_score.rs"]
 pub(crate) mod projection_score_tests;
+#[cfg(test)]
+#[path = "tests/projection_units.rs"]
+pub(crate) mod projection_units_tests;

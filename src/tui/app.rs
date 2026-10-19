@@ -219,11 +219,12 @@ impl Setting {
                 };
             }
             Self::Projection => {
-                use ProjectionMethod::{Ora, Score};
+                use ProjectionMethod::{Ora, Score, Units};
                 a.projection = match (a.projection, up) {
                     (None, true) | (Some(Ora), false) => Some(Score),
-                    (Some(Score), true) | (None, false) => Some(Ora),
-                    (Some(Ora), true) | (Some(Score), false) => None,
+                    (Some(Score), true) | (Some(Units), false) => Some(Ora),
+                    (Some(Ora), true) | (None, false) => Some(Units),
+                    (Some(Units), true) | (Some(Score), false) => None,
                 };
             }
             Self::Knn => {
