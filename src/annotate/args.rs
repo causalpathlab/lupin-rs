@@ -186,6 +186,10 @@ pub struct MarkerScoreArgs {
     pub no_clean: bool,
 }
 
+/// Random gene sets per size a units pass trains as its terms' null: 99, so
+/// the smallest p is one in a hundred.
+pub const DECOYS: usize = 99;
+
 /// `lupin annotate --method projection --projection units`: the panel's
 /// cell types as gene-set units ([`crate::annotate::geneset_units`]).
 #[derive(Debug, serde::Serialize)]
@@ -205,6 +209,15 @@ pub struct UnitsArgs {
     /// The device training runs on, and its ordinal
     pub device: crate::gene_text::cli::ComputeDevice,
     pub device_no: usize,
+    /// Ontology terms trained beside the cell types: the GO annotations for
+    /// the genes' species (`go`), else a GAF, else a GMT, read against
+    /// `go_obo`
+    pub go: bool,
+    pub gaf: Option<Box<str>>,
+    pub gmt: Option<Box<str>>,
+    pub go_obo: Option<Box<str>>,
+    /// Random gene sets per size, trained as the terms' null
+    pub decoys: usize,
     /// Keep existing {out}.* outputs (default: erase the pass's set first)
     pub no_clean: bool,
 }
@@ -216,8 +229,38 @@ impl UnitsArgs {
             epochs: self.epochs,
             seed: self.seed,
             device: self.device.open(self.device_no)?,
+            decoys: self.decoys,
             ..Default::default()
         })
+    }
+
+    /// The ontology terms asked for, as gene sets over `gene_names`; none
+    /// when none are.
+    pub fn terms(
+        &self,
+        gene_names: &[Box<str>],
+    ) -> anyhow::Result<Vec<crate::annotate::geneset_units::GeneSet>> {
+        if !self.go && self.gaf.is_none() && self.gmt.is_none() {
+            return Ok(Vec::new());
+        }
+        let obo = self
+            .go_obo
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("ontology terms need an ontology (--go-obo)"))?;
+        let gs = crate::annotate::go_signature::requested_gene_sets(
+            obo,
+            self.go,
+            self.gaf.as_deref(),
+            self.gmt.as_deref(),
+            gene_names,
+        )?;
+        Ok((gs.terms.into_iter())
+            .map(|(id, rows)| crate::annotate::geneset_units::GeneSet {
+                name: id.into(),
+                kind: crate::annotate::geneset_units::SetKind::Term,
+                genes: rows.iter().map(|&r| gene_names[r].to_string()).collect(),
+            })
+            .collect())
     }
 
     /// The defaults for `markers`, writing under `out`.
@@ -233,6 +276,11 @@ impl UnitsArgs {
             seed: d.seed,
             device: crate::gene_text::cli::ComputeDevice::Cpu,
             device_no: 0,
+            go: false,
+            gaf: None,
+            gmt: None,
+            go_obo: None,
+            decoys: DECOYS,
             no_clean: false,
         }
     }

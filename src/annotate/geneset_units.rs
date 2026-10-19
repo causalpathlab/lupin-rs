@@ -22,6 +22,8 @@ use std::collections::HashMap;
 pub const UNITS_PARQUET: &str = ".celltype_units.parquet";
 /// Each pair of cell types and the cells they share (`Regions::links`).
 pub const TYPE_LINKS_TSV: &str = ".celltype_links.tsv";
+/// Each cluster against each ontology term: score, p and q ([`align`]).
+pub const TERM_ALIGNMENT_PARQUET: &str = ".term_alignment.parquet";
 
 /// A run's genes and their rows (row-major, `dim` wide), in the space its
 /// cells share with them.
@@ -67,6 +69,8 @@ pub struct UnitConfig {
     pub seed: u64,
     /// EM rounds fitting the regions to the cells.
     pub region_iters: usize,
+    /// Random gene sets per kind and size bin, trained as the null.
+    pub decoys: usize,
     /// Where training runs.
     pub device: legume_numeric::candle::candle_core::Device,
 }
@@ -78,6 +82,7 @@ impl Default for UnitConfig {
             min_genes: 2,
             seed: 1,
             region_iters: 100,
+            decoys: 0,
             device: legume_numeric::candle::candle_core::Device::Cpu,
         }
     }
@@ -97,8 +102,20 @@ pub struct Units {
     pub dim: usize,
     /// Per set, the genes in the table and the genes given.
     pub covered: Vec<(usize, usize)>,
+    /// Per set, the size its decoys have ([`size_bin`]).
+    pub bins: Vec<usize>,
     /// The sets with too few genes in the table: name, found, given.
     pub dropped: Vec<(String, usize, usize)>,
+    /// Random gene sets trained beside the sets, as their null.
+    pub decoys: Vec<Decoy>,
+}
+
+/// A random gene set of `size` genes trained as a `kind` set is.
+#[derive(Debug, Clone)]
+pub struct Decoy {
+    pub kind: SetKind,
+    pub size: usize,
+    pub centre: Vec<f32>,
 }
 
 impl Units {
@@ -118,15 +135,23 @@ impl Units {
     }
 }
 
-/// Train `sets` against `genes`, whose rows stay as they are.
+/// Train `sets` against `genes`, whose rows stay as they are, with
+/// `cfg.decoys` random gene sets per kind and size bin ([`size_bin`]) trained
+/// beside them as nodes of the same type, the null [`align`] reads.
 pub fn train_units(genes: &GeneTable, sets: &[GeneSet], cfg: &UnitConfig) -> Result<Units> {
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
     let row_of: HashMap<&str, u32> = (genes.names.iter().enumerate())
         .map(|(i, g)| (g.as_str(), i as u32))
         .collect();
+    let n_genes = genes.names.len();
     let mut dropped = Vec::new();
-    // The sets kept, by kind in node-type order, each with its gene rows.
-    let mut kept: Vec<(&GeneSet, Vec<u32>)> = Vec::new();
+    let mut rng = SmallRng::seed_from_u64(cfg.seed);
+    // Every node to train, kind by kind in node-type order: the kept sets,
+    // then their decoys. `None` for a decoy.
+    let mut nodes: Vec<(SetKind, Vec<u32>, Option<&GeneSet>)> = Vec::new();
     for kind in SetKind::ALL {
+        let mut bins = std::collections::BTreeSet::new();
         for s in sets.iter().filter(|s| s.kind == kind) {
             let mut found: Vec<u32> = (s.genes.iter())
                 .filter_map(|g| row_of.get(g.as_str()).copied())
@@ -136,26 +161,29 @@ pub fn train_units(genes: &GeneTable, sets: &[GeneSet], cfg: &UnitConfig) -> Res
             if found.len() < cfg.min_genes {
                 dropped.push((s.name.clone(), found.len(), s.genes.len()));
             } else {
-                kept.push((s, found));
+                bins.insert(size_bin(found.len()).min(n_genes));
+                nodes.push((kind, found, Some(s)));
+            }
+        }
+        for bin in bins {
+            for _ in 0..cfg.decoys {
+                let pick = rand::seq::index::sample(&mut rng, n_genes, bin);
+                let rows: Vec<u32> = pick.iter().map(|g| g as u32).collect();
+                nodes.push((kind, rows, None));
             }
         }
     }
     anyhow::ensure!(
-        !kept.is_empty(),
+        nodes.iter().any(|n| n.2.is_some()),
         "no gene set has {} genes in the table",
         cfg.min_genes
     );
 
-    let n_genes = genes.names.len();
     let present: Vec<SetKind> = (SetKind::ALL.into_iter())
-        .filter(|k| kept.iter().any(|(s, _)| s.kind == *k))
+        .filter(|k| nodes.iter().any(|n| n.0 == *k))
         .collect();
     let mut table = vec![("gene", n_genes)];
-    table.extend(
-        present
-            .iter()
-            .map(|k| (k.name(), kept.iter().filter(|(s, _)| s.kind == *k).count())),
-    );
+    table.extend((present.iter()).map(|k| (k.name(), nodes.iter().filter(|n| n.0 == *k).count())));
     let types = NodeTypeTable::new(&table)?;
     let rels = RelationTable::new(
         (present.iter().enumerate())
@@ -171,14 +199,11 @@ pub fn train_units(genes: &GeneTable, sets: &[GeneSet], cfg: &UnitConfig) -> Res
         &types,
     )?;
     let mut edges = TypedEdgeList::default();
-    for (set_id, (s, rows)) in kept.iter().enumerate() {
-        let rel = present
-            .iter()
-            .position(|k| *k == s.kind)
-            .unwrap_or_default();
+    for (id, (kind, rows, _)) in nodes.iter().enumerate() {
+        let rel = present.iter().position(|k| k == kind).unwrap_or_default();
         for &g in rows {
             edges.lhs.push(g);
-            edges.rhs.push((n_genes + set_id) as u32);
+            edges.rhs.push((n_genes + id) as u32);
             edges.rel.push(rel as u16);
         }
     }
@@ -198,28 +223,56 @@ pub fn train_units(genes: &GeneTable, sets: &[GeneSet], cfg: &UnitConfig) -> Res
     };
     let out = train(edges, types, rels, &config)?;
     let all: Vec<f32> = out.embedding.flatten_all()?.to_vec1()?;
-    let (gene_rows, centres) = all.split_at(n_genes * genes.dim);
-    let origin: Vec<f32> = (0..genes.dim)
-        .map(|d| {
-            (0..n_genes)
-                .map(|g| genes.rows[g * genes.dim + d])
-                .sum::<f32>()
-                / n_genes as f32
-        })
-        .collect();
+    let (gene_rows, trained) = all.split_at(n_genes * genes.dim);
     anyhow::ensure!(
         gene_rows == genes.rows.as_slice(),
         "training moved the gene table it was to keep fixed"
     );
-    Ok(Units {
-        origin,
-        names: kept.iter().map(|(s, _)| s.name.clone()).collect(),
-        kinds: kept.iter().map(|(s, _)| s.kind).collect(),
-        centres: centres.to_vec(),
+    let row = |id: usize| trained[id * genes.dim..(id + 1) * genes.dim].to_vec();
+    let mut units = Units {
+        origin: (0..genes.dim)
+            .map(|d| {
+                (0..n_genes)
+                    .map(|g| genes.rows[g * genes.dim + d])
+                    .sum::<f32>()
+                    / n_genes as f32
+            })
+            .collect(),
+        names: Vec::new(),
+        kinds: Vec::new(),
+        centres: Vec::new(),
         dim: genes.dim,
-        covered: kept.iter().map(|(s, r)| (r.len(), s.genes.len())).collect(),
+        covered: Vec::new(),
+        bins: Vec::new(),
         dropped,
-    })
+        decoys: Vec::new(),
+    };
+    for (id, (kind, rows, set)) in nodes.iter().enumerate() {
+        match set {
+            Some(s) => {
+                units.names.push(s.name.clone());
+                units.kinds.push(*kind);
+                units.centres.extend(row(id));
+                units.covered.push((rows.len(), s.genes.len()));
+                units.bins.push(size_bin(rows.len()).min(n_genes));
+            }
+            None => units.decoys.push(Decoy {
+                kind: *kind,
+                size: rows.len(),
+                centre: row(id),
+            }),
+        }
+    }
+    Ok(units)
+}
+
+/// The size a set of `n` genes is compared at: the nearest of 2, 3, 4, 6,
+/// 8, 11, 16, … (`round(2^(i/2))`), so decoys are drawn for a few sizes, not
+/// every one.
+#[must_use]
+pub fn size_bin(n: usize) -> usize {
+    let i = (2.0 * (n.max(2) as f64).log2()).round();
+    2f64.powf(i / 2.0).round() as usize
 }
 
 /// The sets of one kind as regions of the cells' space: each a ball around
@@ -316,15 +369,19 @@ pub fn fit_regions(
     })
 }
 
-/// A projection pass by gene-set units: the panel's cell types trained on
-/// the gene table `feat` (frozen), fitted to `cells` as regions, each cell
-/// called by the region it most belongs to (its membership the
-/// probability); the units and their links written beside the labels.
+/// A projection pass by gene-set units: the panel's cell types, and the
+/// ontology `terms` when given, trained on the gene table `feat` (frozen).
+/// The cell types are fitted to `cells` as regions, each cell called by the
+/// region it most belongs to (its membership the probability), and written
+/// with their links beside the labels; the terms are aligned with the
+/// clusters of `groups` against their decoys.
 pub fn run_pass(
     markers: &str,
     out: &str,
     feat: &MatWithNames<Mat>,
     cells: &MatWithNames<Mat>,
+    groups: &[usize],
+    terms: &[GeneSet],
     cfg: &UnitConfig,
 ) -> Result<AnnotationOutputs> {
     legume_numeric::matrix::common_io::mkdir_parent(out)?;
@@ -340,6 +397,7 @@ pub fn run_pass(
             }),
         }
     }
+    by_type.extend_from_slice(terms);
     let units = train_units(&table_of(feat), &by_type, cfg)?;
     for (name, found, given) in &units.dropped {
         log::warn!("{name}: {found} of its {given} markers are in the gene table; not trained");
@@ -360,10 +418,18 @@ pub fn run_pass(
     graph_embedding_util::type_annotation::write_cell_labels(out, &cells.rows, &labels, &probs)?;
     write_units(&format!("{out}{UNITS_PARQUET}"), &units, &r)?;
     write_links(&format!("{out}{TYPE_LINKS_TSV}"), &r)?;
+    let term_alignment = if units.kinds.contains(&SetKind::Term) {
+        let path = format!("{out}{TERM_ALIGNMENT_PARQUET}");
+        write_alignment(&path, &align(&units, SetKind::Term, &flat, groups)?)?;
+        Some(path)
+    } else {
+        None
+    };
     Ok(AnnotationOutputs {
         argmax: Some(labels_path(out)),
         celltype_units: Some(format!("{out}{UNITS_PARQUET}")),
         celltype_links: Some(format!("{out}{TYPE_LINKS_TSV}")),
+        term_alignment,
         ..AnnotationOutputs::default()
     })
 }
@@ -404,6 +470,31 @@ fn write_units(path: &str, units: &Units, r: &Regions) -> Result<()> {
     Ok(())
 }
 
+/// `a` as a long table: cluster (`K{id}`), term, score, p, q.
+fn write_alignment(path: &str, a: &Alignment) -> Result<()> {
+    let t = a.terms.len();
+    let cluster: Vec<Box<str>> = (a.clusters.iter())
+        .flat_map(|k| std::iter::repeat_n(format!("K{k}").into(), t))
+        .collect();
+    let term: Vec<Box<str>> = (0..a.clusters.len())
+        .flat_map(|_| a.terms.iter().map(|x| x.as_str().into()))
+        .collect();
+    let rows: Vec<Box<str>> = (0..cluster.len()).map(|i| i.to_string().into()).collect();
+    write_named_table(
+        path,
+        "row",
+        &rows,
+        &[
+            ("cluster".into(), Column::Str(&cluster)),
+            ("term".into(), Column::Str(&term)),
+            ("score".into(), Column::F32(&a.score)),
+            ("p".into(), Column::F32(&a.p)),
+            ("q".into(), Column::F32(&a.q)),
+        ],
+    )?;
+    Ok(())
+}
+
 fn write_links(path: &str, r: &Regions) -> Result<()> {
     let k = r.names.len();
     let mut text = String::from("type_a\ttype_b\tlink\n");
@@ -414,6 +505,94 @@ fn write_links(path: &str, r: &Regions) -> Result<()> {
     }
     std::fs::write(path, text)?;
     Ok(())
+}
+
+/// How each cluster's cells align with each set of one kind: `[clusters ×
+/// sets]` row-major.
+#[derive(Debug, Clone)]
+pub struct Alignment {
+    pub terms: Vec<String>,
+    pub clusters: Vec<usize>,
+    /// The mean cosine of a cluster's cells (from the genes' origin) to the
+    /// set's centre.
+    pub score: Vec<f32>,
+    /// The share of the set's decoys aligned as well or better (with one
+    /// added to each count); NaN without decoys.
+    pub p: Vec<f32>,
+    /// `p` adjusted by Benjamini–Hochberg within each cluster.
+    pub q: Vec<f32>,
+}
+
+/// Align the clusters of `cells` (`[n × dim]`, `groups` per cell,
+/// `usize::MAX` left out) with the `kind` sets of `units`, each against the
+/// decoys of its size.
+pub fn align(units: &Units, kind: SetKind, cells: &[f32], groups: &[usize]) -> Result<Alignment> {
+    let dim = units.dim;
+    let n = groups.len();
+    anyhow::ensure!(cells.len() == n * dim, "cells are not {n} rows of {dim}");
+    let clusters: Vec<usize> = {
+        let set: std::collections::BTreeSet<usize> = groups
+            .iter()
+            .copied()
+            .filter(|&g| g != usize::MAX)
+            .collect();
+        set.into_iter().collect()
+    };
+    // Each cluster's mean unit vector, read from the genes' origin.
+    let means: Vec<Vec<f32>> = (clusters.iter())
+        .map(|&k| {
+            let mut m = vec![0.0f32; dim];
+            let members = (0..n).filter(|&c| groups[c] == k);
+            let mut count = 0usize;
+            for c in members {
+                let from: Vec<f32> = (cells[c * dim..(c + 1) * dim].iter())
+                    .zip(&units.origin)
+                    .map(|(x, o)| x - o)
+                    .collect();
+                m.iter_mut().zip(unit(&from)).for_each(|(a, b)| *a += b);
+                count += 1;
+            }
+            m.iter_mut().for_each(|a| *a /= count.max(1) as f32);
+            m
+        })
+        .collect();
+    let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    let picked: Vec<usize> = (0..units.names.len())
+        .filter(|&i| units.kinds[i] == kind)
+        .collect();
+    let decoys: Vec<&Decoy> = units.decoys.iter().filter(|d| d.kind == kind).collect();
+    let decoy_dirs: Vec<Vec<f32>> = decoys.iter().map(|d| unit(&d.centre)).collect();
+    let t = picked.len();
+    let mut score = Vec::with_capacity(clusters.len() * t);
+    let mut p = Vec::with_capacity(clusters.len() * t);
+    let mut q = Vec::with_capacity(clusters.len() * t);
+    for m in &means {
+        let mut row_p = Vec::with_capacity(t);
+        for &i in &picked {
+            let s = dot(m, &unit(&units.centres[i * dim..(i + 1) * dim]));
+            let null: Vec<f32> = (decoys.iter().zip(&decoy_dirs))
+                .filter(|(d, _)| d.size == units.bins[i])
+                .map(|(_, dir)| dot(m, dir))
+                .collect();
+            score.push(s);
+            row_p.push(if null.is_empty() {
+                f32::NAN
+            } else {
+                (1 + null.iter().filter(|&&x| x >= s).count()) as f32 / (1 + null.len()) as f32
+            });
+        }
+        q.extend(legume_numeric::matrix::hypothesis::benjamini_hochberg(
+            &row_p,
+        ));
+        p.extend(row_p);
+    }
+    Ok(Alignment {
+        terms: picked.iter().map(|&i| units.names[i].clone()).collect(),
+        clusters,
+        score,
+        p,
+        q,
+    })
 }
 
 /// `v` scaled to unit length (zero stays zero).

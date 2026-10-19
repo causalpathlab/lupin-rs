@@ -420,12 +420,10 @@ fn run_pass(
         }
         Route::Projection => {
             anyhow::ensure!(!args.markers.is_empty(), "projection needs --markers");
-            anyhow::ensure!(
-                !args.go && args.gaf.is_none() && args.gmt.is_none(),
-                "GO terms are scored by the enrichment pass; add --method enrichment"
-            );
             let loaded = loaded.context("--from is required for projection annotation")?;
-            match resolve_projection(args, Some(&loaded.manifest)) {
+            let projection = resolve_projection(args, Some(&loaded.manifest));
+            check_projection_gene_sets(args, projection)?;
+            match projection {
                 ProjectionMethod::Score => {
                     annotate_by_marker_score(&build_score_args(args)?, loaded)?
                 }
@@ -584,6 +582,18 @@ pub fn resolve_method(args: &AnnotateCliArgs, manifest: Option<&RunManifest>) ->
     }
 }
 
+/// Gene sets (`--go`, `--gaf`, `--gmt`) on a projection pass: trained as
+/// units by `--projection units`, scored by the enrichment pass otherwise.
+fn check_projection_gene_sets(args: &AnnotateCliArgs, projection: ProjectionMethod) -> Result<()> {
+    anyhow::ensure!(
+        projection == ProjectionMethod::Units
+            || (!args.go && args.gaf.is_none() && args.gmt.is_none()),
+        "GO terms are scored by the enrichment pass, or trained as units by \
+         --projection units; add --method enrichment or --projection units"
+    );
+    Ok(())
+}
+
 /// GO terms asked for, or no panel: what only the enrichment does.
 fn enrichment_only(args: &AnnotateCliArgs) -> bool {
     args.go || args.gaf.is_some() || args.gmt.is_some() || args.markers.is_empty()
@@ -650,8 +660,20 @@ fn run_projection_from_files(
         }
         ProjectionMethod::Units => {
             let a = build_units_args(args);
-            let cfg = a.config()?;
-            crate::annotate::geneset_units::run_pass(&a.markers, &a.out, &feat, &cell, &cfg)?;
+            let groups = match args.clusters.as_deref() {
+                Some(p) => crate::annotate::inputs::load_cluster_labels(p, &cell.rows)?.0,
+                None => vec![0; cell.rows.len()],
+            };
+            let terms = a.terms(&feat.rows)?;
+            crate::annotate::geneset_units::run_pass(
+                &a.markers,
+                &a.out,
+                &feat,
+                &cell,
+                &groups,
+                &terms,
+                &a.config()?,
+            )?;
         }
     }
     Ok(())
@@ -776,6 +798,10 @@ fn build_units_args(args: &AnnotateCliArgs) -> crate::annotate::args::UnitsArgs 
         seed: args.seed,
         device: args.device,
         device_no: args.device_no,
+        go: args.go,
+        gaf: args.gaf.clone(),
+        gmt: args.gmt.clone(),
+        go_obo: args.go_obo.clone(),
         no_clean: args.no_clean,
         ..crate::annotate::args::UnitsArgs::new(&args.markers, &args.out)
     }

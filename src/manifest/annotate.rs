@@ -211,8 +211,16 @@ pub fn annotate_by_units(args: &UnitsArgs, loaded: &Loaded) -> Result<()> {
             graph_embedding_util::type_annotation::CELL_LABEL_FILE_SUFFIXES,
         );
     }
-    let mut outputs =
-        crate::annotate::geneset_units::run_pass(&args.markers, &args.out, &feat, &cells, &cfg)?;
+    let terms = args.terms(&feat.rows)?;
+    let mut outputs = crate::annotate::geneset_units::run_pass(
+        &args.markers,
+        &args.out,
+        &feat,
+        &cells,
+        &groups,
+        &terms,
+        &cfg,
+    )?;
     let clusters = format!("{}{}", args.out, rounds::CLUSTERS);
     rounds::write_clusters(&clusters, &cells.rows, &rounds::cluster_ids(&groups))?;
     outputs.clusters = Some(clusters);
@@ -451,6 +459,7 @@ fn record(
             a.marker_embedding = rel(&out.marker_embedding);
             a.celltype_units = rel(&out.celltype_units);
             a.celltype_links = rel(&out.celltype_links);
+            a.term_alignment = rel(&out.term_alignment);
             a.ontology_signature = rel(&out.ontology_signature);
             a.ontology_term_effect = rel(&out.ontology_term_effect);
             loaded.manifest.defaults.colour_by = Some("annotation".into());

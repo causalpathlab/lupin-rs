@@ -105,7 +105,9 @@ fn planted_regions() -> (Units, Vec<f32>, usize) {
         centres: centres.concat(),
         dim: 4,
         covered: vec![(3, 3); 3],
+        bins: vec![3; 3],
         dropped: Vec::new(),
+        decoys: Vec::new(),
     };
     // A fixed spread of offsets, scaled per type: no random draws.
     let offsets: Vec<[f32; 4]> = (0..40)
@@ -154,10 +156,26 @@ fn types_that_share_cells_are_connected_and_apart_ones_are_not() {
 fn a_pass_calls_each_cell_by_its_region_and_writes_the_units_and_links() {
     use crate::annotate::marker_score::toy;
     let dir = tempfile::tempdir().unwrap();
-    let (feat, cells, _) = toy::matrices();
+    let (feat, cells, groups) = toy::matrices();
     let panel = toy::panel(dir.path());
     let out = dir.path().join("p").to_string_lossy().into_owned();
-    let o = run_pass(&panel, &out, &feat, &cells, &quick()).unwrap();
+    let terms = [
+        GeneSet {
+            name: "TERM1".into(),
+            kind: SetKind::Term,
+            genes: ["g0", "g1"].map(String::from).to_vec(),
+        },
+        GeneSet {
+            name: "TERM2".into(),
+            kind: SetKind::Term,
+            genes: ["g3", "g4"].map(String::from).to_vec(),
+        },
+    ];
+    let cfg = UnitConfig {
+        decoys: 9,
+        ..quick()
+    };
+    let o = run_pass(&panel, &out, &feat, &cells, &groups, &terms, &cfg).unwrap();
 
     let labels = std::fs::read_to_string(format!("{out}.argmax.tsv")).unwrap();
     let call = |cell: &str| {
@@ -180,6 +198,36 @@ fn a_pass_calls_each_cell_by_its_region_and_writes_the_units_and_links() {
     assert!(t.cols.iter().any(|c| &**c == "radius"), "{:?}", t.cols);
     let links = std::fs::read_to_string(format!("{out}{TYPE_LINKS_TSV}")).unwrap();
     assert!(links.lines().any(|l| l.starts_with("A\tB\t")), "{links}");
+
+    // Every cluster against every term, with its decoys' p and q.
+    let (strings, nums) = legume_numeric::matrix::parquet::read_table_columns(
+        &format!("{out}{TERM_ALIGNMENT_PARQUET}"),
+        &["cluster", "term"],
+        &["score", "p", "q"],
+    )
+    .unwrap();
+    assert_eq!(strings[0].len(), 4, "two clusters × two terms");
+    assert!(
+        nums[1].iter().all(|p| (0.0..=1.0).contains(p)),
+        "{:?}",
+        nums[1]
+    );
+    assert_eq!(
+        o.term_alignment.as_deref(),
+        Some(format!("{out}{TERM_ALIGNMENT_PARQUET}").as_str())
+    );
+}
+
+#[test]
+fn a_pass_without_terms_writes_no_alignment() {
+    use crate::annotate::marker_score::toy;
+    let dir = tempfile::tempdir().unwrap();
+    let (feat, cells, groups) = toy::matrices();
+    let panel = toy::panel(dir.path());
+    let out = dir.path().join("p").to_string_lossy().into_owned();
+    let o = run_pass(&panel, &out, &feat, &cells, &groups, &[], &quick()).unwrap();
+    assert!(o.term_alignment.is_none());
+    assert!(!std::path::Path::new(&format!("{out}{TERM_ALIGNMENT_PARQUET}")).exists());
 }
 
 /// Sets trained by contrast point away from the genes' common origin, not
@@ -207,4 +255,67 @@ fn cells_are_read_from_the_genes_origin_as_the_sets_are() {
         let a = r.membership[c * 2];
         assert_eq!(a > 0.5, c < 10, "cell {c}: membership of A {a}");
     }
+}
+
+/// Forty genes in 8 dimensions, ten along each of the first four axes, with
+/// small planted offsets on the other four; and cells in four clusters, one
+/// along each of those axes.
+fn four_groups() -> (GeneTable, Vec<f32>, Vec<usize>) {
+    let offset = |i: usize, d: usize| 0.1 * (((i * 7 + d * 3) % 5) as f32 - 2.0);
+    let mut rows = Vec::new();
+    for g in 0..40 {
+        let mut r = [0.0f32; 8];
+        r[g / 10] = 1.0;
+        for d in 4..8 {
+            r[d] = offset(g, d);
+        }
+        rows.extend(r);
+    }
+    let mut cells = Vec::new();
+    let mut groups = Vec::new();
+    for c in 0..80 {
+        let k = c / 20;
+        let mut v = [0.0f32; 8];
+        v[k] = 2.0;
+        for d in 4..8 {
+            v[d] = offset(c, d);
+        }
+        cells.extend(v);
+        groups.push(k);
+    }
+    let table = GeneTable {
+        names: (0..40).map(|g| format!("GENE{g}")).collect(),
+        rows,
+        dim: 8,
+    };
+    (table, cells, groups)
+}
+
+#[test]
+fn a_term_aligned_with_a_cluster_beats_random_sets_of_its_size_and_others_do_not() {
+    let (g, cells, groups) = four_groups();
+    let sets = [
+        set("TERM1", SetKind::Term, &[0, 1, 2, 3, 4]),
+        set("TERM2", SetKind::Term, &[10, 11, 12, 13, 14]),
+    ];
+    let cfg = UnitConfig {
+        decoys: 99,
+        ..quick()
+    };
+    let u = train_units(&g, &sets, &cfg).unwrap();
+    assert_eq!(
+        u.names,
+        ["TERM1", "TERM2"],
+        "decoys are kept apart from the sets"
+    );
+    let a = align(&u, SetKind::Term, &cells, &groups).unwrap();
+    let p = |cluster: usize, term: &str| {
+        let t = a.terms.iter().position(|x| x == term).unwrap();
+        a.p[cluster * a.terms.len() + t]
+    };
+    assert!(p(0, "TERM1") < 0.05, "{:?}", a.p);
+    assert!(p(1, "TERM2") < 0.05, "{:?}", a.p);
+    assert!(p(0, "TERM2") > 0.5, "{:?}", a.p);
+    assert!(p(1, "TERM1") > 0.5, "{:?}", a.p);
+    assert_eq!(a.q.len(), a.p.len());
 }

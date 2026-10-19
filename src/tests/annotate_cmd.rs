@@ -178,6 +178,32 @@ fn the_units_projection_takes_a_device_and_parses_back() {
 }
 
 #[test]
+fn only_the_units_projection_takes_gene_sets() {
+    let base = [
+        "-f",
+        "run.senna.json",
+        "-m",
+        "m.tsv",
+        "-o",
+        "out/x",
+        "--method",
+        "projection",
+        "--go",
+        "--projection",
+    ];
+    for (method, ok) in [
+        (ProjectionMethod::Units, true),
+        (ProjectionMethod::Score, false),
+        (ProjectionMethod::Ora, false),
+    ] {
+        let mut argv = base.to_vec();
+        argv.push(method.as_str());
+        let r = check_projection_gene_sets(&parse(&argv), method);
+        assert_eq!(r.is_ok(), ok, "{method:?}: {r:?}");
+    }
+}
+
+#[test]
 fn projection_from_embedding_files_runs_the_ora_unless_the_score_is_asked_for() {
     use legume_numeric::matrix::traits::IoOps;
     let dir = tempfile::tempdir().unwrap();

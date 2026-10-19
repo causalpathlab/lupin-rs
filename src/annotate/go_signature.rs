@@ -145,6 +145,40 @@ pub fn load_go_gene_sets(
     })
 }
 
+/// The gene sets a pass asks for: `--gaf`, else (`go`) the GO Consortium's
+/// annotations for the species `gene_names` belong to, else `--gmt`; read
+/// against `obo` and reconciled to `gene_names`.
+pub fn requested_gene_sets(
+    obo: &str,
+    go: bool,
+    gaf: Option<&str>,
+    gmt: Option<&str>,
+    gene_names: &[Box<str>],
+) -> anyhow::Result<GeneSetInputs> {
+    let gaf = match (gaf, go && gmt.is_none()) {
+        (Some(g), _) => Some(g.to_string()),
+        (None, true) => {
+            let species = anyhow::Context::context(
+                Species::detect(gene_names),
+                "--go: cannot tell the species from the gene names; pass --gaf instead",
+            )?;
+            let gaf = crate::manifest::data_files::go_annotations(species, None)?;
+            info!("GO annotations for {species:?} genes: {}", gaf.display());
+            Some(gaf.to_string_lossy().into_owned())
+        }
+        (None, false) => None,
+    };
+    load_go_gene_sets(
+        obo,
+        gaf.as_deref(),
+        gmt,
+        !crate::annotate::args::KEEP_IEA,
+        MIN_TESTABLE,
+        None,
+        gene_names,
+    )
+}
+
 /// Each cluster × term's test, as the cell types are tested.
 pub struct TermStats<'a> {
     pub nes_kt: &'a enrichment::Mat,
