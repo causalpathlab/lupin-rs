@@ -69,13 +69,14 @@ pub fn prepare(
         )?;
         let text = crate::annotate::provenance::methods(&record);
         fs::write(format!("{out}{METHODS}"), text + "\n")?;
+        let to = (data.search.user_groups()).map_or_else(
+            || super::data_files::GROUPS.to_string(),
+            |p| p.display().to_string(),
+        );
         for q in &record.questions {
             info!(
-                "{} stands alone; its siblings are in {}: answer in {} (`{}<TAB>join` or `alone`)",
-                q.label,
-                q.group,
-                super::data_files::GROUPS,
-                q.label
+                "{} stands alone; its siblings are in {}: answer in the annotate TUI, or in {to} (`{}<TAB>join` or `alone`)",
+                q.label, q.group, q.label
             );
         }
     }

@@ -62,6 +62,7 @@ fn data(obo: &str) -> crate::manifest::data_files::ClData {
         ontology: Some(obo.into()),
         rule_files: Vec::new(),
         alias_files: Vec::new(),
+        group_files: Vec::new(),
         search: crate::manifest::data_files::SearchPath::new(None),
         parsed: std::sync::OnceLock::new(),
     }

@@ -5,6 +5,10 @@
 //! paragraph a methods section needs. The same record gives the same text.
 
 use crate::annotate::celltype_tree::{panel_types, ClTerms, How, JoinQuestion, TypeTree};
+
+/// The fewest labels on terms for the groups to come from the ontology, as
+/// [`TypeTree::from_placed`] needs.
+const FEWEST_ON_TERMS: usize = 2;
 use serde::Serialize;
 
 /// One label: what placed it, and on which term.
@@ -22,6 +26,9 @@ pub struct LabelRecord {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Record {
     pub ontology_release: Option<String>,
+    /// Whether the groups came from the ontology; else from shared markers,
+    /// too few labels being on terms.
+    pub groups_from_ontology: bool,
     pub labels: Vec<LabelRecord>,
     /// The user's answers on types left alone: joined (`true`) or alone.
     pub answers: Vec<(String, bool)>,
@@ -52,13 +59,18 @@ impl Record {
                 }
             })
             .collect();
+        let alone = TypeTree::left_alone(terms, &placed);
         Self {
             ontology_release: terms.release.clone(),
+            groups_from_ontology: placed.on().count() >= FEWEST_ON_TERMS,
             labels,
-            answers: (types.iter())
-                .filter_map(|l| Some((l.clone(), terms.joined(l)?)))
+            answers: (alone.iter())
+                .filter_map(|(q, a)| Some((q.label.clone(), (*a)?)))
                 .collect(),
-            questions: TypeTree::join_questions(terms, panel),
+            questions: (alone.into_iter())
+                .filter(|(_, a)| a.is_none())
+                .map(|(q, _)| q)
+                .collect(),
         }
     }
 }
@@ -77,10 +89,10 @@ pub fn methods(r: &Record) -> String {
     let under = count(&|h| *h == How::Under);
     let kept = count(&|h| *h == How::Kept);
     let nowhere = count(&|h| *h == How::Nowhere);
-    let release = r
-        .ontology_release
-        .as_deref()
-        .unwrap_or("of unknown release");
+    let release = (r.ontology_release.as_deref()).map_or_else(
+        || "release not stated".to_string(),
+        |v| format!("release {v}"),
+    );
     let mut parts = vec![format!("{names} by a term's name or synonym")];
     if aliases > 0 {
         parts.push(format!("{aliases} by a curated alias"));
@@ -91,11 +103,14 @@ pub fn methods(r: &Record) -> String {
         ));
     }
     let mut text = format!(
-        "The marker panel's {n} cell-type labels were matched to the Cell Ontology (release {release}) \
+        "The marker panel's {n} cell-type labels were matched to the Cell Ontology ({release}) \
          with lupin's matching rules (cl_matching.json): {}.",
         parts.join(", "),
         n = r.labels.len()
     );
+    if !r.groups_from_ontology {
+        text += " With too few labels on terms to group them by the ontology, the coarse groups were formed by shared marker genes.";
+    }
     if under > 0 {
         text += &format!(
             " Of the labels no term matched, {under} {} placed under the term named by the longest run of its words, the words left off being ones the ontology uses for kinds of a term.",

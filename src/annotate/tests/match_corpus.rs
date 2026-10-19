@@ -749,7 +749,7 @@ fn the_record_drafts_a_methods_paragraph() {
         "Omega",
         "Sigma",
         "Tau",
-        "Mature CT16",
+        "Mature CT14",
         "CT6",
     ];
     let panel: Vec<(String, String)> = (labels.iter().enumerate())
@@ -775,4 +775,39 @@ fn the_record_drafts_a_methods_paragraph() {
         crate::annotate::provenance::methods(&r),
         "the same record, the same text"
     );
+}
+
+#[test]
+fn an_answer_is_read_in_any_case_and_only_answers_that_apply_are_recorded() {
+    let mut terms = terms();
+    assert_eq!(
+        terms.add_joins("CT2 cell\tJoin\nCT7 cell\tjoin\nCT1 cell\tmaybe\n"),
+        2
+    );
+    let panel: Vec<(String, String)> = (LONE.iter().chain(["CT7 cell"].iter()).enumerate())
+        .map(|(i, l)| (format!("GENE{i}"), (*l).to_string()))
+        .collect();
+    let r = crate::annotate::provenance::Record::of(&terms, &panel);
+    assert_eq!(
+        r.answers,
+        [("CT2 cell".to_string(), true)],
+        "CT7 is not left alone here: its answer did nothing"
+    );
+}
+
+#[test]
+fn the_methods_paragraph_says_when_groups_came_from_markers_and_reads_without_a_release() {
+    let obo = "[Term]\nid: CL:1\nname: CT1 cell\n";
+    let terms = ClTerms::parse(obo, &shipped());
+    let panel: Vec<(String, String)> = ["CT1 cell", "XQ", "YZ"]
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (format!("GENE{i}"), (*l).to_string()))
+        .collect();
+    let text = crate::annotate::provenance::methods(&crate::annotate::provenance::Record::of(
+        &terms, &panel,
+    ));
+    assert!(!text.contains("release of unknown"), "{text}");
+    assert!(text.contains("shared marker genes"), "{text}");
+    assert!(text.contains("too few"), "{text}");
 }

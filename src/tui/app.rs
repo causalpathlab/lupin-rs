@@ -593,6 +593,15 @@ pub struct App {
     /// Cell Ontology terms suggested for the panel types without one, once
     /// ranked (`c` in the tree pane).
     pub suggestions: Option<super::suggest::Suggestions>,
+    /// The questions left to ask on this panel ([`super::ask`]); `None`
+    /// until they are worked out.
+    questions: Option<std::collections::VecDeque<super::ask::Question>>,
+    /// Esc on a question pauses them until `Q`.
+    questions_paused: bool,
+    /// The question the open menu asks.
+    asked_now: Option<super::ask::Question>,
+    /// The questions have started a ranking for their terms: one per panel.
+    questions_ranked: bool,
     /// The ranking those come from, while it runs.
     pub ranking: Option<Ranking>,
     /// The files jobs hand to their child: a folder only the user can
@@ -718,6 +727,10 @@ impl App {
             tree_marked: Vec::new(),
             mixed: super::ontology::Mixed::default(),
             suggestions: None,
+            questions: None,
+            questions_paused: false,
+            asked_now: None,
+            questions_ranked: false,
             ranking: None,
             jobs_dir: None,
             order_shown: None,
@@ -791,6 +804,7 @@ impl App {
         self.keep_scores_current();
         self.keep_order_current();
         self.keep_ranking();
+        self.ask_next();
         // A question asked again lapses, and the status with it unless
         // something has said more since.
         if let Some((_, _, asked)) = self
@@ -2179,12 +2193,18 @@ impl App {
             Outcome::Open => {}
             Outcome::Cancel => {
                 let note = self.menu.take().map(|m| m.on_cancel).unwrap_or_default();
+                // A question closed unanswered is asked again after `Q`.
+                if let Some(q) = self.asked_now.take() {
+                    self.questions_paused = true;
+                    self.questions.get_or_insert_default().push_front(q);
+                }
                 // Nothing follows a pass the menu was asked about.
                 self.after_pass = AfterPass::Nothing;
                 self.status = note;
             }
             Outcome::Chosen(a) => {
                 self.menu = None;
+                self.asked_now = None;
                 self.choose(a);
             }
         }
@@ -2833,6 +2853,15 @@ impl App {
             {
                 self.suggest_terms();
             }
+            Focus::Tree
+                if code == KeyCode::Char('Q') && matches!(self.tree_mode, TreeMode::Panel) =>
+            {
+                self.questions_paused = false;
+                if self.questions.as_ref().is_some_and(|q| q.is_empty()) {
+                    self.questions = None;
+                }
+                self.status = "questions: answered one at a time; esc pauses them".into();
+            }
             // A search is of the ontology: open it there.
             Focus::Tree
                 if code == KeyCode::Char('/') && matches!(self.tree_mode, TreeMode::Panel) =>
@@ -3281,6 +3310,7 @@ impl App {
             Action::NoneSuggested { label } => {
                 self.status = format!("none taken: {label} stays without a Cell Ontology term");
             }
+            Action::Join { label, join, file } => self.answer_join(&label, join, &file),
             Action::LabelByName { cluster } => {
                 self.prompt = Some(Prompt {
                     title: format!(" label K{cluster} as (any name): "),
@@ -3493,6 +3523,7 @@ impl App {
         match terms {
             Ok(t) => {
                 self.cl = t;
+                self.forget_questions();
                 // Ranked against the terms as they were.
                 self.forget_suggestions();
                 self.rebuild_tree_keeping(None);
@@ -3623,6 +3654,7 @@ impl App {
         match read {
             Ok((panel, sets)) => {
                 self.panel = panel;
+                self.forget_questions();
                 self.forget_suggestions();
                 self.rebuild_tree();
                 self.original = sets;
@@ -4102,6 +4134,88 @@ impl App {
         self.ask_label(label, reason, remember);
     }
 
+    /// Ask the next question on the panel ([`super::ask`]) when the panel
+    /// tree is idle and they are not paused; a term's waits for its
+    /// suggestions, ranked by a job started here when they are not.
+    fn ask_next(&mut self) {
+        use super::ask::Question;
+        if self.questions_paused || !self.idle_on_panel_tree() {
+            return;
+        }
+        let Some(cl) = &self.cl else { return };
+        if self.questions.is_none() {
+            self.questions = Some(super::ask::queue(cl, &self.tree, &self.panel));
+        }
+        while let Some(q) = self.questions.as_mut().and_then(|q| q.pop_front()) {
+            match q {
+                Question::Join(j) => {
+                    let Some(cl) = &self.cl else { return };
+                    if cl.joined(&j.label).is_some() {
+                        continue;
+                    }
+                    let Some(file) = self.data_search.user_groups() else {
+                        self.status = "no user or project folder to write an answer to".into();
+                        return;
+                    };
+                    let class = cl.name(&j.class).unwrap_or(&j.class).to_string();
+                    self.menu = Some(super::ask::join_menu(&j, &class, &file));
+                    self.asked_now = Some(Question::Join(j));
+                    return;
+                }
+                Question::Term(label) => {
+                    let Some(cl) = &self.cl else { return };
+                    if !super::suggest::needs_term(cl, &self.tree, &label) {
+                        continue;
+                    }
+                    let labels = super::suggest::unmatched(cl, &self.tree);
+                    if self.offer_suggestions(&label) {
+                        if self.menu.is_some() {
+                            self.asked_now = Some(Question::Term(label));
+                        }
+                        return;
+                    }
+                    // Not ranked yet: rank once, and ask once it is; a
+                    // ranking that gave this one nothing passes it by.
+                    if self.ranking.is_none() {
+                        if self.questions_ranked {
+                            continue;
+                        }
+                        self.questions_ranked = true;
+                        self.start_ranking(labels, label.clone());
+                    }
+                    if let Some(q) = self.questions.as_mut() {
+                        q.push_front(Question::Term(label));
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Work the questions out again, for another panel or ontology.
+    fn forget_questions(&mut self) {
+        self.questions = None;
+        self.asked_now = None;
+        self.questions_ranked = false;
+    }
+
+    /// Write the user's answer for type `label` left alone to `file`, and
+    /// build the tree again with it.
+    fn answer_join(&mut self, label: &str, join: bool, file: &Path) {
+        let answer = if join { "join" } else { "alone" };
+        let header = "Answers on types left alone: label<TAB>join|alone (lupin TUI)";
+        match crate::manifest::data_files::append_row(file, header, &[label, answer]) {
+            Ok(()) => {
+                if let Some(cl) = self.cl.as_mut() {
+                    cl.add_joins(&format!("{label}\t{answer}\n"));
+                }
+                self.rebuild_tree_keeping(Some(label));
+                self.status = format!("{label}: {answer} (written to {})", file_name(file));
+            }
+            Err(e) => self.status = format!("{e:#}"),
+        }
+    }
+
     /// `c` on the panel tree: the selected type's suggested Cell Ontology
     /// terms when it has no term of its own, ranked first by a job (for
     /// every such type) when they are not yet.
@@ -4132,6 +4246,12 @@ impl App {
                 "the terms are being ranked: c offers them once they are (x stops it)".into();
             return;
         }
+        self.start_ranking(labels, label);
+    }
+
+    /// Rank terms for `labels` (the types without one) by a job, offering
+    /// `label`'s once it is done.
+    fn start_ranking(&mut self, labels: Vec<String>, label: String) {
         let (tx, rx) = channel();
         let started = self.job_file("suggest.json").and_then(|file| {
             let obo = self.args.obo.as_deref();
