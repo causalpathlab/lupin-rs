@@ -5,7 +5,7 @@
 //! or none), each with a reason. Genes can be added to a cell type's
 //! markers. Saving writes the edits as the next round.
 
-use super::figure_pane::FigureKey;
+use super::figure_pane::{FigureKey, MapMouse};
 use super::menu::{numbered, Action, Menu, Outcome};
 use super::ontology::ViewKey;
 use super::round::{decisions, Edit, RoundView};
@@ -22,7 +22,7 @@ use crate::trajectory::prior::Relation;
 use anyhow::Context as _;
 use enrichment::UNASSIGNED_LABEL;
 use legume_tui::graphics::Repick;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -654,6 +654,9 @@ pub struct App {
     map_hint: Option<String>,
     /// The user put the tree in the cell map's place (`V`).
     map_off: bool,
+    /// The status a hover on the cell map put there, which leaving goes
+    /// with.
+    hovered: Option<String>,
     /// The Cell Ontology on screen was opened from the cell map, which `o`
     /// goes back to.
     pub ontology_from_map: bool,
@@ -755,6 +758,7 @@ impl App {
             shift_enter: false,
             figures: None,
             cell_map: None,
+            hovered: None,
             map_hint: None,
             map_off: false,
             ontology_from_map: false,
@@ -2524,6 +2528,16 @@ impl App {
             }
             return;
         }
+        // Moving the cell map's labels takes its keys (Tab, the arrows,
+        // Esc) before the pane's.
+        if self.focus == Focus::Tree && matches!(self.tree_mode, TreeMode::Cells) {
+            if let Some(m) = &mut self.cell_map {
+                let k = m.edit_key(&k);
+                if self.took_figure_key(k, true) {
+                    return;
+                }
+            }
+        }
         // The focused pane's keys come first.
         if self.pane_key(k.code) {
             return;
@@ -4041,6 +4055,81 @@ impl App {
         self.took_figure_key(k, false)
     }
 
+    /// Whether the terminal's mouse reports are the screen's: while the cell
+    /// map is shown with nothing over it. Elsewhere the terminal keeps its
+    /// own text selection.
+    pub fn wants_mouse(&self) -> bool {
+        matches!(self.tree_mode, TreeMode::Cells)
+            && self.cell_map.as_ref().is_some_and(|m| m.grid.is_none())
+            && !self.help_open
+            && self.form.is_none()
+            && self.prompt.is_none()
+            && self.menu.is_none()
+            && self.browser.is_none()
+    }
+
+    /// Mouse event `m` on the cell map: a drag pans it, the wheel zooms it,
+    /// a press on a label drags the label, a click selects the cluster under
+    /// the pointer and a hover names it. Whether the screen changed.
+    pub fn mouse(&mut self, m: MouseEvent) -> bool {
+        let wanted = self.wants_mouse();
+        let Some(map) = &mut self.cell_map else {
+            return false;
+        };
+        if !wanted {
+            map.let_go();
+            return false;
+        }
+        let changed = match map.mouse(&m) {
+            MapMouse::None => false,
+            MapMouse::Redraw => true,
+            MapMouse::Hover(k) => {
+                let note = k.and_then(|k| self.cluster_note(k));
+                let left = self.hovered.take().filter(|h| *h == self.status);
+                match note {
+                    Some(n) => {
+                        let changed = n != self.status;
+                        self.status.clone_from(&n);
+                        self.hovered = Some(n);
+                        changed
+                    }
+                    None if left.is_some() => {
+                        self.status.clear();
+                        true
+                    }
+                    None => false,
+                }
+            }
+            MapMouse::Click(Some(k)) => {
+                if self.reselect(k as ClusterId) {
+                    self.status = self.cluster_note(k).unwrap_or_default();
+                }
+                true
+            }
+            MapMouse::Click(None) => false,
+            MapMouse::Say(s) => {
+                self.status = s;
+                true
+            }
+        };
+        self.replied = (!self.status.is_empty()).then(Instant::now);
+        self.sync_map_focus();
+        changed
+    }
+
+    /// Cluster `k` in a word: its name, label and cells.
+    fn cluster_note(&self, k: i32) -> Option<String> {
+        let r = self.round.as_ref()?;
+        let c = r.clusters.iter().find(|c| c.id as i32 == k)?;
+        let label = r.label_of(c.id, &self.edits);
+        Some(format!(
+            "{} · {} · {} cells",
+            crate::figures::cluster_name(k),
+            label.as_deref().unwrap_or("unlabelled"),
+            c.cells
+        ))
+    }
+
     /// Keys of the round's cell map, in the tree pane: `V` shows the tree
     /// again, `o` the Cell Ontology, Esc the clusters; the rest are the
     /// figure pane's.
@@ -4050,6 +4139,7 @@ impl App {
         };
         if code == KeyCode::Char('V') {
             v.exports.disarm();
+            v.let_go();
             v.grid = None;
             self.map_off = true;
             self.tree_mode = TreeMode::Panel;

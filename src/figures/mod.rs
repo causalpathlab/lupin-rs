@@ -223,6 +223,44 @@ impl View {
         self.clamp(reach);
     }
 
+    /// Move the picture by `(dx, dy)` pixels of a `w × h` frame of `whole`
+    /// (down the screen for `dy`), as a drag does.
+    pub(crate) fn pan_px(&mut self, dx: f32, dy: f32, whole: Bounds, w: usize, h: usize) {
+        let mut vp = self.viewport(whole, w, h);
+        vp.pan_px(dx, dy, &Limits::default());
+        self.centre_on(&vp, whole);
+        self.clamp(Self::reach(whole, w, h));
+    }
+
+    /// Zoom in (`inward`) or out by one step, the data under pixel `at` of
+    /// a `w × h` frame of `whole` kept under it, as the wheel does.
+    pub(crate) fn zoom_at(
+        &mut self,
+        inward: bool,
+        at: (f32, f32),
+        whole: Bounds,
+        w: usize,
+        h: usize,
+    ) {
+        let mut vp = self.viewport(whole, w, h);
+        let before = self.factor();
+        self.level = if inward {
+            (self.level + 1).min(MAX_ZOOM_LEVEL)
+        } else {
+            self.level.saturating_sub(1)
+        };
+        vp.zoom_at(self.factor() / before, at.0, at.1, &Limits::default());
+        self.centre_on(&vp, whole);
+        self.clamp(Self::reach(whole, w, h));
+    }
+
+    /// The centre `vp` looks at, in shares of `whole`.
+    fn centre_on(&mut self, vp: &Viewport, whole: Bounds) {
+        let [x0, y0, x1, y1] = whole;
+        self.cx = (vp.cx - x0) / (x1 - x0).max(1e-6);
+        self.cy = (vp.cy - y0) / (y1 - y0).max(1e-6);
+    }
+
     /// Keep the part on screen inside the whole extent, as the frame keeps
     /// it (`Limits.keep_inside`): centred on an axis it shows all of.
     fn clamp(&mut self, reach: [f32; 2]) {
@@ -321,15 +359,18 @@ pub(crate) struct Size {
 }
 
 /// A scatter drawn as a map: the frame, the camera it was drawn with, and
-/// where its labels and legend went (which the tests read, and a click on a
-/// label will).
-#[cfg_attr(not(test), allow(dead_code))]
+/// where its labels and legend went (which a press on a label finds).
 pub(crate) struct CellMap {
     pub(crate) frame: Frame,
     pub(crate) vp: Viewport,
     /// The labels placed, keyed by their place in `names`.
     pub(crate) placed: Vec<Placed<u32>>,
     pub(crate) names: Vec<Box<str>>,
+    /// The labels' line height in pixels, the unit of their offsets; none
+    /// without labels.
+    pub(crate) line: f32,
+    /// Where the legend went, which the tests read.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) legend: Option<Rect>,
     /// The legend's and the labels' text, when it was kept as text (for a
     /// PDF) rather than drawn into the frame.
@@ -714,18 +755,19 @@ impl CellFigures {
     }
 
     /// The figure, drawn to fit `size`; a scatter in `style` at `view` (a
-    /// thumbnail shows it whole).
+    /// thumbnail shows it whole), its labels moved by `moved`.
     pub(crate) fn figure(
         &self,
         panel: Panel,
         size: Size,
         style: &Style,
         view: View,
+        moved: &Offsets<String>,
     ) -> Result<Picture> {
         Ok(match panel {
-            Panel::Layout { .. } | Panel::Diffusion { .. } => {
-                Picture::Map(Box::new(self.cell_map(panel, size, style, view, false)?))
-            }
+            Panel::Layout { .. } | Panel::Diffusion { .. } => Picture::Map(Box::new(
+                self.cell_map(panel, size, style, view, false, moved)?,
+            )),
             Panel::Order => Picture::Svg(self.order_figure(size.w, size.h)),
             Panel::Connectivity => Picture::Svg(self.connectivity_figure(size.w, size.h)),
         })
@@ -739,6 +781,28 @@ impl CellFigures {
             .collect();
         anyhow::ensure!(!finite.is_empty(), "no cell has coordinates");
         Ok(bounds_of(&x, &y, finite.into_iter()))
+    }
+
+    /// The cell of `panel` drawn nearest pixel `(px, py)` of a frame with
+    /// camera `vp`, when one is within `reach` pixels.
+    pub(crate) fn cell_at(
+        &self,
+        panel: Panel,
+        vp: &Viewport,
+        px: f32,
+        py: f32,
+        reach: f32,
+    ) -> Option<usize> {
+        let (x, y) = self.coords(panel).ok()?;
+        (0..x.len())
+            .filter(|&i| x[i].is_finite() && y[i].is_finite())
+            .map(|i| {
+                let (cx, cy) = vp.to_px([x[i], y[i]]);
+                (i, (cx - px).hypot(cy - py))
+            })
+            .filter(|&(_, d)| d <= reach)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
     }
 
     /// The coordinates of the scatter `panel`.
@@ -759,14 +823,15 @@ impl CellFigures {
 
     /// Write `panel` as `{prefix}.{kind}.{panel}`, moved past existing
     /// files as `-2`, `-3` …: a scatter as it is on screen, as a PDF of its
-    /// raster with its text set over it (as senna exports its map); the
-    /// other panels as `.svg` and `.pdf`.
+    /// raster with its text set over it (as senna exports its map), its
+    /// labels moved by `moved`; the other panels as `.svg` and `.pdf`.
     pub(crate) fn export(
         &self,
         panel: Panel,
         style: &Style,
         view: View,
         frame: Option<(u32, u32)>,
+        moved: &Offsets<String>,
     ) -> Result<Export> {
         let base = free_base(&format!(
             "{}.{}.{}",
@@ -777,7 +842,7 @@ impl CellFigures {
         let size = export_size(frame);
         let b = base.to_string_lossy();
         let files = if panel.is_scatter() {
-            let mut m = self.cell_map(panel, size, style, view, true)?;
+            let mut m = self.cell_map(panel, size, style, view, true, moved)?;
             let pdf = PathBuf::from(format!("{b}.pdf"));
             let page = Page {
                 img: m.frame.to_image(),
@@ -787,7 +852,7 @@ impl CellFigures {
                 .with_context(|| format!("writing {}", pdf.display()))?;
             vec![pdf]
         } else {
-            let Picture::Svg(fig) = self.figure(panel, size, style, view)? else {
+            let Picture::Svg(fig) = self.figure(panel, size, style, view, moved)? else {
                 unreachable!("only a scatter is a map")
             };
             let formats = FigureFormats {
@@ -821,8 +886,9 @@ impl CellFigures {
     /// point job on the paper page; with the prior's direct edges as arrows
     /// between the type medians on a layout; the legend in the top-left
     /// corner; and the labels at the medians of their cells (of the cells on
-    /// screen when zoomed), placed so none covers another. With `keep_text`
-    /// the text is kept as text, for a PDF, instead of drawn.
+    /// screen when zoomed), placed so none covers another; a label the user
+    /// moved (`moved`, by name) sits its offset away. With `keep_text` the
+    /// text is kept as text, for a PDF, instead of drawn.
     pub(crate) fn cell_map(
         &self,
         panel: Panel,
@@ -830,6 +896,7 @@ impl CellFigures {
         style: &Style,
         view: View,
         keep_text: bool,
+        moved: &Offsets<String>,
     ) -> Result<CellMap> {
         let (x, y) = self.coords(panel)?;
         let (x, y) = (&x[..], &y[..]);
@@ -856,8 +923,10 @@ impl CellFigures {
         let legend = self.draw_legend(&mut frame, &legend, size.text_px);
         let mut names = Vec::new();
         let mut labels = Vec::new();
+        let mut line = 0.0;
         if let Some(k) = style.labels {
             let font = Font::for_cell_height(size.text_px * TEXT_SCALES[k], true);
+            line = font.line_height() as f32;
             // Coloured by cluster, the labels name the clusters; else the
             // types. The whole scatter's are kept; a zoomed one's are of the
             // cells on screen.
@@ -906,13 +975,20 @@ impl CellFigures {
             }
         }
         let reserved: Vec<Rect> = legend.into_iter().collect();
-        let placed = place(&mut frame, labels, &reserved, &Offsets::default());
+        // The moves are kept by name; here the labels go by their place.
+        let offsets: Offsets<u32> = names
+            .iter()
+            .enumerate()
+            .filter_map(|(k, n)| Some((k as u32, moved.get(&n.to_string())?)))
+            .collect();
+        let placed = place(&mut frame, labels, &reserved, &offsets);
         let text = frame.take_text();
         Ok(CellMap {
             frame,
             vp,
             placed,
             names,
+            line,
             legend,
             text,
         })

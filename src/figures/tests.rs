@@ -43,14 +43,22 @@ const SIZE: Size = Size {
 
 /// `t`'s figure of `panel` at [`SIZE`] in `style`, whole.
 fn draw(t: &CellFigures, panel: Panel, style: &Style) -> Picture {
-    t.figure(panel, SIZE, style, View::default()).unwrap()
+    t.figure(panel, SIZE, style, View::default(), &Offsets::default())
+        .unwrap()
 }
 
 /// `t`'s first layout as a cell map at [`SIZE`] in `style` at `view`, its
 /// text kept as text.
 fn map_at(t: &CellFigures, style: &Style, view: View) -> CellMap {
-    t.cell_map(Panel::Layout { k: 0 }, SIZE, style, view, true)
-        .unwrap()
+    t.cell_map(
+        Panel::Layout { k: 0 },
+        SIZE,
+        style,
+        view,
+        true,
+        &Offsets::default(),
+    )
+    .unwrap()
 }
 
 fn map(t: &CellFigures, style: &Style) -> CellMap {
@@ -267,12 +275,24 @@ fn export_writes_svg_and_pdf_past_existing_files() {
     let mut t = data();
     t.manifest = dir.join("x.senna.json");
     let first = t
-        .export(Panel::Order, &Style::default(), View::default(), None)
+        .export(
+            Panel::Order,
+            &Style::default(),
+            View::default(),
+            None,
+            &Offsets::default(),
+        )
         .unwrap();
     assert_eq!(first.base, dir.join("x.trajectory.order"));
     assert!(first.files.iter().all(|f| f.is_file()), "{:?}", first.files);
     let second = t
-        .export(Panel::Order, &Style::default(), View::default(), None)
+        .export(
+            Panel::Order,
+            &Style::default(),
+            View::default(),
+            None,
+            &Offsets::default(),
+        )
         .unwrap();
     assert_eq!(second.base, dir.join("x.trajectory.order-2"));
 }
@@ -545,7 +565,9 @@ fn a_zoomed_scatter_labels_only_the_types_on_screen() {
         Picture::Map(_) => panic!("the order panel is no map"),
     };
     assert_eq!(
-        svg(t.figure(Panel::Order, SIZE, &style, zoomed).unwrap()),
+        svg(t
+            .figure(Panel::Order, SIZE, &style, zoomed, &Offsets::default())
+            .unwrap()),
         svg(draw(&t, Panel::Order, &style))
     );
 }
@@ -584,7 +606,14 @@ fn the_legend_fits_the_figure_or_stays_out_of_a_thumbnail() {
         text_px: 16.0,
     };
     let m = t
-        .cell_map(Panel::Layout { k: 0 }, size, &style, View::default(), true)
+        .cell_map(
+            Panel::Layout { k: 0 },
+            size,
+            &style,
+            View::default(),
+            true,
+            &Offsets::default(),
+        )
         .unwrap();
     let text = texts(&m);
     assert_eq!(text.len(), LEGEND_MAX, "{text:?}");
@@ -600,6 +629,7 @@ fn the_legend_fits_the_figure_or_stays_out_of_a_thumbnail() {
             &style,
             View::default(),
             true,
+            &Offsets::default(),
         )
         .unwrap();
     assert!(thumb.legend.is_none() && thumb.text.is_empty());
@@ -878,6 +908,7 @@ fn a_rounds_figures_export_as_cells_not_trajectory() {
             &Style::opening(&f),
             View::default(),
             None,
+            &Offsets::default(),
         )
         .unwrap();
     assert!(
@@ -999,4 +1030,76 @@ fn a_round_without_the_score_has_no_call_or_margin_colouring() {
     let dir = tempfile::tempdir().unwrap();
     let colourings = of_round(&round_with_layout(dir.path())).colourings();
     assert!(!colourings.contains(&Colouring::Call) && !colourings.contains(&Colouring::Margin));
+}
+
+#[test]
+fn a_drag_pans_the_view_and_the_wheel_zooms_about_the_pointer() {
+    let t = data();
+    let whole = t.whole(Panel::Layout { k: 0 }).unwrap();
+    let (w, h) = (320, 240);
+    let mut v = View::default();
+    v.pan_px(10.0, 0.0, whole, w, h);
+    assert_eq!(v, View::default(), "the whole scatter does not pan");
+    // A step in, the data under the pointer kept under it.
+    let at = (80.0, 120.0);
+    let before = v.viewport(whole, w, h).to_data(at.0, at.1);
+    v.zoom_at(true, at, whole, w, h);
+    assert_eq!(v.level, 1);
+    let after = v.viewport(whole, w, h).to_data(at.0, at.1);
+    assert!((before[0] - after[0]).abs() < 1e-3, "{before:?} {after:?}");
+    // Dragged right, the picture follows the pointer.
+    let cell = [10.0, 3.0];
+    let was = v.viewport(whole, w, h).to_px(cell);
+    v.pan_px(10.0, 0.0, whole, w, h);
+    let now = v.viewport(whole, w, h).to_px(cell);
+    assert!((now.0 - was.0 - 10.0).abs() < 1e-2, "{was:?} {now:?}");
+    v.zoom_at(false, at, whole, w, h);
+    assert_eq!(v, View::default(), "a step out shows it whole again");
+}
+
+#[test]
+fn a_moved_label_sits_its_offset_in_lines_from_its_cells() {
+    let t = data();
+    let style = Style {
+        colouring: Colouring::Type,
+        ..Style::default()
+    };
+    let at = |m: &CellMap| {
+        *m.placed
+            .iter()
+            .find(|p| m.names[p.key as usize].as_ref() == "A")
+            .expect("A placed")
+    };
+    let still = map(&t, &style);
+    assert!(still.line > 0.0);
+    let mut o = Offsets::default();
+    o.nudge("A".to_string(), (0.0, 2.0));
+    let moved = t
+        .cell_map(
+            Panel::Layout { k: 0 },
+            SIZE,
+            &style,
+            View::default(),
+            true,
+            &o,
+        )
+        .unwrap();
+    let (a, b) = (at(&still), at(&moved));
+    assert!(b.moved && !a.moved);
+    let dy = b.rect[1] - a.rect[1];
+    assert!(
+        (dy - 2.0 * moved.line).abs() < 2.0,
+        "{dy} for {}",
+        moved.line
+    );
+}
+
+#[test]
+fn the_cell_under_a_pixel_is_the_nearest_within_reach() {
+    let t = data();
+    let vp = View::default().viewport(t.whole(Panel::Layout { k: 0 }).unwrap(), 320, 240);
+    let (px, py) = vp.to_px([5.0, 5.0]);
+    let panel = Panel::Layout { k: 0 };
+    assert_eq!(t.cell_at(panel, &vp, px + 1.0, py, 4.0), Some(5));
+    assert_eq!(t.cell_at(panel, &vp, px, py - 60.0, 4.0), None, "none near");
 }

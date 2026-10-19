@@ -341,6 +341,17 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
   type with none there has no label. A new layout (`m`), diffusion pair or
   figure (`v`, or opened from the grid) starts whole. The order and
   connectivity panels do not zoom.
+  On the round's cell map the mouse works too, as on senna view's map, but
+  only while the map is shown (elsewhere the terminal keeps its text
+  selection): a drag pans, the wheel zooms a step at the pointer, a click
+  selects the cluster under it and the pointer names it in the status line.
+  A label pressed is dragged instead of the map; `E` moves the labels from
+  the keys (Tab and Shift+Tab choose one, the arrows move it half a line,
+  Shift two, Backspace puts it back, Esc ends). A label moved keeps its
+  distance from its cells in lines, at any zoom and in an export, and is kept
+  by name per round and layout in `{round}.lupin_labels.json` beside the run,
+  lupin's own file, never the run's manifest. A file there that cannot be
+  read is left as it is, and the labels stay where they are, saying so.
 - **Order by type**: median pseudotime and middle half per type, in order of
   the median.
 - **Connectivity**: PAGA connectivity between the node types as a Hinton

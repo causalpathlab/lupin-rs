@@ -17,6 +17,13 @@ pub(crate) fn made(p: &FigurePane) -> (ratatui_image::picker::ProtocolType, bool
 
 /// Two layouts, a diffusion map and one edge, on placeholder types.
 pub(crate) fn pane() -> FigurePane {
+    let mut p = FigurePane::new(figures(), &Picker::halfblocks());
+    p.shown = true;
+    p
+}
+
+/// [`pane`]'s figures.
+fn figures() -> CellFigures {
     let n = 30;
     let x: Vec<f32> = (0..n).map(|i| i as f32).collect();
     let y: Vec<f32> = (0..n).map(|i| (i % 5) as f32).collect();
@@ -25,7 +32,7 @@ pub(crate) fn pane() -> FigurePane {
         d[(i, 1)] = x[i];
         d[(i, 2)] = y[i];
     }
-    let data = CellFigures {
+    CellFigures {
         manifest: "run.senna.json".into(),
         pseudotime: (0..n).map(|i| i as f32 / n as f32).collect(),
         types: (0..n)
@@ -55,10 +62,7 @@ pub(crate) fn pane() -> FigurePane {
             order_agreement: 0.9,
         }],
         ..CellFigures::default()
-    };
-    let mut p = FigurePane::new(data, &Picker::halfblocks());
-    p.shown = true;
-    p
+    }
 }
 
 #[test]
@@ -350,7 +354,8 @@ fn the_scatter_on_screen_is_the_cell_map_on_the_paper_page() {
     let area = Rect::new(0, 0, 30, 10);
     let look = p.look(p.current(), p.view);
     let (cw, ch) = p.cell_px();
-    let img = FigurePane::rasterised(&p.data, look, &p.style, (cw, ch), area).unwrap();
+    let moved = Offsets::default();
+    let (img, _) = FigurePane::rasterised(&p.data, look, &p.style, &moved, (cw, ch), area).unwrap();
     assert_eq!((img.width(), img.height()), (30 * cw, 10 * ch));
     let [r, g, b] = legume_tui::map::theme::Theme::PAPER.background;
     assert_eq!(
@@ -358,4 +363,228 @@ fn the_scatter_on_screen_is_the_cell_map_on_the_paper_page() {
         [r, g, b, 255],
         "the page, not white"
     );
+}
+
+use legume_tui::map::offsets::OffsetBook;
+use ratatui::crossterm::event::{KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use std::path::Path;
+
+/// Where the pointer tests draw the map.
+const MAP: Rect = Rect::new(2, 1, 60, 24);
+
+/// [`figures`] as a round's cells, in two clusters, its run `run.L1` in
+/// `dir`; labelled by type and drawn in [`MAP`].
+fn map_in(dir: &Path) -> FigurePane {
+    let mut data = figures();
+    data.source = crate::figures::Source::Round;
+    data.manifest = dir.join("run.L1.senna.json");
+    data.cluster = (0..30).map(|i| i32::from(i >= 15)).collect();
+    let mut p = FigurePane::showing(data, &Picker::halfblocks());
+    p.style.colouring = crate::figures::Colouring::Type;
+    drawn(&p);
+    p
+}
+
+fn drawn(p: &FigurePane) {
+    assert!(p.protocol(MAP).is_ok());
+}
+
+fn at(kind: MouseEventKind, (column, row): (u16, u16)) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+    KeyEvent::new(code, modifiers)
+}
+
+/// The screen cell over frame pixel `(x, y)` of the map.
+fn cell_of(p: &FigurePane, (x, y): (f32, f32)) -> (u16, u16) {
+    let (cw, ch) = p.cell_px();
+    (
+        MAP.x + (x / cw as f32) as u16,
+        MAP.y + (y / ch as f32) as u16,
+    )
+}
+
+/// Where label `name` was placed on the map as last drawn, and whether it
+/// was moved.
+fn label(p: &FigurePane, name: &str) -> ([f32; 4], bool) {
+    let on = p.on_screen.borrow().clone().expect("drawn");
+    let k = on
+        .names
+        .iter()
+        .position(|n| n.as_ref() == name)
+        .expect("named");
+    let q = on
+        .placed
+        .iter()
+        .find(|q| q.key as usize == k)
+        .expect("placed");
+    (q.rect, q.moved)
+}
+
+/// The screen cell over label `name`.
+fn label_cell(p: &FigurePane, name: &str) -> (u16, u16) {
+    let (r, _) = label(p, name);
+    cell_of(p, (0.5 * (r[0] + r[2]), 0.5 * (r[1] + r[3])))
+}
+
+/// The screen cell over cell `i` of the first layout.
+fn cell_cell(p: &FigurePane, i: usize) -> (u16, u16) {
+    let on = p.on_screen.borrow().clone().expect("drawn");
+    let l = &p.data.layouts[0];
+    cell_of(p, on.vp.to_px([l.x[i], l.y[i]]))
+}
+
+#[test]
+fn the_pointer_shows_and_picks_a_cluster_drags_the_map_and_the_wheel_zooms() {
+    use MouseButton::Left;
+    use MouseEventKind::{Down, Drag, Moved, ScrollUp, Up};
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = map_in(dir.path());
+    p.style.labels = None;
+    drawn(&p);
+    let c = cell_cell(&p, 20);
+    assert_eq!(p.mouse(&at(Moved, c)), MapMouse::Hover(Some(1)));
+    assert_eq!(p.mouse(&at(Down(Left), c)), MapMouse::None);
+    assert_eq!(p.mouse(&at(Up(Left), c)), MapMouse::Click(Some(1)));
+    let off = (MAP.x, MAP.y + MAP.height - 1);
+    assert_eq!(
+        p.mouse(&at(Moved, off)),
+        MapMouse::Hover(None),
+        "no cell near"
+    );
+    // Whole, the map does not pan; the wheel zooms it, then it does.
+    let mid = (MAP.x + 30, MAP.y + 12);
+    assert_eq!(p.mouse(&at(ScrollUp, mid)), MapMouse::Redraw);
+    assert_eq!(p.view.level, 1);
+    drawn(&p);
+    let cx = p.view.cx;
+    p.mouse(&at(Down(Left), mid));
+    assert_eq!(
+        p.mouse(&at(Drag(Left), (mid.0 + 2, mid.1))),
+        MapMouse::Redraw
+    );
+    p.mouse(&at(Up(Left), (mid.0 + 2, mid.1)));
+    assert!(p.view.cx < cx, "dragged right, the view goes left");
+    // Off the map, nothing.
+    assert_eq!(p.mouse(&at(ScrollUp, (0, 0))), MapMouse::None);
+}
+
+#[test]
+fn a_dragged_label_is_kept_beside_the_run_and_read_again() {
+    use MouseButton::Left;
+    use MouseEventKind::{Down, Drag, Up};
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = map_in(dir.path());
+    assert!(!label(&p, "CT1").1);
+    let from = label_cell(&p, "CT1");
+    let to = (from.0, from.1 + 2);
+    p.mouse(&at(Down(Left), from));
+    assert_eq!(p.mouse(&at(Drag(Left), to)), MapMouse::Redraw);
+    p.mouse(&at(Up(Left), to));
+    assert_eq!(p.view, View::default(), "the label moved, not the map");
+    let file = dir.path().join("run.L1.lupin_labels.json");
+    let o = OffsetBook::load(&file)
+        .unwrap()
+        .layout("run.L1:layout_phate");
+    let (dx, dy) = o.get(&"CT1".to_string()).expect("kept");
+    assert!(dx == 0.0 && dy > 0.0, "{dx} {dy}");
+    let written: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(written, ["run.L1.lupin_labels.json"], "nothing else");
+    // Opened again, the label is where it was put.
+    let again = map_in(dir.path());
+    assert!(label(&again, "CT1").1);
+    assert!(!label(&again, "CT2").1);
+}
+
+#[test]
+fn a_labels_file_that_cannot_be_read_is_left_as_it_is_and_said() {
+    use MouseButton::Left;
+    use MouseEventKind::{Down, Drag, Up};
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("run.L1.lupin_labels.json");
+    std::fs::write(&file, "{ not a book").unwrap();
+    let mut p = map_in(dir.path());
+    let from = label_cell(&p, "CT1");
+    let to = (from.0, from.1 + 2);
+    p.mouse(&at(Down(Left), from));
+    match p.mouse(&at(Drag(Left), to)) {
+        MapMouse::Say(s) => assert!(s.contains("run.L1.lupin_labels.json"), "{s}"),
+        r => panic!("{r:?}"),
+    }
+    p.mouse(&at(Up(Left), to));
+    match p.edit_key(&key(KeyCode::Char('E'), KeyModifiers::SHIFT)) {
+        FigureKey::Say(s) => assert!(s.contains("run.L1.lupin_labels.json"), "{s}"),
+        r => panic!("{r:?}"),
+    }
+    assert!(!p.editing());
+    drawn(&p);
+    assert!(!label(&p, "CT1").1, "the labels stay where they are");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "{ not a book");
+}
+
+#[test]
+fn capital_e_moves_the_labels_from_the_keys_and_keeps_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = map_in(dir.path());
+    let none = KeyModifiers::NONE;
+    assert_eq!(
+        p.edit_key(&key(KeyCode::Char('t'), none)),
+        FigureKey::Ignored
+    );
+    assert!(matches!(
+        p.edit_key(&key(KeyCode::Char('E'), KeyModifiers::SHIFT)),
+        FigureKey::Say(_)
+    ));
+    assert!(p.editing());
+    assert!(matches!(
+        p.edit_key(&key(KeyCode::Right, none)),
+        FigureKey::Say(_)
+    ));
+    let file = dir.path().join("run.L1.lupin_labels.json");
+    let o = OffsetBook::load(&file)
+        .unwrap()
+        .layout("run.L1:layout_phate");
+    let moved: Vec<_> = o.iter().map(|(k, d)| (k.clone(), d)).collect();
+    assert_eq!(
+        moved,
+        [("CT1".to_string(), (0.5, 0.0))],
+        "the first as read"
+    );
+    // Tab goes on to the next; Backspace puts it back.
+    p.edit_key(&key(KeyCode::Tab, none));
+    p.edit_key(&key(KeyCode::Down, KeyModifiers::SHIFT));
+    p.edit_key(&key(KeyCode::BackTab, none));
+    p.edit_key(&key(KeyCode::Backspace, none));
+    let o = OffsetBook::load(&file)
+        .unwrap()
+        .layout("run.L1:layout_phate");
+    let moved: Vec<_> = o.iter().map(|(k, d)| (k.clone(), d)).collect();
+    assert_eq!(moved, [("CT2".to_string(), (0.0, 2.0))]);
+    assert_eq!(p.edit_key(&key(KeyCode::Esc, none)), FigureKey::Took);
+    assert!(!p.editing());
+    // Out of the mode, the arrows pan again.
+    assert_eq!(p.edit_key(&key(KeyCode::Right, none)), FigureKey::Ignored);
+}
+
+/// The screen cell over data point `xy` of `p`'s scatter, as last drawn
+/// wherever it was drawn.
+pub(crate) fn screen_at(p: &FigurePane, xy: [f32; 2]) -> (u16, u16) {
+    let on = p.on_screen.borrow().clone().expect("drawn");
+    let area = p.area.get().expect("drawn");
+    let (cw, ch) = p.cell_px();
+    let (x, y) = on.vp.to_px(xy);
+    (
+        area.x + (x / cw as f32) as u16,
+        area.y + (y / ch as f32) as u16,
+    )
 }

@@ -1,21 +1,28 @@
 //! The figure pane of the order view: a trajectory run's figures drawn in the
 //! terminal, a scatter as senna draws its map, exported (a scatter as a PDF,
 //! the other panels as SVG + PDF) and logged in the gallery
-//! (`docs/trajectory-plan.md` §6).
+//! (`docs/trajectory-plan.md` §6). The round's cell map is one too, with the
+//! mouse: a drag pans, the wheel zooms, a click picks the cluster under it,
+//! and a label pressed is dragged. Labels moved (by the mouse or `E`) are kept
+//! beside the run in lupin's own `{prefix}.lupin_labels.json`.
 
 use super::app::step;
 use super::gallery::{Gallery, Status};
-use crate::figures::{self, CellFigures, Panel, Size, Style, View};
+use crate::figures::{self, CellFigures, CellMap, Colouring, Panel, Picture, Size, Style, View};
 use crate::manifest::run::load;
 use anyhow::{Context, Result};
 use image::RgbaImage;
 use legume_tui::map::display::fit_protocol;
-use ratatui::crossterm::event::KeyCode;
+use legume_tui::map::labels::{Hits, Placed};
+use legume_tui::map::offsets::{OffsetBook, Offsets};
+use legume_tui::map::pointer::{EditKey, LabelEdit, MapAction, MapArea, Pointer, PointerOpts};
+use legume_tui::map::viewport::Viewport;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use rayon::prelude::*;
-use std::cell::{Ref, RefCell};
+use std::cell::{Cell, Ref, RefCell};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
@@ -144,12 +151,14 @@ impl Exports {
 }
 
 /// What a figure on screen depends on: the panel and, for a scatter, the
-/// style and the view (the other panels ignore both).
+/// style, the view and the labels moved so far (the other panels ignore
+/// them).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Look {
     panel: Panel,
     style: Option<Style>,
     view: View,
+    moves: u32,
 }
 
 /// A figure drawn for the terminal, or why it could not be.
@@ -158,8 +167,65 @@ type Drawn = Result<Protocol, String>;
 /// A figure on screen: what it shows, at a size in terminal cells.
 type Sized = (Look, (u16, u16));
 
+/// A figure rasterised, with where its labels went when it is a scatter.
+type Raster = Result<(RgbaImage, Option<Arc<OnMap>>), String>;
+
 /// A look being rasterised, and where its pixels will come.
-type Rasterising = (Look, Receiver<Result<RgbaImage, String>>);
+type Rasterising = (Look, Receiver<Raster>);
+
+/// A scatter as drawn: its camera and its labels, which the pointer and
+/// label editing find.
+pub(crate) struct OnMap {
+    pub(crate) panel: Panel,
+    pub(crate) vp: Viewport,
+    pub(crate) placed: Vec<Placed<u32>>,
+    pub(crate) names: Vec<Box<str>>,
+    /// The labels' line height in pixels: an offset's unit.
+    pub(crate) line: f32,
+    hits: Hits<u32>,
+}
+
+impl OnMap {
+    fn of(panel: Panel, m: &CellMap) -> Self {
+        let mut hits = Hits::default();
+        hits.record(m.vp, &m.placed);
+        Self {
+            panel,
+            vp: m.vp,
+            placed: m.placed.clone(),
+            names: m.names.clone(),
+            line: m.line,
+            hits,
+        }
+    }
+
+    /// The moves `moved` keeps by name, by the labels' places here.
+    fn by_place(&self, moved: &Offsets<String>) -> Offsets<u32> {
+        self.names
+            .iter()
+            .enumerate()
+            .filter_map(|(k, n)| Some((k as u32, moved.get(&n.to_string())?)))
+            .collect()
+    }
+}
+
+/// What the pointer did on the map.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MapMouse {
+    /// Nothing to show.
+    None,
+    /// The map or a label moved: draw it again.
+    Redraw,
+    /// The pointer is over this cluster's cells, or no cluster's.
+    Hover(Option<i32>),
+    /// A click on this cluster's cells, or on no cluster's.
+    Click(Option<i32>),
+    /// Taken; the status line says this.
+    Say(String),
+}
+
+/// The file beside the run that keeps its moved labels, lupin's own.
+const LABELS_SUFFIX: &str = "lupin_labels.json";
 
 /// Why a figure rasterised off the screen's thread never came.
 const NOT_DRAWN: &str = "the figure was not drawn";
@@ -238,7 +304,7 @@ pub struct FigurePane {
     /// The figure on screen, drawn for the pane.
     rendered: RefCell<Option<(Sized, Drawn)>>,
     /// The figure on screen rasterised once; a new pane size only re-fits it.
-    image: RefCell<Option<(Look, Result<RgbaImage, String>)>>,
+    image: RefCell<Option<(Look, Raster)>>,
     /// A figure being rasterised off the screen's thread, for a quick frame.
     pending: RefCell<Option<Rasterising>>,
     /// Thumbnails drawn, kept while the grid closes and opens again.
@@ -246,6 +312,19 @@ pub struct FigurePane {
     /// The thumbnail grid, while it is open.
     pub grid: Option<Grid>,
     pub exports: Exports,
+    /// The labels moved, beside the run; why not when the file there cannot
+    /// be read (it is then left as it is, and the labels where they are).
+    book: Result<OffsetBook, String>,
+    /// Label moves so far, so a figure is drawn again after each.
+    moves: u32,
+    /// A label dragged since the book was last written.
+    unsaved: bool,
+    pointer: Pointer<u32>,
+    /// Moving labels from the keys (`E`), while it is on.
+    edit: Option<LabelEdit<u32>>,
+    /// The scatter on screen, as drawn, and where on the screen.
+    pub(crate) on_screen: RefCell<Option<Arc<OnMap>>>,
+    pub(crate) area: Cell<Option<Rect>>,
 }
 
 impl FigurePane {
@@ -266,6 +345,13 @@ impl FigurePane {
     fn new(data: CellFigures, picker: &Picker) -> Self {
         let exports = Exports::new(format!("{}.{}", data.prefix(), data.kind()));
         let style = Style::opening(&data);
+        let path = PathBuf::from(format!("{}.{LABELS_SUFFIX}", data.prefix()));
+        let book = OffsetBook::load(&path).map_err(|e| {
+            format!(
+                "the moved labels in {} cannot be read ({e}): the labels stay where they are and the file is left as it is",
+                path.display()
+            )
+        });
         Self {
             panels: data.panels(),
             data: Arc::new(data),
@@ -281,6 +367,17 @@ impl FigurePane {
             tiles: RefCell::new(Vec::new()),
             grid: None,
             exports,
+            book,
+            moves: 0,
+            unsaved: false,
+            // One wheel step is one of the view's zoom steps.
+            pointer: Pointer::new(PointerOpts {
+                wheel: std::f32::consts::SQRT_2,
+                ..PointerOpts::default()
+            }),
+            edit: None,
+            on_screen: RefCell::new(None),
+            area: Cell::new(None),
         }
     }
 
@@ -306,6 +403,7 @@ impl FigurePane {
     pub fn repick(&mut self, picker: &Picker, changed: bool) {
         self.picker = picker.clone();
         *self.rendered.get_mut() = None;
+        *self.on_screen.get_mut() = None;
         self.tiles.get_mut().clear();
         if changed {
             *self.image.get_mut() = None;
@@ -571,6 +669,7 @@ impl FigurePane {
             panel,
             style: scatter.then_some(self.style),
             view: if scatter { view } else { View::default() },
+            moves: if scatter { self.moves } else { 0 },
         }
     }
 
@@ -632,16 +731,21 @@ impl FigurePane {
             return;
         }
         let (data, px) = (&self.data, self.cell_px());
+        let moved: Vec<Offsets<String>> = missing
+            .iter()
+            .map(|((look, _), _)| self.moved(look.panel))
+            .collect();
         let images: Vec<Result<RgbaImage, String>> = missing
             .par_iter()
-            .map(|((look, _), area)| {
+            .zip(&moved)
+            .map(|(((look, _), area), moved)| {
                 let size = Size {
                     w: (u32::from(area.width) * px.0).max(32),
                     h: (u32::from(area.height) * px.1).max(32),
                     text_px: px.1 as f32,
                 };
                 let style = look.style.unwrap_or_default();
-                data.figure(look.panel, size, &style, View::default())
+                data.figure(look.panel, size, &style, View::default(), moved)
                     .and_then(|f| figures::render(&f))
                     .map_err(|e| format!("{e:#}"))
             })
@@ -696,14 +800,14 @@ impl FigurePane {
     pub fn protocol(&self, area: Rect) -> Ref<'_, Drawn> {
         let look = self.look(self.current(), self.view);
         let key = (look, (area.width, area.height));
+        self.area.set(Some(area));
         if self
             .rendered
             .borrow()
             .as_ref()
             .is_none_or(|(k, _)| *k != key)
         {
-            let drawn = self.fit(self.image(look, area), area);
-            *self.rendered.borrow_mut() = Some((key, drawn));
+            self.show(key, self.image(look, area), area);
         }
         Ref::map(self.rendered.borrow(), |s| {
             &s.as_ref().expect("filled above").1
@@ -718,15 +822,24 @@ impl FigurePane {
         let look = self.look(self.current(), self.view);
         let key = (look, (area.width, area.height));
         let current = |r: &Option<(Sized, Drawn)>| r.as_ref().is_some_and(|(k, _)| *k == key);
+        self.area.set(Some(area));
         if !current(&self.rendered.borrow()) {
             if let Some(img) = self.image_ready(look, area) {
-                *self.rendered.borrow_mut() = Some((key, self.fit(img, area)));
+                self.show(key, img, area);
             }
         }
         let rendered = self.rendered.borrow();
         let behind = !current(&rendered);
         let drawn = Ref::filter_map(rendered, |s| s.as_ref().map(|(_, d)| d)).ok();
         (drawn, behind)
+    }
+
+    /// Put `img` on screen for `area` as `key`, keeping where its labels
+    /// went.
+    fn show(&self, key: Sized, img: Raster, area: Rect) {
+        let on = img.as_ref().ok().and_then(|(_, on)| on.clone());
+        *self.rendered.borrow_mut() = Some((key, self.fit(img.map(|(img, _)| img), area)));
+        *self.on_screen.borrow_mut() = on;
     }
 
     /// `img` fitted to `area` as the terminal draws it, as senna fits its
@@ -736,17 +849,24 @@ impl FigurePane {
     }
 
     /// `look` rasterised from `data` for `area`, at its pixel size, its
-    /// text a cell high.
+    /// text a cell high, its labels moved by `moved`.
     fn rasterised(
         data: &CellFigures,
         look: Look,
         style: &Style,
+        moved: &Offsets<String>,
         px: (u32, u32),
         area: Rect,
-    ) -> Result<RgbaImage, String> {
-        data.figure(look.panel, frame_size(px, area), style, look.view)
-            .and_then(|f| figures::render(&f))
-            .map_err(|e| format!("{e:#}"))
+    ) -> Raster {
+        let fig = data
+            .figure(look.panel, frame_size(px, area), style, look.view, moved)
+            .map_err(|e| format!("{e:#}"))?;
+        let on = match &fig {
+            Picture::Map(m) => Some(Arc::new(OnMap::of(look.panel, m))),
+            Picture::Svg(_) => None,
+        };
+        let img = figures::render(&fig).map_err(|e| format!("{e:#}"))?;
+        Ok((img, on))
     }
 
     /// The scatter's frame in pixels, as last drawn on screen; before
@@ -781,7 +901,7 @@ impl FigurePane {
     }
 
     /// `look` rasterised, when it is the one last drawn.
-    fn cached(&self, look: Look) -> Option<Result<RgbaImage, String>> {
+    fn cached(&self, look: Look) -> Option<Raster> {
         let cache = self.image.borrow();
         cache
             .as_ref()
@@ -791,14 +911,17 @@ impl FigurePane {
 
     /// `look` rasterised, from the cache when it is the one last drawn;
     /// else waiting for the one being rasterised, or drawing it here.
-    fn image(&self, look: Look, area: Rect) -> Result<RgbaImage, String> {
+    fn image(&self, look: Look, area: Rect) -> Raster {
         if let Some(img) = self.cached(look) {
             return img;
         }
         let waiting = self.pending.borrow_mut().take();
         let img = match waiting {
             Some((l, rx)) if l == look => rx.recv().unwrap_or_else(|_| Err(NOT_DRAWN.into())),
-            _ => Self::rasterised(&self.data, look, &self.style, self.cell_px(), area),
+            _ => {
+                let moved = self.moved(look.panel);
+                Self::rasterised(&self.data, look, &self.style, &moved, self.cell_px(), area)
+            }
         };
         *self.image.borrow_mut() = Some((look, img.clone()));
         img
@@ -807,7 +930,7 @@ impl FigurePane {
     /// `look` rasterised when it is, without waiting: from the cache, or
     /// from the one being rasterised; else that is started (off the
     /// screen's thread) and `None` said.
-    fn image_ready(&self, look: Look, area: Rect) -> Option<Result<RgbaImage, String>> {
+    fn image_ready(&self, look: Look, area: Rect) -> Option<Raster> {
         if let Some(img) = self.cached(look) {
             return Some(img);
         }
@@ -829,8 +952,9 @@ impl FigurePane {
         }
         let (tx, rx) = channel();
         let (data, style, px) = (Arc::clone(&self.data), self.style, self.cell_px());
+        let moved = self.moved(look.panel);
         std::thread::spawn(move || {
-            let _ = tx.send(Self::rasterised(&data, look, &style, px, area));
+            let _ = tx.send(Self::rasterised(&data, look, &style, &moved, px, area));
         });
         *pending = Some((look, rx));
         None
@@ -843,7 +967,8 @@ impl FigurePane {
             Some(tile) => (tile, View::default(), None),
             None => (self.current(), self.view, Some(self.frame())),
         };
-        let e = self.data.export(panel, &self.style, view, frame)?;
+        let moved = self.moved(panel);
+        let e = self.data.export(panel, &self.style, view, frame, &moved)?;
         let logged = self
             .exports
             .gallery
@@ -867,6 +992,232 @@ impl FigurePane {
             exts.join(" and ")
         ))
     }
+}
+
+impl FigurePane {
+    /// The labels moved on `panel`, by name: none when the book cannot be
+    /// read.
+    fn moved(&self, panel: Panel) -> Offsets<String> {
+        match &self.book {
+            Ok(b) => b.layout(&self.layout_id(panel)),
+            Err(_) => Offsets::default(),
+        }
+    }
+
+    /// `panel`'s key in the book: the round and the layout, so a label
+    /// moved on one round's UMAP stays off the next round's and the PHATE.
+    fn layout_id(&self, panel: Panel) -> String {
+        let prefix = self.data.prefix();
+        let round = Path::new(&prefix)
+            .file_name()
+            .map_or(prefix.clone(), |n| n.to_string_lossy().into_owned());
+        format!("{round}:{}", self.data.slug(panel))
+    }
+
+    /// The scatter on screen as drawn, when it is the panel shown.
+    fn shown_map(&self) -> Option<Arc<OnMap>> {
+        let on = self.on_screen.borrow().clone()?;
+        (self.shown && self.grid.is_none() && on.panel == self.current()).then_some(on)
+    }
+
+    /// What mouse event `m` does on the scatter on screen: a drag pans it,
+    /// the wheel zooms it at the pointer, a press on a label drags the
+    /// label, and a click or a hover finds the cluster under the pointer.
+    pub fn mouse(&mut self, m: &MouseEvent) -> MapMouse {
+        let (Some(rect), Some(on)) = (self.area.get(), self.shown_map()) else {
+            self.pointer.cancel();
+            return MapMouse::None;
+        };
+        let cell = legume_tui::map::display::cell(&self.picker);
+        let held = self.pointer.label();
+        let act = self.pointer.handle(&MapArea { rect, cell }, m, |px, py| {
+            on.hits.at(&on.vp, px, py)
+        });
+        let (w, h) = (on.vp.w, on.vp.h);
+        let reply = match act {
+            MapAction::None => MapMouse::None,
+            MapAction::Hover { px, py } => MapMouse::Hover(self.cluster_at(&on, px, py, cell)),
+            MapAction::Away => MapMouse::Hover(None),
+            MapAction::Click { px, py, .. } => MapMouse::Click(self.cluster_at(&on, px, py, cell)),
+            MapAction::Pan { dx, dy } => self.move_view(|v, whole| v.pan_px(dx, dy, whole, w, h)),
+            MapAction::Zoom { factor, at } => {
+                self.move_view(|v, whole| v.zoom_at(factor > 1.0, at, whole, w, h))
+            }
+            MapAction::MoveLabel { key, dx, dy } if on.line > 0.0 => {
+                self.move_label(&on, key, (dx / on.line, dy / on.line))
+            }
+            MapAction::MoveLabel { .. } => MapMouse::None,
+        };
+        // A label let go is kept.
+        if held.is_some() && !self.pointer.dragging() && self.unsaved {
+            if let Err(e) = self.save_labels() {
+                return MapMouse::Say(e);
+            }
+        }
+        reply
+    }
+
+    /// Let go of a press and stop moving labels, as when the map goes
+    /// away.
+    pub fn let_go(&mut self) {
+        self.pointer.cancel();
+        self.edit = None;
+    }
+
+    /// Move the view by `f` on the whole extent of the scatter.
+    fn move_view(
+        &mut self,
+        f: impl FnOnce(&mut View, legume_tui::map::viewport::Bounds),
+    ) -> MapMouse {
+        let Ok(whole) = self.data.whole(self.current()) else {
+            return MapMouse::None;
+        };
+        let before = self.view;
+        f(&mut self.view, whole);
+        if self.view == before {
+            MapMouse::None
+        } else {
+            MapMouse::Redraw
+        }
+    }
+
+    /// Move label `key` of `on` by `d_em` lines.
+    fn move_label(&mut self, on: &OnMap, key: u32, d_em: (f32, f32)) -> MapMouse {
+        let Some(name) = on.names.get(key as usize) else {
+            return MapMouse::None;
+        };
+        let id = self.layout_id(on.panel);
+        match &mut self.book {
+            Err(why) => MapMouse::Say(why.clone()),
+            Ok(book) => {
+                let mut o = book.layout(&id);
+                o.nudge(name.to_string(), d_em);
+                book.set_layout(&id, &o);
+                self.moves += 1;
+                self.unsaved = true;
+                MapMouse::Redraw
+            }
+        }
+    }
+
+    /// Write the moved labels beside the run.
+    fn save_labels(&mut self) -> Result<(), String> {
+        self.unsaved = false;
+        match &self.book {
+            Ok(b) => b.save().map_err(|e| {
+                format!(
+                    "the moved labels were not kept in {}: {e}",
+                    b.path().display()
+                )
+            }),
+            Err(why) => Err(why.clone()),
+        }
+    }
+
+    /// The cluster under pixel `(px, py)` of `on`: a cluster's label names
+    /// it, else the cell drawn nearest within a terminal cell.
+    fn cluster_at(&self, on: &OnMap, px: f32, py: f32, cell: (f32, f32)) -> Option<i32> {
+        if self.data.cluster.is_empty() {
+            return None;
+        }
+        if self.style.colouring == Colouring::Cluster {
+            let named = on
+                .hits
+                .at(&on.vp, px, py)
+                .and_then(|k| on.names.get(k as usize)?.strip_prefix('K')?.parse().ok());
+            if named.is_some() {
+                return named;
+            }
+        }
+        let i = self
+            .data
+            .cell_at(on.panel, &on.vp, px, py, cell.0.max(cell.1))?;
+        let k = *self.data.cluster.get(i)?;
+        (k >= 0).then_some(k)
+    }
+
+    /// Moving labels from the keys is on.
+    pub fn editing(&self) -> bool {
+        self.edit.is_some()
+    }
+
+    /// Key `k` for moving labels: `E` starts it; then Tab and BackTab
+    /// choose a label, the arrows move it (Shift: further), Backspace puts
+    /// it back on its cells and Esc ends it. Other keys are ignored.
+    pub fn edit_key(&mut self, k: &KeyEvent) -> FigureKey {
+        use FigureKey::{Ignored, Say, Took};
+        if self.grid.is_some() {
+            return Ignored;
+        }
+        let Some(mut edit) = self.edit else {
+            if !LabelEdit::<u32>::starts(k) {
+                return Ignored;
+            }
+            return self.start_editing();
+        };
+        let Some(on) = self.shown_map() else {
+            self.edit = None;
+            return Say("the labels move on the scatter on screen".into());
+        };
+        let id = self.layout_id(on.panel);
+        let Ok(book) = &mut self.book else {
+            self.edit = None;
+            return Ignored;
+        };
+        let mut by_name = book.layout(&id);
+        let mut o = on.by_place(&by_name);
+        let did = edit.key(k, &on.placed, &mut o);
+        self.edit = Some(edit);
+        match did {
+            EditKey::Pass => Ignored,
+            EditKey::Leave => {
+                self.edit = None;
+                Took
+            }
+            EditKey::Taken => Say(editing_note(&on, edit)),
+            EditKey::Changed => {
+                for (k, n) in on.names.iter().enumerate() {
+                    let n = n.to_string();
+                    by_name.reset(&n);
+                    if let Some(d) = o.get(&(k as u32)) {
+                        by_name.nudge(n, d);
+                    }
+                }
+                book.set_layout(&id, &by_name);
+                self.moves += 1;
+                Say(match self.save_labels() {
+                    Ok(()) => editing_note(&on, edit),
+                    Err(e) => e,
+                })
+            }
+        }
+    }
+
+    /// `E`: moving labels from the keys, on the first label as read.
+    fn start_editing(&mut self) -> FigureKey {
+        if let Err(why) = &self.book {
+            return FigureKey::Say(why.clone());
+        }
+        if !self.current().is_scatter() {
+            return FigureKey::Say("labels move on the scatter (m and v choose it)".into());
+        }
+        let Some(on) = self.shown_map().filter(|on| !on.placed.is_empty()) else {
+            return FigureKey::Say("no labels on screen to move: t shows them".into());
+        };
+        let edit = LabelEdit::enter(&on.placed);
+        self.edit = Some(edit);
+        FigureKey::Say(editing_note(&on, edit))
+    }
+}
+
+/// The status while labels are moved from the keys: the one chosen, and
+/// the keys.
+fn editing_note(on: &OnMap, edit: LabelEdit<u32>) -> String {
+    let name = edit
+        .at
+        .and_then(|k| on.names.get(k as usize))
+        .map_or("no label", AsRef::as_ref);
+    format!("moving {name} · arrows move it (shift: further) · tab next · ⌫ back on its cells · esc done")
 }
 
 /// The pixels a figure is rasterised at for `area`, `px` per cell, its

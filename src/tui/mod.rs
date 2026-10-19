@@ -36,7 +36,7 @@ use crate::manifest::run::{self, annotated_path, resolve};
 use anyhow::{Context, Result};
 use app::App;
 pub use legume_tui::graphics::Graphics;
-use legume_tui::{cli::SessionArgs, Keyboard, Round, Session};
+use legume_tui::{cli::SessionArgs, Keyboard, Modes, Mouse, Round, Session};
 use ratatui::crossterm::event::{Event, KeyEventKind, KeyboardEnhancementFlags};
 use ratatui::DefaultTerminal;
 use std::path::{Path, PathBuf};
@@ -152,10 +152,7 @@ pub fn run(
     // stderr's copy of the log is dropped while the screen is up; the pane
     // keeps every line.
     let quiet = legume_tui::logs::quiet_stderr();
-    // Shift+Enter is told from Enter where the terminal can.
-    let keys = Keyboard::IfSupported(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES);
-    let mut terminal =
-        session.terminal_with(legume_tui::Modes::new().keyboard_enhancement(keys))?;
+    let mut terminal = session.terminal_with(modes(false))?;
     let latest = screens(&session, &mut terminal, args, trajectory);
     // The latest round is left: said on the terminal attached as the
     // session ends, else kept for whoever looks next.
@@ -170,6 +167,16 @@ pub fn run(
     session.restore();
     drop(quiet);
     latest.map(|_| ())
+}
+
+/// The screen's terminal modes: Shift+Enter told from Enter where the
+/// terminal can, and with `mouse` every mouse event reported (the cell map's
+/// pointer), which takes the terminal's own text selection away.
+fn modes(mouse: bool) -> Modes {
+    let keys = Keyboard::IfSupported(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES);
+    Modes::new()
+        .keyboard_enhancement(keys)
+        .mouse(if mouse { Mouse::Full } else { Mouse::Off })
 }
 
 /// A message on the whole screen while the TUI loads, and the session's
@@ -329,7 +336,13 @@ fn screens(
     let mut dirty = true;
     let mut behind = false;
     let mut drawn = std::time::Instant::now();
+    // The mouse is the screen's only while the cell map is shown.
+    let mut mouse = false;
     while !app.quit {
+        if app.wants_mouse() != mouse {
+            mouse = !mouse;
+            session.set_modes(modes(mouse))?;
+        }
         let (logged, status) = (app.log.len(), app.status.clone());
         let rescoring = app.rescoring.is_some();
         let progress = app.child.as_ref().map(|r| r.progress.reported_at);
@@ -397,6 +410,7 @@ fn screens(
                     app.key(k);
                     dirty = true;
                 }
+                Round::Event(Event::Mouse(m)) => dirty |= app.mouse(m),
                 Round::Event(Event::Resize(..)) => dirty = true,
                 Round::Event(_) => {}
                 Round::Repainted => {

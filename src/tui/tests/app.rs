@@ -3819,3 +3819,71 @@ fn a_new_terminal_of_the_same_kind_leaves_the_pictures_or_sends_kittys_again() {
     assert_eq!(app.picker().protocol_type(), Kitty);
     assert_eq!(made(app.figures.as_ref().unwrap()), (Kitty, false, true));
 }
+
+#[test]
+fn the_mouse_is_the_maps_while_it_is_shown_and_a_click_picks_a_cluster() {
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let at = |kind, (column, row): (u16, u16)| MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Clusters;
+    assert!(app.wants_mouse(), "the map is on screen");
+    drawn(&app);
+    let map = app.cell_map.as_ref().unwrap();
+    let (on_k0, on_k1) = (
+        super::super::figure_pane::tests::screen_at(map, [0.0, 0.0]),
+        super::super::figure_pane::tests::screen_at(map, [5.0, 5.0]),
+    );
+    assert!(app.mouse(at(MouseEventKind::Moved, on_k1)));
+    assert!(app.status.starts_with("K1"), "{}", app.status);
+    assert_eq!(
+        app.selected().map(|c| c.id),
+        Some(0),
+        "a hover picks nothing"
+    );
+    app.mouse(at(MouseEventKind::Down(MouseButton::Left), on_k1));
+    app.mouse(at(MouseEventKind::Up(MouseButton::Left), on_k1));
+    assert_eq!(app.selected().map(|c| c.id), Some(1));
+    assert_eq!(map_focus(&app), Some(1), "and lit");
+    app.mouse(at(MouseEventKind::Down(MouseButton::Left), on_k0));
+    app.mouse(at(MouseEventKind::Up(MouseButton::Left), on_k0));
+    assert_eq!(app.selected().map(|c| c.id), Some(0));
+    app.focus = Focus::Tree;
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("E move labels"), "{bar}");
+    press(&mut app, KeyCode::Char('V'));
+    assert!(!app.wants_mouse(), "the tree: the terminal's own selection");
+    assert!(!app.mouse(at(MouseEventKind::Down(MouseButton::Left), on_k1)));
+    press(&mut app, KeyCode::Char('v'));
+    assert!(app.wants_mouse());
+    let guide: String = super::super::ui::guide(false)
+        .flat_map(|(_, keys)| keys)
+        .map(|(k, what)| format!("{k} {what}\n"))
+        .collect();
+    assert!(guide.contains("mouse"), "{guide}");
+    assert!(guide.contains("lupin_labels.json"), "{guide}");
+}
+
+#[test]
+fn capital_e_on_the_map_edits_its_labels_until_esc() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = map_app(dir.path(), true);
+    app.focus = Focus::Tree;
+    drawn(&app);
+    app.key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::SHIFT));
+    assert!(app.cell_map.as_ref().unwrap().editing(), "{}", app.status);
+    let bar = super::super::ui::help(&app);
+    assert!(bar.contains("tab next label"), "{bar}");
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Tree, "tab is the labels' while editing");
+    press(&mut app, KeyCode::Right);
+    assert!(dir.path().join("r.lupin_labels.json").is_file());
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.cell_map.as_ref().unwrap().editing());
+    assert_eq!(app.focus, Focus::Tree, "esc left the labels, not the map");
+}

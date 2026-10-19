@@ -476,6 +476,18 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "T tree",
             "esc clusters",
         ],
+        Focus::Tree
+            if matches!(app.tree_mode, TreeMode::Cells)
+                && app.cell_map.as_ref().is_some_and(|m| m.editing()) =>
+        {
+            &[
+                "tab next label",
+                "←↑→↓ move it",
+                "shift further",
+                "⌫ back on its cells",
+                "esc done",
+            ]
+        }
         Focus::Tree if matches!(app.tree_mode, TreeMode::Cells) => &[
             "c colour",
             "t labels",
@@ -483,6 +495,8 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "+-0 zoom",
             "←↑→↓ pan",
             "o ontology",
+            "E move labels",
+            "mouse: drag pan · wheel zoom · click cluster · drag a label",
             "w all",
             "p export",
             "f exports",
@@ -607,6 +621,8 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("h", "in the data's tree: hide / show the terms not in the data below the selected term (◈ hiding)"),
             ("o", "panel tree ↔ the Cell Ontology; from the cell map, the Cell Ontology and o back to the map"),
             ("v / V", "the round's cells on the run's layout, the selected cluster lit (c colour, t labels, m layout, + - 0 zoom, arrows pan, o the Cell Ontology, w all figures, p export, f the exports strip: ↑↓ select, enter list an unlisted file, M move, d unlist, D D delete, R re-check) / the tree again"),
+            ("mouse", "on the cell map: drag to pan, the wheel zooms where it points, a click selects the cluster under it, the pointer names it; a label pressed is dragged. The map takes the mouse only while it is shown: elsewhere the terminal selects text as ever"),
+            ("E", "on the cell map: move its labels from the keys: tab / shift+tab the next / previous label, arrows move it half a line (shift: two), ⌫ back on its cells, esc done. Labels moved (here or by the mouse) are kept per round and layout in {round}.lupin_labels.json beside the run, never in its manifest; a file there that cannot be read is left as it is and the labels stay put"),
             ("d", "Cell Ontology: the terms in the data (the labels, under their common ancestor) ↔ all"),
             ("c", "on a panel type with no Cell Ontology term: its three nearest terms by text embedding, with their scores; one you confirm goes to your cl_aliases.tsv and the tree is built again (the first ranking fetches the text model and encodes the ontology, a minute or two; offline without the model, there are none)"),
             (
