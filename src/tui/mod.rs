@@ -6,6 +6,10 @@
 //! A pass is a child `lupin annotate` ([`runner`]); a round is read back from
 //! the manifest it records ([`round`]); saving writes the edits as the next
 //! round, as `lupin relabel --next` does.
+//!
+//! The screens run as a detachable session ([`legume_tui`]): the pickers and
+//! the main screen share one session and terminal, which outlive a dropped
+//! connection; `lupin attach` comes back, and `lupin kill` quits as `q` does.
 
 mod app;
 mod export;
@@ -30,16 +34,33 @@ use crate::annotate_cmd::AnnotateCliArgs;
 use crate::manifest::run::{self, annotated_path, resolve};
 use anyhow::{Context, Result};
 use app::App;
-pub use figure_pane::Graphics;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
-use std::path::Path;
+pub use legume_tui::graphics::Graphics;
+use legume_tui::{cli::SessionArgs, Keyboard, Round, Session};
+use ratatui::crossterm::event::{Event, KeyEventKind, KeyboardEnhancementFlags};
+use ratatui::DefaultTerminal;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// This process's own log lines while the screen is up.
+/// The tool lupin's TUI sessions belong to: they are named
+/// `lupin-annotate-1`, `lupin-trajectory-2`, and `lupin attach` finds them.
+pub const TOOL: legume_tui::Tool = legume_tui::Tool::new("lupin");
+
+/// The detach and switch keys for the `?` guide, each with what it does,
+/// in lower case as the guide shows keys; none when the screen runs plain.
+pub(crate) fn session_keys() -> Vec<(String, String)> {
+    legume_tui::help_keys()
+        .into_iter()
+        .map(|k| (k.key.to_lowercase(), k.long))
+        .collect()
+}
+
+/// This process's own log lines, for the log pane.
 static OWN_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-struct PaneLogger(log::LevelFilter);
+/// The log pane's logger, at its level, and the stderr logger behind the
+/// gate, which stays quiet while the screen is up ([`run`]).
+struct PaneLogger(log::LevelFilter, &'static legume_tui::logs::Gate);
 
 impl log::Log for PaneLogger {
     fn enabled(&self, m: &log::Metadata) -> bool {
@@ -53,19 +74,24 @@ impl log::Log for PaneLogger {
             if let Ok(mut v) = OWN_LOG.lock() {
                 v.push(format!("[{}] {}", r.level(), r.args()));
             }
+            self.1.log(r);
         }
     }
-    fn flush(&self) {}
+    fn flush(&self) {
+        self.1.flush();
+    }
 }
 
-/// Send this process's `log` output to the log pane instead of stderr.
-pub fn init_logger(verbose: bool) {
+/// Send this process's `log` output to the log pane, and to `stderr` (as
+/// the other subcommands log) while the screen is not up.
+pub fn init_logger(verbose: bool, stderr: env_logger::Logger) {
     let level = if verbose {
         log::LevelFilter::Debug
     } else {
         log::LevelFilter::Info
     };
-    if log::set_boxed_logger(Box::new(PaneLogger(level))).is_ok() {
+    let pane = PaneLogger(level, legume_tui::logs::gate(stderr));
+    if log::set_boxed_logger(Box::new(pane)).is_ok() {
         log::set_max_level(level);
     }
 }
@@ -80,7 +106,10 @@ fn drain_own_log() -> Vec<String> {
 /// `lupin trajectory` without both `--from` and `--out`: the TUI on the
 /// order view, which picks the manifest when none is given and asks for the
 /// output prefix when it runs.
-pub fn run_trajectory(t: &crate::trajectory::run::TrajectoryArgs) -> Result<()> {
+pub fn run_trajectory(
+    t: &crate::trajectory::run::TrajectoryArgs,
+    session: &SessionArgs,
+) -> Result<()> {
     use clap::Parser;
     #[derive(Parser)]
     struct Annotate {
@@ -94,26 +123,87 @@ pub fn run_trajectory(t: &crate::trajectory::run::TrajectoryArgs) -> Result<()> 
     a.obo.clone_from(&t.obo);
     a.label_cl.clone_from(&t.label_cl);
     a.graphics = t.graphics;
-    run(&a, Some(order::TrajectoryRun::of(t)))
+    run(&a, Some(order::TrajectoryRun::of(t)), session)
 }
 
 /// Run the TUI on `args`; with `trajectory`, it opens on the order view and
-/// runs `lupin trajectory` with those options.
-pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> Result<()> {
+/// runs `lupin trajectory` with those options. It runs as a detachable
+/// session (`session`): a new one when the run is named (`--from`), else
+/// the live ones are offered first.
+pub fn run(
+    args: &AnnotateCliArgs,
+    trajectory: Option<order::TrajectoryRun>,
+    session: &SessionArgs,
+) -> Result<()> {
     use std::io::IsTerminal;
     anyhow::ensure!(
         std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
         "no terminal for the TUI: give the output prefix (-o, and -f for trajectory) to run without it"
     );
+    // First: hosted, this process only relays the terminal from here on,
+    // and the program the host starts does the rest.
+    let screen = if trajectory.is_some() {
+        "trajectory"
+    } else {
+        "annotate"
+    };
+    let session = TOOL.session(screen, &session.options(args.from.is_some()))?;
+    // stderr's copy of the log is dropped while the screen is up; the pane
+    // keeps every line.
+    let quiet = legume_tui::logs::quiet_stderr();
+    // Shift+Enter is told from Enter where the terminal can.
+    let keys = Keyboard::IfSupported(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES);
+    let mut terminal =
+        session.terminal_with(legume_tui::Modes::new().keyboard_enhancement(keys))?;
+    let latest = screens(&session, &mut terminal, args, trajectory);
+    // The latest round is left: said on the terminal attached as the
+    // session ends, else kept for whoever looks next.
+    match &latest {
+        Ok(Some(m)) => session.leave(&format!("lupin: latest round {}", m.display())),
+        Ok(None) => {}
+        // Seen before the session ends, then said as main says it.
+        Err(e) => {
+            let _ = session.hold_error(&mut terminal, e);
+        }
+    }
+    session.restore();
+    drop(quiet);
+    latest.map(|_| ())
+}
+
+/// A message on the whole screen while the TUI loads, and the session's
+/// status.
+fn say(session: &Session, terminal: &mut DefaultTerminal, msg: &str) -> Result<()> {
+    session.status(msg);
+    session.draw(terminal, |f| {
+        use ratatui::widgets::{Paragraph, Wrap};
+        let text = Paragraph::new(format!(" lupin: {msg}")).wrap(Wrap { trim: false });
+        f.render_widget(text, f.area());
+    })?;
+    Ok(())
+}
+
+/// The pickers, then the main screen, on `terminal`; the latest round on
+/// screen when it is left, if any.
+fn screens(
+    session: &Session,
+    terminal: &mut DefaultTerminal,
+    args: &AnnotateCliArgs,
+    trajectory: Option<order::TrajectoryRun>,
+) -> Result<Option<PathBuf>> {
     let start_in_order = trajectory.is_some();
     let cwd = std::env::current_dir()?;
     let from = match args.from.as_deref() {
         Some(f) => f.to_string(),
-        None => match picker::pick("Pick a run manifest", &cwd, picker::Want::Manifest)? {
-            Some(f) => f.to_string_lossy().into_owned(),
-            None => return Ok(()),
-        },
+        None => {
+            let want = picker::Want::Manifest;
+            match picker::pick(session, terminal, "Pick a run manifest", &cwd, want)? {
+                Some(f) => f.to_string_lossy().into_owned(),
+                None => return Ok(None),
+            }
+        }
     };
+    say(session, terminal, "reading the run…")?;
     let loaded = run::load(&from)?;
     let mut args = args.clone();
     crate::annotate_cmd::apply_level(&mut args, &loaded.file)?;
@@ -143,9 +233,9 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
                 let index = genes.get_or_insert_with(|| gene_index(&loaded)).clone();
                 let n = index.as_deref().map_or(0, GeneRows::n_genes);
                 let want = picker::Want::Markers(index, n);
-                match picker::pick("Pick a marker panel", &loaded.dir, want)? {
+                match picker::pick(session, terminal, "Pick a marker panel", &loaded.dir, want)? {
                     Some(p) => p.to_string_lossy().into(),
-                    None => return Ok(()),
+                    None => return Ok(None),
                 }
             }
         };
@@ -165,7 +255,9 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
         .into_boxed_str();
     }
 
-    eprintln!("lupin: placing the panel on the Cell Ontology…");
+    say(session, terminal, "placing the panel on the Cell Ontology…")?;
+    // Why the order view opens without the recorded panel, for its status.
+    let mut no_panel = None;
     let panel = if args.markers.is_empty() {
         Vec::new()
     } else {
@@ -173,7 +265,7 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
             Ok(p) => p,
             // The order view needs no panel.
             Err(e) if start_in_order => {
-                eprintln!("lupin: no marker panel ({e:#})");
+                no_panel = Some(format!("no marker panel ({e:#})"));
                 args.markers = Default::default();
                 Vec::new()
             }
@@ -215,91 +307,130 @@ pub fn run(args: &AnnotateCliArgs, trajectory: Option<order::TrajectoryRun>) -> 
     if app.round.is_none() && crate::manifest::family::has_round(&loaded.file) {
         app.status = "this run has annotated rounds: g lists them".into();
     }
+    if let Some(why) = no_panel {
+        app.status = why;
+    }
 
-    let mut terminal = ratatui::init();
-    app.shift_enter = push_keys();
-    let result = (|| -> Result<()> {
-        // Drawn when something changed: a key, a resize, the log, the status
-        // or a rescoring starting or ending; and each second a job runs.
-        // Every frame goes out at once, the figures as last drawn while a
-        // new one is rasterised off this thread; the screen is drawn again
-        // shortly until it is in (`behind`).
-        app.quick_frame.set(true);
-        let mut dirty = true;
-        let mut behind = false;
-        let mut drawn = std::time::Instant::now();
-        while !app.quit {
-            let (logged, status) = (app.log.len(), app.status.clone());
-            let rescoring = app.rescoring.is_some();
-            let progress = app.child.as_ref().map(|r| r.progress.reported_at);
-            app.tick();
-            dirty |= app.browser.as_mut().is_some_and(|(_, b)| b.poll());
-            dirty |= app.log.len() != logged
-                || app.status != status
-                || app.rescoring.is_some() != rescoring
-                || app.child.as_ref().map(|r| r.progress.reported_at) != progress
-                || app.redraw_due(drawn.elapsed());
-            if dirty || behind {
-                app.frame_behind.set(false);
-                terminal.draw(|f| ui::draw(f, &app))?;
-                behind = app.frame_behind.get();
-                dirty = false;
-                drawn = std::time::Instant::now();
-            }
-            if let Some(want) = app.want_file.take() {
-                // The file browser opens in a popup over what asked for it.
-                let kind = match want {
-                    app::FileWant::Markers => {
-                        let index = genes.get_or_insert_with(|| gene_index(&loaded)).clone();
-                        let n = index.as_deref().map_or(0, GeneRows::n_genes);
-                        picker::Want::Markers(index, n)
-                    }
-                    // Tab-separated text files.
-                    _ => picker::Want::Labels,
-                };
-                let start = match want {
-                    // Beside the panel already chosen, else the run.
-                    app::FileWant::Markers if !app.args.markers.is_empty() => {
-                        Path::new(app.args.markers.as_ref())
-                            .parent()
-                            .filter(|d| d.is_dir())
-                            .unwrap_or(&loaded.dir)
-                            .to_path_buf()
-                    }
-                    _ => loaded.dir.clone(),
-                };
-                app.browser = Some((want, picker::Picker::new(want.title(), &start, kind)));
-                dirty = true;
-            }
-            // Every event already waiting is handled before the next draw, so
-            // a held key draws only where it ends.
-            // A job that has ended is read before the next key.
-            if app.job_ended() {
-                continue;
-            }
-            let mut wait = Duration::from_millis(if behind { 30 } else { 150 });
-            while !app.quit && app.want_file.is_none() && event::poll(wait)? {
-                wait = Duration::ZERO;
-                match event::read()? {
-                    Event::Key(k) if k.kind == KeyEventKind::Press => {
-                        app.key(k);
-                        dirty = true;
-                    }
-                    Event::Resize(..) => dirty = true,
-                    _ => {}
+    // The screen is the pickers' still: cleared, and the attached terminal
+    // asked what it can show, before the main screen is drawn, so no key
+    // typed on it meets the query. Taken by the loop's first round.
+    session.request_repaint();
+    let mut first = Some(session.poll_with(terminal, Duration::ZERO, || {
+        fit(session, &mut app);
+        Ok(())
+    })?);
+    // Drawn when something changed: a key, a resize, an attach, the log, the
+    // status or a rescoring starting or ending; and each second a job runs.
+    // Every frame goes out at once, the figures as last drawn while a new one
+    // is rasterised off this thread; the screen is drawn again shortly until
+    // it is in (`behind`).
+    app.quick_frame.set(true);
+    let mut dirty = true;
+    let mut behind = false;
+    let mut drawn = std::time::Instant::now();
+    while !app.quit {
+        let (logged, status) = (app.log.len(), app.status.clone());
+        let rescoring = app.rescoring.is_some();
+        let progress = app.child.as_ref().map(|r| r.progress.reported_at);
+        app.tick();
+        dirty |= app.browser.as_mut().is_some_and(|(_, b)| b.poll());
+        dirty |= app.log.len() != logged
+            || app.status != status
+            || app.rescoring.is_some() != rescoring
+            || app.child.as_ref().map(|r| r.progress.reported_at) != progress
+            || app.redraw_due(drawn.elapsed());
+        if dirty || behind {
+            app.frame_behind.set(false);
+            // Detached, nothing is drawn and the jobs go on.
+            session.draw(terminal, |f| ui::draw(f, &app))?;
+            behind = app.frame_behind.get();
+            dirty = false;
+            drawn = std::time::Instant::now();
+        }
+        session.status(&app.session_status());
+        if let Some(want) = app.want_file.take() {
+            // The file browser opens in a popup over what asked for it.
+            let kind = match want {
+                app::FileWant::Markers => {
+                    let index = genes.get_or_insert_with(|| gene_index(&loaded)).clone();
+                    let n = index.as_deref().map_or(0, GeneRows::n_genes);
+                    picker::Want::Markers(index, n)
                 }
+                // Tab-separated text files.
+                _ => picker::Want::Labels,
+            };
+            let start = match want {
+                // Beside the panel already chosen, else the run.
+                app::FileWant::Markers if !app.args.markers.is_empty() => {
+                    Path::new(app.args.markers.as_ref())
+                        .parent()
+                        .filter(|d| d.is_dir())
+                        .unwrap_or(&loaded.dir)
+                        .to_path_buf()
+                }
+                _ => loaded.dir.clone(),
+            };
+            app.browser = Some((want, picker::Picker::new(want.title(), &start, kind)));
+            dirty = true;
+        }
+        // Every event already waiting is handled before the next draw, so
+        // a held key draws only where it ends.
+        // A job that has ended is read before the next key.
+        if app.job_ended() {
+            continue;
+        }
+        let mut wait = Duration::from_millis(if behind { 30 } else { 150 });
+        while !app.quit && app.want_file.is_none() {
+            // After an attach: the screen is cleared and the new terminal
+            // asked what it can show, before its modes are on again.
+            let round = match first.take() {
+                Some(round) => round,
+                None => session.poll_with(terminal, wait, || {
+                    fit(session, &mut app);
+                    Ok(())
+                })?,
+            };
+            wait = Duration::ZERO;
+            match round {
+                Round::Event(Event::Key(k)) if k.kind == KeyEventKind::Press => {
+                    app.key(k);
+                    dirty = true;
+                }
+                Round::Event(Event::Resize(..)) => dirty = true,
+                Round::Event(_) => {}
+                Round::Repainted => {
+                    app.shift_enter = session.keyboard_enhanced();
+                    dirty = true;
+                    break;
+                }
+                // `lupin kill` quits as q does, without asking.
+                Round::Stopped => {
+                    if app.saving_now() {
+                        app.status = "lupin kill: the save finishes, then lupin quits".into();
+                        session.draw(terminal, |f| ui::draw(f, &app))?;
+                    }
+                    app.kill();
+                    break;
+                }
+                _ => break,
             }
         }
-        Ok(())
-    })();
-    if app.shift_enter {
-        pop_keys();
     }
-    ratatui::restore();
-    if let Some(r) = &app.round {
-        eprintln!("lupin: latest round {}", r.manifest.display());
-    }
-    result
+    Ok(app.round.as_ref().map(|r| r.manifest.clone()))
+}
+
+/// Fit the figures to the terminal attached now: its picture protocol as
+/// `--graphics` names it, else asked of the terminal, else guessed from its
+/// environment. Asked with the terminal raw and before mouse reports are on.
+fn fit(session: &Session, app: &mut App) {
+    use legume_tui::graphics::{reprobe, Fallback};
+    let old = app.picker().clone();
+    app.repick(reprobe(
+        session,
+        &old,
+        app.args.graphics,
+        Fallback::ProbeThenEnv,
+    ));
 }
 
 /// The run's genes, indexed to score marker panels against.
@@ -315,24 +446,4 @@ fn run_genes(loaded: &run::Loaded) -> Option<Vec<Box<str>>> {
     let rel = o.dictionary.as_deref().or(o.feature_embedding.as_deref())?;
     // Only the row-name column: the numbers are not needed.
     read_parquet_string_column(&resolve(&loaded.dir, rel), 0).ok()
-}
-
-/// Ask the terminal to tell Shift+Enter from Enter (the kitty keyboard
-/// protocol) when it can; whether it does.
-fn push_keys() -> bool {
-    use ratatui::crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
-    let can = ratatui::crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
-    can && ratatui::crossterm::execute!(
-        std::io::stdout(),
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    )
-    .is_ok()
-}
-
-/// Undo [`push_keys`]; called only after it succeeded.
-fn pop_keys() {
-    let _ = ratatui::crossterm::execute!(
-        std::io::stdout(),
-        ratatui::crossterm::event::PopKeyboardEnhancementFlags
-    );
 }

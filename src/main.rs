@@ -11,6 +11,9 @@ mod hub;
 mod manifest;
 mod marker_embedding;
 mod progress;
+#[cfg(test)]
+#[path = "tests/session_cli.rs"]
+mod session_cli_tests;
 mod trajectory;
 mod tui;
 
@@ -19,6 +22,7 @@ use crate::gene_text::cli::{run_knn_graph, run_qc, KnnGraphCmd, QcCmd};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use describe::{run_describe, DescribeArgs};
+use legume_tui::cli::SessionArgs;
 use trajectory::run::{run_trajectory, TrajectoryArgs};
 
 /// `bytes` as lower-case hex.
@@ -81,7 +85,7 @@ enum Commands {
     #[command(
         name = "annotate",
         about = "Cell-type annotation by enrichment, embedding projection, or auto-dispatch",
-        long_about = "Unified annotation entry point.\n\
+        long_about = format!("Unified annotation entry point.\n\
                       \n\
                       `--method enrichment` scores the marker panel on per-cluster expression.\n\
                       `--method projection` calls cells on the run's embeddings: `--projection score`\n\
@@ -94,9 +98,20 @@ enum Commands {
                       adds the projection score beside it as a second reading; projection's own call\n\
                       needs `--projection score`, or a run with only the co-embedding (the ORA).\n\
                       GO terms and runs without a panel are the enrichment's.\n\
-                      Ontology-only follow-up: `--from` + `--obo` + `--label-cl` without markers."
+                      Ontology-only follow-up: `--from` + `--obo` + `--label-cl` without markers.\n\
+                      \n\
+                      Without `-o` it opens the TUI, which asks for what is missing.\n\
+                      \n\
+                      {}",
+            session_help("a pass or a save goes on", "`lupin annotate` with no --from")
+        )
     )]
-    Annotate(AnnotateCliArgs),
+    Annotate {
+        #[command(flatten)]
+        args: AnnotateCliArgs,
+        #[command(flatten)]
+        session: SessionArgs,
+    },
     #[command(
         name = "describe",
         about = "Short citation-checked sentence from annotate evidence",
@@ -137,9 +152,25 @@ enum Commands {
     Docs(docs::DocsArgs),
     #[command(
         name = "trajectory",
-        about = "Order cells along a supervised prior over their cell types: Cell Ontology and precedence statements, checked against the kNN graph, then diffusion pseudotime"
+        about = "Order cells along a supervised prior over their cell types: Cell Ontology and precedence statements, checked against the kNN graph, then diffusion pseudotime",
+        long_about = format!(
+            "Order cells along a supervised prior over their cell types: Cell Ontology\n\
+             and precedence statements, checked against the kNN graph, then diffusion\n\
+             pseudotime.\n\
+             \n\
+             Without both `--from` and `--out` it opens the TUI on the order view,\n\
+             which asks for what is missing.\n\
+             \n\
+             {}",
+            session_help("a pass or a trajectory run goes on", "`lupin trajectory` with no --from")
+        )
     )]
-    Trajectory(TrajectoryArgs),
+    Trajectory {
+        #[command(flatten)]
+        args: TrajectoryArgs,
+        #[command(flatten)]
+        session: SessionArgs,
+    },
     #[command(
         about = "Where lupin's data files (Cell Ontology, matching rules, aliases) come from; fetch them for offline use"
     )]
@@ -154,40 +185,96 @@ enum Commands {
                       rescored like any enrichment run. Nothing is sent anywhere by lupin."
     )]
     Ask(manifest::ask::AskArgs),
+    #[command(
+        about = "Return to a detached `lupin annotate` or `lupin trajectory`",
+        long_about = "Return to a detached `lupin annotate` or `lupin trajectory` in this\n\
+                      terminal.\n\
+                      \n\
+                      A session keeps running when the terminal goes (a dropped connection,\n\
+                      or the detach key: ctrl+alt+d unless LEGUME_TUI_DETACH_KEY sets\n\
+                      another; `?` shows it) and is picked up again here, or by starting it\n\
+                      again with no --from. The first detach by the key asks for a label\n\
+                      (Enter keeps the id); `lupin rename` or `r` in the picker changes it\n\
+                      later. A session is found by its label or its id; with one live the\n\
+                      name is optional, with several a picker opens. `lupin sessions` lists\n\
+                      them. Inside one, ctrl+alt+s (or LEGUME_TUI_SWITCH_KEY) switches to\n\
+                      another. --no-detach on either starts it plain."
+    )]
+    Attach(legume_tui::cli::AttachArgs),
+    #[command(
+        about = "List the live `lupin annotate` and `lupin trajectory` sessions",
+        long_about = "List the live `lupin annotate` and `lupin trajectory` sessions, one a\n\
+                      line: label and id, attached or detached, age, pid, command line and\n\
+                      the run on screen, with the job running and the unsaved edits."
+    )]
+    Sessions,
+    #[command(
+        about = "Stop a `lupin annotate` or `lupin trajectory` session",
+        long_about = "Stop a session as q does, without asking: a save under way finishes\n\
+                      first, a running pass, trajectory, rescoring or term ranking is\n\
+                      stopped, and unsaved edits are dropped. Waits up to a minute for it\n\
+                      to end. --force kills it at once, and a pass it started may then\n\
+                      keep running."
+    )]
+    Kill(legume_tui::cli::KillArgs),
+    #[command(
+        about = "Give a `lupin annotate` or `lupin trajectory` session a label",
+        long_about = "Give a session a label, found by its label or its id. The label is\n\
+                      unique among the live sessions; `attach`, `kill` and `rename` take it\n\
+                      in place of the id, and `sessions` shows it."
+    )]
+    Rename(legume_tui::cli::RenameArgs),
+}
+
+/// The session paragraph of `lupin annotate`'s and `lupin trajectory`'s
+/// long help: what goes on when the connection drops, who offers the live
+/// sessions to return to, and where `?` shows the keys.
+fn session_help(what_goes_on: &str, resume_hint: &str) -> String {
+    legume_tui::cli::session_help(
+        &tui::TOOL,
+        legume_tui::cli::SessionHelp::new()
+            .what_goes_on(what_goes_on)
+            .resume_hint(Some(resume_hint))
+            .more("`?` in the TUI shows the keys in effect."),
+    )
 }
 
 fn main() -> Result<()> {
+    // A session's host runs this binary again: it serves the session and
+    // exits here, before any of lupin's own work.
+    legume_tui::serve_if_host();
     let cli = Cli::parse();
     if cli.overwrite {
         manifest::run::allow_overwrite();
     }
     let interactive = match &cli.cmd {
-        Commands::Annotate(c) => c.opens_tui(),
-        Commands::Trajectory(c) => c.opens_tui(),
+        Commands::Annotate { args, .. } => args.opens_tui(),
+        Commands::Trajectory { args, .. } => args.opens_tui(),
         _ => false,
     };
+    // On stderr, as RUST_LOG says; the TUI's log pane takes it too.
+    let mut stderr = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(if cli.verbose { "debug" } else { "info" }),
+    );
     if interactive {
-        tui::init_logger(cli.verbose);
+        tui::init_logger(cli.verbose, stderr.build());
     } else {
-        env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or(if cli.verbose {
-                "debug"
-            } else {
-                "info"
-            }),
-        )
-        .init();
+        stderr.init();
     }
     match cli.cmd {
         Commands::TextQc(c) => run_qc(&c),
         Commands::WordGraph(c) => run_knn_graph(&c),
-        Commands::Annotate(c) => run_annotate(&c),
+        Commands::Annotate { args, session } => run_annotate(&args, &session),
         Commands::Describe(c) => run_describe(&c),
         Commands::Review(c) => manifest::rounds::run_review(&c),
         Commands::Relabel(c) => manifest::rounds::run_relabel(&c),
         Commands::Ask(c) => manifest::ask::run_ask(&c),
         Commands::Docs(c) => docs::run_docs(&c),
-        Commands::Trajectory(c) => run_trajectory(&c),
+        Commands::Trajectory { args, session } => run_trajectory(&args, &session),
         Commands::Data(c) => manifest::data_files::run_data(&c),
+        Commands::Attach(a) => Ok(legume_tui::cli::attach(&tui::TOOL, &a)?),
+        Commands::Sessions => Ok(legume_tui::cli::sessions(&tui::TOOL)?),
+        Commands::Kill(k) => Ok(legume_tui::cli::kill(&tui::TOOL, &k)?),
+        Commands::Rename(r) => Ok(legume_tui::cli::rename(&tui::TOOL, &r)?),
     }
 }

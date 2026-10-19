@@ -83,5 +83,10 @@ unicode-segmentation = "1.13"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Detachable sessions for the TUI, its image protocol pick and the session
+# subcommands, shared with the other legume tools.
+legume-tui = "0.3.1"
 
 [dev-dependencies]
+# Drives the TUI through pseudo-terminals in the session tests.
+legume-tui = { version = "0.3.2", features = ["testing"] }

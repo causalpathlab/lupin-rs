@@ -160,7 +160,7 @@ fn running(app: &mut App) {
         .arg("30")
         .spawn()
         .unwrap();
-    app.child = Some(Running::new(child, Job::Pass));
+    app.child = Some(Running::new(child.into(), Job::Pass));
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn a_running_save_offers_no_stop_and_x_says_so_at_once() {
         .arg("30")
         .spawn()
         .unwrap();
-    app.child = Some(Running::new(child, Job::Save(1)));
+    app.child = Some(Running::new(held_as(child, &Job::Save(1)), Job::Save(1)));
     app.tick();
     assert!(!app.status.contains("x: stop"), "{}", app.status);
     assert!(!drawn(&app).contains("x stop"), "the popup offers no stop");
@@ -230,7 +230,7 @@ fn a_running_save_offers_no_stop_and_x_says_so_at_once() {
     assert!(app.status.contains("finishes on its own"), "{}", app.status);
     assert!(app.child.is_some());
     if let Some(mut r) = app.child.take() {
-        let _ = r.child.kill();
+        r.child.kill();
         let _ = r.child.wait();
     }
 }
@@ -2726,13 +2726,61 @@ fn the_log_pane_leaves_out_the_svg_fonts_fallback_notes() {
     fn at(target: &str, level: Level) -> Metadata<'_> {
         Metadata::builder().target(target).level(level).build()
     }
-    let pane = crate::tui::PaneLogger(LevelFilter::Info);
+    let stderr = || legume_tui::logs::gate(Kept::default());
+    let pane = crate::tui::PaneLogger(LevelFilter::Info, stderr());
     assert!(!pane.enabled(&at("usvg::text", Level::Warn)), "font noise");
     assert!(pane.enabled(&at("lupin::figures", Level::Warn)));
     assert!(pane.enabled(&at("lupin::tui", Level::Info)));
     // With -v, everything.
-    let verbose = crate::tui::PaneLogger(LevelFilter::Debug);
+    let verbose = crate::tui::PaneLogger(LevelFilter::Debug, stderr());
     assert!(verbose.enabled(&at("usvg::text", Level::Warn)));
+}
+
+/// A logger that keeps what it is given, standing in for stderr's.
+#[derive(Clone, Default)]
+struct Kept(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl log::Log for Kept {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, r: &log::Record) {
+        self.0.lock().unwrap().push(r.args().to_string());
+    }
+    fn flush(&self) {}
+}
+
+#[test]
+fn a_log_line_for_the_pane_goes_through_the_gate_to_stderr_too() {
+    use log::{Level, LevelFilter, Log, Record};
+    let stderr = Kept::default();
+    let pane = crate::tui::PaneLogger(LevelFilter::Info, legume_tui::logs::gate(stderr.clone()));
+    let say = |level, target, text: &str| {
+        let args = format_args!("{text}");
+        pane.log(
+            &Record::builder()
+                .level(level)
+                .target(target)
+                .args(args)
+                .build(),
+        );
+    };
+    say(Level::Info, "lupin::tui", "PLACEHOLDER1 read");
+    say(Level::Warn, "usvg::text", "a font fallback");
+    say(Level::Debug, "lupin::tui", "a detail");
+    // What the pane leaves out, stderr does too.
+    assert_eq!(*stderr.0.lock().unwrap(), ["PLACEHOLDER1 read"]);
+}
+
+/// `child` held as the runner holds `job`'s: a save is let finish.
+fn held_as(child: std::process::Child, job: &Job) -> Held {
+    use legume_tui::child::Stopper;
+    let stopper = if matches!(job, Job::Save(_)) {
+        Stopper::saving()
+    } else {
+        Stopper::new()
+    };
+    Held::new(child, stopper)
 }
 
 /// A stand-in for a running `job`.
@@ -2741,7 +2789,7 @@ fn running_job(app: &mut App, job: Job) {
         .arg("30")
         .spawn()
         .unwrap();
-    app.child = Some(Running::new(child, job));
+    app.child = Some(Running::new(held_as(child, &job), job));
 }
 
 /// `job`, ended well, taken in as the main loop does: one tick says it is
@@ -2749,7 +2797,7 @@ fn running_job(app: &mut App, job: Job) {
 fn finished(app: &mut App, job: Job) {
     let mut child = std::process::Command::new("true").spawn().unwrap();
     child.wait().unwrap();
-    app.child = Some(Running::new(child, job));
+    app.child = Some(Running::new(held_as(child, &job), job));
     app.tick();
     assert!(app.job_ended(), "{}", app.status);
     assert!(app.status.contains(" done in "), "{}", app.status);
@@ -2767,8 +2815,9 @@ fn a_job_that_ends_says_so_before_its_output_is_read() {
     assert!(app.status.starts_with("pass…"), "{}", app.status);
     let mut child = std::process::Command::new("true").spawn().unwrap();
     child.wait().unwrap();
-    let mut sleeping = std::mem::replace(&mut app.child.as_mut().unwrap().child, child);
-    let _ = (sleeping.kill(), sleeping.wait());
+    let mut sleeping = std::mem::replace(&mut app.child.as_mut().unwrap().child, child.into());
+    sleeping.kill();
+    let _ = sleeping.wait();
     app.tick();
     assert!(app.status.starts_with("pass done in"), "{}", app.status);
     assert!(app.status.contains("reading"), "{}", app.status);
@@ -2795,7 +2844,7 @@ fn a_keys_reply_holds_the_status_against_the_progress_for_a_while() {
     assert!(app.status.starts_with("save…"), "{}", app.status);
     app.stop();
     if let Some(mut r) = app.child.take() {
-        let _ = r.child.kill();
+        r.child.kill();
         let _ = r.child.wait();
     }
 
@@ -2822,7 +2871,7 @@ fn the_settings_note_does_not_offer_r_while_a_job_refuses_it() {
     assert!(screen.contains("settings changed"), "{screen}");
     assert!(!screen.contains("r to re-run"), "{screen}");
     if let Some(mut r) = app.child.take() {
-        let _ = r.child.kill();
+        r.child.kill();
         let _ = r.child.wait();
     }
 }
@@ -3607,4 +3656,162 @@ fn a_statement_on_a_type_below_min_cells_leaves_the_order_menu_to_ask_and_says_s
     let m = menu(&app).expect("CT2 has 1 cell: nothing orders the nodes");
     assert!(m.question.contains("--min-cells 2"), "{}", m.question);
     assert!(m.question.contains("CT1 precedes CT2"), "{}", m.question);
+}
+
+#[test]
+fn kill_quits_at_once_dropping_unsaved_edits_without_asking() {
+    let mut app = app_with_terms(false);
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    app.kill();
+    assert!(app.quit, "no second press asked for");
+    assert!(app.edits.is_empty(), "the unsaved edits are dropped");
+    assert!(app.armed.is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn kill_stops_a_running_pass_as_quitting_does() {
+    let mut app = app_with_terms(false);
+    running(&mut app);
+    let pid = app.child.as_ref().unwrap().child.id();
+    app.kill();
+    assert!(app.quit && app.child.is_none());
+    assert!(
+        !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+        "the pass is killed and waited for"
+    );
+}
+
+#[test]
+fn kill_lets_a_save_under_way_finish_before_quitting() {
+    let mut app = app_with_terms(false);
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    // A save that takes a moment, and fails, so nothing is read after it.
+    let child = std::process::Command::new("sh")
+        .args(["-c", "sleep 0.3; exit 3"])
+        .spawn()
+        .unwrap();
+    app.child = Some(Running::new(held_as(child, &Job::Save(1)), Job::Save(1)));
+    assert!(app.saving_now());
+    let started = Instant::now();
+    app.kill();
+    assert!(
+        started.elapsed() >= Duration::from_millis(250),
+        "waited for the save"
+    );
+    assert!(app.quit && app.child.is_none());
+    assert!(app.status.contains("save failed"), "{}", app.status);
+    assert!(app.edits.is_empty());
+}
+
+#[test]
+fn the_sessions_line_names_the_run_the_job_and_the_unsaved_edits() {
+    let mut app = app_with_terms(false);
+    app.source = PathBuf::from("dir").join("X.senna.json");
+    app.round = None;
+    assert_eq!(app.session_status(), "X.senna.json");
+    running(&mut app);
+    app.edits.push(super::super::round::Edit::Keep {
+        cluster: 0,
+        reason: "why".into(),
+    });
+    assert_eq!(
+        app.session_status(),
+        "X.senna.json, pass running, 1 unsaved edit(s)"
+    );
+    app.stop();
+}
+
+#[test]
+fn a_new_terminal_gives_the_figures_its_picker() {
+    let mut app = app_with_terms(false);
+    assert_eq!(
+        app.picker().protocol_type(),
+        ratatui_image::picker::ProtocolType::Halfblocks,
+        "block characters until the terminal is asked"
+    );
+    use super::super::figure_pane::tests::{made, pane};
+    use ratatui_image::picker::ProtocolType::{Halfblocks, Kitty};
+    // Both panes with a picture made for the old terminal.
+    let area = ratatui::layout::Rect::new(0, 0, 30, 10);
+    let (figures, cell_map) = (pane(), pane());
+    assert!(figures.protocol(area).is_ok() && cell_map.protocol(area).is_ok());
+    app.figures = Some(figures);
+    app.cell_map = Some(cell_map);
+    for p in [&app.figures, &app.cell_map].into_iter().flatten() {
+        assert_eq!(made(p), (Halfblocks, true, true));
+    }
+    #[allow(deprecated)]
+    let mut kitty = ratatui_image::picker::Picker::from_fontsize((10, 20).into());
+    kitty.set_protocol_type(Kitty);
+    app.repick(Repick::Changed(kitty));
+    assert_eq!(app.picker().protocol_type(), Kitty);
+    // Each pane has the new picker, its picture and figure dropped (another
+    // protocol), and makes them again for the new terminal.
+    for p in [&app.figures, &app.cell_map].into_iter().flatten() {
+        assert_eq!(made(p), (Kitty, false, false));
+        assert!(p.protocol(area).is_ok());
+        assert_eq!(made(p), (Kitty, true, true));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_held_child_is_killed_and_waited_for_and_its_end_kept() {
+    let sleeping = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut held = Held::from(sleeping);
+    let pid = held.id();
+    assert!(held.try_wait().unwrap().is_none());
+    held.kill();
+    let ended = held.wait().unwrap();
+    assert!(!ended.success());
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    // Seen once, it stays seen: the tick after reads it again.
+    assert_eq!(held.try_wait().unwrap(), Some(ended));
+    let mut done = Held::from(std::process::Command::new("true").spawn().unwrap());
+    let st = loop {
+        if let Some(st) = done.try_wait().unwrap() {
+            break st;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(st.success());
+    assert_eq!(done.try_wait().unwrap(), Some(st));
+    assert_eq!(done.wait().unwrap(), st);
+}
+
+#[test]
+fn a_new_terminal_of_the_same_kind_leaves_the_pictures_or_sends_kittys_again() {
+    use super::super::figure_pane::tests::{made, pane};
+    use ratatui_image::picker::ProtocolType::{Halfblocks, Kitty};
+    let mut app = app_with_terms(false);
+    let area = ratatui::layout::Rect::new(0, 0, 30, 10);
+    let figures = pane();
+    assert!(figures.protocol(area).is_ok());
+    app.figures = Some(figures);
+    // The same: nothing made again.
+    app.repick(Repick::Same);
+    assert_eq!(
+        made(app.figures.as_ref().unwrap()),
+        (Halfblocks, true, true)
+    );
+    #[allow(deprecated)]
+    let mut kitty = ratatui_image::picker::Picker::from_fontsize((10, 20).into());
+    kitty.set_protocol_type(Kitty);
+    app.repick(Repick::Changed(kitty));
+    let p = app.figures.as_ref().unwrap();
+    assert!(p.protocol(area).is_ok());
+    // Kitty again: the pictures sent again, from the figures drawn.
+    app.repick(Repick::Resend);
+    assert_eq!(app.picker().protocol_type(), Kitty);
+    assert_eq!(made(app.figures.as_ref().unwrap()), (Kitty, false, true));
 }

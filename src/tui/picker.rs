@@ -11,7 +11,8 @@ use crate::annotate::markers::key_labels;
 use crate::manifest::{pinto, run};
 use anyhow::Result;
 use data_beans::aux::gene_sets::membership_rows;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use legume_tui::Round;
+use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -492,39 +493,58 @@ pub enum Step {
     Cancelled,
 }
 
-/// Browse from `start` for a file of the kind `want` on the whole screen;
-/// `None` when cancelled.
-pub fn pick(title: &'static str, start: &Path, want: Want) -> Result<Option<PathBuf>> {
+/// Browse from `start` for a file of the kind `want` on the whole screen of
+/// `session`; `None` when cancelled, or when `lupin kill` stops it.
+pub fn pick(
+    session: &legume_tui::Session,
+    terminal: &mut DefaultTerminal,
+    title: &'static str,
+    start: &Path,
+    want: Want,
+) -> Result<Option<PathBuf>> {
     let mut p = Picker::new(title, start, want);
-    let mut terminal: DefaultTerminal = ratatui::init();
-    let chosen = (|| -> Result<Option<PathBuf>> {
-        let mut dirty = true;
-        loop {
-            dirty |= p.poll();
-            if dirty {
-                terminal.draw(|f| p.draw(f))?;
-                dirty = false;
-            }
-            // Panels still being read redraw as they come; else wait for a key.
-            if p.scan.is_some() && !event::poll(Duration::from_millis(100))? {
-                continue;
-            }
-            dirty = true;
-            let Event::Key(k) = event::read()? else {
-                continue;
-            };
-            if k.kind != KeyEventKind::Press {
-                continue;
-            }
-            match p.key(k.code) {
-                Step::Stay => {}
-                Step::Chosen(file) => return Ok(Some(file)),
-                Step::Cancelled => return Ok(None),
-            }
+    session.status(&title.to_lowercase());
+    let mut dirty = true;
+    loop {
+        dirty |= p.poll();
+        if dirty {
+            // Detached, nothing is drawn; panels are still read.
+            session.draw(terminal, |f| p.draw(f))?;
+            dirty = false;
         }
-    })();
-    ratatui::restore();
-    chosen
+        // Panels still being read redraw as they come; else wait for a key.
+        let wait = if p.scan.is_some() {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_secs(60)
+        };
+        let event = match session.poll(terminal, wait)? {
+            Round::Event(event) => event,
+            // An attach clears the screen, to be drawn whole.
+            Round::Repainted => {
+                dirty = true;
+                continue;
+            }
+            Round::Stopped => return Ok(None),
+            _ => continue,
+        };
+        dirty = true;
+        let Event::Key(k) = event else {
+            continue;
+        };
+        if k.kind != KeyEventKind::Press {
+            continue;
+        }
+        // ctrl+c leaves, as it quits the screen after.
+        if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
+            return Ok(None);
+        }
+        match p.key(k.code) {
+            Step::Stay => {}
+            Step::Chosen(file) => return Ok(Some(file)),
+            Step::Cancelled => return Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]

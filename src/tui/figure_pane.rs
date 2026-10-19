@@ -7,11 +7,10 @@ use super::gallery::{Gallery, Status};
 use crate::figures::{self, CellFigures, Panel, Style, View};
 use crate::manifest::run::load;
 use anyhow::{Context, Result};
-use clap::ValueEnum;
 use image::DynamicImage;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Rect, Size};
-use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{FilterType, Resize};
 use rayon::prelude::*;
@@ -19,20 +18,6 @@ use std::cell::{Ref, RefCell};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
-
-/// How figures reach the terminal, as `senna view` offers it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
-pub enum Graphics {
-    /// The terminal's own, as its environment names it (kitty, Ghostty,
-    /// iTerm2, WezTerm, foot, mlterm); half-block characters otherwise.
-    #[default]
-    Auto,
-    Kitty,
-    Sixel,
-    Iterm2,
-    /// Unicode half-blocks, which every terminal shows.
-    Blocks,
-}
 
 /// The exports strip: the gallery, checked against the files, and the
 /// figure files beside the run that it does not list.
@@ -312,6 +297,19 @@ impl FigurePane {
         }
         self.view = before.view;
         self.exports.open = before.exports.open;
+    }
+
+    /// Draw for the terminal `picker` is for: every terminal picture made
+    /// again, and with `changed` (another protocol or cell size) every
+    /// figure rasterised again too.
+    pub fn repick(&mut self, picker: &Picker, changed: bool) {
+        self.picker = picker.clone();
+        *self.rendered.get_mut() = None;
+        self.tiles.get_mut().clear();
+        if changed {
+            *self.image.get_mut() = None;
+            *self.pending.get_mut() = None;
+        }
     }
 
     /// `data`'s figures, shown at once.
@@ -847,64 +845,6 @@ impl FigurePane {
         self.exports.refresh();
         Ok(format!("wrote {}.svg and .pdf{logged}", e.base.display()))
     }
-}
-
-/// The terminal's picture protocol: the one `graphics` names, else the one
-/// the environment says the terminal has; half-blocks when it says none or
-/// the cell's pixel size is unknown.
-///
-/// The terminal is not asked. ratatui-image's query reads stdin on a thread
-/// that outlives its timeout and restores the terminal mode after it says it
-/// is done, so beside the TUI's own key reader it eats keys and can leave
-/// the terminal out of raw mode.
-pub fn picker(graphics: Graphics) -> Picker {
-    let cell = ratatui::crossterm::terminal::window_size()
-        .ok()
-        .and_then(|w| cell_pixels(&w));
-    let protocol = match graphics {
-        Graphics::Blocks => ProtocolType::Halfblocks,
-        Graphics::Kitty => ProtocolType::Kitty,
-        Graphics::Sixel => ProtocolType::Sixel,
-        Graphics::Iterm2 => ProtocolType::Iterm2,
-        Graphics::Auto if cell.is_none() => ProtocolType::Halfblocks,
-        Graphics::Auto => protocol_from_env(|k| std::env::var(k).ok()),
-    };
-    if protocol == ProtocolType::Halfblocks {
-        return Picker::halfblocks();
-    }
-    // A protocol named outright, with the cell's size unknown: a common one.
-    #[allow(deprecated)] // in favour of the stdin query, which is what is avoided
-    let mut picker = Picker::from_fontsize(cell.unwrap_or((10, 20)).into());
-    picker.set_protocol_type(protocol);
-    picker
-}
-
-/// The picture protocol the terminal's environment variables (`var`) name.
-pub(crate) fn protocol_from_env(var: impl Fn(&str) -> Option<String>) -> ProtocolType {
-    let v = |k: &str| var(k).unwrap_or_default();
-    let (term, program) = (v("TERM"), v("TERM_PROGRAM"));
-    // Through tmux a picture needs passthrough, which `--graphics` can ask for.
-    if var("TMUX").is_some() {
-        ProtocolType::Halfblocks
-    } else if var("KITTY_WINDOW_ID").is_some()
-        || term.contains("kitty")
-        || term.contains("ghostty")
-        || program.eq_ignore_ascii_case("ghostty")
-    {
-        ProtocolType::Kitty
-    } else if program == "iTerm.app" || program == "WezTerm" || v("LC_TERMINAL") == "iTerm2" {
-        ProtocolType::Iterm2
-    } else if term.starts_with("foot") || term.starts_with("mlterm") {
-        ProtocolType::Sixel
-    } else {
-        ProtocolType::Halfblocks
-    }
-}
-
-/// A cell's size in pixels, from the window's when the terminal reports it.
-pub(crate) fn cell_pixels(w: &ratatui::crossterm::terminal::WindowSize) -> Option<(u16, u16)> {
-    (w.columns > 0 && w.rows > 0 && w.width > 0 && w.height > 0)
-        .then(|| (w.width / w.columns, w.height / w.rows))
 }
 
 #[cfg(test)]

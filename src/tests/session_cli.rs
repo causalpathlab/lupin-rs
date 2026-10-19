@@ -1,0 +1,100 @@
+//! The session flags and subcommands on lupin's command line, and the help
+//! that describes them.
+
+use super::*;
+use clap::CommandFactory;
+
+fn parse(argv: &[&str]) -> Cli {
+    Cli::try_parse_from(std::iter::once("lupin").chain(argv.iter().copied())).unwrap()
+}
+
+/// The long help of subcommand `name`.
+fn long_help(name: &str) -> String {
+    let mut cli = Cli::command();
+    cli.build();
+    cli.find_subcommand_mut(name)
+        .unwrap()
+        .render_long_help()
+        .to_string()
+}
+
+#[test]
+fn the_session_flags_sit_beside_annotate_and_stay_out_of_its_child_passes() {
+    let cli = parse(&["annotate", "--no-detach", "--session", "work", "-o", "x"]);
+    let Commands::Annotate { args, session } = cli.cmd else {
+        panic!("annotate");
+    };
+    assert!(session.no_detach);
+    assert_eq!(session.session.as_deref(), Some("work"));
+    // A pass started from the TUI is `lupin annotate` with these: no
+    // session flag goes with them.
+    let argv = args.to_argv();
+    assert!(!argv
+        .iter()
+        .any(|a| a.contains("detach") || a == "--session"));
+}
+
+#[test]
+fn trajectory_takes_the_session_flags_too() {
+    let cli = parse(&["trajectory", "-f", "run", "--no-detach"]);
+    let Commands::Trajectory { args, session } = cli.cmd else {
+        panic!("trajectory");
+    };
+    assert!(session.no_detach && session.session.is_none());
+    assert_eq!(args.from.as_deref(), Some("run"));
+    assert!(!args.child_argv().iter().any(|a| a.contains("detach")));
+}
+
+#[test]
+fn the_session_subcommands_parse() {
+    assert!(matches!(parse(&["sessions"]).cmd, Commands::Sessions));
+    let Commands::Attach(a) = parse(&["attach", "work"]).cmd else {
+        panic!("attach");
+    };
+    assert_eq!(a.name.as_deref(), Some("work"));
+    let Commands::Kill(k) = parse(&["kill", "--force"]).cmd else {
+        panic!("kill");
+    };
+    assert!(k.force && k.name.is_none());
+    let Commands::Rename(r) = parse(&["rename", "annotate-1", "work"]).cmd else {
+        panic!("rename");
+    };
+    assert_eq!(
+        (r.session.as_str(), r.label.as_str()),
+        ("annotate-1", "work")
+    );
+}
+
+#[test]
+fn the_tui_commands_help_ends_with_their_session_in_lupins_words() {
+    for (name, goes_on, resume) in [
+        (
+            "annotate",
+            "a pass or a save goes on",
+            "`lupin annotate` with no --from",
+        ),
+        (
+            "trajectory",
+            "a pass or a trajectory run goes on",
+            "`lupin trajectory` with no --from",
+        ),
+    ] {
+        let help = long_help(name);
+        // Wrapped to lines, so read as one.
+        let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        for said in [
+            goes_on,
+            resume,
+            "ctrl+alt+d detaches",
+            "ctrl+alt+s",
+            "`lupin attach`",
+            "--no-detach",
+            "`?` in the TUI shows the keys",
+        ] {
+            assert!(flat.contains(said), "{name}: {said:?} in {help}");
+        }
+    }
+    let kill = long_help("kill");
+    let flat = kill.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("unsaved edits are dropped"), "{kill}");
+}

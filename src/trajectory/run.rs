@@ -257,11 +257,11 @@ struct Ordering {
 }
 
 /// With both `--from` and `--out`, the run; otherwise the TUI, which asks for
-/// what is missing.
-pub fn run_trajectory(args: &TrajectoryArgs) -> Result<()> {
+/// what is missing, in a session as `session` asks.
+pub fn run_trajectory(args: &TrajectoryArgs, session: &legume_tui::cli::SessionArgs) -> Result<()> {
     match (args.from.as_deref(), args.out.as_deref()) {
         (Some(from), Some(out)) if !args.opens_tui() => run_batch(args, from, out),
-        _ => crate::tui::run_trajectory(args),
+        _ => crate::tui::run_trajectory(args, session),
     }
 }
 

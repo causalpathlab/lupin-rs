@@ -116,7 +116,9 @@ fn susie_settings_that_leave_no_posterior_fail_the_command() {
     ] {
         let mut argv = vec!["-o", "x", "-m", "m.tsv"];
         argv.extend_from_slice(bad);
-        let err = run_annotate(&parse(&argv)).unwrap_err().to_string();
+        let err = run_annotate(&parse(&argv), &Default::default())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("SuSiE"), "{bad:?}: {err}");
     }
 }
