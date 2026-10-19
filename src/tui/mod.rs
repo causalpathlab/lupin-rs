@@ -12,6 +12,7 @@
 //! connection; `lupin attach` comes back, and `lupin kill` quits as `q` does.
 
 mod app;
+mod ask;
 mod export;
 mod figure_pane;
 mod gallery;

@@ -589,10 +589,13 @@ impl ClTerms {
         let rows = legume_numeric::matrix::common_io::TwoFieldRows::from_text(text);
         let mut n = 0;
         for (label, answer) in &rows.rows {
-            let join = match answer.trim() {
+            let join = match answer.trim().to_lowercase().as_str() {
                 "join" => true,
                 "alone" => false,
-                _ => continue,
+                other => {
+                    log::warn!("{label}: answer {other:?} is neither join nor alone; skipped");
+                    continue;
+                }
             };
             self.joins.insert(self.rules.normalise(label), join);
             n += 1;
@@ -918,11 +921,24 @@ impl TypeTree {
         }
         let (mut groups, lone) = class_groups(terms, &on);
         // A lone type the user said to join goes with the group its sharers
-        // took, under the class they all share.
+        // took, under the class they all share; a second joining the same
+        // group goes where the first took it.
+        let mut moved: BTreeMap<String, String> = BTreeMap::new();
         for l in &lone {
             if let (Some(true), Some(target)) = (terms.joined(&l.label), &l.target) {
-                if let Some(siblings) = groups.remove(target) {
-                    groups.entry(l.class.clone()).or_default().extend(siblings);
+                match moved.get(target) {
+                    Some(to) if *to != l.class => {
+                        if let Some(alone) = groups.remove(&l.class) {
+                            groups.entry(to.clone()).or_default().extend(alone);
+                        }
+                    }
+                    Some(_) => {}
+                    None => {
+                        if let Some(siblings) = groups.remove(target) {
+                            groups.entry(l.class.clone()).or_default().extend(siblings);
+                        }
+                        moved.insert(target.clone(), l.class.clone());
+                    }
                 }
             }
         }
@@ -963,26 +979,46 @@ impl TypeTree {
         })
     }
 
-    /// The panel's types left alone that the user has not answered for
-    /// ([`JoinQuestion`]): those whose sharers all took one group.
+    /// The panel's types left alone whose sharers all took one group
+    /// ([`JoinQuestion`]), each with the user's answer when there is one.
+    #[must_use]
+    pub fn left_alone(terms: &ClTerms, placed: &Placed) -> Vec<(JoinQuestion, Option<bool>)> {
+        let on: BTreeMap<&str, &str> = (placed.on())
+            .map(|(l, id)| (l.as_str(), id.as_str()))
+            .collect();
+        if on.len() < 2 {
+            return Vec::new();
+        }
+        let (groups, lone) = class_groups(terms, &on);
+        (lone.into_iter())
+            .filter_map(|l| {
+                let target = l.target?;
+                // As the tree names it: a group of one for its type's term.
+                let named = match groups.get(&target).map(Vec::as_slice) {
+                    Some([only]) => on[only.as_str()].to_string(),
+                    _ => target,
+                };
+                let answer = terms.joined(&l.label);
+                Some((
+                    JoinQuestion {
+                        label: l.label,
+                        group: label_key(terms.name(&named).unwrap_or(&named)),
+                        class: l.class,
+                    },
+                    answer,
+                ))
+            })
+            .collect()
+    }
+
+    /// The panel's types left alone that the user has not answered for.
     #[must_use]
     pub fn join_questions(terms: &ClTerms, panel: &[(String, String)]) -> Vec<JoinQuestion> {
         let types = panel_types(panel);
         let placed = terms.place_labels(types.iter().map(String::as_str));
-        let on: BTreeMap<&str, &str> = (placed.on())
-            .map(|(l, id)| (l.as_str(), id.as_str()))
-            .collect();
-        let (_, lone) = class_groups(terms, &on);
-        (lone.into_iter())
-            .filter(|l| terms.joined(&l.label).is_none())
-            .filter_map(|l| {
-                let target = l.target?;
-                Some(JoinQuestion {
-                    label: l.label,
-                    group: label_key(terms.name(&target).unwrap_or(&target)),
-                    class: l.class,
-                })
-            })
+        (Self::left_alone(terms, &placed).into_iter())
+            .filter(|(_, a)| a.is_none())
+            .map(|(q, _)| q)
             .collect()
     }
 

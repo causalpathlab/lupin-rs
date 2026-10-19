@@ -227,6 +227,16 @@ impl SearchPath {
             .map(|d| d.join(ALIASES))
     }
 
+    /// The user's own answers on types left alone: the user layer's
+    /// `cl_groups.tsv`, else the project's.
+    #[must_use]
+    pub fn user_groups(&self) -> Option<PathBuf> {
+        self.user
+            .as_ref()
+            .or(self.project.as_ref())
+            .map(|d| d.join(GROUPS))
+    }
+
     /// Where a label's alias chosen in the TUI is written: the panel's
     /// sidecar when its directory takes a new file, else the project's
     /// (else the user's) `cl_aliases.tsv`.
@@ -346,6 +356,8 @@ pub struct ClData {
     /// The rules and alias files read, in layer order.
     pub rule_files: Vec<PathBuf>,
     pub alias_files: Vec<PathBuf>,
+    /// The user's answers on types left alone ([`GROUPS`]), in layer order.
+    pub group_files: Vec<PathBuf>,
     pub search: SearchPath,
     /// The ontology, parsed on first use.
     pub parsed: OnceLock<Option<ClTerms>>,
@@ -389,7 +401,10 @@ impl ClData {
             Some(f) => search.run_file(f),
             None => search.layers(ONTOLOGY, false).pop(),
         };
-        let mut data = Self::from_files(rule_files, alias_files, ontology, search)?;
+        let group_files = (search.user_and_project_files(GROUPS).into_iter())
+            .map(|(_, p)| p)
+            .collect();
+        let mut data = Self::from_files(rule_files, alias_files, group_files, ontology, search)?;
         if data.ontology.is_none() && explicit_obo.is_none() {
             data.ontology = fetch_ontology(&data.search, &data.rules, online);
         }
@@ -423,12 +438,21 @@ impl ClData {
             warn!("files the pass recorded are gone; finding the Cell Ontology data afresh");
             return Ok(None);
         }
-        Self::from_files(rules, aliases, ontology, search).map(Some)
+        // Records from before the answers were kept have none.
+        let groups = paths("groups").unwrap_or_default();
+        if !groups.iter().all(|p| p.is_file()) {
+            warn!(
+                "answers files the pass recorded are gone; finding the Cell Ontology data afresh"
+            );
+            return Ok(None);
+        }
+        Self::from_files(rules, aliases, groups, ontology, search).map(Some)
     }
 
     fn from_files(
         rule_files: Vec<PathBuf>,
         alias_files: Vec<PathBuf>,
+        group_files: Vec<PathBuf>,
         ontology: Option<PathBuf>,
         search: SearchPath,
     ) -> Result<Self> {
@@ -458,6 +482,7 @@ impl ClData {
             ontology,
             rule_files,
             alias_files,
+            group_files,
             search,
             parsed: OnceLock::new(),
         })
@@ -489,7 +514,9 @@ impl ClData {
                     fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
                 let mut terms =
                     ClTerms::parse(&text, &self.rules).with_aliases(self.aliases.clone());
-                for answers in self.search.user_and_project(GROUPS)? {
+                for p in &self.group_files {
+                    let answers = fs::read_to_string(p)
+                        .with_context(|| format!("reading {}", p.display()))?;
                     terms.add_joins(&answers);
                 }
                 Ok(terms)
@@ -506,6 +533,7 @@ impl ClData {
         json!({
             "rules": self.rule_files.iter().map(abs).collect::<Vec<_>>(),
             "aliases": self.alias_files.iter().map(abs).collect::<Vec<_>>(),
+            "groups": self.group_files.iter().map(abs).collect::<Vec<_>>(),
             "ontology": self.ontology.as_ref().map(abs),
             "ontology_release": release,
         })
@@ -772,6 +800,12 @@ fn where_report(search: &SearchPath) -> Vec<String> {
         "aliases   the shared {ALIASES} (downloaded), then the panel's sidecar (x.tsv.gz → x.cl.tsv), then user and project {ALIASES}, then --label-cl"
     ));
     for p in search.alias_layers(false) {
+        out.push(format!("  {}", p.display()));
+    }
+    out.push(format!(
+        "{GROUPS}: answers on types left alone (label<TAB>join|alone), the user's, then the project's"
+    ));
+    for (_, p) in search.user_and_project_files(GROUPS) {
         out.push(format!("  {}", p.display()));
     }
     for name in [RULES, ONTOLOGY, GO_ONTOLOGY].into_iter().chain(gafs) {
