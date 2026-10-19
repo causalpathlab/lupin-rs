@@ -61,9 +61,7 @@ impl PanelTree {
     pub fn from_ontology(terms: &ClTerms, panel: &[(String, String)]) -> Option<Self> {
         let types = panel_types(panel);
         let placed = terms.place_labels(types.iter().map(String::as_str));
-        if placed.on().count() < 2 {
-            return None;
-        }
+        placed.on_terms()?;
         // A label under a term hangs as a leaf under that term's node.
         let ancestry: BTreeMap<&str, BTreeSet<String>> = placed
             .on()

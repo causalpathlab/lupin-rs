@@ -31,6 +31,9 @@ pub struct ClTerms {
     aliases: Aliases,
     /// The aliases by label as names are compared ([`MatchRules::normalise`]).
     alias_of: HashMap<String, String>,
+    /// The user's answers on types left alone (see [`JoinQuestion`]): join
+    /// (`true`) or stand alone, by label as names are compared.
+    joins: HashMap<String, bool>,
     /// [`MatchRules::qualifier_words`].
     qualifiers: Vec<Vec<String>>,
     /// Normalised name or counted synonym → term ids.
@@ -231,27 +234,32 @@ impl ClTerms {
         &self,
         labels: impl IntoIterator<Item = &'a str>,
     ) -> (BTreeMap<String, String>, Vec<String>, Option<String>) {
-        let mut mapped = BTreeMap::new();
+        let (placed, unmapped) = self.read_panel(labels);
+        (placed.mapped, unmapped, placed.context)
+    }
+
+    /// [`Self::match_panel`] as a [`Placed`] holding the matched labels and
+    /// what matched each, and the labels left.
+    fn read_panel<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> (Placed, Vec<String>) {
+        let mut placed = Placed::default();
         let mut unmapped = Vec::new();
         for label in labels {
-            match self.match_one(label) {
-                Some(id) => {
-                    mapped.insert(label.to_string(), id);
-                }
+            match self.match_how(label) {
+                Some((id, how)) => placed.put(label.to_string(), id, how),
                 None => unmapped.push(label.to_string()),
             }
         }
-        let context = self.context_word(&unmapped);
-        if let Some(w) = &context {
-            unmapped.retain(|l| match self.complete(l, w) {
+        placed.context = self.context_word(&unmapped);
+        if let Some(w) = placed.context.clone() {
+            unmapped.retain(|l| match self.complete(l, &w) {
                 Some(id) => {
-                    mapped.insert(l.clone(), id);
+                    placed.put(l.clone(), id, How::PanelWord(w.clone()));
                     false
                 }
                 None => true,
             });
         }
-        (mapped, unmapped, context)
+        (placed, unmapped)
     }
 
     /// A panel's labels on the ontology: [`Self::map_labels`], then each
@@ -259,19 +267,11 @@ impl ClTerms {
     /// ([`Self::place_with`]), the panel's word completing runs too.
     #[must_use]
     pub fn place_labels<'a>(&self, labels: impl IntoIterator<Item = &'a str>) -> Placed {
-        let (mapped, unmapped, context) = self.match_panel(labels);
-        let mut placed = Placed {
-            mapped,
-            ..Placed::default()
-        };
+        let (mut placed, unmapped) = self.read_panel(labels);
         for label in unmapped {
-            match self.place_with(&label, context.as_deref()) {
-                Some((id, true)) => {
-                    placed.under.insert(label, id);
-                }
-                Some((id, false)) => {
-                    placed.kept.insert(label, id);
-                }
+            match self.place_with(&label, placed.context.as_deref()) {
+                Some((id, true)) => placed.put(label, id, How::Under),
+                Some((id, false)) => placed.put(label, id, How::Kept),
                 None => placed.none.push(label),
             }
         }
@@ -281,10 +281,26 @@ impl ClTerms {
     /// One label's term: a curated alias first, when its term is in this
     /// ontology, else by the names.
     fn match_one(&self, label: &str) -> Option<String> {
+        self.match_how(label).map(|(id, _)| id)
+    }
+
+    /// [`Self::match_one`], and which of the two matched.
+    fn match_how(&self, label: &str) -> Option<(String, How)> {
+        (self.alias(label).map(|id| (id, How::Alias)))
+            .or_else(|| self.match_name(label).map(|id| (id, How::Name)))
+    }
+
+    /// The term `label` is aliased to, when this ontology has it.
+    fn alias(&self, label: &str) -> Option<String> {
         let exact = self.rules.normalise(label);
-        if let Some(id) = self.alias_of.get(&exact).filter(|id| self.has(id)) {
-            return Some(id.clone());
-        }
+        (self.alias_of.get(&exact))
+            .filter(|id| self.has(id))
+            .cloned()
+    }
+
+    /// One label's term by the names alone.
+    fn match_name(&self, label: &str) -> Option<String> {
+        let exact = self.rules.normalise(label);
         // As written, else made singular, else in any word order, else
         // with an implied trailing word completing a term's own name
         // (see `ImpliedRules`), else as the most general term it fits
@@ -545,6 +561,32 @@ impl ClTerms {
         n
     }
 
+    /// Layer the user's answers on types left alone: `label<TAB>join` or
+    /// `label<TAB>alone` rows, read as every two-column table is; a later
+    /// row wins. How many rows it took.
+    pub fn add_joins(&mut self, text: &str) -> usize {
+        let rows = legume_numeric::matrix::common_io::TwoFieldRows::from_text(text);
+        let mut n = 0;
+        for (label, answer) in &rows.rows {
+            let join = match answer.trim().to_lowercase().as_str() {
+                "join" => true,
+                "alone" => false,
+                other => {
+                    log::warn!("{label}: answer {other:?} is neither join nor alone; skipped");
+                    continue;
+                }
+            };
+            self.joins.insert(self.rules.normalise(label), join);
+            n += 1;
+        }
+        n
+    }
+
+    /// The user's answer for type `label` left alone, if any.
+    pub(crate) fn joined(&self, label: &str) -> Option<bool> {
+        self.joins.get(&self.rules.normalise(label)).copied()
+    }
+
     /// Whether labels `a` and `b` are one label as names are compared.
     #[must_use]
     pub fn alike(&self, a: &str, b: &str) -> bool {
@@ -674,12 +716,73 @@ pub struct Placed {
     pub kept: BTreeMap<String, String>,
     /// Nowhere on the ontology.
     pub none: Vec<String>,
+    /// The word the panel leaves off.
+    pub context: Option<String>,
+    /// What put each label on a term, matched, under or kept.
+    by: BTreeMap<String, How>,
+}
+
+/// The fewest labels on terms for the ontology to group a panel's types.
+const FEWEST_ON_TERMS: usize = 2;
+
+/// What put a label where it is ([`Placed::how`]), for the record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "by", content = "word")]
+pub enum How {
+    /// A curated alias.
+    Alias,
+    /// A term's name or counted synonym, under the matching rules.
+    Name,
+    /// The word the panel leaves off its labels.
+    PanelWord(String),
+    /// Under the term the longest run of its words names.
+    Under,
+    /// Kept to a term's lineage, grouped by its markers.
+    Kept,
+    /// Nowhere on the ontology: grouped by its markers.
+    Nowhere,
 }
 
 impl Placed {
     /// Each label on a term: matched, or under it.
     pub fn on(&self) -> impl Iterator<Item = (&String, &String)> {
         self.mapped.iter().chain(&self.under)
+    }
+
+    /// What put `label` where it is.
+    #[must_use]
+    pub fn how(&self, label: &str) -> How {
+        self.by.get(label).cloned().unwrap_or(How::Nowhere)
+    }
+
+    /// The term `label` is matched to, under, or kept to.
+    #[must_use]
+    pub fn term(&self, label: &str) -> Option<&String> {
+        (self.mapped.get(label))
+            .or_else(|| self.under.get(label))
+            .or_else(|| self.kept.get(label))
+    }
+
+    /// `label` on term `id`, put there as `how` says.
+    fn put(&mut self, label: String, id: String, how: How) {
+        let to = match how {
+            How::Alias | How::Name | How::PanelWord(_) => &mut self.mapped,
+            How::Under => &mut self.under,
+            How::Kept => &mut self.kept,
+            How::Nowhere => unreachable!("a label on term {id} is somewhere"),
+        };
+        to.insert(label.clone(), id);
+        self.by.insert(label, how);
+    }
+
+    /// Each label on a term by its term, when enough are for the ontology
+    /// to group them.
+    #[must_use]
+    pub fn on_terms(&self) -> Option<BTreeMap<&str, &str>> {
+        let on: BTreeMap<&str, &str> = (self.on())
+            .map(|(l, id)| (l.as_str(), id.as_str()))
+            .collect();
+        (on.len() >= FEWEST_ON_TERMS).then_some(on)
     }
 
     /// The labels on no term: those kept to a lineage, then the others.
@@ -809,56 +912,48 @@ impl TypeTree {
         panel: &[(String, String)],
         placed: &Placed,
     ) -> Option<Self> {
-        let on: BTreeMap<&str, &str> = (placed.on())
-            .map(|(l, id)| (l.as_str(), id.as_str()))
-            .collect();
-        if on.len() < 2 {
-            return None;
-        }
-        let ancestry: BTreeMap<&str, BTreeSet<String>> = on
-            .iter()
-            .map(|(label, id)| (*label, terms.ancestors_or_self(id)))
-            .collect();
-        // Each type goes under its nearest ancestor (or itself) among the
-        // ontology's analysis classes that it shares with another panel type.
-        // A type sharing none stands as its own group.
-        // Per analysis class: how many panel types sit under it, and its depth.
-        let mut sharers: HashMap<&str, usize> = HashMap::new();
-        for a in ancestry.values() {
-            for t in a.iter().filter(|t| terms.classes.contains(*t)) {
-                *sharers.entry(t.as_str()).or_default() += 1;
+        let on = placed.on_terms()?;
+        let (mut groups, lone) = class_groups(terms, &on);
+        // A lone type the user said to join goes with the group its sharers
+        // took, under the class they all share. A second joining the same
+        // group goes where the first took it, under the broader of the two
+        // classes when one is in the other; else it stays alone, the two
+        // sharing no class to group under.
+        let mut moved: BTreeMap<String, String> = BTreeMap::new();
+        for l in &lone {
+            let (Some(true), Some(target)) = (terms.joined(&l.label), &l.target) else {
+                continue;
+            };
+            let (from, to) = match moved.get(target) {
+                None => (target.clone(), l.class.clone()),
+                Some(to) if terms.ancestors_or_self(to).contains(&l.class) => {
+                    (to.clone(), l.class.clone())
+                }
+                Some(to) if terms.ancestors_or_self(&l.class).contains(to) => {
+                    (l.class.clone(), to.clone())
+                }
+                Some(to) => {
+                    log::warn!(
+                        "{}: joins a group already under {to}, a class it is not in; left alone",
+                        l.label
+                    );
+                    continue;
+                }
+            };
+            if let Some(members) = groups.remove(&from) {
+                groups.entry(to.clone()).or_default().extend(members);
             }
-        }
-        let depth: HashMap<&str, usize> = sharers.keys().map(|t| (*t, terms.depth(t))).collect();
-        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (label, a) in &ancestry {
-            let node = a
-                .iter()
-                .filter(|t| sharers.get(t.as_str()).is_some_and(|&n| n >= 2))
-                .max_by(|x, y| {
-                    depth[x.as_str()]
-                        .cmp(&depth[y.as_str()])
-                        .then_with(|| y.cmp(x))
-                })
-                .cloned()
-                .unwrap_or_else(|| on[*label].to_string());
-            groups.entry(node).or_default().push((*label).to_string());
+            moved.insert(target.clone(), to);
         }
         let mut groups: Vec<TypeGroup> = groups
             .into_iter()
             .map(|(id, members)| {
-                // A class every sharer left for a nearer one groups nothing:
-                // its lone type is named for itself, not for the broader class.
-                if members.len() == 1 {
-                    (on[members[0].as_str()].to_string(), members)
-                } else {
-                    (id, members)
+                let id = group_term(&on, id, &members);
+                TypeGroup {
+                    name: label_key(terms.name(&id).unwrap_or(&id)),
+                    cl_id: Some(id),
+                    members,
                 }
-            })
-            .map(|(id, members)| TypeGroup {
-                name: label_key(terms.name(&id).unwrap_or(&id)),
-                cl_id: Some(id),
-                members,
             })
             .collect();
         // A group in a kept label's lineage: its term above or below the one
@@ -879,6 +974,46 @@ impl TypeTree {
             label_cl: placed.mapped.clone(),
             groups,
         })
+    }
+
+    /// The panel's types left alone whose sharers all took one group
+    /// ([`JoinQuestion`]), each with the user's answer when there is one.
+    #[must_use]
+    pub fn left_alone(terms: &ClTerms, placed: &Placed) -> Vec<(JoinQuestion, Option<bool>)> {
+        let Some(on) = placed.on_terms() else {
+            return Vec::new();
+        };
+        let (groups, lone) = class_groups(terms, &on);
+        (lone.into_iter())
+            .filter_map(|l| {
+                let target = l.target?;
+                // As the tree names it.
+                let named = match groups.get(&target) {
+                    Some(members) => group_term(&on, target, members),
+                    None => target,
+                };
+                let answer = terms.joined(&l.label);
+                Some((
+                    JoinQuestion {
+                        label: l.label,
+                        group: label_key(terms.name(&named).unwrap_or(&named)),
+                        class: l.class,
+                    },
+                    answer,
+                ))
+            })
+            .collect()
+    }
+
+    /// The panel's types left alone that the user has not answered for.
+    #[must_use]
+    pub fn join_questions(terms: &ClTerms, panel: &[(String, String)]) -> Vec<JoinQuestion> {
+        let types = panel_types(panel);
+        let placed = terms.place_labels(types.iter().map(String::as_str));
+        (Self::left_alone(terms, &placed).into_iter())
+            .filter(|(_, a)| a.is_none())
+            .map(|(q, _)| q)
+            .collect()
     }
 
     /// Groups of types that share marker genes: the connected components of
@@ -930,6 +1065,87 @@ impl TypeTree {
                 .collect(),
         }
     }
+}
+
+/// The term a group of `members` under class `id` is named for: the class,
+/// but for a group of one, which a class every sharer left for a nearer one
+/// leaves; its type is named for itself, not for the broader class.
+fn group_term(on: &BTreeMap<&str, &str>, id: String, members: &[String]) -> String {
+    match members {
+        [only] => on[only.as_str()].to_string(),
+        _ => id,
+    }
+}
+
+/// A type that shares an analysis class with other panel types, but stands
+/// alone because they all went under a nearer class: the class it shares,
+/// and the group they took (by its class) when they all took one.
+struct Lone {
+    label: String,
+    class: String,
+    target: Option<String>,
+}
+
+/// The panel's types on terms (`on`), each under its nearest ancestor (or
+/// itself) among the ontology's analysis classes that it shares with another
+/// panel type, by class; and the types that left alone ([`Lone`]).
+fn class_groups(
+    terms: &ClTerms,
+    on: &BTreeMap<&str, &str>,
+) -> (BTreeMap<String, Vec<String>>, Vec<Lone>) {
+    let ancestry: BTreeMap<&str, BTreeSet<String>> = (on.iter())
+        .map(|(label, id)| (*label, terms.ancestors_or_self(id)))
+        .collect();
+    // Per analysis class: how many panel types sit under it, and its depth.
+    let mut sharers: HashMap<&str, usize> = HashMap::new();
+    for a in ancestry.values() {
+        for t in a.iter().filter(|t| terms.classes.contains(*t)) {
+            *sharers.entry(t.as_str()).or_default() += 1;
+        }
+    }
+    let depth: HashMap<&str, usize> = sharers.keys().map(|t| (*t, terms.depth(t))).collect();
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut node_of: BTreeMap<&str, String> = BTreeMap::new();
+    for (label, a) in &ancestry {
+        let node = a
+            .iter()
+            .filter(|t| sharers.get(t.as_str()).is_some_and(|&n| n >= 2))
+            .max_by(|x, y| {
+                depth[x.as_str()]
+                    .cmp(&depth[y.as_str()])
+                    .then_with(|| y.cmp(x))
+            })
+            .cloned()
+            .unwrap_or_else(|| on[*label].to_string());
+        node_of.insert(label, node.clone());
+        groups.entry(node).or_default().push((*label).to_string());
+    }
+    let lone = (groups.iter())
+        .filter(|(class, members)| members.len() == 1 && on[members[0].as_str()] != class.as_str())
+        .map(|(class, members)| {
+            let label = &members[0];
+            let theirs: BTreeSet<&String> = (ancestry.iter())
+                .filter(|(l, a)| **l != label.as_str() && a.contains(class))
+                .map(|(l, _)| &node_of[*l])
+                .collect();
+            Lone {
+                label: label.clone(),
+                class: class.clone(),
+                target: (theirs.len() == 1).then(|| (*theirs.iter().next().unwrap()).clone()),
+            }
+        })
+        .collect();
+    (groups, lone)
+}
+
+/// A question for the user: does `label`, left alone, join `group` under
+/// the analysis class `class` they share, or stand alone? Answered in
+/// `cl_groups.tsv` ([`ClTerms::add_joins`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JoinQuestion {
+    pub label: String,
+    pub class: String,
+    pub group: String,
 }
 
 /// The panel's cell types, in first-seen order, one per scoring name.

@@ -43,6 +43,9 @@ use std::time::Duration;
 
 pub const RULES: &str = "cl_matching.json";
 pub const ALIASES: &str = "cl_aliases.tsv";
+/// The user's answers on types left alone (`label<TAB>join|alone`), in the
+/// user's and the project's layers.
+pub const GROUPS: &str = "cl_groups.tsv";
 /// Which cell types precede which, for `lupin trajectory` and the TUI's order view.
 pub const PRECEDENCE: &str = "precedence.tsv";
 pub const ONTOLOGY: &str = "cl-basic.obo";
@@ -218,10 +221,22 @@ impl SearchPath {
     /// project's.
     #[must_use]
     pub fn user_aliases(&self) -> Option<PathBuf> {
+        self.user_file(ALIASES)
+    }
+
+    /// The user's own answers on types left alone: the user layer's
+    /// `cl_groups.tsv`, else the project's.
+    #[must_use]
+    pub fn user_groups(&self) -> Option<PathBuf> {
+        self.user_file(GROUPS)
+    }
+
+    /// The user's own file `name`: in the user layer, else the project's.
+    fn user_file(&self, name: &str) -> Option<PathBuf> {
         self.user
             .as_ref()
             .or(self.project.as_ref())
-            .map(|d| d.join(ALIASES))
+            .map(|d| d.join(name))
     }
 
     /// Where a label's alias chosen in the TUI is written: the panel's
@@ -343,6 +358,8 @@ pub struct ClData {
     /// The rules and alias files read, in layer order.
     pub rule_files: Vec<PathBuf>,
     pub alias_files: Vec<PathBuf>,
+    /// The user's answers on types left alone ([`GROUPS`]), in layer order.
+    pub group_files: Vec<PathBuf>,
     pub search: SearchPath,
     /// The ontology, parsed on first use.
     pub parsed: OnceLock<Option<ClTerms>>,
@@ -386,7 +403,10 @@ impl ClData {
             Some(f) => search.run_file(f),
             None => search.layers(ONTOLOGY, false).pop(),
         };
-        let mut data = Self::from_files(rule_files, alias_files, ontology, search)?;
+        let group_files = (search.user_and_project_files(GROUPS).into_iter())
+            .map(|(_, p)| p)
+            .collect();
+        let mut data = Self::from_files(rule_files, alias_files, group_files, ontology, search)?;
         if data.ontology.is_none() && explicit_obo.is_none() {
             data.ontology = fetch_ontology(&data.search, &data.rules, online);
         }
@@ -411,21 +431,25 @@ impl ClData {
             .get("ontology")
             .and_then(Value::as_str)
             .map(PathBuf::from);
+        // Records from before the answers were kept have none.
+        let groups = paths("groups").unwrap_or_default();
         let all_there = rules
             .iter()
             .chain(&aliases)
+            .chain(&groups)
             .chain(&ontology)
             .all(|p| p.is_file());
         if !all_there {
             warn!("files the pass recorded are gone; finding the Cell Ontology data afresh");
             return Ok(None);
         }
-        Self::from_files(rules, aliases, ontology, search).map(Some)
+        Self::from_files(rules, aliases, groups, ontology, search).map(Some)
     }
 
     fn from_files(
         rule_files: Vec<PathBuf>,
         alias_files: Vec<PathBuf>,
+        group_files: Vec<PathBuf>,
         ontology: Option<PathBuf>,
         search: SearchPath,
     ) -> Result<Self> {
@@ -455,6 +479,7 @@ impl ClData {
             ontology,
             rule_files,
             alias_files,
+            group_files,
             search,
             parsed: OnceLock::new(),
         })
@@ -484,7 +509,18 @@ impl ClData {
             .map(|p| {
                 let text =
                     fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
-                Ok(ClTerms::parse(&text, &self.rules).with_aliases(self.aliases.clone()))
+                let mut terms =
+                    ClTerms::parse(&text, &self.rules).with_aliases(self.aliases.clone());
+                // Answers are optional: one unreadable is passed over.
+                for p in &self.group_files {
+                    match fs::read_to_string(p) {
+                        Ok(answers) => {
+                            terms.add_joins(&answers);
+                        }
+                        Err(e) => warn!("{}: {e}; its answers are not used", p.display()),
+                    }
+                }
+                Ok(terms)
             })
             .transpose()
     }
@@ -498,6 +534,7 @@ impl ClData {
         json!({
             "rules": self.rule_files.iter().map(abs).collect::<Vec<_>>(),
             "aliases": self.alias_files.iter().map(abs).collect::<Vec<_>>(),
+            "groups": self.group_files.iter().map(abs).collect::<Vec<_>>(),
             "ontology": self.ontology.as_ref().map(abs),
             "ontology_release": release,
         })
@@ -764,6 +801,12 @@ fn where_report(search: &SearchPath) -> Vec<String> {
         "aliases   the shared {ALIASES} (downloaded), then the panel's sidecar (x.tsv.gz → x.cl.tsv), then user and project {ALIASES}, then --label-cl"
     ));
     for p in search.alias_layers(false) {
+        out.push(format!("  {}", p.display()));
+    }
+    out.push(format!(
+        "{GROUPS}: answers on types left alone (label<TAB>join|alone), the user's, then the project's"
+    ));
+    for (_, p) in search.user_and_project_files(GROUPS) {
         out.push(format!("  {}", p.display()));
     }
     for name in [RULES, ONTOLOGY, GO_ONTOLOGY].into_iter().chain(gafs) {

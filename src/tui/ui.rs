@@ -528,6 +528,7 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "o ontology",
             "/ search",
             "c suggest a term",
+            "Q questions",
             "v cells",
             "esc clusters",
         ],

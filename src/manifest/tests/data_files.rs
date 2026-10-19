@@ -355,3 +355,18 @@ fn an_xdg_folder_without_lupin_s_reads_the_older_one_under_home() {
     assert_eq!(dir, xdg.join("lupin"));
     assert_eq!(passed_over, None);
 }
+
+#[test]
+fn an_unreadable_answers_file_is_passed_over() {
+    offline();
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path().join("cache").join(ONTOLOGY),
+        "[Term]\nid: CL:1\nname: x\n",
+    );
+    let groups = root.path().join("user").join(GROUPS);
+    write(groups.clone(), "");
+    fs::write(&groups, [0xff, 0xfe, b'\t', b'j']).unwrap();
+    let d = ClData::load(search(root.path()), None, None, Fetch::Never).unwrap();
+    assert!(d.terms().unwrap().is_some());
+}
