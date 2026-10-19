@@ -147,9 +147,10 @@ pub enum ProjectionMethod {
     /// The embedding marker score on the run's decoder gene table: each
     /// cell's best type and its margin over the runner-up.
     Score,
-    /// Term over-representation on the co-embedding (kept one release, for
-    /// comparison).
-    Ora,
+    /// The panel's cell types trained as gene-set units on the genes placed
+    /// among the cells, kept fixed; each cell called by the type whose
+    /// fitted region it most belongs to.
+    Units,
 }
 
 impl ProjectionMethod {
@@ -158,7 +159,7 @@ impl ProjectionMethod {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Score => "score",
-            Self::Ora => "ora",
+            Self::Units => "units",
         }
     }
 }
@@ -181,65 +182,122 @@ pub struct MarkerScoreArgs {
     pub no_clean: bool,
 }
 
-/// `lupin annotate --method projection --projection ora` — firm marker-set
-/// annotation by projection onto a co-embedded feature space (bge / fne /
-/// resolve-embedding-space). Embedding-grounded (no raw-count re-read),
-/// complementary to `annotate --method enrichment`. Drives the shared firm
-/// term-ORA core.
-#[derive(Debug, serde::Serialize)]
-pub struct AnnotateProjectionArgs {
-    /// Marker-gene TSV: `gene<TAB>celltype` per line (tab/comma/space delimited)
-    pub markers: Box<str>,
+/// Random gene sets per size a units pass trains as its terms' null: 99, so
+/// the smallest p is one in a hundred.
+pub const DECOYS: usize = 99;
+/// The genes a GO/GMT term must share with the data's features, at least
+/// and at most: the terms the enrichment reports, and the ones the units
+/// train.
+pub const GO_MIN_OVERLAP: usize = 20;
+pub const GO_MAX_OVERLAP: usize = 500;
 
+/// `lupin annotate --method projection --projection units`: the panel's
+/// cell types as gene-set units ([`crate::annotate::geneset_units`]).
+#[derive(Debug, serde::Serialize)]
+pub struct UnitsArgs {
+    /// Marker-gene TSV: `gene<TAB>celltype` per line
+    pub markers: Box<str>,
     /// Output prefix
     pub out: Box<str>,
-
-    /// k for the cosine cell kNN graph fed to Leiden clustering
-    pub knn: usize,
-
-    /// Leiden resolution for cell clustering (higher → more, finer clusters)
-    pub resolution: f64,
-
-    /// Permutation draws calibrating the over-representation null (0 = analytic p only)
-    pub num_perm: usize,
-
-    /// RNG seed (clustering + permutation null)
+    /// Cluster parquet the round is tabled by; else the run's
+    /// `cluster.clusters`, else internal Leiden
+    pub clusters: Option<Box<str>>,
+    /// Internal Leiden, when no clusters are given
+    pub leiden: crate::manifest::annotate::LeidenArgs,
+    /// Training epochs over the gene–type edges
+    pub epochs: usize,
     pub seed: u64,
-
-    /// Drop a cell type with fewer than this many usable markers
-    pub min_markers: usize,
-
-    /// Disable IDF down-weighting of markers shared across many types
-    pub no_idf: bool,
-
-    /// Keep every cell→term assignment (skip the distance-outlier prune)
-    pub no_assign_qc: bool,
-
-    /// Outlier gate:
-    /// prune a cell whose distance to its centroid exceeds median + k·MAD
-    pub assign_mad: f64,
-
-    /// FDR α for the per-cluster term call + Q sparsity (BH on the permutation p)
-    pub fdr_alpha: f32,
-
-    /// Softmax temperature when row-normalizing Q over significant terms
-    pub q_temperature: f32,
-
-    /// Cell Ontology .obo, e.g. cl-basic.obo
-    pub obo: Option<Box<str>>,
-
-    /// Curated `label<TAB>CL:id` map, one row per marker celltype.
-    /// Needed with `obo`
-    pub label_cl: Option<Box<str>>,
-
-    /// Ontology TreeBH per-level FDR target (lower → descends less, abstains more)
-    pub ontology_fdr_q: f64,
-
-    /// Ontology TreeBH: Benjamini–Yekutieli within families (any dependence; more conservative)
-    pub ontology_by: bool,
-
-    /// Keep existing {out}.* projection outputs (default: erase the explicit set first)
+    /// The device training runs on, and its ordinal
+    pub device: crate::gene_text::cli::ComputeDevice,
+    pub device_no: usize,
+    /// Ontology terms trained beside the cell types: the GO annotations for
+    /// the genes' species (`go`), else a GAF, else a GMT, read against
+    /// `go_obo`
+    pub go: bool,
+    pub gaf: Option<Box<str>>,
+    pub gmt: Option<Box<str>>,
+    pub go_obo: Option<Box<str>>,
+    /// The fewest and most of a term's genes in the table for it to be
+    /// trained: the broadest terms, propagated up the ontology, hold most
+    /// genes and tell no cluster apart
+    pub go_min: usize,
+    pub go_max: usize,
+    /// Random gene sets per size, trained as the terms' null
+    pub decoys: usize,
+    /// Keep existing {out}.* outputs (default: erase the pass's set first)
     pub no_clean: bool,
+}
+
+impl UnitsArgs {
+    /// The training settings these ask for.
+    pub fn config(&self) -> anyhow::Result<crate::annotate::geneset_units::UnitConfig> {
+        Ok(crate::annotate::geneset_units::UnitConfig {
+            epochs: self.epochs,
+            seed: self.seed,
+            device: self.device.open(self.device_no)?,
+            decoys: self.decoys,
+            ..Default::default()
+        })
+    }
+
+    /// The ontology terms asked for, as gene sets over `gene_names`; none
+    /// when none are.
+    pub fn terms(
+        &self,
+        gene_names: &[Box<str>],
+    ) -> anyhow::Result<crate::annotate::geneset_units::Terms> {
+        if !self.go && self.gaf.is_none() && self.gmt.is_none() {
+            return Ok(crate::annotate::geneset_units::Terms::default());
+        }
+        let obo = self
+            .go_obo
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("ontology terms need an ontology (--go-obo)"))?;
+        let gs = crate::annotate::go_signature::requested_gene_sets(
+            obo,
+            self.go,
+            self.gaf.as_deref(),
+            self.gmt.as_deref(),
+            gene_names,
+            (self.go_min, Some(self.go_max)),
+        )?;
+        Ok(crate::annotate::geneset_units::Terms {
+            sets: (gs.terms.into_iter())
+                .map(|(id, rows)| crate::annotate::geneset_units::GeneSet {
+                    name: id.into(),
+                    kind: crate::annotate::geneset_units::SetKind::Term,
+                    genes: rows.iter().map(|&r| gene_names[r].to_string()).collect(),
+                })
+                .collect(),
+            pool: (gs.universe.iter())
+                .map(|&r| gene_names[r].to_string())
+                .collect(),
+        })
+    }
+
+    /// The defaults for `markers`, writing under `out`.
+    #[must_use]
+    pub fn new(markers: &str, out: &str) -> Self {
+        let d = crate::annotate::geneset_units::UnitConfig::default();
+        Self {
+            markers: markers.into(),
+            out: out.into(),
+            clusters: None,
+            leiden: crate::manifest::annotate::LeidenArgs::default(),
+            epochs: d.epochs,
+            seed: d.seed,
+            device: crate::gene_text::cli::ComputeDevice::Cpu,
+            device_no: 0,
+            go: false,
+            gaf: None,
+            gmt: None,
+            go_obo: None,
+            go_min: GO_MIN_OVERLAP,
+            go_max: GO_MAX_OVERLAP,
+            decoys: DECOYS,
+            no_clean: false,
+        }
+    }
 }
 
 /// Ontology follow-up of `lupin annotate` — hierarchical multi-resolution cell-type calling

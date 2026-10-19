@@ -170,11 +170,33 @@ pub struct QcCmd {
     pub out: String,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ComputeDevice {
     Cpu,
     Cuda,
     Metal,
+}
+
+impl ComputeDevice {
+    /// As the command line spells it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Cuda => "cuda",
+            Self::Metal => "metal",
+        }
+    }
+
+    /// The device, ordinal `n` for cuda and metal.
+    pub fn open(self, n: usize) -> Result<Device> {
+        Ok(match self {
+            Self::Cpu => Device::Cpu,
+            Self::Cuda => Device::new_cuda(n)?,
+            Self::Metal => Device::new_metal(n)?,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
@@ -538,11 +560,7 @@ fn write_knn_edges(corpus: &Corpus, feat: &Tensor, knn: usize, out: &str) -> Res
 pub fn run_knn_graph(c: &KnnGraphCmd) -> Result<()> {
     let p = prepare(&c.sources, &c.qc, c.vocab_file.as_deref(), &c.out)?;
     anyhow::ensure!(!p.vocab.kept.is_empty(), "the vocabulary is empty after QC");
-    let device = match c.device {
-        ComputeDevice::Cpu => Device::Cpu,
-        ComputeDevice::Cuda => Device::new_cuda(c.device_no)?,
-        ComputeDevice::Metal => Device::new_metal(c.device_no)?,
-    };
+    let device = c.device.open(c.device_no)?;
     let spec = ModelSpec {
         model_id: c.model.clone(),
         revision: c.revision.clone(),

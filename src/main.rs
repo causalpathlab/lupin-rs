@@ -90,14 +90,14 @@ enum Commands {
                       `--method enrichment` scores the marker panel on per-cluster expression.\n\
                       `--method projection` calls cells on the run's embeddings: `--projection score`\n\
                       (the embedding marker score on the decoder gene table, per cell with its margin)\n\
-                      where the run decodes cells, else `--projection ora` (over-representation on the\n\
-                      co-embedding).\n\
+                      where the run decodes cells, else `--projection units` (cell types, and GO terms\n\
+                      with --go/--gaf/--gmt, trained as gene sets on the run's fixed genes).\n\
                       `--feature-embedding` + `--cell-embedding` run projection on those files directly\n\
-                      (the ORA unless `--projection score`).\n\
+                      (the units unless `--projection score`).\n\
                       `--method auto` (default) calls by enrichment and, where the run decodes cells,\n\
                       adds the projection score beside it as a second reading; projection's own call\n\
-                      needs `--projection score`, or a run with only the co-embedding (the ORA).\n\
-                      GO terms and runs without a panel are the enrichment's.\n\
+                      needs `--projection score`, or a run with only the co-embedding (the units).\n\
+                      GO terms and runs without a panel are the enrichment's, unless `--projection units`.\n\
                       Ontology-only follow-up: `--from` + `--obo` + `--label-cl` without markers.\n\
                       \n\
                       Without `-o` it opens the TUI, which asks for what is missing.\n\

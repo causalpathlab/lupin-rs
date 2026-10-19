@@ -2,7 +2,7 @@
 //! expression matrix (NB-Fisher adjusted, re-aggregated from raw counts by the
 //! caller — see [`crate::manifest::annotate`]).
 
-use super::args::{AnnotateArgs, KEEP_IEA, MIN_CONFIDENCE, NUM_DRAWS};
+use super::args::{AnnotateArgs, MIN_CONFIDENCE, NUM_DRAWS};
 use super::inputs::EnrichmentInputs;
 use super::outputs::{clean_outputs, AnnotationOutputs, ENRICHMENT_OUTPUT_SUFFIXES};
 use super::outputs::{
@@ -488,30 +488,13 @@ fn gene_set_signature(
         .go_obo
         .as_deref()
         .expect("gene-set scoring validated to have an ontology");
-    // `--go`: the GO Consortium's annotations for the species the gene names
-    // belong to.
-    let gaf = match (&args.gaf, args.go && args.gmt.is_none()) {
-        (Some(g), _) => Some(g.to_string()),
-        (None, true) => {
-            use super::go_signature::Species;
-            let species = anyhow::Context::context(
-                Species::detect(gene_names),
-                "--go: cannot tell the species from the gene names; pass --gaf instead",
-            )?;
-            let gaf = crate::manifest::data_files::go_annotations(species, None)?;
-            info!("GO annotations for {species:?} genes: {}", gaf.display());
-            Some(gaf.to_string_lossy().into_owned())
-        }
-        (None, false) => None,
-    };
-    let gs = super::go_signature::load_go_gene_sets(
+    let gs = super::go_signature::requested_gene_sets(
         obo,
-        gaf.as_deref(),
+        args.go,
+        args.gaf.as_deref(),
         args.gmt.as_deref(),
-        !KEEP_IEA,
-        super::go_signature::MIN_TESTABLE,
-        None,
         gene_names,
+        (super::go_signature::MIN_TESTABLE, None),
     )?;
 
     ////////////////////////////////////////////////////////////

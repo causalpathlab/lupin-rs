@@ -1,7 +1,7 @@
 # Why marker annotation pools cells into *coarse* clusters
 
-The projection method (`lupin annotate --method projection`) calls each group of cells by its
-most over-represented marker type. This note explains why those groups must stay coarse, and what
+The retired term-ORA projection (`--projection ora`) called each group of cells by its most
+over-represented marker type; the enrichment's per-cluster tests share the constraint. This note explains why those groups must stay coarse, and what
 does and does not reduce false calls. The scoring code is `type_annotation::term_ora` in the
 `legume-graph-embedding` crate.
 

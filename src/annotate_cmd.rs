@@ -1,13 +1,11 @@
 //! Unified `lupin annotate` — enrichment, or projection from a run manifest or embedding files.
 
 use crate::annotate::args::{
-    AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, MarkerScoreArgs, ProjectionMethod,
+    AnnotateArgs, AnnotateOntologyArgs, MarkerScoreArgs, ProjectionMethod,
 };
-use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::susie::SusieConfig;
 use crate::manifest::annotate::{
-    annotate_by_enrichment, annotate_by_marker_score, annotate_by_projection, annotate_ontology,
-    LeidenArgs,
+    annotate_by_enrichment, annotate_by_marker_score, annotate_ontology, LeidenArgs,
 };
 use crate::manifest::run::RunManifest;
 use anyhow::{Context, Result};
@@ -69,7 +67,7 @@ pub struct AnnotateCliArgs {
     pub out: Box<str>,
 
     // ── shared clustering / stats ──
-    // Default is method-specific when omitted: enrichment 15, projection/ORA 30.
+    // Default is method-specific when omitted: enrichment 15, projection 30.
     #[arg(long)]
     pub knn: Option<usize>,
     #[arg(long, default_value_t = 1.0)]
@@ -119,14 +117,14 @@ pub struct AnnotateCliArgs {
     pub go_obo: Option<Box<str>>,
     #[arg(
         long = "go-min-overlap",
-        default_value_t = 20,
-        help = "Report GO/GMT terms sharing at least this many genes with the data's features (the overlap, not the term's own size); every term is tested"
+        default_value_t = crate::annotate::args::GO_MIN_OVERLAP,
+        help = "GO/GMT terms sharing at least this many genes with the data's features (the overlap, not the term's own size): the enrichment tests every term and reports these; the units train only these"
     )]
     pub go_min_overlap: usize,
     #[arg(
         long = "go-max-overlap",
-        default_value_t = 500,
-        help = "Report GO/GMT terms sharing at most this many genes with the data's features; every term is tested"
+        default_value_t = crate::annotate::args::GO_MAX_OVERLAP,
+        help = "GO/GMT terms sharing at most this many genes with the data's features: the enrichment tests every term and reports these; the units train only these"
     )]
     pub go_max_overlap: usize,
 
@@ -164,21 +162,32 @@ pub struct AnnotateCliArgs {
     #[arg(long = "mcmc-thin", default_value_t = SusieConfig::default().thin)]
     pub mcmc_thin: usize,
 
-    // ── projection / ORA ──
+    // ── projection ──
     #[arg(
         long,
         value_enum,
         help = "Projection: score (the embedding marker score on the run's decoder gene table, \
-                per cell with its margin) or ora (term over-representation on the co-embedding); \
-                default: the score where the run decodes cells, else the ORA"
+                per cell with its margin) or units (cell types and GO terms trained as gene sets on \
+                the run's fixed genes); default: the score where the run decodes cells, else the units"
     )]
     pub projection: Option<ProjectionMethod>,
-    #[arg(long = "no-idf")]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = crate::gene_text::cli::ComputeDevice::Cpu,
+        help = "Device training the gene-set units (--projection units)"
+    )]
+    pub device: crate::gene_text::cli::ComputeDevice,
+    #[arg(long, default_value_t = 0, help = "Device ordinal (for cuda/metal)")]
+    pub device_no: usize,
+    /// Retired with the term-ORA projection; accepted so saved commands
+    /// keep working, and ignored with a warning.
+    #[arg(long = "no-idf", hide = true)]
     pub no_idf: bool,
-    #[arg(long = "no-assign-qc")]
+    #[arg(long = "no-assign-qc", hide = true)]
     pub no_assign_qc: bool,
-    #[arg(long = "assign-mad", default_value_t = 2.5)]
-    pub assign_mad: f64,
+    #[arg(long = "assign-mad", hide = true)]
+    pub assign_mad: Option<f64>,
 
     // ── ontology (inline on annotate, or follow-up without markers) ──
     #[arg(long = "obo")]
@@ -209,6 +218,12 @@ pub struct AnnotateCliArgs {
 }
 
 impl AnnotateCliArgs {
+    /// Gene sets asked for: `--go`, `--gaf` or `--gmt`.
+    #[must_use]
+    pub fn wants_gene_sets(&self) -> bool {
+        self.go || self.gaf.is_some() || self.gmt.is_some()
+    }
+
     /// Without an output prefix, annotate opens its TUI, which asks for one.
     #[must_use]
     pub fn opens_tui(&self) -> bool {
@@ -242,13 +257,14 @@ impl AnnotateCliArgs {
         val("fdr-alpha", self.fdr_alpha.to_string());
         val("q-temperature", self.q_temperature.to_string());
         val("min-cluster-size", self.min_cluster_size.to_string());
-        val("assign-mad", self.assign_mad.to_string());
         val("ontology-fdr-q", self.ontology_fdr_q.to_string());
         val("susie-effects", self.susie_effects.to_string());
         val("mcmc-chains", self.mcmc_chains.to_string());
         val("mcmc-samples", self.mcmc_samples.to_string());
         val("mcmc-warmup", self.mcmc_warmup.to_string());
         val("mcmc-thin", self.mcmc_thin.to_string());
+        val("device", self.device.as_str().into());
+        val("device-no", self.device_no.to_string());
         let opts: [(&str, Option<String>); 15] = [
             ("from", self.from.as_deref().map(String::from)),
             (
@@ -286,8 +302,6 @@ impl AnnotateCliArgs {
         }
         let flags = [
             ("no-clean", self.no_clean),
-            ("no-idf", self.no_idf),
-            ("no-assign-qc", self.no_assign_qc),
             ("ontology-by", self.ontology_by),
             ("use-perm-p", self.use_perm_p),
             ("fine", self.fine),
@@ -313,9 +327,17 @@ pub fn run_annotate(args: &AnnotateCliArgs, session: &legume_tui::cli::SessionAr
     if let Some(cfg) = build_enrichment_args(args).susie {
         cfg.validate()?;
     }
+    if args.no_idf || args.no_assign_qc || args.assign_mad.is_some() {
+        log::warn!(
+            "--no-idf, --no-assign-qc and --assign-mad are retired with the term-ORA \
+             projection; ignoring them"
+        );
+    }
     // Refused before any prompt or download, as SuSiE's settings are.
-    if args.projection == Some(ProjectionMethod::Score) {
-        build_score_args(args)?;
+    match args.projection {
+        Some(ProjectionMethod::Score) => drop(build_score_args(args)?),
+        Some(ProjectionMethod::Units) => drop(build_units_args(args)?),
+        None => {}
     }
     // One manifest load per invocation; every route below reuses it.
     let loaded = args
@@ -401,7 +423,7 @@ fn run_pass(
         Route::EmbeddingFiles { feat, cell } => run_projection_from_files(args, feat, cell)?,
         Route::Enrichment => {
             anyhow::ensure!(
-                !args.markers.is_empty() || args.go || args.gaf.is_some() || args.gmt.is_some(),
+                !args.markers.is_empty() || args.wants_gene_sets(),
                 "enrichment needs --markers, --go, --gaf, or --gmt"
             );
             let loaded = loaded.context("--from is required for enrichment annotation")?;
@@ -409,17 +431,15 @@ fn run_pass(
         }
         Route::Projection => {
             anyhow::ensure!(!args.markers.is_empty(), "projection needs --markers");
-            anyhow::ensure!(
-                !args.go && args.gaf.is_none() && args.gmt.is_none(),
-                "GO terms are scored by the enrichment pass; add --method enrichment"
-            );
             let loaded = loaded.context("--from is required for projection annotation")?;
-            match resolve_projection(args, Some(&loaded.manifest)) {
+            let projection = resolve_projection(args, Some(&loaded.manifest));
+            check_projection_gene_sets(args, projection)?;
+            match projection {
                 ProjectionMethod::Score => {
                     annotate_by_marker_score(&build_score_args(args)?, loaded)?
                 }
-                ProjectionMethod::Ora => {
-                    annotate_by_projection(&build_projection_args(args), loaded)?
+                ProjectionMethod::Units => {
+                    crate::manifest::annotate::annotate_by_units(&build_units_args(args)?, loaded)?
                 }
             }
         }
@@ -478,7 +498,7 @@ fn resolve_go(
     loaded: Option<&crate::manifest::run::Loaded>,
 ) -> Result<()> {
     let dir = loaded.map(|l| l.dir.as_path());
-    if (args.go || args.gaf.is_some() || args.gmt.is_some()) && args.go_obo.is_none() {
+    if args.wants_gene_sets() && args.go_obo.is_none() {
         args.go_obo = match args.obo.take() {
             Some(obo) if args.markers.is_empty() => Some(obo),
             cl => {
@@ -570,29 +590,38 @@ pub fn resolve_method(args: &AnnotateCliArgs, manifest: Option<&RunManifest>) ->
     }
 }
 
-/// GO terms asked for, or no panel: what only the enrichment does.
+/// Gene sets (`--go`, `--gaf`, `--gmt`) on a projection pass: trained as
+/// units by `--projection units`, scored by the enrichment pass otherwise.
+fn check_projection_gene_sets(args: &AnnotateCliArgs, projection: ProjectionMethod) -> Result<()> {
+    anyhow::ensure!(
+        projection == ProjectionMethod::Units || !args.wants_gene_sets(),
+        "GO terms are scored by the enrichment pass, or trained as units by \
+         --projection units; add --method enrichment or --projection units"
+    );
+    Ok(())
+}
+
+/// No panel, or GO terms the units are not asked to align: what only the
+/// enrichment does.
 fn enrichment_only(args: &AnnotateCliArgs) -> bool {
-    args.go || args.gaf.is_some() || args.gmt.is_some() || args.markers.is_empty()
+    args.markers.is_empty()
+        || (args.wants_gene_sets() && args.projection != Some(ProjectionMethod::Units))
 }
 
 /// How a projection pass calls: the `--projection` given, else the score
-/// where the run decodes cells through its gene table and the ORA otherwise
-/// (also without a run: embedding files do not say which table they are;
-/// and when `--no-idf` or another `--min-markers` asks for what only the
-/// ORA honours).
+/// where the run decodes cells through its gene table and the units
+/// otherwise (also without a run: embedding files do not say which table
+/// they are).
 #[must_use]
 pub fn resolve_projection(
     args: &AnnotateCliArgs,
     manifest: Option<&RunManifest>,
 ) -> ProjectionMethod {
-    use graph_embedding_util::type_annotation::embedding_score::MIN_MARKERS;
-    // Settings only the ORA honours steer an unset choice to it.
-    let ora_only = args.no_idf || args.min_markers != MIN_MARKERS;
     args.projection.unwrap_or_else(|| match manifest {
-        Some(m) if !ora_only && manifest_prefers_projection(m, ProjectionMethod::Score) => {
+        Some(m) if manifest_prefers_projection(m, ProjectionMethod::Score) => {
             ProjectionMethod::Score
         }
-        _ => ProjectionMethod::Ora,
+        _ => ProjectionMethod::Units,
     })
 }
 
@@ -615,24 +644,18 @@ fn run_projection_from_files(
         .with_context(|| format!("reading feature embedding {feat_path}"))?;
     let cell = DMatrix::<f32>::from_parquet(cell_path)
         .with_context(|| format!("reading cell embedding {cell_path}"))?;
+    // Without a run there are no clusters but `--clusters`: else one group,
+    // centred at the mean cell.
+    let groups = match args.clusters.as_deref() {
+        Some(p) => crate::annotate::inputs::load_cluster_labels(p, &cell.rows)?.0,
+        None => vec![0; cell.rows.len()],
+    };
     match resolve_projection(args, None) {
-        // Without a run there are no clusters but `--clusters`: else the
-        // score is centred at the mean cell, one group.
         ProjectionMethod::Score => {
-            let groups = match args.clusters.as_deref() {
-                Some(p) => crate::annotate::inputs::load_cluster_labels(p, &cell.rows)?.0,
-                None => vec![0; cell.rows.len()],
-            };
             crate::annotate::marker_score::run(&build_score_args(args)?, &feat, &cell, &groups)?;
         }
-        ProjectionMethod::Ora => {
-            by_projection::run(
-                &build_projection_args(args),
-                &ProjectionInputs {
-                    feature_embedding: &feat,
-                    cell_embedding: &cell,
-                },
-            )?;
+        ProjectionMethod::Units => {
+            crate::annotate::geneset_units::run(&build_units_args(args)?, &feat, &cell, &groups)?;
         }
     }
     Ok(())
@@ -716,54 +739,57 @@ fn build_susie_config(args: &AnnotateCliArgs) -> crate::annotate::susie::SusieCo
     cfg
 }
 
-/// The score's arguments; `--no-idf` and a `--min-markers` other than the
-/// score's own are refused, as the score cannot honour them.
+/// The score's arguments; a `--min-markers` other than the score's own is
+/// refused, as the score cannot honour it.
 fn build_score_args(args: &AnnotateCliArgs) -> Result<MarkerScoreArgs> {
     use graph_embedding_util::type_annotation::embedding_score::MIN_MARKERS;
     anyhow::ensure!(
-        !args.no_idf,
-        "the marker score always weighs markers by IDF; drop --no-idf (or use --projection ora)"
-    );
-    anyhow::ensure!(
         args.min_markers == MIN_MARKERS,
-        "the marker score keeps types with at least {MIN_MARKERS} live markers; drop --min-markers \
-         (or use --projection ora)"
+        "the marker score keeps types with at least {MIN_MARKERS} live markers; drop --min-markers"
     );
     Ok(MarkerScoreArgs {
         markers: args.markers.clone(),
         out: args.out.clone(),
         clusters: args.clusters.clone(),
-        leiden: LeidenArgs {
-            knn: args.knn.unwrap_or(PROJECTION_KNN),
-            resolution: args.resolution,
-            num_clusters: args.num_clusters,
-            min_cluster_size: args.min_cluster_size,
-            seed: args.cluster_seed,
-        },
+        leiden: projection_leiden(args),
         no_clean: args.no_clean,
     })
 }
 
-fn build_projection_args(args: &AnnotateCliArgs) -> AnnotateProjectionArgs {
-    AnnotateProjectionArgs {
-        markers: args.markers.clone(),
-        out: args.out.clone(),
+/// Internal Leiden for a projection pass, from the command line's settings.
+fn projection_leiden(args: &AnnotateCliArgs) -> LeidenArgs {
+    LeidenArgs {
         knn: args.knn.unwrap_or(PROJECTION_KNN),
         resolution: args.resolution,
-        num_perm: args.num_perm,
-        seed: args.seed,
-        min_markers: args.min_markers,
-        no_idf: args.no_idf,
-        no_assign_qc: args.no_assign_qc,
-        assign_mad: args.assign_mad,
-        fdr_alpha: args.fdr_alpha,
-        q_temperature: args.q_temperature,
-        obo: args.obo.clone(),
-        label_cl: args.label_cl.clone(),
-        ontology_fdr_q: args.ontology_fdr_q,
-        ontology_by: args.ontology_by,
-        no_clean: args.no_clean,
+        num_clusters: args.num_clusters,
+        min_cluster_size: args.min_cluster_size,
+        seed: args.cluster_seed,
     }
+}
+
+/// The units' arguments; a `--min-markers` other than the default is
+/// refused, as the units keep every type with two markers in the table.
+fn build_units_args(args: &AnnotateCliArgs) -> Result<crate::annotate::args::UnitsArgs> {
+    use graph_embedding_util::type_annotation::embedding_score::MIN_MARKERS;
+    anyhow::ensure!(
+        args.min_markers == MIN_MARKERS,
+        "the units train every type with at least two markers in the gene table; drop --min-markers"
+    );
+    Ok(crate::annotate::args::UnitsArgs {
+        clusters: args.clusters.clone(),
+        leiden: projection_leiden(args),
+        seed: args.seed,
+        device: args.device,
+        device_no: args.device_no,
+        go: args.go,
+        gaf: args.gaf.clone(),
+        gmt: args.gmt.clone(),
+        go_obo: args.go_obo.clone(),
+        go_min: args.go_min_overlap,
+        go_max: args.go_max_overlap,
+        no_clean: args.no_clean,
+        ..crate::annotate::args::UnitsArgs::new(&args.markers, &args.out)
+    })
 }
 
 #[cfg(test)]
@@ -824,9 +850,9 @@ mod route_tests {
             AnnotateMethod::Enrichment
         );
         assert_eq!(
-            resolve_method(&cli(&["--projection", "ora"]), Some(&bge)),
+            resolve_method(&cli(&["--projection", "units"]), Some(&bge)),
             AnnotateMethod::Enrichment,
-            "the ORA asked for needs the co-embedding"
+            "the units asked for need the co-embedding"
         );
         assert_eq!(
             resolve_method(&cli(&["--method", "enrichment"]), Some(&bge)),
@@ -836,15 +862,22 @@ mod route_tests {
     }
 
     #[test]
-    fn an_unset_projection_takes_the_ora_for_settings_the_score_cannot_honour() {
-        let bge = run_with(RunKind::Bge, true, true);
-        let p = |more: &[&str]| resolve_projection(&cli(more), Some(&bge));
-        assert_eq!(p(&["--no-idf"]), ProjectionMethod::Ora);
-        assert_eq!(p(&["--min-markers", "5"]), ProjectionMethod::Ora);
+    fn gene_sets_go_to_the_units_when_they_are_asked_for() {
+        let fne = run_with(RunKind::Fne, true, false);
+        let units_go = cli(&["--projection", "units", "--go"]);
         assert_eq!(
-            p(&["--projection", "score", "--no-idf"]),
-            ProjectionMethod::Score,
-            "asked"
+            resolve_method(&units_go, Some(&fne)),
+            AnnotateMethod::Projection,
+            "the units align GO terms themselves"
+        );
+        assert!(
+            matches!(route(&units_go, None), Route::Enrichment),
+            "no run"
+        );
+        assert_eq!(
+            resolve_method(&cli(&["--go"]), Some(&fne)),
+            AnnotateMethod::Enrichment,
+            "unasked, GO terms stay the enrichment's"
         );
     }
 
@@ -871,7 +904,7 @@ mod route_tests {
     }
 
     #[test]
-    fn projection_scores_where_the_run_decodes_and_falls_back_to_the_ora() {
+    fn projection_scores_where_the_run_decodes_and_trains_units_otherwise() {
         let bge = run_with(RunKind::Bge, true, true);
         let fne = run_with(RunKind::Fne, true, false);
         let pinto = run_with(RunKind::Other("pinto-cage".into()), false, true);
@@ -879,13 +912,18 @@ mod route_tests {
         assert_eq!(p(&[], Some(&bge)), ProjectionMethod::Score);
         assert_eq!(
             p(&[], Some(&fne)),
-            ProjectionMethod::Ora,
+            ProjectionMethod::Units,
             "no decoder table"
         );
-        assert_eq!(p(&[], Some(&pinto)), ProjectionMethod::Ora);
+        assert_eq!(p(&[], Some(&pinto)), ProjectionMethod::Units);
+        assert_eq!(
+            p(&["--min-markers", "5"], Some(&bge)),
+            ProjectionMethod::Score,
+            "settings no longer steer the choice"
+        );
         assert_eq!(
             p(&[], None),
-            ProjectionMethod::Ora,
+            ProjectionMethod::Units,
             "files: the table is unknown"
         );
         assert_eq!(

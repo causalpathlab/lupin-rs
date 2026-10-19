@@ -1,8 +1,8 @@
 //! A run's gene table for projection, located through its manifest
 //! ([`projection_gene_table`]). The embedding marker score reads the decoder
 //! table ρ (`outputs.feature_embedding`) of a kind that decodes cells
-//! through it. The co-embedding ORA matches markers against genes placed on
-//! the cell manifold: `outputs.feature_coembedding` for the kinds that
+//! through it. The gene-set units are trained on genes placed on the cell
+//! manifold: `outputs.feature_coembedding` for the kinds that
 //! co-embed, or ρ for kinds whose ρ already shares the cells' space. A `gem`
 //! table is keyed by feature row (spliced and unspliced per gene), so only
 //! its spliced rows are kept, re-keyed by gene.
@@ -20,7 +20,7 @@ use crate::manifest::run::{resolve, RunKind, RunManifest};
 /// The manifest slot and relative path of the gene table `method` reads, or
 /// why the run has none. The score reads the decoder table ρ
 /// (`outputs.feature_embedding`) of a kind that decodes cells through it; the
-/// ORA reads the co-embedding, or the ρ of a kind whose ρ shares the cells'
+/// units read the co-embedding, or the ρ of a kind whose ρ shares the cells'
 /// space (a kind that co-embeds needs its co-embedding: its ρ is not on the
 /// cell manifold).
 pub fn projection_gene_table(
@@ -44,7 +44,9 @@ pub fn projection_gene_table(
             })?;
             Ok(("feature_embedding", rel))
         }
-        ProjectionMethod::Ora => match (
+        // Units align the cells with sets through the genes placed among
+        // them.
+        ProjectionMethod::Units => match (
             o.feature_coembedding.as_deref(),
             o.feature_embedding.as_deref(),
         ) {
@@ -64,14 +66,14 @@ pub fn projection_gene_table(
     }
 }
 
-/// The gene table the ORA matches markers against. `prefix` only names the
+/// The gene table the units are trained on: the genes placed among the cells. `prefix` only names the
 /// run in errors.
 pub fn load_marker_feature_embedding(
     manifest: &RunManifest,
     dir: &Path,
     prefix: &str,
 ) -> Result<MatWithNames<Mat>> {
-    read_gene_table(manifest, dir, prefix, ProjectionMethod::Ora)
+    read_gene_table(manifest, dir, prefix, ProjectionMethod::Units)
 }
 
 /// The run's decoder gene table ρ, which the embedding marker score reads:

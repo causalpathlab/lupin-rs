@@ -6,6 +6,7 @@ use crate::annotate::marker_score::toy;
 use crate::annotate::outputs::MARKER_SCORE_PARQUET;
 use crate::manifest::rounds::read_argmax;
 use crate::manifest::run;
+use legume_numeric::matrix::parquet::read_table_columns;
 
 #[test]
 fn the_score_pass_calls_each_cell_and_records_its_round() {

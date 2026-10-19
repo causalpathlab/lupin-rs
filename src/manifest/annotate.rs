@@ -8,18 +8,16 @@
 //! cluster × gene expression.
 
 use crate::annotate::args::{
-    fixed_settings, AnnotateArgs, AnnotateOntologyArgs, AnnotateProjectionArgs, MarkerScoreArgs,
-    ProjectionMethod, BLOCK_SIZE,
+    fixed_settings, AnnotateArgs, AnnotateOntologyArgs, MarkerScoreArgs, ProjectionMethod,
+    UnitsArgs, BLOCK_SIZE,
 };
 use crate::annotate::by_enrichment;
-use crate::annotate::by_projection::{self, ProjectionInputs};
 use crate::annotate::inputs::{load_cluster_labels, EnrichmentInputs};
 use crate::annotate::marker_score;
 use crate::annotate::ontology;
-use crate::annotate::outputs::{AnnotationOutputs, ANNOT_PARQUET};
+use crate::annotate::outputs::AnnotationOutputs;
 use crate::manifest::rounds;
 use crate::manifest::run::{annotated_path, resolve, Loaded};
-use legume_numeric::matrix::parquet::read_table_columns;
 
 use crate::annotate::aggregate::{accumulate_gene_sum_pair, weighted_mean_profile};
 use crate::annotate::markers::build_annotation_matrix;
@@ -31,7 +29,6 @@ use data_beans::aux::data_loading::{
 use legume_numeric::matrix::dense_mat_io::Mat;
 
 use anyhow::{anyhow, Context, Result};
-use legume_numeric::matrix::dmatrix_io::DMatrix;
 use legume_numeric::matrix::traits::{IoOps, MatWithNames};
 use log::info;
 use rayon::prelude::*;
@@ -187,6 +184,37 @@ pub fn annotate_by_marker_score(args: &MarkerScoreArgs, loaded: &Loaded) -> Resu
     )
 }
 
+/// `lupin annotate --method projection --projection units`: the panel's
+/// cell types trained as gene-set units on the genes placed among the cells
+/// ([`crate::annotate::geneset_units`]), each cell called by its region, the
+/// round tabled by `--clusters`, else the run's, else internal Leiden.
+pub fn annotate_by_units(args: &UnitsArgs, loaded: &Loaded) -> Result<()> {
+    let run = loaded.file.display().to_string();
+    let feat = load_marker_feature_embedding(&loaded.manifest, &loaded.dir, &run)?;
+    let cell_path = loaded.geometry_latent_path()?;
+    let cells = Mat::from_parquet(&cell_path)
+        .with_context(|| format!("reading cell embedding {cell_path}"))?;
+    let (groups, _) = resolve_clusters(
+        args.clusters.as_deref(),
+        &args.leiden,
+        &loaded.manifest,
+        &loaded.dir,
+        &cells.rows,
+    )?;
+    let mut outputs = crate::annotate::geneset_units::run(args, &feat, &cells, &groups)?;
+    let clusters = format!("{}{}", args.out, rounds::CLUSTERS);
+    rounds::write_clusters(&clusters, &cells.rows, &rounds::cluster_ids(&groups))?;
+    outputs.clusters = Some(clusters);
+    record(
+        loaded,
+        &args.out,
+        Pass::Markers(&args.markers),
+        &outputs,
+        "projection",
+        projection_settings(args, ProjectionMethod::Units)?,
+    )
+}
+
 /// What the score reads: the run's decoder gene table and its cell embedding.
 fn score_tables(loaded: &Loaded) -> Result<(MatWithNames<Mat>, MatWithNames<Mat>)> {
     let run = loaded.file.display().to_string();
@@ -254,41 +282,6 @@ fn projection_settings(
     Ok(v)
 }
 
-/// `lupin annotate --method projection --projection ora`: score the run's
-/// co-embedded gene space and cell embedding against the marker panel, and
-/// record what it wrote (kept one release, for comparison).
-pub fn annotate_by_projection(args: &AnnotateProjectionArgs, loaded: &Loaded) -> Result<()> {
-    let run = loaded.file.display().to_string();
-    // Genes on the cell manifold; for a `gem` run only the spliced rows,
-    // re-keyed by gene — see [`crate::marker_embedding`].
-    let feat = load_marker_feature_embedding(&loaded.manifest, &loaded.dir, &run).with_context(
-        || {
-            "projection needs a co-embedded gene space (a senna `gem` / `bge` / `fne` / \
-             `resolve-embedding-space` run). For topic/svd runs use `lupin annotate --method enrichment`."
-        },
-    )?;
-    let cell_path = loaded.geometry_latent_path()?;
-    let cell = DMatrix::<f32>::from_parquet(&cell_path)
-        .with_context(|| format!("reading cell embedding {cell_path}"))?;
-
-    let mut outputs = by_projection::run(
-        args,
-        &ProjectionInputs {
-            feature_embedding: &feat,
-            cell_embedding: &cell,
-        },
-    )?;
-    outputs.clusters = Some(projection_clusters(&args.out)?);
-    record(
-        loaded,
-        &args.out,
-        Pass::Markers(&args.markers),
-        &outputs,
-        "projection",
-        projection_settings(args, ProjectionMethod::Ora)?,
-    )
-}
-
 /// `lupin annotate` without markers: walk the CL tree over the cluster ×
 /// cell-type matrix an earlier enrichment run recorded.
 pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &Loaded) -> Result<()> {
@@ -318,7 +311,7 @@ pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &Loaded) -> Result
 
 /// The method whose reading made a `method` pass's call, by what it wrote:
 /// a projection pass with the score's per-cell table is the score's; SuSiE's
-/// tables, the enrichment's share, or nothing named (the ORA).
+/// tables, the enrichment's share, or nothing named (the units).
 fn called_by(method: &str, out: &AnnotationOutputs) -> Option<crate::annotate::rounds::Method> {
     use crate::annotate::rounds::Method;
     if method == "projection" {
@@ -353,21 +346,6 @@ enum Pass<'a> {
     GeneSets,
     /// CL ontology walk over an earlier enrichment.
     Ontology,
-}
-
-/// Projection clusters the cells itself; its per-cell `community` becomes
-/// the round's cluster table.
-fn projection_clusters(out: &str) -> Result<String> {
-    let annot = format!("{out}{ANNOT_PARQUET}");
-    let (strings, nums) = read_table_columns(&annot, &["cell"], &["community"])
-        .with_context(|| format!("reading {annot}"))?;
-    let ids: Vec<Option<u32>> = nums[0]
-        .iter()
-        .map(|&k| (k.is_finite() && k >= 0.0).then_some(k as u32))
-        .collect();
-    let path = format!("{out}{}", rounds::CLUSTERS);
-    rounds::write_clusters(&path, &strings[0], &ids)?;
-    Ok(path)
 }
 
 /// Record a pass's artifacts in the manifest, relative to its directory, plus
@@ -408,8 +386,13 @@ fn record(
             a.cluster_celltype_q_values = rel(&out.cluster_celltype_q_values);
             a.cluster_celltype_p = rel(&out.cluster_celltype_p);
             a.cluster_celltype_nes = rel(&out.cluster_celltype_nes);
-            a.cluster_term_q = rel(&out.cluster_term_q);
-            a.marker_embedding = rel(&out.marker_embedding);
+            // The retired term ORA's tables are no later round's.
+            a.cluster_term_q = None;
+            a.marker_embedding = None;
+            a.celltype_units = rel(&out.celltype_units);
+            a.celltype_links = rel(&out.celltype_links);
+            a.term_alignment = rel(&out.term_alignment);
+            a.term_units = rel(&out.term_units);
             a.ontology_signature = rel(&out.ontology_signature);
             a.ontology_term_effect = rel(&out.ontology_term_effect);
             loaded.manifest.defaults.colour_by = Some("annotation".into());
@@ -916,3 +899,6 @@ fn build_batch_labels(labels: Vec<Box<str>>, n_cells: usize) -> Result<(Vec<usiz
 #[cfg(test)]
 #[path = "tests/projection_score.rs"]
 pub(crate) mod projection_score_tests;
+#[cfg(test)]
+#[path = "tests/projection_units.rs"]
+pub(crate) mod projection_units_tests;
