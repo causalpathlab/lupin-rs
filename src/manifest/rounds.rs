@@ -631,6 +631,15 @@ pub struct RelabelArgs {
 
     #[arg(
         long,
+        requires = "next",
+        value_name = "PREFIX",
+        help = "With --next: refuse unless the next round is PREFIX ({chain}.r<N+1>), so a \
+                replayed step writes the round it wrote before"
+    )]
+    pub expect: Option<Box<str>>,
+
+    #[arg(
+        long,
         conflicts_with_all = ["next", "out", "watch"],
         help = "Validate as --next would, write nothing, and print what the decisions would \
                 change as JSON (marker edits re-rank cell types approximately)"
@@ -688,6 +697,13 @@ pub fn run_relabel(args: &RelabelArgs) -> Result<()> {
         None if args.next => {
             let chain = Chain::of(&source.file);
             let lock = chain.lock()?;
+            if let Some(want) = &args.expect {
+                let next = chain.next_prefix();
+                anyhow::ensure!(
+                    std::path::absolute(&**want)? == std::path::absolute(&next)?,
+                    "the next round of the chain is {next}, not {want}"
+                );
+            }
             chain.write_next(&lock, &source.file, decisions, &decisions_dir)?
         }
         None => anyhow::bail!("give -o <prefix>, or --next to continue -f's chain"),
@@ -792,6 +808,11 @@ impl Chain {
 
     fn round_prefix(&self, k: usize) -> String {
         super::family::Tag::Chain.name(&self.prefix, k)
+    }
+
+    /// The prefix `--next` would write now: one past the latest round.
+    pub(crate) fn next_prefix(&self) -> String {
+        self.round_prefix(self.latest().0 + 1)
     }
 
     /// Every round manifest on disk after the base, in order. Found by
@@ -1769,16 +1790,18 @@ struct Reviewed {
 
 impl Reviewed {
     /// The round as review shows it; `every_type` when the types' evidence
-    /// is wanted too (`--json`).
-    fn read(loaded: &Loaded, every_type: bool) -> Result<Self> {
+    /// is wanted too, `tops` when each method's top type is.
+    fn read(loaded: &Loaded, every_type: bool, tops: bool) -> Result<Self> {
         // The cells give the score's and the units' shares over the current
         // clusters: for the types' evidence, the digests when no summary was
-        // written, and the order of tied calls when either made the call. A round
-        // whose cells cannot be read is still reviewed from its summary.
+        // written, the order of tied calls when either made the call, and
+        // their tops. A round whose cells cannot be read is still reviewed
+        // from its summary.
         let a = &loaded.manifest.annotate;
         let summary = (a.cluster_summary.as_deref()).and_then(|rel| loaded.recorded(rel));
         let by_cells = matches!(called_by(a), Some(Method::Score | Method::Units));
-        let wants_cells = every_type || summary.is_none() || by_cells;
+        let cell_tops = tops && (a.marker_score.is_some() || a.units_call.is_some());
+        let wants_cells = every_type || summary.is_none() || by_cells || cell_tops;
         let cells = wants_cells
             .then(|| {
                 read_cells(loaded)
@@ -1817,13 +1840,14 @@ impl Reviewed {
 /// `review --json`: per cluster (all, or those in `clusters`), its digest,
 /// its history, each method's top type (`tops`, the first of
 /// [`Method::ranked`], for the methods that put one forward), every type's
-/// evidence (`types`) and, when the round has a
+/// evidence (`types`, when `with_types`) and, when the round has a
 /// type tree, the Cell Ontology term it puts the label on (`cl`).
 pub(crate) fn review_json(
     loaded: &Loaded,
     clusters: &[ClusterId],
+    with_types: bool,
 ) -> Result<BTreeMap<ClusterId, Value>> {
-    let r = Reviewed::read(loaded, true)?;
+    let r = Reviewed::read(loaded, with_types, true)?;
     let (digests, history, tables) = (&r.digests, &r.history, &r.tables);
     Ok(digests
         .iter()
@@ -1838,7 +1862,10 @@ pub(crate) fn review_json(
                 })
                 .collect();
             let h = history.get(id).cloned().unwrap_or_default();
-            let mut v = json!({ "digest": d, "history": h, "tops": tops, "types": types });
+            let mut v = json!({ "digest": d, "history": h, "tops": tops });
+            if with_types {
+                v["types"] = json!(types);
+            }
             if let Some(cl) = r.placement(d) {
                 v["cl"] = json!(cl);
             }
@@ -1849,7 +1876,7 @@ pub(crate) fn review_json(
 
 /// `review`'s text: each cluster (all, or those in `clusters`) in turn.
 pub(crate) fn review_text(loaded: &Loaded, clusters: &[ClusterId]) -> Result<String> {
-    let r = Reviewed::read(loaded, false)?;
+    let r = Reviewed::read(loaded, false, false)?;
     Ok(r.digests
         .iter()
         .filter(|(id, _)| clusters.is_empty() || clusters.contains(id))
@@ -1863,7 +1890,7 @@ pub(crate) fn review_text(loaded: &Loaded, clusters: &[ClusterId]) -> Result<Str
 pub fn run_review(args: &ReviewArgs) -> Result<()> {
     let loaded = run::load(&args.from)?;
     if args.json {
-        let out = review_json(&loaded, &args.cluster)?;
+        let out = review_json(&loaded, &args.cluster, true)?;
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
@@ -1924,4 +1951,4 @@ fn render(
 
 #[cfg(test)]
 #[path = "rounds_tests.rs"]
-mod tests;
+pub(crate) mod tests;

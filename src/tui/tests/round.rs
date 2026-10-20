@@ -1,6 +1,8 @@
 //! [`super::RoundView`]'s pieces on made-up rounds.
 
 use super::*;
+use legume_numeric::matrix::dense_mat_io::Mat;
+use legume_numeric::matrix::traits::MatWithNames;
 
 fn candidate(label: &str, share: f32) -> Candidate {
     let mut c = Candidate::new(label, share);

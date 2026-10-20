@@ -269,6 +269,42 @@ patterns such as `MT-*` kept out of the specific-genes view) and
 `mixed_labels.tsv` (a name for a mixed label, e.g. `CT1 mix<TAB>CT2<TAB>CT3`, given
 to a cluster the evidence cannot split).
 
+## Agents (MCP)
+
+```sh
+claude mcp add lupin -- lupin mcp
+```
+
+`lupin mcp` serves the annotation and trajectory loops to an agent over the
+Model Context Protocol (stdio): `annotate_run`, `annotate_review`,
+`annotate_genes`, `annotate_preview`, `annotate_relabel`, `annotate_ask`,
+`trajectory_run`, `trajectory_read` and `docs`. lupin states the facts; the
+agent's decisions go through `relabel` with a rationale and
+`decided_by: agent_proposed_user_accepted`, and its precedence statements carry
+a note. Passes run as child `lupin` processes. No tool replaces an existing
+manifest: an output takes the next free `{stem}.L{k}` / `{stem}.T{k}`, in
+today's results folder unless the agent names one.
+
+The server keeps the project's records, laid out after Noble's guide to
+organizing computational biology projects [1] (see `legume-mcp`): outputs the
+agent does not name go to `results/<YYYY-MM-DD>/`; every step that wrote
+something goes into that day's `results/<YYYY-MM-DD>/runall.sh`, with paths
+relative to the project and steps skipped when their outputs exist, so a copy
+of the project replays it; `results/INDEX.tsv` lists each output with a
+one-line summary for a quick `grep`; and the agent keeps
+`results/<YYYY-MM-DD>/notebook.md` through the `notebook` tool, opening with a
+plan (the question, the data, how the result will be checked) after [2]. The
+project is the server's working directory, or `LEGUME_MCP_PROJECT`;
+`LEGUME_MCP_RECORDS=off` keeps no records. A relabel runs `--next --expect
+{chain}.r<k>`: the next round of the chain, refused unless it is the one named,
+so a replay writes the same round.
+
+[1] W. S. Noble, "A quick guide to organizing computational biology projects",
+PLoS Comput Biol 5(7): e1000424 (2009). doi:10.1371/journal.pcbi.1000424
+
+[2] W. S. Noble, "Ten simple rules for defining a computational biology
+project", PLoS Comput Biol 19(1): e1010786 (2023). doi:10.1371/journal.pcbi.1010786
+
 ## Method write-ups
 
 `lupin docs` lists them; `lupin docs <topic>` prints one (compiled into the

@@ -66,6 +66,8 @@ enrichment = { version = "0.5.2", package = "legume-enrichment" }
 graph-embedding-util = { version = "0.9.4", package = "legume-graph-embedding" }
 legume-numeric = { version = "0.9.5", features = ["matrix", "candle", "mcmc"] }
 legume-plot = { version = "0.3.2" }
+# The MCP server under `lupin mcp`.
+legume-mcp = { git = "https://github.com/causalpathlab/legume-mcp", rev = "a2d5002" }
 # Rasterises figures in memory for the TUI; the version legume-plot uses.
 resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts"] }
 

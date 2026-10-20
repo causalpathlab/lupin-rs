@@ -10,6 +10,7 @@ pub mod by_susie;
 mod calibration_tests;
 pub mod celltype_tree;
 pub mod cl_rules;
+pub mod expression;
 pub mod gene_rows;
 pub mod geneset_units;
 pub mod go_signature;
