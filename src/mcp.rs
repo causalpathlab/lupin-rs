@@ -462,7 +462,7 @@ fn relabel_preview(a: &Arguments, cx: &Call) -> Result<Value> {
         tmp.path().to_string_lossy().into_owned(),
         "--preview".into(),
     ];
-    let out = cx.run(lupin(&argv)?)?;
+    let out = cx.run_reading(lupin(&argv)?)?;
     serde_json::from_str(&out).context("reading the preview")
 }
 
