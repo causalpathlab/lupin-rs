@@ -9,16 +9,21 @@
 //! round or run they made. Passes, relabels, `ask` and trajectories run as
 //! child `lupin` processes, as from the TUI: stdout carries the protocol,
 //! and their log lines come back as progress. No tool replaces an existing
-//! manifest: a new output takes the next free name. The session script
-//! (`legume_mcp::journal`) keeps every command and the inputs made for them,
-//! so the session can be repeated without the agent.
+//! manifest: a new output takes the next free name, in today's results
+//! folder unless the agent names one. `legume_mcp::project` keeps the
+//! project's records after Noble (PLoS Comput Biol 5(7): e1000424, 2009,
+//! doi:10.1371/journal.pcbi.1000424): every step that writes, with the
+//! inputs made for it, goes into the day's `runall.sh`, so the work can be
+//! redone without the agent.
 
 use crate::annotate::markers::label_key;
 use crate::annotate::rounds::ClusterId;
 use crate::describe::trajectory::{self as order_text, OrderFacts};
 use crate::manifest::family::Tag;
-use crate::manifest::rounds::review_json;
-use crate::manifest::run::{self, annotated_path, derive_out_prefix, manifest_file, resolve};
+use crate::manifest::rounds::{review_json, Chain};
+use crate::manifest::run::{
+    self, annotated_path, derive_out_prefix, manifest_file, resolve, same_file,
+};
 use crate::tui::round::{panel_sets, specific_genes, Expression};
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
@@ -223,14 +228,10 @@ impl Handler for Lupin {
                 Ok(vec![Content::Json(json!(review))])
             }
             "annotate_genes" => annotate_genes(&a),
-            "annotate_preview" => {
-                let out = relabel(&a, "--preview", cx)?;
-                let v: Value = serde_json::from_str(&out).context("reading the preview")?;
-                Ok(vec![Content::Json(v)])
-            }
+            "annotate_preview" => Ok(vec![Content::Json(relabel_preview(&a, cx)?)]),
             "annotate_relabel" => {
-                let round = relabel(&a, "--next", cx)?;
-                Ok(vec![Content::Json(json!({ "round": round.trim() }))])
+                let round = relabel_apply(&a, cx)?;
+                Ok(vec![Content::Json(json!({ "round": absolute(&round) }))])
             }
             "annotate_ask" => annotate_ask(&a, cx),
             "trajectory_run" => trajectory_run(&a, cx),
@@ -302,13 +303,18 @@ fn absolute(p: &Path) -> String {
         .into_owned()
 }
 
-/// `out`, or the next free `tag` name beside the manifest `from` names; and
-/// the manifest a run from `from` to it writes, which must not exist yet.
-fn output(a: &Arguments, from: &str, tag: Tag) -> Result<(String, PathBuf)> {
+/// `out`, or the next free `tag` name in today's results folder (beside the
+/// manifest `from` names when the server keeps no records); and the
+/// manifest a run from `from` to it writes, which must not exist yet.
+fn output(a: &Arguments, cx: &Call, from: &str, tag: Tag) -> Result<(String, PathBuf)> {
     let source = manifest_file(from);
-    let out = a
-        .str("out")
-        .map_or_else(|| tag.next_free(&source), str::to_string);
+    let out = match a.str("out") {
+        Some(o) => o.to_string(),
+        None => match (cx.results_dir(), source.file_name()) {
+            (Some(dir), Some(name)) => tag.next_free(&dir.join(name)),
+            _ => tag.next_free(&source),
+        },
+    };
     let manifest = annotated_path(&source, &out);
     anyhow::ensure!(
         !manifest.exists(),
@@ -320,7 +326,7 @@ fn output(a: &Arguments, from: &str, tag: Tag) -> Result<(String, PathBuf)> {
 
 fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let from = a.req("from")?;
-    let (out, round) = output(a, &from, Tag::Round)?;
+    let (out, round) = output(a, cx, &from, Tag::Round)?;
     let mut argv: Vec<String> = ["annotate", "-f", &from, "-o", &out]
         .map(String::from)
         .into();
@@ -331,7 +337,17 @@ fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         argv.extend(["--method".into(), m.into()]);
     }
     argv.extend(a.options()?);
-    cx.run(lupin(&argv)?)?;
+    let summary = format!(
+        "annotate {}{}{}",
+        file_name(Path::new(&from)),
+        a.str("markers").map_or(String::new(), |m| format!(
+            " with {}",
+            file_name(Path::new(m))
+        )),
+        a.str("method")
+            .map_or(String::new(), |m| format!(" by {m}")),
+    );
+    cx.run_making(lupin(&argv)?, std::slice::from_ref(&round), &summary)?;
     let loaded = run::load(&round.to_string_lossy())?;
     let clusters: Map<String, Value> = review_json(&loaded, &[])?
         .into_iter()
@@ -408,51 +424,101 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     Ok(vec![Content::Json(Value::Object(out))])
 }
 
-/// `lupin relabel -f <round> -d <decisions> <mode>`; its stdout. Each
-/// decision names the round, so it cannot land on renumbered ids, and is the
-/// agent's unless it says otherwise. A preview's decisions go to a temporary
-/// file; applied ones to the next free `{round}.mcp_decisions.{k}.jsonl`
-/// beside the round, kept in the session script too.
-fn relabel(a: &Arguments, mode: &str, cx: &Call) -> Result<String> {
-    let round = manifest_file(&a.req("round")?);
-    anyhow::ensure!(round.is_file(), "{}: no such round", round.display());
+/// The decisions in `a`, one JSON line each. Each names the round (as
+/// `round_ref`, relative to the decisions file), so it cannot land on
+/// renumbered ids, and is the agent's unless it says otherwise.
+fn decisions_text(a: &Arguments, round_ref: &str) -> Result<String> {
     let decisions: Vec<Map<String, Value>> = a.parse("decisions")?.unwrap_or_default();
     anyhow::ensure!(!decisions.is_empty(), "no decisions");
     let mut text = String::new();
     for mut d in decisions {
-        d.entry("round").or_insert_with(|| json!(absolute(&round)));
+        d.entry("round").or_insert_with(|| json!(round_ref));
         d.entry("decided_by")
             .or_insert_with(|| json!("agent_proposed_user_accepted"));
         text += &format!("{}\n", Value::Object(d));
     }
-    let tmp;
-    let file = if mode == "--preview" {
-        tmp = tempfile::Builder::new().suffix(".jsonl").tempfile()?;
-        std::fs::write(tmp.path(), &text)?;
-        tmp.path().to_path_buf()
-    } else {
-        let stem = derive_out_prefix(&round.to_string_lossy());
-        let file = (1..)
-            .map(|k| PathBuf::from(format!("{stem}.mcp_decisions.{k}.jsonl")))
-            .find(|p| !p.exists())
-            .expect("some k is free");
-        cx.write_file(&file, &text)?;
-        file
-    };
+    Ok(text)
+}
+
+/// The round `a` names, which must exist.
+fn round_arg(a: &Arguments) -> Result<PathBuf> {
+    let round = manifest_file(&a.req("round")?);
+    anyhow::ensure!(round.is_file(), "{}: no such round", round.display());
+    Ok(round)
+}
+
+/// `lupin relabel --preview` with the decisions in a temporary file; the
+/// preview's JSON.
+fn relabel_preview(a: &Arguments, cx: &Call) -> Result<Value> {
+    let round = round_arg(a)?;
+    let text = decisions_text(a, &absolute(&round))?;
+    let tmp = tempfile::Builder::new().suffix(".jsonl").tempfile()?;
+    std::fs::write(tmp.path(), text)?;
+    let argv = [
+        "relabel".to_string(),
+        "-f".into(),
+        round.to_string_lossy().into_owned(),
+        "-d".into(),
+        tmp.path().to_string_lossy().into_owned(),
+        "--preview".into(),
+    ];
+    let out = cx.run(lupin(&argv)?)?;
+    serde_json::from_str(&out).context("reading the preview")
+}
+
+/// Apply the decisions as the next round of the round's chain, named here
+/// (`-o`) rather than left to `--next`, so the step replays to the same
+/// round. The decisions go to the next free `{round}.mcp_decisions.{k}.jsonl`
+/// beside the round, and into the driver script.
+fn relabel_apply(a: &Arguments, cx: &Call) -> Result<PathBuf> {
+    let round = round_arg(a)?;
+    let chain = Chain::of(&round);
+    let (k, latest) = chain.latest();
+    anyhow::ensure!(
+        same_file(&round, &latest),
+        "{} is not the latest round of its chain: review {} and decide on it",
+        round.display(),
+        latest.display()
+    );
+    let name = round.file_name().map(|n| n.to_string_lossy().into_owned());
+    let text = decisions_text(a, &name.unwrap_or_default())?;
+    let stem = derive_out_prefix(&round.to_string_lossy());
+    let file = (1..)
+        .map(|k| PathBuf::from(format!("{stem}.mcp_decisions.{k}.jsonl")))
+        .find(|p| !p.exists())
+        .expect("some k is free");
+    cx.write_file(&file, &text)?;
+    let prefix = chain.round_prefix(k + 1);
+    let next = annotated_path(&round, &prefix);
     let argv = [
         "relabel".to_string(),
         "-f".into(),
         round.to_string_lossy().into_owned(),
         "-d".into(),
         file.to_string_lossy().into_owned(),
-        mode.into(),
+        "-o".into(),
+        prefix,
     ];
-    cx.run(lupin(&argv)?)
+    let summary = format!(
+        "relabel {} with {} decision(s)",
+        file_name(&round),
+        text.lines().count()
+    );
+    cx.run_making(lupin(&argv)?, std::slice::from_ref(&next), &summary)?;
+    Ok(next)
+}
+
+/// `p`'s file name, for summaries.
+fn file_name(p: &Path) -> String {
+    p.file_name().map_or_else(
+        || p.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 fn annotate_ask(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let from = a.req("from")?;
-    let (out, round) = output(a, &from, Tag::Round)?;
+    let (out, round) = output(a, cx, &from, Tag::Round)?;
     let mut argv: Vec<String> = ["ask", "-f", &from, "-o", &out].map(String::from).into();
     if let Some(c) = a.str("context") {
         argv.extend(["--context".into(), c.into()]);
@@ -460,7 +526,11 @@ fn annotate_ask(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     if let Some(n) = a.parse::<usize>("top")? {
         argv.extend(["--top".into(), n.to_string()]);
     }
-    let prompt = cx.run(lupin(&argv)?)?;
+    let summary = format!(
+        "unlabelled first round of {} for ask",
+        file_name(Path::new(&from))
+    );
+    let prompt = cx.run_making(lupin(&argv)?, std::slice::from_ref(&round), &summary)?;
     Ok(vec![
         Content::Json(json!({ "round": absolute(&round) })),
         Content::Text(prompt),
@@ -478,7 +548,7 @@ struct Statement {
 
 fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let from = a.req("from")?;
-    let (out, manifest) = output(a, &from, Tag::Trajectory)?;
+    let (out, manifest) = output(a, cx, &from, Tag::Trajectory)?;
     let mut argv: Vec<String> = ["trajectory", "-f", &from, "-o", &out]
         .map(String::from)
         .into();
@@ -515,7 +585,22 @@ fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         (None, true) => {}
     }
     argv.extend(a.options()?);
-    cx.run(lupin(&argv)?)?;
+    let roots: Vec<String> = a.parse("roots")?.unwrap_or_default();
+    let summary = format!(
+        "trajectory of {}{}{}",
+        file_name(Path::new(&from)),
+        if roots.is_empty() {
+            String::new()
+        } else {
+            format!(" from {}", roots.join(", "))
+        },
+        if statements.is_empty() {
+            String::new()
+        } else {
+            format!(", {} statement(s)", statements.len())
+        },
+    );
+    cx.run_making(lupin(&argv)?, std::slice::from_ref(&manifest), &summary)?;
     Ok(vec![Content::Json(trajectory_read(
         &manifest.to_string_lossy(),
     )?)])

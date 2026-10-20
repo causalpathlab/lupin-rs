@@ -282,12 +282,27 @@ Model Context Protocol (stdio): `annotate_run`, `annotate_review`,
 agent's decisions go through `relabel` with a rationale and
 `decided_by: agent_proposed_user_accepted`, and its precedence statements carry
 a note. Passes run as child `lupin` processes. No tool replaces an existing
-manifest: an output takes the next free `{stem}.L{k}` / `{stem}.T{k}`.
+manifest: an output takes the next free `{stem}.L{k}` / `{stem}.T{k}`, in
+today's results folder unless the agent names one.
 
-Every session leaves a bash script that repeats what its tools wrote: the
-calls as comments, each command as run, and the decisions and statements as
-heredocs. It goes to `mcp-journal/` under the server's working directory, or
-to the file `LEGUME_MCP_JOURNAL` names (`off` for none).
+The server keeps the project's records, laid out after Noble's guide to
+organizing computational biology projects [1] (see `legume-mcp`): outputs the
+agent does not name go to `results/<YYYY-MM-DD>/`; every step that wrote
+something goes into that day's `results/<YYYY-MM-DD>/runall.sh`, with paths
+relative to the project and steps skipped when their outputs exist, so a copy
+of the project replays it; `results/INDEX.tsv` lists each output with a
+one-line summary for a quick `grep`; and the agent keeps
+`results/<YYYY-MM-DD>/notebook.md` through the `notebook` tool, opening with a
+plan (the question, the data, how the result will be checked) after [2]. The
+project is the server's working directory, or `LEGUME_MCP_PROJECT`;
+`LEGUME_MCP_JOURNAL=off` keeps no records. A relabel names its round
+(`-o {chain}.r<k>`) rather than `--next`, so it replays to the same round.
+
+[1] W. S. Noble, "A quick guide to organizing computational biology projects",
+PLoS Comput Biol 5(7): e1000424 (2009). doi:10.1371/journal.pcbi.1000424
+
+[2] W. S. Noble, "Ten simple rules for defining a computational biology
+project", PLoS Comput Biol 19(1): e1010786 (2023). doi:10.1371/journal.pcbi.1010786
 
 ## Method write-ups
 

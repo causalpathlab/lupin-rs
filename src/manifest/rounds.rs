@@ -790,7 +790,7 @@ impl Chain {
         }
     }
 
-    fn round_prefix(&self, k: usize) -> String {
+    pub(crate) fn round_prefix(&self, k: usize) -> String {
         super::family::Tag::Chain.name(&self.prefix, k)
     }
 
