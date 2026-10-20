@@ -269,6 +269,26 @@ patterns such as `MT-*` kept out of the specific-genes view) and
 `mixed_labels.tsv` (a name for a mixed label, e.g. `CT1 mix<TAB>CT2<TAB>CT3`, given
 to a cluster the evidence cannot split).
 
+## Agents (MCP)
+
+```sh
+claude mcp add lupin -- lupin mcp
+```
+
+`lupin mcp` serves the annotation and trajectory loops to an agent over the
+Model Context Protocol (stdio): `annotate_run`, `annotate_review`,
+`annotate_genes`, `annotate_preview`, `annotate_relabel`, `annotate_ask`,
+`trajectory_run`, `trajectory_read` and `docs`. lupin states the facts; the
+agent's decisions go through `relabel` with a rationale and
+`decided_by: agent_proposed_user_accepted`, and its precedence statements carry
+a note. Passes run as child `lupin` processes. No tool replaces an existing
+manifest: an output takes the next free `{stem}.L{k}` / `{stem}.T{k}`.
+
+Every session leaves a bash script that repeats what its tools wrote: the
+calls as comments, each command as run, and the decisions and statements as
+heredocs. It goes to `mcp-journal/` under the server's working directory, or
+to the file `LEGUME_MCP_JOURNAL` names (`off` for none).
+
 ## Method write-ups
 
 `lupin docs` lists them; `lupin docs <topic>` prints one (compiled into the

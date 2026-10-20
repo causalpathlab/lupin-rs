@@ -21,7 +21,7 @@ mod menu;
 mod ontology;
 mod order;
 mod picker;
-mod round;
+pub(crate) mod round;
 mod runner;
 mod suggest;
 mod ui;

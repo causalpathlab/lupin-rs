@@ -52,33 +52,41 @@ pub struct DocsArgs {
     pub topic: Option<Topic>,
 }
 
-pub fn run_docs(args: &DocsArgs) -> Result<()> {
-    let Some(want) = args.topic else {
-        println!("lupin method write-ups (`lupin docs <TOPIC>` to read one):\n");
-        // The name clap accepts, e.g. `ontology-plan`, not the Debug form.
-        let slugs: Vec<String> = DOCS
-            .iter()
-            .map(|(topic, _, _)| {
-                topic
-                    .to_possible_value()
-                    .as_ref()
-                    .map(PossibleValue::get_name)
-                    .unwrap_or_default()
-                    .to_string()
-            })
-            .collect();
-        let width = slugs.iter().map(String::len).max().unwrap_or(0);
-        for (slug, (_, blurb, _)) in slugs.iter().zip(DOCS) {
-            println!("  {slug:<width$} {blurb}");
-        }
-        return Ok(());
-    };
-    let text = DOCS
+/// The listing `lupin docs` prints with no topic.
+pub fn listing() -> String {
+    let mut s = String::from("lupin method write-ups (`lupin docs <TOPIC>` to read one):\n\n");
+    // The name clap accepts, e.g. `ontology-plan`, not the Debug form.
+    let slugs: Vec<String> = DOCS
         .iter()
-        .find(|(t, _, _)| *t == want)
+        .map(|(topic, _, _)| {
+            topic
+                .to_possible_value()
+                .as_ref()
+                .map(PossibleValue::get_name)
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect();
+    let width = slugs.iter().map(String::len).max().unwrap_or(0);
+    for (slug, (_, blurb, _)) in slugs.iter().zip(DOCS) {
+        s += &format!("  {slug:<width$} {blurb}\n");
+    }
+    s
+}
+
+/// The write-up on `topic`.
+pub fn text(topic: Topic) -> &'static str {
+    DOCS.iter()
+        .find(|(t, _, _)| *t == topic)
         .map(|(_, _, text)| *text)
-        .expect("every Topic has a row in DOCS");
-    println!("{text}");
+        .expect("every Topic has a row in DOCS")
+}
+
+pub fn run_docs(args: &DocsArgs) -> Result<()> {
+    match args.topic {
+        Some(t) => println!("{}", text(t)),
+        None => print!("{}", listing()),
+    }
     Ok(())
 }
 

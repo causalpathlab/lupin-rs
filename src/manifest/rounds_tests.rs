@@ -7,7 +7,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 
 /// A first round in `{root}/r0`: four cells in clusters 0, 0, 1, 2.
-fn first_round(root: &Path) -> PathBuf {
+pub(crate) fn first_round(root: &Path) -> PathBuf {
     let r0 = root.join("r0");
     fs::create_dir_all(&r0).unwrap();
     let cells: Vec<Box<str>> = ["a", "b", "c", "d"].iter().map(|s| Box::from(*s)).collect();
@@ -413,7 +413,7 @@ fn review_prints_the_names_decisions_files_use() {
 /// `first_round` plus an expression profile (genes × K0..K2) and a panel:
 /// GENE1 marks CT1 and peaks in K0, GENE2 marks CT2 and peaks in K1, GENE3
 /// marks CT3 and peaks in K2; GENE4, on no panel, also peaks in K1.
-fn round_with_profile(root: &Path) -> PathBuf {
+pub(crate) fn round_with_profile(root: &Path) -> PathBuf {
     let src = first_round(root);
     let r0 = root.join("r0");
     let genes: Vec<Box<str>> = ["GENE1", "GENE2", "GENE3", "GENE4"]

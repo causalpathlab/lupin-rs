@@ -1924,4 +1924,4 @@ fn render(
 
 #[cfg(test)]
 #[path = "rounds_tests.rs"]
-mod tests;
+pub(crate) mod tests;
