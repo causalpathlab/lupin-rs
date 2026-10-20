@@ -71,7 +71,7 @@ fn tools() -> Vec<ToolSpec> {
     });
     let decisions = json!({
         "type": "array",
-        "description": "Decisions, one object each: {cluster or clusters, action: label|merge|keep|markers_add|markers_drop, label?, features?, evidence?: [..], alternatives?: [{label, why_not}], rationale (required)}. decided_by defaults to agent_proposed_user_accepted.",
+        "description": "Decisions, one object each: {cluster or clusters, action: label|merge|keep|markers_add|markers_drop, label?, features?, evidence?: [..], alternatives?: [{label, why_not}], rationale (required)}. decided_by defaults to agent (your own decision); give agent_proposed_user_accepted only when the user accepted it.",
         "items": { "type": "object" }
     });
     vec![
@@ -432,7 +432,7 @@ fn decisions_text(a: &Arguments, round: &Path) -> Result<String> {
     for mut d in decisions {
         d.insert("round".into(), json!(file_name(round)));
         d.entry("decided_by")
-            .or_insert_with(|| json!(DecidedBy::AgentProposedUserAccepted.as_str()));
+            .or_insert_with(|| json!(DecidedBy::Agent.as_str()));
         text += &format!("{}\n", Value::Object(d));
     }
     Ok(text)

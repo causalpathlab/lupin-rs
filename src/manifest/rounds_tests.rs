@@ -405,6 +405,7 @@ fn review_prints_the_names_decisions_files_use() {
         DecidedBy::User,
         DecidedBy::AgentProposedUserAccepted,
         DecidedBy::UserOverride,
+        DecidedBy::Agent,
     ] {
         assert_eq!(json!(d), json!(d.as_str()));
     }

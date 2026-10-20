@@ -577,6 +577,8 @@ pub enum DecidedBy {
     User,
     AgentProposedUserAccepted,
     UserOverride,
+    /// An agent's own decision, with no person accepting it (`lupin mcp`).
+    Agent,
 }
 
 impl DecidedBy {
@@ -587,6 +589,7 @@ impl DecidedBy {
             DecidedBy::User => "user",
             DecidedBy::AgentProposedUserAccepted => "agent_proposed_user_accepted",
             DecidedBy::UserOverride => "user_override",
+            DecidedBy::Agent => "agent",
         }
     }
 }

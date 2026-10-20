@@ -1742,7 +1742,7 @@ Decisions file for `lupin relabel -d`: one JSON object per line.
 action:     label (one cluster), merge (\"clusters\": [..], fresh id), keep,
             markers_add / markers_drop (\"label\": cell type, \"features\": [..];
             edits the round's marker panel, which the next annotate uses)
-decided_by: user | agent_proposed_user_accepted | user_override
+decided_by: user | agent_proposed_user_accepted | user_override | agent
 round:      optional; the round whose ids the decision names, relative to the
             decisions file. A decision on any other round is refused.
 Every decision needs a rationale; it is kept in the round's history.
