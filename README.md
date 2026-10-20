@@ -345,12 +345,21 @@ Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence statements (from, to, precedes|unrelated, note), writes a run.
 2. trajectory_read returns its lineages, each edge's connectivity and verdict (supported, unsupported, candidate, inferred) and the order in words. Revise the statements where the data disagree and run again.
 
+annotate_run and trajectory_run take `background`: on a large run set it, and the call returns a job id at once.
+
 docs prints the method write-ups. Paths are resolved against the server's working directory; results give the paths written.
 ```
 
 With records kept (the default), legume-mcp adds where they are and asks the
 agent to open with a `notebook` plan (the question, the data, how the result
-will be checked) and to close with its conclusions.
+will be checked) and to close with its conclusions; it also tells the agent
+how to follow background jobs.
+
+A large `annotate_run` or `trajectory_run` can outlast a client's wait on one
+call: with `background: true` it returns `{job, round}` or `{job, run}` at
+once, and the agent follows the job with `job_wait` or `job_status` (or stops
+it with `job_cancel`), using the manifest only once the job is done. A job that
+succeeds is recorded like any step; jobs end with their server.
 
 | Tool | Does |
 |---|---|
@@ -364,6 +373,7 @@ will be checked) and to close with its conclusions.
 | `trajectory_read` | lineages, each edge's connectivity and verdict, the order in words |
 | `docs` | lupin's method write-ups |
 | `notebook` | (from legume-mcp) an entry in the day's lab notebook |
+| `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow or stop a background job |
 
 Decisions use the `relabel` format (`lupin review --help`). They are recorded
 as `decided_by: agent` unless the agent says a person accepted them

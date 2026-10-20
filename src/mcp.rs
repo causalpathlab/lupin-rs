@@ -57,6 +57,9 @@ statements (from, to, precedes|unrelated, note), writes a run.
 verdict (supported, unsupported, candidate, inferred) and the order in words. \
 Revise the statements where the data disagree and run again.
 
+annotate_run and trajectory_run take `background`: on a large run set it, \
+and the call returns a job id at once.
+
 docs prints the method write-ups. Paths are resolved against the server's \
 working directory; results give the paths written.";
 
@@ -74,6 +77,10 @@ fn tools() -> Vec<ToolSpec> {
         "description": "Decisions, one object each: {cluster or clusters, action: label|merge|keep|markers_add|markers_drop, label?, features?, evidence?: [..], alternatives?: [{label, why_not}], rationale (required)}. decided_by defaults to agent (your own decision); give agent_proposed_user_accepted only when the user accepted it.",
         "items": { "type": "object" }
     });
+    let background = json!({
+        "type": "boolean",
+        "description": "Run as a background job: the call returns its id at once; follow it with job_wait or job_status, and use the manifest only once it is done"
+    });
     vec![
         ToolSpec::new(
             "annotate_run",
@@ -85,6 +92,7 @@ fn tools() -> Vec<ToolSpec> {
                     "method": { "type": "string", "enum": ["auto", "enrichment", "projection"] },
                     "out": { "type": "string", "description": "Output prefix; the next free {stem}.L{k} when omitted" },
                     "options": options,
+                    "background": background.clone(),
                 }),
                 &["from"],
             ),
@@ -167,6 +175,7 @@ fn tools() -> Vec<ToolSpec> {
                     },
                     "prior": { "type": "string", "description": "A precedence file, or a run's {out}.trajectory_prior.tsv to replay (not with statements)" },
                     "options": { "type": "array", "items": { "type": "string" }, "description": "Further options, as `lupin trajectory --help` lists them" },
+                    "background": background,
                 }),
                 &["from"],
             ),
@@ -333,6 +342,21 @@ fn flag(flag: &str, value: &str) -> String {
     format!("--{flag}={value}")
 }
 
+/// Whether the agent asked for the step as a background job.
+fn background(a: &Arguments) -> Result<bool> {
+    Ok(a.parse::<bool>("background")?.unwrap_or(false))
+}
+
+/// What a step started as a job returns: its id, and the manifest it
+/// writes (`key`), to use once the job is done.
+fn started(job: &str, key: &str, manifest: &Path) -> Value {
+    json!({
+        "job": job,
+        key: absolute(manifest),
+        "note": "running as a background job: job_wait or job_status until it is done, then use it",
+    })
+}
+
 fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let from = a.req_path("from")?;
     let Output {
@@ -351,6 +375,10 @@ fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         summary += &format!(" by {m}");
     }
     argv.extend(a.parse::<Vec<String>>("options")?.unwrap_or_default());
+    if background(a)? {
+        let job = cx.spawn_job(lupin(&argv)?, std::slice::from_ref(&round), &summary)?;
+        return Ok(vec![Content::Json(started(&job, "round", &round))]);
+    }
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&round), &summary)?;
     cx.state(&json!({ "round": absolute(&round) }));
     let loaded = run::load(&round.to_string_lossy())?;
@@ -595,6 +623,10 @@ fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         (None, true) => {}
     }
     argv.extend(a.parse::<Vec<String>>("options")?.unwrap_or_default());
+    if background(a)? {
+        let job = cx.spawn_job(lupin(&argv)?, std::slice::from_ref(&manifest), &summary)?;
+        return Ok(vec![Content::Json(started(&job, "run", &manifest))]);
+    }
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&manifest), &summary)?;
     cx.state(&json!({ "trajectory": absolute(&manifest), "from": from }));
     Ok(vec![Content::Json(trajectory_read(
