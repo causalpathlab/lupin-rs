@@ -271,38 +271,121 @@ to a cluster the evidence cannot split).
 
 ## Agents (MCP)
 
-```sh
-claude mcp add lupin -- lupin mcp
+`lupin mcp` serves lupin's annotation and trajectory loops over the
+[Model Context Protocol](https://modelcontextprotocol.io) on stdin/stdout, so
+any MCP client can drive them, with any model behind it (Claude, GPT, Gemini,
+or a local one). lupin computes and states the facts; the agent supplies the
+judgments, each with a rationale that lupin keeps.
+
+### Connect a client
+
+The server is one command, `lupin mcp`. A client needs that, and where the
+project is: the server keeps its records (below) in its working directory, or
+in `LEGUME_MCP_PROJECT` when set. Set it whenever the client may start servers
+somewhere else (desktop apps usually do). If the client cannot find `lupin`,
+give its full path (`which lupin`).
+
+Most clients (Claude Desktop, Cursor's `.cursor/mcp.json`, Gemini CLI's
+`settings.json`, and others) take this shape:
+
+```json
+{
+  "mcpServers": {
+    "lupin": {
+      "command": "lupin",
+      "args": ["mcp"],
+      "env": { "LEGUME_MCP_PROJECT": "/path/to/project" }
+    }
+  }
+}
 ```
 
-`lupin mcp` serves the annotation and trajectory loops to an agent over the
-Model Context Protocol (stdio): `annotate_run`, `annotate_review`,
-`annotate_genes`, `annotate_preview`, `annotate_relabel`, `annotate_ask`,
-`trajectory_run`, `trajectory_read` and `docs`. lupin states the facts; the
-agent's decisions go through `relabel` with a rationale and `decided_by: agent`
-(`agent_proposed_user_accepted` only when a person accepted them), and its
-precedence statements carry a note. Passes run as child `lupin` processes. No tool replaces an existing
-manifest: an output takes the next free `{stem}.L{k}` / `{stem}.T{k}`, in
-today's results folder unless the agent names one.
+Claude Code:
+
+```sh
+claude mcp add lupin -e LEGUME_MCP_PROJECT="$PWD" -- lupin mcp
+```
+
+VS Code (`.vscode/mcp.json`):
+
+```json
+{ "servers": { "lupin": { "type": "stdio", "command": "lupin", "args": ["mcp"],
+                          "env": { "LEGUME_MCP_PROJECT": "${workspaceFolder}" } } } }
+```
+
+Codex CLI (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.lupin]
+command = "lupin"
+args = ["mcp"]
+env = { LEGUME_MCP_PROJECT = "/path/to/project" }
+```
+
+Key names differ between clients; the server needs only the command, its
+argument and, optionally, the environment. Nothing is sent anywhere by lupin:
+the model sees what the tools return, and where that goes is up to the client
+and model you choose (a local model keeps it on the machine).
+
+### What the agent does
+
+The server tells the agent how to work when it connects (the MCP
+`instructions`). Some clients do not pass those to the model; with one of them,
+put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
+
+> Use lupin's MCP tools for cell-type annotation and trajectories. Open the
+> day with `notebook` (kind `plan`): the question, the data, and how the result
+> will be checked. Annotation: `annotate_run` (or `annotate_ask` without a
+> marker panel) writes a round; `annotate_review` and `annotate_genes` show the
+> evidence per cluster; where the methods disagree, weigh it and do not label
+> beyond it; `annotate_preview` your decisions, then `annotate_relabel` them,
+> each with a rationale naming the evidence. Trajectories: `trajectory_run`
+> with roots and precedence statements (each with a note), then
+> `trajectory_read`, and revise where the data disagree. Close with `notebook`
+> (kind `conclusion`) and tell the user where the records are.
+
+| Tool | Does |
+|---|---|
+| `annotate_run` | a pass (`lupin annotate`) on a run manifest; returns the round and each cluster's label and each method's top type |
+| `annotate_ask` | without a panel: an unlabelled round and each cluster's most specific genes |
+| `annotate_review` | per cluster: calls with q, terms, each method's top type, Cell Ontology placement, history; `types` adds every type's evidence |
+| `annotate_genes` | per cluster: the genes that set it apart, and how the panel markers of its label and of each method's top type fare |
+| `annotate_preview` | what decisions would change, rescored; writes nothing |
+| `annotate_relabel` | applies decisions as the next round of the chain; rounds are never overwritten |
+| `trajectory_run` | orders an annotated round along a prior (roots, precedence statements) and the kNN graph |
+| `trajectory_read` | lineages, each edge's connectivity and verdict, the order in words |
+| `docs` | lupin's method write-ups |
+| `notebook` | (from legume-mcp) an entry in the day's lab notebook |
+
+Decisions use the `relabel` format (`lupin review --help`). They are recorded
+as `decided_by: agent` unless the agent says a person accepted them
+(`agent_proposed_user_accepted`). Passes run as child `lupin` processes. No
+tool replaces an existing manifest: an output the agent does not name takes the
+next free `{stem}.L{k}` / `{stem}.T{k}` in the day's results folder.
+
+### Records
 
 The server keeps the project's records, laid out after Noble's guide to
-organizing computational biology projects [1] (see `legume-mcp`): outputs the
-agent does not name go to `results/<YYYY-MM-DD>/`; every step that wrote
-something goes into that day's `results/<YYYY-MM-DD>/runall.sh`, with paths
-relative to the project and steps skipped when their outputs exist, so a copy
-of the project replays it; `results/INDEX.tsv` lists each output with a
-one-line summary for a quick `grep`; and the agent keeps
-`results/<YYYY-MM-DD>/notebook.md` through the `notebook` tool, opening with a
-plan (the question, the data, how the result will be checked) after [2]. The
-project is the server's working directory, or `LEGUME_MCP_PROJECT`;
-`LEGUME_MCP_RECORDS=off` keeps no records. A relabel runs `--next --expect
-{chain}.r<k>`: the next round of the chain, refused unless it is the one named,
-so a replay writes the same round.
+organizing computational biology projects [1] (see `legume-mcp`):
 
-A person can follow the server live and steer it (stop a call, leave the agent
-a note) through legume-mcp's `watch`: after each step that writes a round or a
-trajectory, `lupin mcp` publishes it (`{"round": …}` or `{"trajectory": …}`)
-as the view a follower opens.
+- `results/<YYYY-MM-DD>/runall.sh`: every step that wrote something, in order,
+  with paths relative to the project and steps skipped when their outputs
+  exist, so `bash results/<day>/runall.sh` in a copy of the project redoes the
+  work without the agent. A relabel runs `--next --expect {chain}.r<k>`, so it
+  replays to the same round.
+- `results/<YYYY-MM-DD>/notebook.md`: the agent's plan, observations and
+  conclusions; the plan names the question, the data and the check, after [2].
+- `results/INDEX.tsv`: one row per output with a one-line summary, for `grep`.
+
+`LEGUME_MCP_RECORDS=off` keeps none.
+
+### Watching
+
+While an agent works, the server writes a live feed to
+`$XDG_RUNTIME_DIR/legume-mcp/lupin-<pid>/`, and after each round or trajectory
+it writes, it publishes it (`{"round": …}` or `{"trajectory": …}`) as the view
+to open. A person follows and steers it (stop a call, leave the agent a note)
+with legume-mcp's `watch` reader and view. `LEGUME_MCP_WATCH=off` writes none.
 
 [1] W. S. Noble, "A quick guide to organizing computational biology projects",
 PLoS Comput Biol 5(7): e1000424 (2009). doi:10.1371/journal.pcbi.1000424
