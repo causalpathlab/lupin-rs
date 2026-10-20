@@ -52,12 +52,10 @@ pub struct DocsArgs {
     pub topic: Option<Topic>,
 }
 
-/// The listing `lupin docs` prints with no topic.
-pub fn listing() -> String {
-    let mut s = String::from("lupin method write-ups (`lupin docs <TOPIC>` to read one):\n\n");
-    // The name clap accepts, e.g. `ontology-plan`, not the Debug form.
-    let slugs: Vec<String> = DOCS
-        .iter()
+/// The topics' names as `lupin docs` takes them, e.g. `ontology-plan`, not
+/// the Debug form.
+pub fn slugs() -> Vec<String> {
+    DOCS.iter()
         .map(|(topic, _, _)| {
             topic
                 .to_possible_value()
@@ -66,7 +64,13 @@ pub fn listing() -> String {
                 .unwrap_or_default()
                 .to_string()
         })
-        .collect();
+        .collect()
+}
+
+/// The listing `lupin docs` prints with no topic.
+pub fn listing() -> String {
+    let mut s = String::from("lupin method write-ups (`lupin docs <TOPIC>` to read one):\n\n");
+    let slugs = slugs();
     let width = slugs.iter().map(String::len).max().unwrap_or(0);
     for (slug, (_, blurb, _)) in slugs.iter().zip(DOCS) {
         s += &format!("  {slug:<width$} {blurb}\n");

@@ -172,3 +172,30 @@ fn docs_list_and_print_the_write_ups() {
         .starts_with('#'));
     error_text(&r[2]);
 }
+
+#[test]
+fn the_readme_gives_an_agent_the_servers_own_instructions() {
+    // For clients that do not pass the MCP instructions on to their model.
+    let readme = include_str!("../README.md");
+    assert!(
+        readme.contains(INSTRUCTIONS),
+        "README's agent block differs from INSTRUCTIONS"
+    );
+}
+
+#[test]
+fn docs_names_its_topics_so_an_agent_need_not_guess() {
+    let docs = tools().into_iter().find(|t| t.name == "docs").unwrap();
+    let topics = docs.input_schema["properties"]["topic"]["enum"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        topics,
+        crate::docs::slugs()
+            .into_iter()
+            .map(Value::from)
+            .collect::<Vec<_>>()
+    );
+    assert!(topics.contains(&json!("annotation")));
+}
