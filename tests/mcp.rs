@@ -61,6 +61,7 @@ impl Server {
             .current_dir(project)
             .env_remove("LEGUME_MCP_RECORDS")
             .env_remove("LEGUME_MCP_PROJECT")
+            .env("LEGUME_MCP_WATCH", project.join(".watch"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -171,6 +172,13 @@ fn an_agents_relabel_is_recorded_and_replays() {
         .to_string();
     assert!(r1.ends_with("run.r1.senna.json"), "{r1}");
     assert_eq!(label(&mut s, &r1, 2), "CT9");
+    // A person following the server sees the round the agent made.
+    let live = legume_mcp::watch::live_in(&project.path().join(".watch"));
+    let view = live.iter().find_map(|l| legume_mcp::watch::state(&l.dir));
+    assert_eq!(
+        view.as_ref().and_then(|v| v["round"].as_str()),
+        Some(r1.as_str())
+    );
     assert_eq!(
         label(&mut s, &r0, 2),
         "CT3",
