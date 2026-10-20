@@ -87,7 +87,7 @@ fn the_default_pass_records_every_methods_reading_in_one_round() {
     let fields = legume_numeric::matrix::parquet::peek_parquet_field_names(&evidence).unwrap();
     assert!(fields.iter().any(|f| f.as_ref() == "units"), "{fields:?}");
 
-    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    let v = crate::manifest::rounds::review_json(&round, &[], true).unwrap();
     let tops = v
         .values()
         .map(|c| c["tops"]["units"].clone())
