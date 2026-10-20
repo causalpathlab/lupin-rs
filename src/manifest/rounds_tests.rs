@@ -7,7 +7,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 
 /// A first round in `{root}/r0`: four cells in clusters 0, 0, 1, 2.
-pub(crate) fn first_round(root: &Path) -> PathBuf {
+fn first_round(root: &Path) -> PathBuf {
     let r0 = root.join("r0");
     fs::create_dir_all(&r0).unwrap();
     let cells: Vec<Box<str>> = ["a", "b", "c", "d"].iter().map(|s| Box::from(*s)).collect();

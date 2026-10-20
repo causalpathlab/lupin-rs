@@ -3,6 +3,7 @@
 mod annotate;
 mod annotate_cmd;
 mod cell_labels;
+mod child;
 mod describe;
 mod docs;
 mod figures;
@@ -242,7 +243,7 @@ enum Commands {
                       lupin states the facts; the agent's decisions carry a rationale, kept\n\
                       with the round. No tool replaces an existing manifest."
     )]
-    Mcp(mcp::McpArgs),
+    Mcp,
 }
 
 /// The session paragraph of `lupin annotate`'s and `lupin trajectory`'s
@@ -325,6 +326,6 @@ fn main() -> Result<()> {
         Commands::Sessions => Ok(legume_tui::cli::sessions(&tui::TOOL)?),
         Commands::Kill(k) => Ok(legume_tui::cli::kill(&tui::TOOL, &k)?),
         Commands::Rename(r) => Ok(legume_tui::cli::rename(&tui::TOOL, &r)?),
-        Commands::Mcp(c) => mcp::run_mcp(&c),
+        Commands::Mcp => mcp::run_mcp(),
     }
 }

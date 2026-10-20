@@ -16,27 +16,21 @@
 //! inputs made for it, goes into the day's `runall.sh`, so the work can be
 //! redone without the agent.
 
+use crate::annotate::expression::{profile_and_panel, specific_genes};
 use crate::annotate::markers::label_key;
-use crate::annotate::rounds::ClusterId;
+use crate::annotate::rounds::{ClusterId, DecidedBy};
+use crate::child::{lupin_command, relabel_argv};
 use crate::describe::trajectory::{self as order_text, OrderFacts};
-use crate::manifest::family::Tag;
+use crate::manifest::family::{file_name, Tag};
 use crate::manifest::rounds::{review_json, Chain};
-use crate::manifest::run::{
-    self, annotated_path, derive_out_prefix, manifest_file, resolve, same_file,
-};
-use crate::tui::round::{panel_sets, specific_genes, Expression};
+use crate::manifest::run::{self, annotated_path, derive_out_prefix, manifest_file};
 use anyhow::{Context, Result};
-use clap::{Args, ValueEnum};
+use clap::ValueEnum;
 use legume_mcp::{Call, Content, Handler, ServerInfo, ToolSpec};
-use legume_numeric::matrix::dense_mat_io::Mat;
-use legume_numeric::matrix::traits::IoOps;
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-#[derive(Args, Debug)]
-pub struct McpArgs {}
 
 const INSTRUCTIONS: &str = "\
 lupin annotates single-cell clusters with cell types and orders the types \
@@ -193,7 +187,7 @@ fn tools() -> Vec<ToolSpec> {
     ]
 }
 
-pub fn run_mcp(_args: &McpArgs) -> Result<()> {
+pub fn run_mcp() -> Result<()> {
     let info = ServerInfo {
         name: "lupin".into(),
         version: env!("CARGO_PKG_VERSION").into(),
@@ -215,16 +209,9 @@ impl Handler for Lupin {
             "annotate_run" => annotate_run(&a, cx),
             "annotate_review" => {
                 let clusters: Vec<ClusterId> = a.parse("clusters")?.unwrap_or_default();
-                let every_type = a.parse::<bool>("types")?.unwrap_or(false);
+                let with_types = a.parse::<bool>("types")?.unwrap_or(false);
                 let loaded = run::load(&a.req("round")?)?;
-                let mut review = review_json(&loaded, &clusters)?;
-                if !every_type {
-                    for v in review.values_mut() {
-                        if let Some(m) = v.as_object_mut() {
-                            m.remove("types");
-                        }
-                    }
-                }
+                let review = review_json(&loaded, &clusters, with_types)?;
                 Ok(vec![Content::Json(json!(review))])
             }
             "annotate_genes" => annotate_genes(&a),
@@ -270,30 +257,16 @@ impl Arguments {
                 .with_context(|| format!("reading `{key}`")),
         }
     }
-
-    /// `options`, refusing `--overwrite`: no tool replaces a manifest.
-    fn options(&self) -> Result<Vec<String>> {
-        let v: Vec<String> = self.parse("options")?.unwrap_or_default();
-        anyhow::ensure!(
-            !v.iter().any(|o| o == "--overwrite"),
-            "--overwrite is not taken here: choose another `out`"
-        );
-        Ok(v)
-    }
 }
 
-/// `lupin` itself, run with `argv`. A binary replaced while the server runs
-/// (a `cargo install`) is gone from its path; the server's own still runs.
+/// `lupin` with `argv` as a child, refusing `--overwrite` anywhere in it:
+/// no tool replaces a manifest, whatever the agent passes on.
 fn lupin(argv: &[String]) -> Result<Command> {
-    let exe = std::env::current_exe().context("finding the lupin binary")?;
-    let own = Path::new("/proc/self/exe");
-    let mut cmd = Command::new(if !exe.exists() && own.exists() {
-        own
-    } else {
-        &exe
-    });
-    cmd.args(argv);
-    Ok(cmd)
+    anyhow::ensure!(
+        !argv.iter().any(|o| o == "--overwrite"),
+        "--overwrite is not taken here: choose another `out`"
+    );
+    lupin_command(argv)
 }
 
 fn absolute(p: &Path) -> String {
@@ -330,26 +303,19 @@ fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let mut argv: Vec<String> = ["annotate", "-f", &from, "-o", &out]
         .map(String::from)
         .into();
+    let mut summary = format!("annotate {}", file_name(Path::new(&from)));
     if let Some(m) = a.str("markers") {
         argv.extend(["-m".into(), m.into()]);
+        summary += &format!(" with {}", file_name(Path::new(m)));
     }
     if let Some(m) = a.str("method") {
         argv.extend(["--method".into(), m.into()]);
+        summary += &format!(" by {m}");
     }
-    argv.extend(a.options()?);
-    let summary = format!(
-        "annotate {}{}{}",
-        file_name(Path::new(&from)),
-        a.str("markers").map_or(String::new(), |m| format!(
-            " with {}",
-            file_name(Path::new(m))
-        )),
-        a.str("method")
-            .map_or(String::new(), |m| format!(" by {m}")),
-    );
+    argv.extend(a.parse::<Vec<String>>("options")?.unwrap_or_default());
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&round), &summary)?;
     let loaded = run::load(&round.to_string_lossy())?;
-    let clusters: Map<String, Value> = review_json(&loaded, &[])?
+    let clusters: Map<String, Value> = review_json(&loaded, &[], false)?
         .into_iter()
         .map(|(id, v)| {
             let d = &v["digest"];
@@ -367,23 +333,12 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     let clusters: Vec<ClusterId> = a.parse("clusters")?.unwrap_or_default();
     let more: Vec<String> = a.parse("types")?.unwrap_or_default();
     let top = a.parse::<usize>("top")?.unwrap_or(20);
-    let at = |rel: &Option<String>| rel.as_deref().map(|r| resolve(&loaded.dir, r));
-    let ann = &loaded.manifest.annotate;
-    let profile = at(&ann.cluster_expression).context("the round records no expression profile")?;
-    let expr = Expression::new(
-        Mat::from_parquet_with_row_names(&profile, Some(0))
-            .with_context(|| format!("reading {profile}"))?,
-    );
+    let (expr, panel) = profile_and_panel(&loaded)?;
+    let expr = expr.context("the round records no expression profile")?;
     let specific = specific_genes(&expr);
-    let panel = match at(&ann.markers) {
-        Some(p) if Path::new(&p).is_file() => panel_sets(&p)?,
-        _ => BTreeMap::new(),
-    };
-    let out: Map<String, Value> = review_json(&loaded, &clusters)?
+    let out: Map<String, Value> = review_json(&loaded, &clusters, false)?
         .into_iter()
         .map(|(id, v)| {
-            let cols = expr.cols(&BTreeSet::from([id]));
-            let fc = |g: &str| expr.row(g).and_then(|r| expr.log2fc(r, &cols));
             let label = v["digest"]["label"].as_str().map(str::to_string);
             let tops = v["tops"].as_object().into_iter().flat_map(|m| m.values());
             let types: BTreeSet<String> = label
@@ -398,7 +353,7 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
                     let mut genes: Vec<(&String, f32)> = set
                         .into_iter()
                         .flatten()
-                        .filter_map(|g| Some((g, fc(g)?)))
+                        .filter_map(|g| Some((g, expr.fold_change(id, g)?)))
                         .collect();
                     genes.sort_by(|x, y| y.1.total_cmp(&x.1));
                     let up = genes.iter().filter(|(_, f)| *f >= 1.0).count();
@@ -424,22 +379,6 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     Ok(vec![Content::Json(Value::Object(out))])
 }
 
-/// The decisions in `a`, one JSON line each. Each names the round (as
-/// `round_ref`, relative to the decisions file), so it cannot land on
-/// renumbered ids, and is the agent's unless it says otherwise.
-fn decisions_text(a: &Arguments, round_ref: &str) -> Result<String> {
-    let decisions: Vec<Map<String, Value>> = a.parse("decisions")?.unwrap_or_default();
-    anyhow::ensure!(!decisions.is_empty(), "no decisions");
-    let mut text = String::new();
-    for mut d in decisions {
-        d.entry("round").or_insert_with(|| json!(round_ref));
-        d.entry("decided_by")
-            .or_insert_with(|| json!("agent_proposed_user_accepted"));
-        text += &format!("{}\n", Value::Object(d));
-    }
-    Ok(text)
-}
-
 /// The round `a` names, which must exist.
 fn round_arg(a: &Arguments) -> Result<PathBuf> {
     let round = manifest_file(&a.req("round")?);
@@ -447,58 +386,55 @@ fn round_arg(a: &Arguments) -> Result<PathBuf> {
     Ok(round)
 }
 
-/// `lupin relabel --preview` with the decisions in a temporary file; the
-/// preview's JSON.
+/// The decisions in `a`, one JSON line each, for a decisions file beside
+/// `round`: each names the round (by its file name, so relative to that
+/// file), so it cannot land on renumbered ids, and is the agent's unless it
+/// says otherwise.
+fn decisions_text(a: &Arguments, round: &Path) -> Result<String> {
+    let decisions: Vec<Map<String, Value>> = a.parse("decisions")?.unwrap_or_default();
+    anyhow::ensure!(!decisions.is_empty(), "no decisions");
+    let mut text = String::new();
+    for mut d in decisions {
+        d.entry("round").or_insert_with(|| json!(file_name(round)));
+        d.entry("decided_by")
+            .or_insert_with(|| json!(DecidedBy::AgentProposedUserAccepted.as_str()));
+        text += &format!("{}\n", Value::Object(d));
+    }
+    Ok(text)
+}
+
+/// `lupin relabel --preview` with the decisions in a temporary file beside
+/// the round; the preview's JSON. A preview writes nothing, so it stays out
+/// of the driver script.
 fn relabel_preview(a: &Arguments, cx: &Call) -> Result<Value> {
     let round = round_arg(a)?;
-    let text = decisions_text(a, &absolute(&round))?;
-    let tmp = tempfile::Builder::new().suffix(".jsonl").tempfile()?;
+    let text = decisions_text(a, &round)?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".mcp-preview-")
+        .suffix(".jsonl")
+        .tempfile_in(run::parent_dir(&round))?;
     std::fs::write(tmp.path(), text)?;
-    let argv = [
-        "relabel".to_string(),
-        "-f".into(),
-        round.to_string_lossy().into_owned(),
-        "-d".into(),
-        tmp.path().to_string_lossy().into_owned(),
-        "--preview".into(),
-    ];
+    let argv = relabel_argv(&round, tmp.path(), &["--preview"]);
     let out = cx.run_reading(lupin(&argv)?)?;
     serde_json::from_str(&out).context("reading the preview")
 }
 
-/// Apply the decisions as the next round of the round's chain, named here
-/// (`-o`) rather than left to `--next`, so the step replays to the same
-/// round. The decisions go to the next free `{round}.mcp_decisions.{k}.jsonl`
+/// Apply the decisions as the next round of the round's chain: `--next`,
+/// told the round it must write (`--expect`), so a replay writes the same
+/// one. The decisions go to the next free `{round}.mcp_decisions.{k}.jsonl`
 /// beside the round, and into the driver script.
 fn relabel_apply(a: &Arguments, cx: &Call) -> Result<PathBuf> {
     let round = round_arg(a)?;
-    let chain = Chain::of(&round);
-    let (k, latest) = chain.latest();
-    anyhow::ensure!(
-        same_file(&round, &latest),
-        "{} is not the latest round of its chain: review {} and decide on it",
-        round.display(),
-        latest.display()
-    );
-    let name = round.file_name().map(|n| n.to_string_lossy().into_owned());
-    let text = decisions_text(a, &name.unwrap_or_default())?;
+    let text = decisions_text(a, &round)?;
     let stem = derive_out_prefix(&round.to_string_lossy());
     let file = (1..)
         .map(|k| PathBuf::from(format!("{stem}.mcp_decisions.{k}.jsonl")))
         .find(|p| !p.exists())
         .expect("some k is free");
     cx.write_file(&file, &text)?;
-    let prefix = chain.round_prefix(k + 1);
+    let prefix = Chain::of(&round).next_prefix();
     let next = annotated_path(&round, &prefix);
-    let argv = [
-        "relabel".to_string(),
-        "-f".into(),
-        round.to_string_lossy().into_owned(),
-        "-d".into(),
-        file.to_string_lossy().into_owned(),
-        "-o".into(),
-        prefix,
-    ];
+    let argv = relabel_argv(&round, &file, &["--next", "--expect", &prefix]);
     let summary = format!(
         "relabel {} with {} decision(s)",
         file_name(&round),
@@ -506,14 +442,6 @@ fn relabel_apply(a: &Arguments, cx: &Call) -> Result<PathBuf> {
     );
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&next), &summary)?;
     Ok(next)
-}
-
-/// `p`'s file name, for summaries.
-fn file_name(p: &Path) -> String {
-    p.file_name().map_or_else(
-        || p.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    )
 }
 
 fn annotate_ask(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
@@ -552,7 +480,12 @@ fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let mut argv: Vec<String> = ["trajectory", "-f", &from, "-o", &out]
         .map(String::from)
         .into();
-    for r in a.parse::<Vec<String>>("roots")?.unwrap_or_default() {
+    let mut summary = format!("trajectory of {}", file_name(Path::new(&from)));
+    let roots: Vec<String> = a.parse("roots")?.unwrap_or_default();
+    if !roots.is_empty() {
+        summary += &format!(" from {}", roots.join(", "));
+    }
+    for r in roots {
         argv.extend(["--root".into(), r]);
     }
     let statements: Vec<Statement> = a.parse("statements")?.unwrap_or_default();
@@ -581,25 +514,11 @@ fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
             }
             cx.write_file(Path::new(&path), &text)?;
             argv.extend(["--prior".into(), path]);
+            summary += &format!(", {} statement(s)", statements.len());
         }
         (None, true) => {}
     }
-    argv.extend(a.options()?);
-    let roots: Vec<String> = a.parse("roots")?.unwrap_or_default();
-    let summary = format!(
-        "trajectory of {}{}{}",
-        file_name(Path::new(&from)),
-        if roots.is_empty() {
-            String::new()
-        } else {
-            format!(" from {}", roots.join(", "))
-        },
-        if statements.is_empty() {
-            String::new()
-        } else {
-            format!(", {} statement(s)", statements.len())
-        },
-    );
+    argv.extend(a.parse::<Vec<String>>("options")?.unwrap_or_default());
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&manifest), &summary)?;
     Ok(vec![Content::Json(trajectory_read(
         &manifest.to_string_lossy(),

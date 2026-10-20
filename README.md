@@ -295,7 +295,7 @@ one-line summary for a quick `grep`; and the agent keeps
 `results/<YYYY-MM-DD>/notebook.md` through the `notebook` tool, opening with a
 plan (the question, the data, how the result will be checked) after [2]. The
 project is the server's working directory, or `LEGUME_MCP_PROJECT`;
-`LEGUME_MCP_JOURNAL=off` keeps no records. A relabel names its round
+`LEGUME_MCP_RECORDS=off` keeps no records. A relabel names its round
 (`-o {chain}.r<k>`) rather than `--next`, so it replays to the same round.
 
 [1] W. S. Noble, "A quick guide to organizing computational biology projects",

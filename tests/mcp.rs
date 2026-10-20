@@ -59,7 +59,7 @@ impl Server {
         let mut child = Command::new(LUPIN)
             .arg("mcp")
             .current_dir(project)
-            .env_remove("LEGUME_MCP_JOURNAL")
+            .env_remove("LEGUME_MCP_RECORDS")
             .env_remove("LEGUME_MCP_PROJECT")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -203,7 +203,7 @@ fn an_agents_relabel_is_recorded_and_replays() {
     );
     assert!(
         script.contains(
-            "lupin relabel -f data/run.senna.json -d data/run.mcp_decisions.1.jsonl -o data/run.r1"
+            "lupin relabel -f data/run.senna.json -d data/run.mcp_decisions.1.jsonl --next --expect data/run.r1"
         ),
         "{script}"
     );

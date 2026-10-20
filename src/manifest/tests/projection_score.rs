@@ -232,8 +232,8 @@ fn each_method_ranks_the_types_it_puts_forward() {
 fn review_json_gives_each_methods_top_and_every_types_evidence() {
     let dir = tempfile::tempdir().unwrap();
     let round = round_with_both(dir.path());
-    let v =
-        serde_json::to_value(crate::manifest::rounds::review_json(&round, &[]).unwrap()).unwrap();
+    let v = serde_json::to_value(crate::manifest::rounds::review_json(&round, &[], true).unwrap())
+        .unwrap();
     let k0 = &v["0"];
     assert_eq!(k0["tops"]["enrichment"], "A");
     assert_eq!(k0["tops"]["score"], "A");
@@ -269,7 +269,7 @@ fn review_json_tops_tied_on_the_share_go_by_q_then_nes() {
     round.manifest.save(&round.file).unwrap();
     let round = run::load(&round.file.to_string_lossy()).unwrap();
 
-    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    let v = crate::manifest::rounds::review_json(&round, &[], true).unwrap();
     assert_eq!(v[&0]["tops"]["enrichment"], "B", "{}", v[&0]["tops"]);
     assert_eq!(v[&1]["tops"]["enrichment"], "B", "{}", v[&1]["tops"]);
 }
@@ -329,7 +329,7 @@ fn review_reads_a_round_from_its_summary_when_its_cells_are_gone() {
     let out = dir.path().join("run.L1").to_string_lossy().into_owned();
     crate::manifest::rounds::write_summary(&mut round, &out).unwrap();
     round.manifest.cluster.clusters = None;
-    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    let v = crate::manifest::rounds::review_json(&round, &[], true).unwrap();
     assert!(v.contains_key(&0), "{v:?}");
     assert_eq!(v[&0]["tops"]["enrichment"], "A", "the tables need no cells");
 }
@@ -348,7 +348,7 @@ fn review_reads_a_round_whose_tree_is_gone_and_a_table_unreadable() {
     .unwrap();
     let text = crate::manifest::rounds::review_text(&round, &[]).unwrap();
     assert!(text.starts_with("K0  "), "{text}");
-    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    let v = crate::manifest::rounds::review_json(&round, &[], true).unwrap();
     assert!(v.contains_key(&0), "{v:?}");
 }
 
@@ -407,7 +407,7 @@ fn review_settles_tied_calls_names_clusters_k_and_places_them_on_the_tree() {
     round.manifest.save(&round.file).unwrap();
     let round = run::load(&round.file.to_string_lossy()).unwrap();
 
-    let v = crate::manifest::rounds::review_json(&round, &[]).unwrap();
+    let v = crate::manifest::rounds::review_json(&round, &[], true).unwrap();
     let e = &v[&1]["digest"]["evidence"];
     assert_eq!(e["top"], "B", "{e}");
     assert_eq!(e["agrees"], true, "{e}");

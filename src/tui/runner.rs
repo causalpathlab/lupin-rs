@@ -7,11 +7,12 @@
 //! [`Held`] where a lost host's hangup reaches it too, a save aside.
 
 use crate::annotate_cmd::AnnotateCliArgs;
+use crate::child::{lupin_command, relabel_argv};
 use anyhow::{Context, Result};
 use legume_tui::child::Stopper;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 /// A child the TUI started, held in a [`Stopper`]: stopping it reaches the
@@ -128,14 +129,7 @@ pub fn spawn_suggest(
 /// Start `lupin relabel -f <round> -d <decisions> --next` as a child: a
 /// save, which quitting lets finish and a hangup does not reach.
 pub fn spawn_relabel(round: &Path, decisions: &Path, log: Sender<String>) -> Result<Held> {
-    let argv = [
-        "relabel".to_string(),
-        "-f".into(),
-        round.to_string_lossy().into_owned(),
-        "-d".into(),
-        decisions.to_string_lossy().into_owned(),
-        "--next".into(),
-    ];
+    let argv = relabel_argv(round, decisions, &["--next"]);
     spawn(&argv, log, Stopper::saving())
 }
 
@@ -147,14 +141,7 @@ pub fn spawn_preview(
     decisions: &Path,
     log: Sender<String>,
 ) -> Result<(Held, Receiver<String>)> {
-    let argv = [
-        "relabel".to_string(),
-        "-f".into(),
-        round.to_string_lossy().into_owned(),
-        "-d".into(),
-        decisions.to_string_lossy().into_owned(),
-        "--preview".into(),
-    ];
+    let argv = relabel_argv(round, decisions, &["--preview"]);
     let (tx, rx) = channel();
     let held = start(&argv, log, Some(tx), Stopper::new())?;
     Ok((held, rx))
@@ -176,8 +163,7 @@ fn start(
     out: Option<Sender<String>>,
     stopper: Stopper,
 ) -> Result<Held> {
-    let exe = std::env::current_exe().context("locating the lupin executable")?;
-    let mut cmd = Command::new(exe);
+    let mut cmd = lupin_command(argv)?;
     // With the session's opt-out (`--no-detach`) passed on; hosted, in a
     // process group of its own.
     if let Some(session) = legume_tui::current() {
@@ -192,8 +178,6 @@ fn start(
         Stdio::null()
     };
     let mut child = cmd
-        .args(argv)
-        .env("RUST_LOG", "info")
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(Stdio::piped())
