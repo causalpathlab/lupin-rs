@@ -211,6 +211,46 @@ fn an_agents_relabel_is_recorded_and_replays() {
         ended["error"].as_str().unwrap().contains("no-such-panel"),
         "{ended}"
     );
+    // While a job runs (held here on a panel that is a pipe no one writes),
+    // its name is not chosen again, and no step writes over it: a
+    // trajectory at its `out` is refused before its statements are written.
+    let pipe = data.join("panel.tsv");
+    assert!(Command::new("mkfifo")
+        .arg(&pipe)
+        .status()
+        .unwrap()
+        .success());
+    let jobs: Vec<Value> = (0..2)
+        .map(|_| {
+            s.call(
+                "annotate_run",
+                json!({ "from": r0, "markers": pipe, "background": true }),
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_ne!(jobs[0]["round"], jobs[1]["round"], "{jobs:?}");
+    let out = jobs[0]["round"]
+        .as_str()
+        .unwrap()
+        .trim_end_matches(".senna.json");
+    let statements = json!([{ "from": "CT1", "to": "CT2", "relation": "precedes", "note": "x" }]);
+    let refused = s.call(
+        "trajectory_run",
+        json!({ "from": r0, "out": out, "statements": statements }),
+    );
+    assert!(
+        refused.unwrap_err().contains("is being written by"),
+        "a held name is refused"
+    );
+    assert!(!Path::new(&format!("{out}.precedence.tsv")).exists());
+    for j in &jobs {
+        s.call("job_cancel", json!({ "id": j["job"] })).unwrap();
+        let ended = s
+            .call("job_wait", json!({ "id": j["job"], "seconds": 60 }))
+            .unwrap();
+        assert_eq!(ended["state"], "cancelled", "{ended}");
+    }
     s.stop();
 
     // The records.

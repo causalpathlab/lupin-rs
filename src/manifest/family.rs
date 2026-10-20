@@ -58,10 +58,19 @@ impl Tag {
     /// The first `{stem}.{tag}{k}` (k = 1, 2, …) beside `source` with no
     /// manifest yet, `stem` being `source`'s prefix.
     pub fn next_free(self, source: &Path) -> String {
+        self.next_free_but(source, |_| false)
+    }
+
+    /// [`Self::next_free`], skipping also the names whose manifest is
+    /// `taken` (one a running job is still to write).
+    pub fn next_free_but(self, source: &Path, taken: impl Fn(&Path) -> bool) -> String {
         let stem = derive_out_prefix(&source.to_string_lossy());
         (1..)
             .map(|k| self.name(&stem, k))
-            .find(|o| !annotated_path(source, o).exists())
+            .find(|o| {
+                let m = annotated_path(source, o);
+                !m.exists() && !taken(&m)
+            })
             .expect("some k is free")
     }
 }
