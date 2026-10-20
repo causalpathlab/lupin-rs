@@ -408,12 +408,14 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     Ok(vec![Content::Json(Value::Object(out))])
 }
 
-/// `lupin relabel -f <round> -d <decisions> <mode>`; its stdout. The
-/// decisions go to `{round}.mcp_decisions.jsonl` (and the session script).
-/// Each names the round, so it cannot land on renumbered ids, and is the
-/// agent's unless it says otherwise.
+/// `lupin relabel -f <round> -d <decisions> <mode>`; its stdout. Each
+/// decision names the round, so it cannot land on renumbered ids, and is the
+/// agent's unless it says otherwise. A preview's decisions go to a temporary
+/// file; applied ones to the next free `{round}.mcp_decisions.{k}.jsonl`
+/// beside the round, kept in the session script too.
 fn relabel(a: &Arguments, mode: &str, cx: &Call) -> Result<String> {
     let round = manifest_file(&a.req("round")?);
+    anyhow::ensure!(round.is_file(), "{}: no such round", round.display());
     let decisions: Vec<Map<String, Value>> = a.parse("decisions")?.unwrap_or_default();
     anyhow::ensure!(!decisions.is_empty(), "no decisions");
     let mut text = String::new();
@@ -423,11 +425,20 @@ fn relabel(a: &Arguments, mode: &str, cx: &Call) -> Result<String> {
             .or_insert_with(|| json!("agent_proposed_user_accepted"));
         text += &format!("{}\n", Value::Object(d));
     }
-    let file = PathBuf::from(format!(
-        "{}.mcp_decisions.jsonl",
-        derive_out_prefix(&round.to_string_lossy())
-    ));
-    cx.write_file(&file, &text)?;
+    let tmp;
+    let file = if mode == "--preview" {
+        tmp = tempfile::Builder::new().suffix(".jsonl").tempfile()?;
+        std::fs::write(tmp.path(), &text)?;
+        tmp.path().to_path_buf()
+    } else {
+        let stem = derive_out_prefix(&round.to_string_lossy());
+        let file = (1..)
+            .map(|k| PathBuf::from(format!("{stem}.mcp_decisions.{k}.jsonl")))
+            .find(|p| !p.exists())
+            .expect("some k is free");
+        cx.write_file(&file, &text)?;
+        file
+    };
     let argv = [
         "relabel".to_string(),
         "-f".into(),
@@ -479,8 +490,6 @@ fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         (Some(_), false) => anyhow::bail!("give `statements` or `prior`, not both"),
         (Some(p), true) => argv.extend(["--prior".into(), p.into()]),
         (None, false) => {
-            // The run is new, so its statements file is too, or left by a
-            // failed attempt at it.
             let path = format!("{out}.precedence.tsv");
             let mut text = String::new();
             for s in &statements {
@@ -491,6 +500,14 @@ fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
                     );
                 }
                 text += &format!("{}\t{}\t{}\t{}\n", s.from, s.to, s.relation, s.note);
+            }
+            // Left by a failed attempt at this run, it is replaced; any
+            // other file there is not.
+            if let Ok(old) = std::fs::read_to_string(&path) {
+                anyhow::ensure!(
+                    old == text,
+                    "{path} exists; not replacing it: choose another `out`"
+                );
             }
             cx.write_file(Path::new(&path), &text)?;
             argv.extend(["--prior".into(), path]);

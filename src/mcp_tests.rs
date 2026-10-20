@@ -140,6 +140,10 @@ fn outputs_are_never_replaced_and_overwrite_is_refused() {
             "annotate_relabel",
             json!({ "round": round, "decisions": [] }),
         ),
+        (
+            "annotate_relabel",
+            json!({ "round": dir.path().join("nope"), "decisions": [{}] }),
+        ),
     ]);
     assert!(error_text(&r[0]).contains("exists; not replacing it"));
     assert!(error_text(&r[1]).contains("--overwrite"));
@@ -147,6 +151,8 @@ fn outputs_are_never_replaced_and_overwrite_is_refused() {
     assert!(error_text(&r[3]).contains("not both"));
     assert!(error_text(&r[4]).contains("records no trajectory"));
     assert!(error_text(&r[5]).contains("no decisions"));
+    assert!(error_text(&r[6]).contains("no such round"));
+    assert!(!dir.path().join("nope.mcp_decisions.1.jsonl").exists());
 }
 
 #[test]
