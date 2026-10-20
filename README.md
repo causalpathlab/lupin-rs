@@ -333,16 +333,24 @@ The server tells the agent how to work when it connects (the MCP
 `instructions`). Some clients do not pass those to the model; with one of them,
 put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 
-> Use lupin's MCP tools for cell-type annotation and trajectories. Open the
-> day with `notebook` (kind `plan`): the question, the data, and how the result
-> will be checked. Annotation: `annotate_run` (or `annotate_ask` without a
-> marker panel) writes a round; `annotate_review` and `annotate_genes` show the
-> evidence per cluster; where the methods disagree, weigh it and do not label
-> beyond it; `annotate_preview` your decisions, then `annotate_relabel` them,
-> each with a rationale naming the evidence. Trajectories: `trajectory_run`
-> with roots and precedence statements (each with a note), then
-> `trajectory_read`, and revise where the data disagree. Close with `notebook`
-> (kind `conclusion`) and tell the user where the records are.
+```text
+lupin annotates single-cell clusters with cell types and orders the types into trajectories. Its tools state facts computed by code; you make the judgments, each with a written rationale that lupin keeps.
+
+Annotation loop:
+1. annotate_run on a run manifest (senna or pinto) writes a new round; or, without a marker panel, annotate_ask writes an unlabelled round and lists each cluster's specific genes for you to label.
+2. annotate_review shows each cluster: its calls with q, its top terms, each method's top type, its Cell Ontology placement and its history. annotate_genes adds the genes: what sets each cluster apart, and how the panel markers of its label and of each method's top type fare in it. Where the methods disagree, weigh their evidence; do not label beyond it.
+3. annotate_preview with your decisions shows what they would change, rescored; then annotate_relabel applies them and returns the next round. Rounds are never overwritten, so a decision can always be revisited.
+
+Trajectory loop:
+1. trajectory_run on an annotated round, with roots and any precedence statements (from, to, precedes|unrelated, note), writes a run.
+2. trajectory_read returns its lineages, each edge's connectivity and verdict (supported, unsupported, candidate, inferred) and the order in words. Revise the statements where the data disagree and run again.
+
+docs prints the method write-ups. Paths are resolved against the server's working directory; results give the paths written.
+```
+
+With records kept (the default), legume-mcp adds where they are and asks the
+agent to open with a `notebook` plan (the question, the data, how the result
+will be checked) and to close with its conclusions.
 
 | Tool | Does |
 |---|---|

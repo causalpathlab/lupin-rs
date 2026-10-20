@@ -182,7 +182,10 @@ fn tools() -> Vec<ToolSpec> {
         ToolSpec::new(
             "docs",
             "lupin's method write-ups; without a topic, the list of topics.",
-            schema(json!({ "topic": { "type": "string" } }), &[]),
+            schema(
+                json!({ "topic": { "type": "string", "enum": crate::docs::slugs() } }),
+                &[],
+            ),
         ),
     ]
 }
