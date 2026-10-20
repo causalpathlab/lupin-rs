@@ -308,7 +308,8 @@ struct Output {
 
 /// `out`, or the next free `tag` name in today's results folder (beside the
 /// manifest `from` names when the server keeps no records); its manifest
-/// must not exist yet.
+/// must not exist yet, nor be one a background job is still writing.
+/// Checked here, before the tool writes anything beside it.
 fn output(a: &Arguments, cx: &Call, from: &str, tag: Tag) -> Result<Output> {
     let source = manifest_file(from);
     let (out, chosen) = match a.path("out") {
@@ -318,7 +319,8 @@ fn output(a: &Arguments, cx: &Call, from: &str, tag: Tag) -> Result<Output> {
                 (Some(dir), Some(name)) => dir.join(name),
                 _ => source.clone(),
             };
-            (tag.next_free(&beside), true)
+            let held = |m: &Path| cx.ensure_free(&[m.to_path_buf()]).is_err();
+            (tag.next_free_but(&beside, held), true)
         }
     };
     let manifest = annotated_path(&source, &out);
@@ -327,6 +329,7 @@ fn output(a: &Arguments, cx: &Call, from: &str, tag: Tag) -> Result<Output> {
         "{} exists; not replacing it: choose another `out`, or omit it for the next free name",
         manifest.display()
     );
+    cx.ensure_free(std::slice::from_ref(&manifest))?;
     if let Some(dir) = Path::new(&out).parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
     }
@@ -587,6 +590,7 @@ fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     }
     argv.extend(roots.iter().map(|r| flag("root", r)));
     let statements: Vec<Statement> = a.parse("statements")?.unwrap_or_default();
+    let mut written = None;
     match (a.path("prior"), statements.is_empty()) {
         (Some(_), false) => anyhow::bail!("give `statements` or `prior`, not both"),
         (Some(p), true) => argv.push(flag("prior", &p)),
@@ -616,18 +620,24 @@ fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
                     "{path} exists; not replacing it: choose another `out`"
                 );
             }
-            cx.write_file(Path::new(&path), &text)?;
             argv.push(flag("prior", &path));
             summary += &format!(", {} statement(s)", statements.len());
+            written = Some((path, text));
         }
         (None, true) => {}
     }
     argv.extend(a.parse::<Vec<String>>("options")?.unwrap_or_default());
-    if background(a)? {
-        let job = cx.spawn_job(lupin(&argv)?, std::slice::from_ref(&manifest), &summary)?;
+    // Every argument is read and checked before the statements are written,
+    // so a call refused writes nothing.
+    let (cmd, in_background) = (lupin(&argv)?, background(a)?);
+    if let Some((path, text)) = written {
+        cx.write_file(Path::new(&path), &text)?;
+    }
+    if in_background {
+        let job = cx.spawn_job(cmd, std::slice::from_ref(&manifest), &summary)?;
         return Ok(vec![Content::Json(started(&job, "run", &manifest))]);
     }
-    cx.run_making(lupin(&argv)?, std::slice::from_ref(&manifest), &summary)?;
+    cx.run_making(cmd, std::slice::from_ref(&manifest), &summary)?;
     cx.state(&json!({ "trajectory": absolute(&manifest), "from": from }));
     Ok(vec![Content::Json(trajectory_read(
         &manifest.to_string_lossy(),

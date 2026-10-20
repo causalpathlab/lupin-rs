@@ -352,14 +352,16 @@ docs prints the method write-ups. Paths are resolved against the server's workin
 
 With records kept (the default), legume-mcp adds where they are and asks the
 agent to open with a `notebook` plan (the question, the data, how the result
-will be checked) and to close with its conclusions; it also tells the agent
-how to follow background jobs.
+will be checked) and to close with its conclusions. Records or not, it also
+tells the agent how to follow background jobs.
 
 A large `annotate_run` or `trajectory_run` can outlast a client's wait on one
 call: with `background: true` it returns `{job, round}` or `{job, run}` at
 once, and the agent follows the job with `job_wait` or `job_status` (or stops
 it with `job_cancel`), using the manifest only once the job is done. A job that
-succeeds is recorded like any step; jobs end with their server.
+succeeds is recorded like any step; jobs end with their server. While a job
+runs, its output is held: a call with no `out` skips its name, and one given
+it is refused, naming the job, before anything is written.
 
 | Tool | Does |
 |---|---|
