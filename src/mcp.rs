@@ -349,6 +349,7 @@ fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     }
     argv.extend(a.parse::<Vec<String>>("options")?.unwrap_or_default());
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&round), &summary)?;
+    cx.state(&json!({ "round": absolute(&round) }));
     let loaded = run::load(&round.to_string_lossy())?;
     let clusters: Map<String, Value> = review_json(&loaded, &[], false)?
         .into_iter()
@@ -482,6 +483,7 @@ fn relabel_apply(a: &Arguments, cx: &Call) -> Result<PathBuf> {
         text.lines().count()
     );
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&next), &summary)?;
+    cx.state(&json!({ "round": absolute(&next), "from": absolute(&round) }));
     Ok(next)
 }
 
@@ -523,6 +525,7 @@ fn annotate_ask(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         file_name(Path::new(&from))
     );
     let prompt = cx.run_making(lupin(&argv)?, std::slice::from_ref(&round), &summary)?;
+    cx.state(&json!({ "round": absolute(&round) }));
     Ok(vec![
         Content::Json(json!({ "round": absolute(&round) })),
         Content::Text(prompt),
@@ -590,6 +593,7 @@ fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     }
     argv.extend(a.parse::<Vec<String>>("options")?.unwrap_or_default());
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&manifest), &summary)?;
+    cx.state(&json!({ "trajectory": absolute(&manifest), "from": from }));
     Ok(vec![Content::Json(trajectory_read(
         &manifest.to_string_lossy(),
     )?)])

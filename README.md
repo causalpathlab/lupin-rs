@@ -299,6 +299,11 @@ project is the server's working directory, or `LEGUME_MCP_PROJECT`;
 {chain}.r<k>`: the next round of the chain, refused unless it is the one named,
 so a replay writes the same round.
 
+A person can follow the server live and steer it (stop a call, leave the agent
+a note) through legume-mcp's `watch`: after each step that writes a round or a
+trajectory, `lupin mcp` publishes it (`{"round": …}` or `{"trajectory": …}`)
+as the view a follower opens.
+
 [1] W. S. Noble, "A quick guide to organizing computational biology projects",
 PLoS Comput Biol 5(7): e1000424 (2009). doi:10.1371/journal.pcbi.1000424
 
