@@ -194,6 +194,23 @@ fn an_agents_relabel_is_recorded_and_replays() {
         json!({ "from": r0, "markers": "no-such-panel.tsv" }),
     );
     assert!(!failed.unwrap_err().is_empty(), "a failed child says why");
+    // As a background job: it returns at once, and waiting tells how it went.
+    let job = s
+        .call(
+            "annotate_run",
+            json!({ "from": r0, "markers": "no-such-panel.tsv", "background": true }),
+        )
+        .unwrap();
+    let id = job["job"].as_str().unwrap().to_string();
+    assert!(job["round"].as_str().is_some(), "{job}");
+    let ended = s
+        .call("job_wait", json!({ "id": id, "seconds": 60 }))
+        .unwrap();
+    assert_eq!(ended["state"], "failed", "{ended}");
+    assert!(
+        ended["error"].as_str().unwrap().contains("no-such-panel"),
+        "{ended}"
+    );
     s.stop();
 
     // The records.
