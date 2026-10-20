@@ -279,9 +279,9 @@ claude mcp add lupin -- lupin mcp
 Model Context Protocol (stdio): `annotate_run`, `annotate_review`,
 `annotate_genes`, `annotate_preview`, `annotate_relabel`, `annotate_ask`,
 `trajectory_run`, `trajectory_read` and `docs`. lupin states the facts; the
-agent's decisions go through `relabel` with a rationale and
-`decided_by: agent_proposed_user_accepted`, and its precedence statements carry
-a note. Passes run as child `lupin` processes. No tool replaces an existing
+agent's decisions go through `relabel` with a rationale and `decided_by: agent`
+(`agent_proposed_user_accepted` only when a person accepted them), and its
+precedence statements carry a note. Passes run as child `lupin` processes. No tool replaces an existing
 manifest: an output takes the next free `{stem}.L{k}` / `{stem}.T{k}`, in
 today's results folder unless the agent names one.
 
