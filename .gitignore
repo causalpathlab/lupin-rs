@@ -17,3 +17,6 @@ __pycache__/
 
 # Local crates.io path patches (sibling checkouts)
 .cargo/
+
+# Outputs, and the folders tests work in
+/results/
