@@ -80,14 +80,9 @@ impl From<Child> for Held {
     }
 }
 
-/// Start `args` as a child pass. Its first round is left at the fine types
-/// (`--fine`): labels are chosen here.
-/// `overwrite` once the user has agreed to replace the pass's existing round.
+/// Start `args` as a child pass. `overwrite` once the user has agreed to
+/// replace the pass's existing round.
 pub fn spawn_pass(args: &AnnotateCliArgs, overwrite: bool, log: Sender<String>) -> Result<Held> {
-    let args = AnnotateCliArgs {
-        fine: true,
-        ..args.clone()
-    };
     let mut argv = vec!["annotate".to_string()];
     argv.extend(args.to_argv());
     if overwrite {

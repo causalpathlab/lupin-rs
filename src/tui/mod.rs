@@ -108,9 +108,12 @@ fn drain_own_log() -> Vec<String> {
 /// `lupin trajectory` without both `--from` and `--out`: the TUI on the
 /// order view, which picks the manifest when none is given and asks for the
 /// output prefix when it runs.
+/// With `job` (`--job`), the run given whole is run at once, as [`run`]
+/// runs a pass.
 pub fn run_trajectory(
     t: &crate::trajectory::run::TrajectoryArgs,
     session: &SessionArgs,
+    job: bool,
 ) -> Result<()> {
     use clap::Parser;
     #[derive(Parser)]
@@ -125,18 +128,22 @@ pub fn run_trajectory(
     a.obo.clone_from(&t.obo);
     a.label_cl.clone_from(&t.label_cl);
     a.graphics = t.graphics;
-    run(&a, Some(order::TrajectoryRun::of(t)), session)
+    run(&a, Some(order::TrajectoryRun::of(t)), session, job)
 }
 
 /// Run the TUI on `args`; with `trajectory`, it opens on the order view and
 /// runs `lupin trajectory` with those options. It runs as a detachable
 /// session (`session`): a new one when the run is named (`--from`), else
-/// the live ones are offered first.
+/// the live ones are offered first. With `job` (`--job`), the step given
+/// whole (`-o` too) runs at once, as given, and lupin ends when it does,
+/// telling its job ([`legume_mcp::job`]).
 pub fn run(
     args: &AnnotateCliArgs,
     trajectory: Option<order::TrajectoryRun>,
     session: &SessionArgs,
+    job: bool,
 ) -> Result<()> {
+    use legume_mcp::job::{End, Reporter};
     use std::io::IsTerminal;
     anyhow::ensure!(
         std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
@@ -154,7 +161,32 @@ pub fn run(
     // keeps every line.
     let quiet = legume_tui::logs::quiet_stderr();
     let mut terminal = session.terminal_with(modes(false))?;
-    let latest = screens(&session, &mut terminal, args, trajectory);
+    let reporter = job.then(Reporter::from_env).flatten().map(Arc::new);
+    let shown = screens(
+        &session,
+        &mut terminal,
+        args,
+        trajectory,
+        job,
+        reporter.clone(),
+    );
+    let (latest, end) = match shown {
+        Ok((latest, end)) => (Ok(latest), end),
+        Err(e) => (Err(e), None),
+    };
+    if job {
+        let end = match &latest {
+            Err(e) => End::Failed(format!("{e:#}")),
+            Ok(_) => end.unwrap_or(End::Cancelled),
+        };
+        // Whoever attached sees why, after the screen is gone.
+        if let End::Failed(why) = &end {
+            session.leave(&format!("lupin: the job failed: {why}"));
+        }
+        if let Some(r) = &reporter {
+            r.finish(end);
+        }
+    }
     // The latest round is left: said on the terminal attached as the
     // session ends, else kept for whoever looks next.
     match &latest {
@@ -199,8 +231,12 @@ fn screens(
     terminal: &mut DefaultTerminal,
     args: &AnnotateCliArgs,
     trajectory: Option<order::TrajectoryRun>,
-) -> Result<Option<PathBuf>> {
+    job: bool,
+    reporter: Option<Arc<legume_mcp::job::Reporter>>,
+) -> Result<(Option<PathBuf>, Option<legume_mcp::job::End>)> {
     let start_in_order = trajectory.is_some();
+    // A job's step runs as it was given, not as the screen adjusts it.
+    let given = job.then(|| args.clone());
     let cwd = std::env::current_dir()?;
     let from = match args.from.as_deref() {
         Some(f) => f.to_string(),
@@ -208,7 +244,7 @@ fn screens(
             let want = picker::Want::Manifest;
             match picker::pick(session, terminal, "Pick a run manifest", &cwd, want)? {
                 Some(f) => f.to_string_lossy().into_owned(),
-                None => return Ok(None),
+                None => return Ok((None, None)),
             }
         }
     };
@@ -238,13 +274,15 @@ fn screens(
             Some(p) => p.into_boxed_str(),
             // The order view needs no marker panel: open on the run's types.
             None if start_in_order => Default::default(),
+            // A job has nobody to pick one, and runs as it was given.
+            None if job => Default::default(),
             None => {
                 let index = genes.get_or_insert_with(|| gene_index(&loaded)).clone();
                 let n = index.as_deref().map_or(0, GeneRows::n_genes);
                 let want = picker::Want::Markers(index, n);
                 match picker::pick(session, terminal, "Pick a marker panel", &loaded.dir, want)? {
                     Some(p) => p.to_string_lossy().into(),
-                    None => return Ok(None),
+                    None => return Ok((None, None)),
                 }
             }
         };
@@ -319,6 +357,9 @@ fn screens(
     if let Some(why) = no_panel {
         app.status = why;
     }
+    if let Some(given) = given {
+        app.start_job(reporter, given);
+    }
 
     // The screen is the pickers' still: cleared, and the attached terminal
     // asked what it can show, before the main screen is drawn, so no key
@@ -348,6 +389,10 @@ fn screens(
         let rescoring = app.rescoring.is_some();
         let progress = app.child.as_ref().map(|r| r.progress.reported_at);
         app.tick();
+        // A job's step is over: so is lupin.
+        if app.job_end.is_some() {
+            break;
+        }
         dirty |= app.browser.as_mut().is_some_and(|(_, b)| b.poll());
         dirty |= app.log.len() != logged
             || app.status != status
@@ -432,7 +477,10 @@ fn screens(
             }
         }
     }
-    Ok(app.round.as_ref().map(|r| r.manifest.clone()))
+    Ok((
+        app.round.as_ref().map(|r| r.manifest.clone()),
+        app.job_end.take(),
+    ))
 }
 
 /// Fit the figures to the terminal attached now: its picture protocol as

@@ -48,6 +48,8 @@ fn round(dir: &Path) -> PathBuf {
 }
 
 struct Server {
+    /// Its background steps' sessions, ended with it.
+    _sessions: legume_tui::testing::Private,
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
@@ -56,7 +58,9 @@ struct Server {
 
 impl Server {
     fn start(project: &Path) -> Self {
+        let sessions = legume_tui::testing::Private::new(LUPIN);
         let mut child = Command::new(LUPIN)
+            .env(legume_tui::DIR_VAR, sessions.path())
             .arg("mcp")
             .current_dir(project)
             .env_remove("LEGUME_MCP_RECORDS")
@@ -70,6 +74,7 @@ impl Server {
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let mut s = Self {
+            _sessions: sessions,
             child,
             stdin,
             stdout,

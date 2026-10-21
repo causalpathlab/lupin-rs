@@ -67,7 +67,9 @@ graph-embedding-util = { version = "0.10", package = "legume-graph-embedding" }
 legume-numeric = { version = "0.9", features = ["matrix", "candle", "mcmc"] }
 legume-plot = { version = "0.3" }
 # The MCP server under `lupin mcp`.
-legume-mcp = "0.4"
+# The agent's server; background steps in a session of lupin's own
+# screen (`sessions`), and its read-only watch (`tui`).
+legume-mcp = { version = "0.4", features = ["sessions", "tui"] }
 # Rasterises figures in memory for the TUI; the version legume-plot uses.
 resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts"] }
 

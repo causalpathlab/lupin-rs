@@ -37,7 +37,7 @@ fn the_session_flags_sit_beside_annotate_and_stay_out_of_its_child_passes() {
 #[test]
 fn trajectory_takes_the_session_flags_too() {
     let cli = parse(&["trajectory", "-f", "run", "--no-detach"]);
-    let Commands::Trajectory { args, session } = cli.cmd else {
+    let Commands::Trajectory { args, session, .. } = cli.cmd else {
         panic!("trajectory");
     };
     assert!(session.no_detach && session.session.is_none());
@@ -107,7 +107,10 @@ fn annotate_with_pdf_draws_the_rounds_map_without_a_terminal() {
     let (from, to) = (loaded.file.to_string_lossy(), out.to_string_lossy());
     let cli = parse(&["annotate", "-f", &from, "--pdf", &to, "--width", "3.5"]);
     assert!(!cli.cmd.opens_tui(), "no screen for a PDF");
-    let Commands::Annotate { args, session, pdf } = cli.cmd else {
+    let Commands::Annotate {
+        args, session, pdf, ..
+    } = cli.cmd
+    else {
         panic!("annotate");
     };
     assert_eq!(
@@ -122,13 +125,35 @@ fn annotate_with_pdf_draws_the_rounds_map_without_a_terminal() {
 
     // A PDF is of a round: one to draw, and no pass beside it.
     let cli = parse(&["annotate", "--pdf", &to]);
-    let Commands::Annotate { args, session, pdf } = cli.cmd else {
+    let Commands::Annotate {
+        args, session, pdf, ..
+    } = cli.cmd
+    else {
         panic!("annotate");
     };
     assert!(annotate_command(&args, &session, &pdf).is_err(), "no -f");
     let cli = parse(&["annotate", "-f", &from, "-o", "x", "--pdf", &to]);
-    let Commands::Annotate { args, session, pdf } = cli.cmd else {
+    let Commands::Annotate {
+        args, session, pdf, ..
+    } = cli.cmd
+    else {
         panic!("annotate");
     };
     assert!(annotate_command(&args, &session, &pdf).is_err(), "with -o");
+}
+
+#[test]
+fn a_job_opens_the_tui_on_the_step_given_whole() {
+    let cli = parse(&["annotate", "--job", "--from", "r.senna.json", "--out", "p"]);
+    assert!(cli.cmd.opens_tui(), "-o given, and still the screen");
+    let Commands::Annotate { job, args, .. } = cli.cmd else {
+        panic!("not annotate");
+    };
+    assert!(job);
+    assert_eq!(args.out.as_ref(), "p");
+    let cli = parse(&["trajectory", "--job", "-f", "r.senna.json", "-o", "t"]);
+    assert!(cli.cmd.opens_tui());
+    // Without it, a step given whole runs without the screen, as before.
+    let cli = parse(&["annotate", "--from", "r.senna.json", "--out", "p"]);
+    assert!(!cli.cmd.opens_tui());
 }

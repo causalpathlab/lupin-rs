@@ -58,7 +58,9 @@ verdict (supported, unsupported, candidate, inferred) and the order in words. \
 Revise the statements where the data disagree and run again.
 
 annotate_run and trajectory_run take `background`: on a large run set it, \
-and the call returns a job id at once.
+and the call returns a job id at once; the step runs on lupin's own screen in \
+a session the user can watch with `lupin attach`, and goes on if this server \
+ends.
 
 docs prints the method write-ups. Paths are resolved against the server's \
 working directory; results give the paths written.";
@@ -197,6 +199,15 @@ fn tools() -> Vec<ToolSpec> {
             ),
         ),
     ]
+}
+
+/// `lupin mcp watch`: follow the server in `dir` (else the one running, or
+/// one picked among several), read-only: a person sees what the agent
+/// does, and stops nothing.
+pub fn watch(dir: Option<PathBuf>) -> Result<()> {
+    // The log stays off the screen while it is up.
+    let _quiet = legume_tui::logs::quiet_stderr();
+    legume_mcp::watch::view::run(&crate::tui::TOOL, dir, false, |_| None)
 }
 
 pub fn run_mcp() -> Result<()> {
@@ -350,14 +361,60 @@ fn background(a: &Arguments) -> Result<bool> {
     Ok(a.parse::<bool>("background")?.unwrap_or(false))
 }
 
-/// What a step started as a job returns: its id, and the manifest it
-/// writes (`key`), to use once the job is done.
-fn started(job: &str, key: &str, manifest: &Path) -> Value {
-    json!({
-        "job": job,
-        key: absolute(manifest),
-        "note": "running as a background job: job_wait or job_status until it is done, then use it",
-    })
+/// `record` (`lupin {argv}`: an annotate pass or a trajectory, `argv[0]`)
+/// in the background, writing `manifest` into `out`: on lupin's own screen
+/// in a session of its own (`--job`), which the user watches with `lupin
+/// attach` and which outlives this server; where there are no sessions, a
+/// job of this server's. What it returns: the job's id, its session, and
+/// the manifest (`key`), to use once the job is done.
+fn background_job(
+    cx: &Call,
+    argv: &[String],
+    record: Command,
+    out: &str,
+    manifest: &Path,
+    summary: &str,
+    key: &str,
+) -> Result<Value> {
+    #[cfg(unix)]
+    {
+        let mut words = vec![argv[0].clone(), "--job".into()];
+        words.extend_from_slice(&argv[1..]);
+        let started = cx.start_session_job(legume_mcp::SessionJob {
+            tool: crate::tui::TOOL,
+            screen: argv[0].clone(),
+            label: Path::new(out)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()),
+            watch: lupin_command(&words)?,
+            record,
+            outputs: vec![manifest.to_path_buf()],
+            summary: summary.into(),
+        })?;
+        let session = started.session;
+        Ok(json!({
+            "job": started.job,
+            key: absolute(manifest),
+            "session": session,
+            "note": format!(
+                "running as a background job on lupin's screen in session {session} (`lupin attach {session}` shows it to the user), which goes on if this server ends: job_wait or job_status until it is done, then use it"
+            ),
+        }))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (argv, out);
+        let job = cx.spawn_job(
+            record,
+            std::slice::from_ref(&manifest.to_path_buf()),
+            summary,
+        )?;
+        Ok(json!({
+            "job": job,
+            key: absolute(manifest),
+            "note": "running as a background job: job_wait or job_status until it is done, then use it",
+        }))
+    }
 }
 
 fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
@@ -379,8 +436,8 @@ fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     }
     argv.extend(a.parse::<Vec<String>>("options")?.unwrap_or_default());
     if background(a)? {
-        let job = cx.spawn_job(lupin(&argv)?, std::slice::from_ref(&round), &summary)?;
-        return Ok(vec![Content::Json(started(&job, "round", &round))]);
+        let job = background_job(cx, &argv, lupin(&argv)?, &out, &round, &summary, "round")?;
+        return Ok(vec![Content::Json(job)]);
     }
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&round), &summary)?;
     cx.state(&json!({ "round": absolute(&round) }));
@@ -634,8 +691,8 @@ fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         cx.write_file(Path::new(&path), &text)?;
     }
     if in_background {
-        let job = cx.spawn_job(cmd, std::slice::from_ref(&manifest), &summary)?;
-        return Ok(vec![Content::Json(started(&job, "run", &manifest))]);
+        let job = background_job(cx, &argv, cmd, &out, &manifest, &summary, "run")?;
+        return Ok(vec![Content::Json(job)]);
     }
     cx.run_making(cmd, std::slice::from_ref(&manifest), &summary)?;
     cx.state(&json!({ "trajectory": absolute(&manifest), "from": from }));
