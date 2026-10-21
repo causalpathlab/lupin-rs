@@ -3076,9 +3076,14 @@ fn the_settings_note_stays_when_g_shows_another_round() {
 
 #[test]
 fn a_long_status_gives_way_to_the_headers_notes_and_manifest() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mut app = family_app(tmp.path());
-    app.open_run(pick(tmp.path(), "X.L0"), false);
+    // A folder of the repository's own, named from where the tests run:
+    // the header shows the manifest's path as given, and the system's
+    // temporary folder is a long one on macOS, which crowds it off.
+    std::fs::create_dir_all("results").unwrap();
+    let tmp = tempfile::tempdir_in("results").unwrap();
+    let here = std::path::Path::new("results").join(tmp.path().file_name().unwrap());
+    let mut app = family_app(&here);
+    app.open_run(pick(&here, "X.L0"), false);
     app.form = Some(Form::default());
     app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
     press(&mut app, KeyCode::Right);

@@ -130,7 +130,12 @@ fn label(s: &mut Server, round: &str, id: u32) -> String {
 
 #[test]
 fn an_agents_relabel_is_recorded_and_replays() {
-    let project = tempfile::tempdir().unwrap();
+    // A folder of the repository's own, not the system's temporary one: on
+    // macOS that is reached through a link (/var to /private/var), so the
+    // project's paths would not read as relative to where it is.
+    let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("results");
+    std::fs::create_dir_all(&local).unwrap();
+    let project = tempfile::tempdir_in(&local).unwrap();
     let data = project.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
     let r0 = round(&data).to_string_lossy().into_owned();
