@@ -1,6 +1,6 @@
 [package]
 name = "lupin-rs"
-version = "0.9.1"
+version = "0.9.2"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -61,11 +61,11 @@ statrs = "0.18"
 nalgebra-sparse = "0.11"
 
 # Published legume stack
-data-beans = { version = "0.8.6", features = ["aux", "alg"] }
-enrichment = { version = "0.5.2", package = "legume-enrichment" }
-graph-embedding-util = { version = "0.9.4", package = "legume-graph-embedding" }
-legume-numeric = { version = "0.9.5", features = ["matrix", "candle", "mcmc"] }
-legume-plot = { version = "0.3.2" }
+data-beans = { version = "0.10", default-features = false, features = ["aux", "alg"] }
+enrichment = { version = "0.5", package = "legume-enrichment" }
+graph-embedding-util = { version = "0.10", package = "legume-graph-embedding" }
+legume-numeric = { version = "0.9", features = ["matrix", "candle", "mcmc"] }
+legume-plot = { version = "0.3" }
 # The MCP server under `lupin mcp`.
 legume-mcp = "0.4"
 # Rasterises figures in memory for the TUI; the version legume-plot uses.
@@ -90,8 +90,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # subcommands, shared with the other legume tools; the cell map drawn as
 # senna draws its map, on the terminal and as a PDF page, saved through its
 # dialog and logged in its gallery with every file traced.
-legume-tui = { version = "0.3.8", features = ["map-display", "export", "save", "gallery-trace", "chart"] }
+legume-tui = { version = "0.3", features = ["map-display", "export", "save", "gallery-trace", "chart"] }
 
 [dev-dependencies]
 # Drives the TUI through pseudo-terminals in the session tests.
-legume-tui = { version = "0.3.8", features = ["testing"] }
+legume-tui = { version = "0.3", features = ["testing"] }
