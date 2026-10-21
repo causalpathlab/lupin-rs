@@ -345,7 +345,7 @@ Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence statements (from, to, precedes|unrelated, note), writes a run.
 2. trajectory_read returns its lineages, each edge's connectivity and verdict (supported, unsupported, candidate, inferred) and the order in words. Revise the statements where the data disagree and run again.
 
-annotate_run and trajectory_run take `background`: on a large run set it, and the call returns a job id at once.
+annotate_run and trajectory_run take `background`: on a large run set it, and the call returns a job id at once; the step runs on lupin's own screen in a session the user can watch with `lupin attach`, and goes on if this server ends.
 
 docs prints the method write-ups. Paths are resolved against the server's working directory; results give the paths written.
 ```

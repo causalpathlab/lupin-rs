@@ -571,6 +571,13 @@ pub struct App {
     pub progress_hidden: bool,
     /// A job that failed: its popup stays, red, until a key.
     pub failed: Option<String>,
+    /// The step given whole runs as a job ([`App::start_job`]): its log
+    /// goes to the reporter, and how it ended ends lupin.
+    /// The pass as the job gave it, before the screen adjusted it: this
+    /// TUI runs a job ([`App::start_job`]).
+    given_pass: Option<AnnotateCliArgs>,
+    reporter: Option<std::sync::Arc<legume_mcp::job::Reporter>>,
+    pub job_end: Option<legume_mcp::job::End>,
     /// The terminal tells Shift+Enter from Enter (the kitty keyboard
     /// protocol): Shift+Enter then runs a pass and Enter only edits.
     pub shift_enter: bool,
@@ -799,12 +806,18 @@ impl App {
             frame_behind: Default::default(),
             progress_hidden: false,
             failed: None,
+            given_pass: None,
+            reporter: None,
+            job_end: None,
         };
         app.rebuild_tree();
         app
     }
 
     pub fn push_log(&mut self, line: String) {
+        if let Some(r) = &self.reporter {
+            r.line(&line);
+        }
         self.log.push(line);
         if self.log.len() > LOG_KEEP {
             self.log.drain(..self.log.len() - LOG_KEEP);
@@ -871,6 +884,15 @@ impl App {
             }
             Ok(Some(st)) if st.success() => {
                 self.child = None;
+                // A job's step is done, and lupin with it: nothing to show.
+                if self.given_pass.is_some() {
+                    let made = match &job {
+                        Job::Trajectory(m) => m.clone(),
+                        _ => self.target.clone(),
+                    };
+                    self.job_over(legume_mcp::job::End::Done(made.display().to_string()));
+                    return;
+                }
                 if let Job::Trajectory(m) = job {
                     self.trajectory_done(&m, secs);
                     return;
@@ -966,12 +988,14 @@ impl App {
                 self.after_pass = AfterPass::Nothing;
                 self.status = format!("{} failed ({st}); see the log", job.name());
                 self.failed = Some(self.status.clone());
+                self.job_over(legume_mcp::job::End::Failed(self.job_failure()));
             }
             Err(e) => {
                 self.child = None;
                 self.after_pass = AfterPass::Nothing;
                 self.status = format!("lost the {}: {e}", job.name());
                 self.failed = Some(self.status.clone());
+                self.job_over(legume_mcp::job::End::Failed(self.status.clone()));
             }
         }
     }
@@ -1666,14 +1690,77 @@ impl App {
         }
     }
 
-    /// Start a pass with the form's settings (`run_form` has checked them).
+    /// Run the step given whole as a job, telling `reporter`: the
+    /// trajectory into its `-o` on the order view, else the pass `given`,
+    /// as given. lupin ends when it does ([`App::job_end`]).
+    pub fn start_job(
+        &mut self,
+        reporter: Option<std::sync::Arc<legume_mcp::job::Reporter>>,
+        given: AnnotateCliArgs,
+    ) {
+        use legume_mcp::job::End;
+        (self.given_pass, self.reporter) = (Some(given), reporter);
+        if self.trajectory_tui {
+            match self.trajectory.out.clone() {
+                Some(out) => self.run_trajectory(&out, false),
+                None => self.job_over(End::Failed("no --out".into())),
+            }
+        } else {
+            self.start();
+        }
+        if self.child.is_none() {
+            let why = self.status.clone();
+            self.job_over(End::Failed(why));
+        }
+    }
+
+    /// Why a job's step failed: the status, with its child's error from
+    /// its part of the log (after the line that started it): the last line
+    /// that says one, else its last line.
+    fn job_failure(&self) -> String {
+        let from = self
+            .log
+            .iter()
+            .rposition(|l| l.starts_with("── "))
+            .map_or(0, |k| k + 1);
+        let its = &self.log[from..];
+        let said = its
+            .iter()
+            .rev()
+            .find(|l| l.contains("Error") || l.contains("error:"));
+        match said.or_else(|| its.last()) {
+            Some(line) => format!("{}: {}", self.status, line.trim()),
+            None => self.status.clone(),
+        }
+    }
+
+    /// A job's step ended as `end`, when this TUI runs one.
+    fn job_over(&mut self, end: legume_mcp::job::End) {
+        if self.given_pass.is_some() && self.job_end.is_none() {
+            self.job_end = Some(end);
+        }
+    }
+
+    /// Start a pass with the form's settings (`run_form` has checked them);
+    /// a job's, as given.
     fn start(&mut self) {
         let replaces = self.target.is_file();
-        self.push_log(format!(
-            "── pass: lupin annotate {}",
-            self.args.to_argv().join(" ")
-        ));
-        match runner::spawn_pass(&self.args, replaces, self.log_tx.clone()) {
+        // A job's pass as given; the screen's at its fine types, labels
+        // chosen here.
+        let (pass, replaces) = match &self.given_pass {
+            Some(given) => (given.clone(), false),
+            None => (
+                AnnotateCliArgs {
+                    fine: true,
+                    ..self.args.clone()
+                },
+                replaces,
+            ),
+        };
+        let said = format!("── pass: lupin annotate {}", pass.to_argv().join(" "));
+        self.push_log(said);
+        let started = runner::spawn_pass(&pass, replaces, self.log_tx.clone());
+        match started {
             Ok(c) => {
                 self.child = Some(Running::new(c, Job::Pass));
                 self.status = "running…".into();
@@ -1693,6 +1780,7 @@ impl App {
                 };
                 r.child.kill();
                 let _ = r.child.wait();
+                self.job_over(legume_mcp::job::End::Cancelled);
                 if job != Job::Pass {
                     self.status = "stopped".into();
                     return;

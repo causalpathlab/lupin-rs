@@ -122,6 +122,10 @@ enum Commands {
         session: SessionArgs,
         #[command(flatten)]
         pdf: legume_tui::export::PdfArgs,
+        /// The pass given whole (`-o` too) on the TUI, run at once, and
+        /// lupin ends when it does: how `lupin mcp` runs a background pass.
+        #[arg(long, hide = true)]
+        job: bool,
     },
     #[command(
         name = "describe",
@@ -181,6 +185,11 @@ enum Commands {
         args: TrajectoryArgs,
         #[command(flatten)]
         session: SessionArgs,
+        /// The run given whole (`-f` and `-o`) on the TUI's order view, run
+        /// at once, and lupin ends when it does: how `lupin mcp` runs a
+        /// background trajectory.
+        #[arg(long, hide = true)]
+        job: bool,
     },
     #[command(
         about = "Where lupin's data files (Cell Ontology, matching rules, aliases) come from; fetch them for offline use"
@@ -243,7 +252,27 @@ enum Commands {
                       lupin states the facts; the agent's decisions carry a rationale, kept\n\
                       with the round. No tool replaces an existing manifest."
     )]
-    Mcp,
+    Mcp {
+        #[command(subcommand)]
+        watch: Option<McpWatch>,
+    },
+}
+
+/// `lupin mcp watch`: what an agent does through `lupin mcp`, followed.
+#[derive(Subcommand)]
+enum McpWatch {
+    #[command(
+        about = "Follow what an agent does through `lupin mcp`, read-only",
+        long_about = "Follow what an agent does through `lupin mcp`: its calls, what each is\n\
+                      doing and the steps it records, as they happen, in a session of its own.\n\
+                      With no SERVER, the one running (or the one picked among several); else\n\
+                      the server whose watch folder is SERVER. A background step's session is\n\
+                      shown with `lupin attach`."
+    )]
+    Watch {
+        /// A server's watch folder.
+        server: Option<std::path::PathBuf>,
+    },
 }
 
 /// The session paragraph of `lupin annotate`'s and `lupin trajectory`'s
@@ -263,8 +292,12 @@ impl Commands {
     /// Whether the command opens the TUI.
     fn opens_tui(&self) -> bool {
         match self {
-            Self::Annotate { args, pdf, .. } => args.opens_tui() && pdf.pdf.is_none(),
-            Self::Trajectory { args, .. } => args.opens_tui(),
+            Self::Annotate { args, pdf, job, .. } => {
+                *job || (args.opens_tui() && pdf.pdf.is_none())
+            }
+            Self::Trajectory { args, job, .. } => *job || args.opens_tui(),
+            // A screen too: the log goes to its pane's gate.
+            Self::Mcp { watch: Some(_) } => true,
             _ => false,
         }
     }
@@ -314,18 +347,34 @@ fn main() -> Result<()> {
     match cli.cmd {
         Commands::TextQc(c) => run_qc(&c),
         Commands::WordGraph(c) => run_knn_graph(&c),
-        Commands::Annotate { args, session, pdf } => annotate_command(&args, &session, &pdf),
+        Commands::Annotate {
+            job: true,
+            args,
+            session,
+            ..
+        } => tui::run(&args, None, &session, true),
+        Commands::Annotate {
+            args, session, pdf, ..
+        } => annotate_command(&args, &session, &pdf),
         Commands::Describe(c) => run_describe(&c),
         Commands::Review(c) => manifest::rounds::run_review(&c),
         Commands::Relabel(c) => manifest::rounds::run_relabel(&c),
         Commands::Ask(c) => manifest::ask::run_ask(&c),
         Commands::Docs(c) => docs::run_docs(&c),
-        Commands::Trajectory { args, session } => run_trajectory(&args, &session),
+        Commands::Trajectory {
+            job: true,
+            args,
+            session,
+        } => tui::run_trajectory(&args, &session, true),
+        Commands::Trajectory { args, session, .. } => run_trajectory(&args, &session),
         Commands::Data(c) => manifest::data_files::run_data(&c),
         Commands::Attach(a) => Ok(legume_tui::cli::attach(&tui::TOOL, &a)?),
         Commands::Sessions => Ok(legume_tui::cli::sessions(&tui::TOOL)?),
         Commands::Kill(k) => Ok(legume_tui::cli::kill(&tui::TOOL, &k)?),
         Commands::Rename(r) => Ok(legume_tui::cli::rename(&tui::TOOL, &r)?),
-        Commands::Mcp => mcp::run_mcp(),
+        Commands::Mcp { watch: None } => mcp::run_mcp(),
+        Commands::Mcp {
+            watch: Some(McpWatch::Watch { server }),
+        } => mcp::watch(server),
     }
 }

@@ -261,7 +261,7 @@ struct Ordering {
 pub fn run_trajectory(args: &TrajectoryArgs, session: &legume_tui::cli::SessionArgs) -> Result<()> {
     match (args.from.as_deref(), args.out.as_deref()) {
         (Some(from), Some(out)) if !args.opens_tui() => run_batch(args, from, out),
-        _ => crate::tui::run_trajectory(args, session),
+        _ => crate::tui::run_trajectory(args, session, false),
     }
 }
 

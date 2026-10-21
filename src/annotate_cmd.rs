@@ -334,7 +334,7 @@ impl AnnotateCliArgs {
 /// `session` asks.
 pub fn run_annotate(args: &AnnotateCliArgs, session: &legume_tui::cli::SessionArgs) -> Result<()> {
     if args.opens_tui() {
-        return crate::tui::run(args, None, session);
+        return crate::tui::run(args, None, session, false);
     }
     if let Some(cfg) = build_enrichment_args(args).susie {
         cfg.validate()?;
