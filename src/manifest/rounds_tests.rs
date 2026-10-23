@@ -540,6 +540,11 @@ fn preview_refuses_a_stale_round_and_reports_unscored_rounds() {
 /// clusters 0..3 of 10 cells each over 4 batches; CT1, CT2 and CT3 own five
 /// markers each, raised in clusters 0, 1 and 2.
 fn enriched_round(root: &Path) -> PathBuf {
+    enriched_round_with(root, &[])
+}
+
+/// [`enriched_round`] with `extra` flags on its pass.
+fn enriched_round_with(root: &Path, extra: &[&str]) -> PathBuf {
     use clap::Parser;
     #[derive(Parser)]
     struct Cli {
@@ -619,7 +624,7 @@ fn enriched_round(root: &Path) -> PathBuf {
     }
     fs::write(dir.join("markers.tsv"), panel).unwrap();
 
-    let cli = Cli::parse_from(["x", "-o", "o", "-m", "markers.tsv"]);
+    let cli = Cli::parse_from(["x", "-o", "o", "-m", "markers.tsv"].iter().chain(extra));
     let settings =
         serde_json::to_value(crate::annotate_cmd::build_enrichment_args(&cli.a)).unwrap();
     let mut m = RunManifest::new(crate::manifest::run::RunKind::Topic, "run");
@@ -639,6 +644,173 @@ fn enriched_round(root: &Path) -> PathBuf {
     let src = dir.join("run.senna.json");
     m.save(&src).unwrap();
     src
+}
+
+/// [`enriched_round`] whose pass scored GMT terms: each cluster's markers
+/// as a pathway, with three that no cluster raises, and a signature naming
+/// the clusters the pass saw.
+fn gene_set_round(root: &Path) -> PathBuf {
+    let dir = root.join("e");
+    fs::create_dir_all(&dir).unwrap();
+    let mut gmt = String::new();
+    for t in 0..6 {
+        let genes: Vec<String> = (0..5)
+            .map(|m| format!("GENE{}", if t < 3 { t * 5 + m } else { 20 + t * 5 + m }))
+            .collect();
+        gmt.push_str(&format!("PATH{t}\tdesc\t{}\n", genes.join("\t")));
+    }
+    fs::write(dir.join("sets.gmt"), gmt).unwrap();
+    fs::write(
+        dir.join("go.obo"),
+        "format-version: 1.2\n\n[Term]\nid: GO:0000001\nname: root\n",
+    )
+    .unwrap();
+    let (gmt, obo) = (dir.join("sets.gmt"), dir.join("go.obo"));
+    let src = enriched_round_with(
+        root,
+        &[
+            "--gmt",
+            gmt.to_str().unwrap(),
+            "--go-obo",
+            obo.to_str().unwrap(),
+            "--go-min-overlap",
+            "3",
+        ],
+    );
+    let header = "cluster\trank\tterm_id\tterm_name\teffect\tn_genes\tnes\tp\tq\n";
+    let rows: String = (0..3)
+        .map(|c| format!("K{c}\t1\tPATH{c}\t\t1\t5\t2\t0.001\t0.01\n"))
+        .collect();
+    fs::write(
+        dir.join("run.ontology_signature.tsv"),
+        format!("{header}{rows}"),
+    )
+    .unwrap();
+    let (mut m, _) = RunManifest::load(&src).unwrap();
+    m.annotate.ontology_signature = Some("run.ontology_signature.tsv".into());
+    m.save(&src).unwrap();
+    src
+}
+
+#[test]
+fn a_merge_rescores_the_terms_on_the_merged_clusters() {
+    let root = tempfile::tempdir().unwrap();
+    let src = gene_set_round(root.path());
+    let d = root.path().join("d.jsonl");
+    fs::write(
+        &d,
+        line(
+            json!({"clusters": [1, 2], "action": "merge", "rationale": "r", "decided_by": "user"}),
+        ),
+    )
+    .unwrap();
+    run_relabel(&args(&src, &d, Some(&root.path().join("r1/run")))).unwrap();
+
+    let r1 = run::load(&root.path().join("r1/run.senna.json").to_string_lossy()).unwrap();
+    let terms = read_gene_set_terms(&r1).unwrap();
+    assert_eq!(
+        terms.keys().copied().collect::<Vec<_>>(),
+        vec![0, 3],
+        "the terms are the merged clusters', under their ids"
+    );
+    let top = |id| {
+        terms[&id]
+            .iter()
+            .map(|t| t.term.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(top(0)[0], "PATH0", "{:?}", top(0));
+    assert!(
+        ["PATH1", "PATH2"].contains(&top(3)[0]),
+        "the merge's top term is one of its parts': {:?}",
+        top(3)
+    );
+    assert!(
+        terms[&3].iter().all(|t| t.q.is_some()),
+        "rescored terms are tested"
+    );
+}
+
+#[test]
+fn a_merged_clusters_profile_is_its_parts() {
+    let root = tempfile::tempdir().unwrap();
+    let src = enriched_round(root.path());
+    let d = root.path().join("d.jsonl");
+    fs::write(
+        &d,
+        line(
+            json!({"clusters": [1, 2], "action": "merge", "rationale": "r", "decided_by": "user"}),
+        ),
+    )
+    .unwrap();
+    run_relabel(&args(&src, &d, Some(&root.path().join("r1/run")))).unwrap();
+
+    let r1 = run::load(&root.path().join("r1/run.senna.json").to_string_lossy()).unwrap();
+    let a = &r1.manifest.annotate;
+    assert!(
+        resolve(&r1.dir, a.cluster_expression.as_deref().unwrap())
+            .ends_with("e/run.cluster_expression.parquet"),
+        "the recorded profile stays the pass's, by its clusters"
+    );
+    let profile = round_profile(&r1, &read_cells(&r1).unwrap())
+        .unwrap()
+        .unwrap();
+    let cols: Vec<&str> = profile.cols.iter().map(AsRef::as_ref).collect();
+    assert_eq!(cols, ["K0", "K3"], "read over the round's clusters");
+    // K3 is K1 and K2 in equal parts: GENE5, CT2's marker raised in K1,
+    // sits halfway between its K1 and K2 values.
+    let g5 = profile.rows.iter().position(|r| &**r == "GENE5").unwrap();
+    let (k1, k2) = (
+        10.0 + ((5 * 7 + 3) % 5) as f32,
+        10.0 + ((5 * 7 + 6) % 5) as f32,
+    );
+    assert!((profile.mat[(g5, 1)] - (6.0 * k1 + k2) / 2.0).abs() < 1e-4);
+}
+
+#[test]
+fn a_merge_preview_shows_the_merged_clusters_terms() {
+    let root = tempfile::tempdir().unwrap();
+    let src = gene_set_round(root.path());
+    let p = preview_of(
+        &src,
+        &line(
+            json!({"clusters": [1, 2], "action": "merge", "rationale": "r", "decided_by": "user"}),
+        ),
+    );
+    let terms = p["clusters"]["3"]["terms"].as_array().unwrap();
+    let names: Vec<&str> = terms.iter().filter_map(|t| t["term"].as_str()).collect();
+    assert!(
+        ["PATH1", "PATH2"].contains(&names[0]),
+        "the merge's top term is one of its parts': {names:?}"
+    );
+    assert!(
+        terms
+            .iter()
+            .all(|t| t["effect"].is_number() && t["q"].is_null()),
+        "a preview ranks by effect; the saved round tests them: {terms:?}"
+    );
+    let with_terms: Vec<&String> = (p["clusters"].as_object().unwrap().iter())
+        .filter(|(_, c)| c.get("terms").is_some())
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(with_terms, ["3"], "only the cluster a decision made: {p}");
+}
+
+#[test]
+fn a_relabel_that_keeps_the_clusters_keeps_their_terms() {
+    let root = tempfile::tempdir().unwrap();
+    let src = gene_set_round(root.path());
+    let d = root.path().join("d.jsonl");
+    fs::write(
+        &d,
+        line(json!({"cluster": 1, "action": "label", "label": "CT9", "rationale": "r", "decided_by": "user"})),
+    )
+    .unwrap();
+    run_relabel(&args(&src, &d, Some(&root.path().join("r1/run")))).unwrap();
+
+    let r1 = run::load(&root.path().join("r1/run.senna.json").to_string_lossy()).unwrap();
+    let terms = read_gene_set_terms(&r1).unwrap();
+    assert_eq!(terms.keys().copied().collect::<Vec<_>>(), vec![0, 1, 2]);
 }
 
 #[test]

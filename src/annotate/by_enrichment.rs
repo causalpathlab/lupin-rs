@@ -2,7 +2,7 @@
 //! expression matrix (NB-Fisher adjusted, re-aggregated from raw counts by the
 //! caller — see [`crate::manifest::annotate`]).
 
-use super::args::{AnnotateArgs, MIN_CONFIDENCE, NUM_DRAWS};
+use super::args::{AnnotateArgs, GO_NUM_DRAWS, MIN_CONFIDENCE, NUM_DRAWS};
 use super::inputs::EnrichmentInputs;
 use super::outputs::{clean_outputs, AnnotationOutputs, ENRICHMENT_OUTPUT_SUFFIXES};
 use super::outputs::{
@@ -11,6 +11,7 @@ use super::outputs::{
     CLUSTER_TERM_NES, CLUSTER_TERM_P, CLUSTER_TERM_Q_VALUES,
 };
 use crate::progress::Stages;
+use anyhow::Context;
 use enrichment::{
     annotate, annotate_types, AnnotateConfig, AnnotateOutputs, GroupInputs, SpecificityMode,
     TypeScores,
@@ -43,7 +44,7 @@ pub fn plan(args: &AnnotateArgs) -> anyhow::Result<EnrichmentPlan> {
     // (cross-cluster-contrasted module score per cluster); both → both, on one
     // cluster profile.
     let markers = !args.markers.is_empty();
-    let gene_sets = args.go || args.gaf.is_some() || args.gmt.is_some();
+    let gene_sets = args.wants_gene_sets();
     anyhow::ensure!(
         markers || gene_sets,
         "a gene-set source is required: --markers, --go, --gaf, or --gmt"
@@ -471,16 +472,114 @@ fn run_ontology_gene_sets(
     })
 }
 
-/// Score the `--gaf`/`--gmt` terms on the cluster profile and write the
-/// per-cluster signature and its `K × T` effect matrix; returns their paths.
-/// Each term is also tested as the cell types are (fgsea NES, p, and q by BH
-/// over the terms within each cluster), written as `K × T` tables beside it.
+/// The `--go`/`--gaf`/`--gmt` terms scored on a cluster profile: each
+/// cluster × term's effect, which the signature ranks by, and its test as
+/// the cell types are tested (fgsea NES, p, and q by BH over the terms within
+/// each cluster). Rows are the profile's clusters, columns `term_ids`.
+pub(crate) struct GeneSetScores {
+    gs: super::go_signature::GeneSetInputs,
+    ms: enrichment::OntologyModuleScore,
+    /// The terms' test, when it ran: NES, p and q.
+    test: Option<TermTest>,
+}
+
+struct TermTest {
+    nes_kt: Mat,
+    p_kt: Mat,
+    q_kt: Mat,
+}
+
+/// A round's GO/GMT signature and its effect matrix, as written.
+pub(crate) type TermPaths = (String, String);
+
+impl GeneSetScores {
+    /// Row `k`'s top terms, as its signature lists them; `source` says
+    /// where the terms come from (`go`, `gmt`).
+    pub(crate) fn top_terms(&self, k: usize, source: &str) -> Vec<crate::annotate::rounds::Term> {
+        super::go_signature::ranked_terms(&self.ms.effect_kt, k)
+            .into_iter()
+            .map(|(t, effect)| {
+                let id = &self.ms.term_ids[t];
+                let test = self.test.as_ref();
+                crate::annotate::rounds::Term {
+                    source: source.to_string(),
+                    term: self.gs.onto.name(id).unwrap_or(id).to_string(),
+                    effect,
+                    q: test.map(|x| x.q_kt[(k, t)]),
+                    p: test.map(|x| x.p_kt[(k, t)]),
+                    nes: test.map(|x| x.nes_kt[(k, t)]),
+                }
+            })
+            .collect()
+    }
+
+    /// Write the per-cluster signature, its `K × T` effect matrix and the
+    /// tests' `K × T` tables under `out`, rows named `cluster_names`;
+    /// returns the signature's and the effect matrix's paths.
+    pub(crate) fn write(&self, out: &str, cluster_names: &[Box<str>]) -> anyhow::Result<TermPaths> {
+        let term_ids = &self.ms.term_ids;
+        let test =
+            (self.test.as_ref()).context("writing gene-set scores whose test did not run")?;
+        write_cluster_tables(
+            out,
+            cluster_names,
+            term_ids,
+            &[
+                (&test.nes_kt, CLUSTER_TERM_NES),
+                (&test.p_kt, CLUSTER_TERM_P),
+                (&test.q_kt, CLUSTER_TERM_Q_VALUES),
+            ],
+        )?;
+        let stats = super::go_signature::TermStats {
+            nes_kt: &test.nes_kt,
+            p_kt: &test.p_kt,
+            q_kt: &test.q_kt,
+        };
+        let sig_path = format!("{out}.ontology_signature.tsv");
+        super::go_signature::write_go_signature(
+            &sig_path,
+            &self.gs.onto,
+            &self.ms.effect_kt,
+            &stats,
+            term_ids,
+            &self.gs.terms,
+            "cluster",
+            cluster_names,
+        )?;
+        let effect_path = format!("{out}.ontology_term_effect.parquet");
+        self.ms.effect_kt.to_parquet_with_names(
+            &effect_path,
+            (Some(cluster_names), Some("cluster")),
+            Some(term_ids),
+        )?;
+        info!("wrote {effect_path}");
+        Ok((sig_path, effect_path))
+    }
+}
+
+/// [`score_gene_sets`] on the cluster profile, written under `out` with rows
+/// named `cluster_names` ([`GeneSetScores::write`]).
 fn gene_set_signature(
     args: &AnnotateArgs,
     out: &str,
     inputs: &EnrichmentInputs,
     cluster_names: &[Box<str>],
-) -> anyhow::Result<(String, String)> {
+) -> anyhow::Result<TermPaths> {
+    score_gene_sets(args, inputs, true)?.write(out, cluster_names)
+}
+
+/// Score the `--go`/`--gaf`/`--gmt` terms on `inputs`' cluster profile.
+/// Only terms in the overlap window are tested: the window is fixed before
+/// anything is scored, and the broadest terms tell no cluster apart. The
+/// window's thousands of terms get [`GO_NUM_DRAWS`] draws each, with fgsea's
+/// multilevel p below their floor, so a lone pathway can still clear BH.
+/// A relabel round and its preview score merged clusters through this; with
+/// `test` false only the effects are computed, which a preview ranks by.
+pub(crate) fn score_gene_sets(
+    args: &AnnotateArgs,
+    inputs: &EnrichmentInputs,
+    test: bool,
+) -> anyhow::Result<GeneSetScores> {
     use enrichment::ontology_module_score;
     let (profile_gk, gene_names) = (&inputs.profile_gk, &inputs.gene_names);
 
@@ -494,7 +593,7 @@ fn gene_set_signature(
         args.gaf.as_deref(),
         args.gmt.as_deref(),
         gene_names,
-        (super::go_signature::MIN_TESTABLE, None),
+        args.go_min_overlap..=args.go_max_overlap,
     )?;
 
     ////////////////////////////////////////////////////////////
@@ -507,6 +606,9 @@ fn gene_set_signature(
     // permutation-z + TreeBH walk, whose ÷sd reweighting rewards small,
     // stable-null terms and whose depth preference descends to narrow processes.
     let ms = ontology_module_score(profile_gk, &gs.terms, &gs.universe)?;
+    if !test {
+        return Ok(GeneSetScores { gs, ms, test: None });
+    }
 
     // The cell types' test on the same terms: their NES, p and q stand beside
     // the effect the signature ranks by.
@@ -517,7 +619,9 @@ fn gene_set_signature(
         }
     }
     // Taken by value: weighted in place, so the dense matrix is held once.
-    let (group, weighted_gt, config) = prepare_with(args, inputs, sets_gt, None)?;
+    let (group, weighted_gt, mut config) = prepare_with(args, inputs, sets_gt, None)?;
+    config.num_row_randomization = GO_NUM_DRAWS;
+    config.multilevel = Some(enrichment::fgsea::Multilevel::default());
     info!(
         "Testing {} GO terms over {} clusters as the cell types are tested",
         gs.terms.len(),
@@ -526,42 +630,15 @@ fn gene_set_signature(
     let all: Vec<usize> = (0..gs.terms.len()).collect();
     let tested = enrichment::annotate_types(&group, &weighted_gt, &ms.term_ids, &config, &all)?;
     let adjusted = enrichment::adjust(&tested.pvalue_kc, &weighted_gt, &config)?;
-    write_cluster_tables(
-        out,
-        cluster_names,
-        &ms.term_ids,
-        &[
-            (&tested.nes_kc, CLUSTER_TERM_NES),
-            (&adjusted.pvalue_kc, CLUSTER_TERM_P),
-            (&adjusted.qvalue_kc, CLUSTER_TERM_Q_VALUES),
-        ],
-    )?;
-    let stats = super::go_signature::TermStats {
-        nes_kt: &tested.nes_kc,
-        p_kt: &adjusted.pvalue_kc,
-        q_kt: &adjusted.qvalue_kc,
-    };
-
-    let sig_path = format!("{out}.ontology_signature.tsv");
-    super::go_signature::write_go_signature(
-        &sig_path,
-        &gs.onto,
-        &ms.effect_kt,
-        &stats,
-        &ms.term_ids,
-        &gs.terms,
-        args.go_min_overlap..=args.go_max_overlap,
-        "cluster",
-        cluster_names,
-    )?;
-    let effect_path = format!("{out}.ontology_term_effect.parquet");
-    ms.effect_kt.to_parquet_with_names(
-        &effect_path,
-        (Some(cluster_names), Some("cluster")),
-        Some(&ms.term_ids),
-    )?;
-    info!("wrote {effect_path}");
-    Ok((sig_path, effect_path))
+    Ok(GeneSetScores {
+        gs,
+        ms,
+        test: Some(TermTest {
+            nes_kt: tested.nes_kc,
+            p_kt: adjusted.pvalue_kc,
+            q_kt: adjusted.qvalue_kc,
+        }),
+    })
 }
 
 /// Multiply each gene's marker entries by an empirical specificity score

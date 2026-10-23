@@ -126,7 +126,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_preview",
-            "What decisions would change in a round, rescored, without writing anything (`lupin relabel --preview`).",
+            "What decisions would change in a round, rescored, without writing anything (`lupin relabel --preview`). A merge also lists the merged cluster's top GO/GMT terms by effect when the round scored terms (the saved round tests them).",
             schema(
                 json!({ "round": { "type": "string" }, "decisions": decisions.clone() }),
                 &["round", "decisions"],
@@ -460,7 +460,8 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     let clusters: Vec<ClusterId> = a.parse("clusters")?.unwrap_or_default();
     let more: Vec<String> = a.parse("types")?.unwrap_or_default();
     let top = a.parse::<usize>("top")?.unwrap_or(20);
-    let (expr, panel) = profile_and_panel(&loaded)?;
+    let cells = crate::manifest::rounds::read_cells(&loaded)?;
+    let (expr, panel) = profile_and_panel(&loaded, &cells)?;
     let expr = expr.context("the round records no expression profile")?;
     let specific = specific_genes(&expr);
     let out: Map<String, Value> = review_json(&loaded, &clusters, false)?

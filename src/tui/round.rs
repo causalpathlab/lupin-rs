@@ -294,7 +294,7 @@ impl RoundView {
         };
         let tables = read_type_tables(&loaded, shares)?;
         let by = called_by(a);
-        let (expression, markers) = profile_and_panel(&loaded)?;
+        let (expression, markers) = profile_and_panel(&loaded, &cells)?;
 
         // Each cluster's size and label, as `review` and `relabel` see them.
         let digests = digest(&cells.clusters, &cells.labels, &Evidence::default());

@@ -127,13 +127,13 @@ pub struct AnnotateCliArgs {
     #[arg(
         long = "go-min-overlap",
         default_value_t = crate::annotate::args::GO_MIN_OVERLAP,
-        help = "GO/GMT terms sharing at least this many genes with the data's features (the overlap, not the term's own size): the enrichment tests every term and reports these; the units train only these"
+        help = "GO/GMT terms sharing at least this many genes with the data's features (the overlap, not the term's own size): the terms the enrichment tests and reports, and the units train"
     )]
     pub go_min_overlap: usize,
     #[arg(
         long = "go-max-overlap",
         default_value_t = crate::annotate::args::GO_MAX_OVERLAP,
-        help = "GO/GMT terms sharing at most this many genes with the data's features: the enrichment tests every term and reports these; the units train only these"
+        help = "GO/GMT terms sharing at most this many genes with the data's features: the terms the enrichment tests and reports, and the units train"
     )]
     pub go_max_overlap: usize,
 

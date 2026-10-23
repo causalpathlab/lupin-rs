@@ -8,6 +8,10 @@ pub const KEEP_IEA: bool = true;
 pub const BLOCK_SIZE: usize = 1024;
 /// Random gene sets in the gene-set null: its p-values go no lower than `1 / (NUM_DRAWS + 1)`.
 pub const NUM_DRAWS: usize = 10_000;
+/// Random gene sets per GO/GMT term: thousands of terms are tested, so each
+/// gets fewer draws, and fgsea's multilevel estimate resolves the p-values
+/// the draws cannot (below `1 / (GO_NUM_DRAWS + 1)`).
+pub const GO_NUM_DRAWS: usize = 1_000;
 /// Minimum per-cell label confidence (0 = keep every call).
 pub const MIN_CONFIDENCE: f32 = 0.0;
 
@@ -18,6 +22,8 @@ pub fn fixed_settings() -> serde_json::Value {
         "keep_iea": KEEP_IEA,
         "block_size": BLOCK_SIZE,
         "num_draws": NUM_DRAWS,
+        "go_num_draws": GO_NUM_DRAWS,
+        "go_p": "gene-set null permutation p, multilevel below its floor (fgsea)",
         "min_confidence": MIN_CONFIDENCE,
         "empirical_specificity": true,
         "gene_strata": true,
@@ -70,12 +76,12 @@ pub struct AnnotateArgs {
     /// Gene Ontology .obo naming the terms of `go`/`gaf`/`gmt`
     pub go_obo: Option<Box<str>>,
 
-    /// GO/GMT terms sharing fewer genes with the data's features are not
-    /// reported (the overlap, not the term's own size); every term is tested
+    /// GO/GMT terms sharing fewer genes with the data's features are
+    /// neither tested nor reported (the overlap, not the term's own size)
     pub go_min_overlap: usize,
 
-    /// GO/GMT terms sharing more genes with the data's features are not
-    /// reported
+    /// GO/GMT terms sharing more genes with the data's features are
+    /// neither tested nor reported
     pub go_max_overlap: usize,
 
     /// Output prefix for annotation artifacts
@@ -144,6 +150,12 @@ pub struct AnnotateArgs {
 }
 
 impl AnnotateArgs {
+    /// Gene sets asked for: `go`, `gaf` or `gmt`.
+    #[must_use]
+    pub fn wants_gene_sets(&self) -> bool {
+        self.go || self.gaf.is_some() || self.gmt.is_some()
+    }
+
     /// The units' settings beside this pass: its panel, terms, seed and
     /// device, writing under its prefix (the pass cleared it already).
     #[must_use]
@@ -222,8 +234,8 @@ pub struct MarkerScoreArgs {
 /// the smallest p is one in a hundred.
 pub const DECOYS: usize = 99;
 /// The genes a GO/GMT term must share with the data's features, at least
-/// and at most: the terms the enrichment reports, and the ones the units
-/// train.
+/// and at most: the terms the enrichment tests and reports, and the ones the
+/// units train.
 pub const GO_MIN_OVERLAP: usize = 20;
 pub const GO_MAX_OVERLAP: usize = 500;
 
@@ -295,7 +307,7 @@ impl UnitsArgs {
             self.gaf.as_deref(),
             self.gmt.as_deref(),
             gene_names,
-            (self.go_min, Some(self.go_max)),
+            self.go_min..=self.go_max,
         )?;
         Ok(crate::annotate::geneset_units::Terms {
             sets: (gs.terms.into_iter())
