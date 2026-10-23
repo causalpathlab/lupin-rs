@@ -206,6 +206,19 @@ enum Commands {
     )]
     Ask(manifest::ask::AskArgs),
     #[command(
+        about = "Open lupin's screen on an output: a round, or a trajectory run",
+        long_about = "Opens the TUI on a manifest lupin wrote, by what it holds: a\n\
+                      trajectory run on the order view (as `lupin trajectory -f`), any\n\
+                      other run or round on the round view (as `lupin annotate -f`).\n\
+                      Nothing is run or written until asked for on the screen."
+    )]
+    View {
+        /// A round, a trajectory run, or any run manifest (or its prefix)
+        manifest: Box<str>,
+        #[command(flatten)]
+        session: SessionArgs,
+    },
+    #[command(
         about = "Return to a detached `lupin annotate` or `lupin trajectory`",
         long_about = "Return to a detached `lupin annotate` or `lupin trajectory` in this\n\
                       terminal.\n\
@@ -296,10 +309,27 @@ impl Commands {
                 *job || (args.opens_tui() && pdf.pdf.is_none())
             }
             Self::Trajectory { args, job, .. } => *job || args.opens_tui(),
+            Self::View { .. } => true,
             // A screen too: the log goes to its pane's gate.
             Self::Mcp { watch: Some(_) } => true,
             _ => false,
         }
+    }
+}
+
+/// `lupin view`: a trajectory run on the order view, anything else on the
+/// round view, as `lupin trajectory -f` and `lupin annotate -f` open them.
+fn view(from: &str, session: &SessionArgs) -> Result<()> {
+    let loaded = manifest::run::load(from)?;
+    let screen = if manifest::family::is_trajectory(&loaded.manifest, &loaded.file) {
+        "trajectory"
+    } else {
+        "annotate"
+    };
+    match Cli::try_parse_from(["lupin", screen, "-f", from])?.cmd {
+        Commands::Trajectory { args, .. } => tui::run_trajectory(&args, session, false),
+        Commands::Annotate { args, .. } => tui::run(&args, None, session, false),
+        _ => unreachable!("parsed as {screen}"),
     }
 }
 
@@ -367,6 +397,7 @@ fn main() -> Result<()> {
             session,
         } => tui::run_trajectory(&args, &session, true),
         Commands::Trajectory { args, session, .. } => run_trajectory(&args, &session),
+        Commands::View { manifest, session } => view(&manifest, &session),
         Commands::Data(c) => manifest::data_files::run_data(&c),
         Commands::Attach(a) => Ok(legume_tui::cli::attach(&tui::TOOL, &a)?),
         Commands::Sessions => Ok(legume_tui::cli::sessions(&tui::TOOL)?),
