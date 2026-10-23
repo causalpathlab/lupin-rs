@@ -109,9 +109,16 @@ pub struct AnnotateCliArgs {
     pub min_cluster_size: usize,
     #[arg(long = "cluster-seed")]
     pub cluster_seed: Option<u64>,
-    #[arg(long = "gaf")]
+    #[arg(
+        long = "gaf",
+        help = "Also score GO terms per cluster, from this GO annotation file (.gaf, plain or gzipped)"
+    )]
     pub gaf: Option<Box<str>>,
-    #[arg(long = "gmt")]
+    #[arg(
+        long = "gmt",
+        conflicts_with = "gaf",
+        help = "Also score these gene sets or pathways per cluster (.gmt: name, description, then its genes, per line)"
+    )]
     pub gmt: Option<Box<str>>,
     #[arg(
         long,

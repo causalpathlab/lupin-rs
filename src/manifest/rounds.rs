@@ -912,7 +912,7 @@ impl Chain {
 fn ensure_latest(made_on: &Path, latest: &Path) -> Result<()> {
     anyhow::ensure!(
         same_file(made_on, latest),
-        "{} is not the latest round (that is {}); reload and decide again",
+        "{} is not the latest round (that is {}): review that one and decide again",
         made_on.display(),
         latest.display()
     );
@@ -961,6 +961,17 @@ fn plan(
         round,
         &now(),
     )?;
+    // An enrichment pass's clusters are rescored each against the others.
+    let contrasted = source.manifest.annotate.stats_cache.is_some();
+    if contrasted && decisions.iter().any(|d| d.action.regroups()) {
+        let left: BTreeSet<ClusterId> = cells.clusters.iter().flatten().copied().collect();
+        anyhow::ensure!(
+            left.len() >= 2,
+            "the decisions leave {} cluster(s): each cluster is scored against the others, so \
+             nothing would be; to call them one type, label each cluster with it instead",
+            left.len()
+        );
+    }
     let (mut markers, older_markers) = read_markers(source)?;
     let (edited, newer_markers) = apply_markers(&decisions, &mut markers, round)?;
     Ok(Planned {
@@ -1603,7 +1614,7 @@ fn check_round(source: &Loaded, decisions: &[Decision], decisions_dir: &Path) ->
         let Some(named) = &d.round else { continue };
         anyhow::ensure!(
             same_file(Path::new(&resolve(decisions_dir, named)), &current),
-            "ids refer to {named}, but the round being relabelled is {}; reload and decide again",
+            "ids refer to {named}, but the round being relabelled is {}: review that one and decide again",
             source.file.display()
         );
     }

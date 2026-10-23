@@ -35,7 +35,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 #[derive(Parser)]
 #[command(
     name = "lupin",
-    version,
+    version = env!("LUPIN_VERSION"),
     about = "Label, Unfold, Place, Interpret, Narrate: text graphs, cell-type annotation, review, trajectories and description."
 )]
 struct Cli {
@@ -210,7 +210,10 @@ enum Commands {
         long_about = "Opens the TUI on a manifest lupin wrote, by what it holds: a\n\
                       trajectory run on the order view (as `lupin trajectory -f`), any\n\
                       other run or round on the round view (as `lupin annotate -f`).\n\
-                      Nothing is run or written until asked for on the screen."
+                      Nothing is run or written until asked for on the screen: saving\n\
+                      (s) writes the next round beside this one, never over it.\n\
+                      It needs a terminal; without one, `lupin review -f` (or the MCP\n\
+                      annotate_review) shows a round."
     )]
     View {
         /// A round, a trajectory run, or any run manifest (or its prefix)
@@ -320,6 +323,11 @@ impl Commands {
 /// `lupin view`: a trajectory run on the order view, anything else on the
 /// round view, as `lupin trajectory -f` and `lupin annotate -f` open them.
 fn view(from: &str, session: &SessionArgs) -> Result<()> {
+    use std::io::IsTerminal;
+    anyhow::ensure!(
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        "no terminal for lupin's screen: without one, `lupin review -f {from}` shows a round (and the MCP trajectory_read a trajectory run)"
+    );
     let loaded = manifest::run::load(from)?;
     let screen = if manifest::family::is_trajectory(&loaded.manifest, &loaded.file) {
         "trajectory"

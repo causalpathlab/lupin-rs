@@ -732,6 +732,23 @@ fn a_merge_rescores_the_terms_on_the_merged_clusters() {
 }
 
 #[test]
+fn a_merge_that_leaves_one_cluster_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let src = enriched_round(root.path());
+    let d = root.path().join("d.jsonl");
+    fs::write(
+        &d,
+        line(json!({"clusters": [0, 1, 2], "action": "merge", "rationale": "r", "decided_by": "user"})),
+    )
+    .unwrap();
+    let err = run_relabel(&args(&src, &d, Some(&root.path().join("r1/run"))))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("leave 1 cluster"), "{err}");
+    assert!(!root.path().join("r1").exists(), "nothing is written");
+}
+
+#[test]
 fn a_merged_clusters_profile_is_its_parts() {
     let root = tempfile::tempdir().unwrap();
     let src = enriched_round(root.path());

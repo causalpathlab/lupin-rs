@@ -92,6 +92,9 @@ fn tools() -> Vec<ToolSpec> {
                     "from": { "type": "string", "description": "Run manifest or its prefix (or a round, to annotate it again)" },
                     "markers": { "type": "string", "description": "Marker panel (cell type, gene per line); a round's own panel is used when omitted" },
                     "method": { "type": "string", "enum": ["auto", "enrichment", "projection"] },
+                    "go": { "type": "boolean", "description": "Also score GO terms per cluster, with the GO annotations of the run's species (human or mouse, from its gene names), downloaded once" },
+                    "gaf": { "type": "string", "description": "Also score GO terms from this GO annotation file (.gaf)" },
+                    "gmt": { "type": "string", "description": "Also score these gene sets or pathways (.gmt: name, description, genes per line)" },
                     "out": { "type": "string", "description": "Output prefix; the next free {stem}.L{k} when omitted" },
                     "options": options,
                     "background": background.clone(),
@@ -213,7 +216,7 @@ pub fn watch(dir: Option<PathBuf>) -> Result<()> {
 pub fn run_mcp() -> Result<()> {
     let info = ServerInfo {
         name: "lupin".into(),
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: env!("LUPIN_VERSION").into(),
         instructions: Some(INSTRUCTIONS.into()),
     };
     legume_mcp::serve(info, Lupin)
@@ -240,8 +243,12 @@ impl Handler for Lupin {
             "annotate_genes" => annotate_genes(&a),
             "annotate_preview" => Ok(vec![Content::Json(relabel_preview(&a, cx)?)]),
             "annotate_relabel" => {
-                let round = relabel_apply(&a, cx)?;
-                Ok(vec![Content::Json(json!({ "round": absolute(&round) }))])
+                let (round, warnings) = relabel_apply(&a, cx)?;
+                let mut out = json!({ "round": absolute(&round) });
+                if !warnings.is_empty() {
+                    out["warnings"] = json!(warnings);
+                }
+                Ok(vec![Content::Json(out)])
             }
             "annotate_ask" => annotate_ask(&a, cx),
             "trajectory_run" => trajectory_run(&a, cx),
@@ -434,6 +441,16 @@ fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         argv.push(flag("method", m));
         summary += &format!(" by {m}");
     }
+    if a.parse::<bool>("go")?.unwrap_or(false) {
+        argv.push("--go".into());
+        summary += " and GO terms";
+    }
+    for key in ["gaf", "gmt"] {
+        if let Some(p) = a.path(key) {
+            argv.push(flag(key, &p));
+            summary += &format!(" and {}", file_name(Path::new(&p)));
+        }
+    }
     argv.extend(a.parse::<Vec<String>>("options")?.unwrap_or_default());
     if background(a)? {
         let job = background_job(cx, &argv, lupin(&argv)?, &out, &round, &summary, "round")?;
@@ -550,8 +567,9 @@ fn relabel_preview(a: &Arguments, cx: &Call) -> Result<Value> {
 /// Apply the decisions as the next round of the round's chain: `--next`,
 /// told the round it must write (`--expect`), so a replay writes the same
 /// one. The decisions go to a fresh `{round}.mcp_decisions.{k}.jsonl` beside
-/// the round, and into the driver script.
-fn relabel_apply(a: &Arguments, cx: &Call) -> Result<PathBuf> {
+/// the round, and into the driver script. Also returns what the agent should
+/// know of the new round that the child's log alone would say.
+fn relabel_apply(a: &Arguments, cx: &Call) -> Result<(PathBuf, Vec<String>)> {
     let round = round_arg(a)?;
     let text = decisions_text(a, &round)?;
     // Refused here before anything is written; relabel checks again under
@@ -576,7 +594,33 @@ fn relabel_apply(a: &Arguments, cx: &Call) -> Result<PathBuf> {
     );
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&next), &summary)?;
     cx.state(&json!({ "round": absolute(&next), "from": absolute(&round) }));
-    Ok(next)
+    let merged = text
+        .lines()
+        .any(|l| serde_json::from_str::<Value>(l).is_ok_and(|d| d["action"] == json!("merge")));
+    let warnings = if merged {
+        unscored_terms(&round, &next)?
+    } else {
+        vec![]
+    };
+    Ok((next, warnings))
+}
+
+/// A merge whose GO/GMT terms could not be scored again keeps the source's
+/// terms file, which has no row for the merged clusters.
+fn unscored_terms(from: &Path, next: &Path) -> Result<Vec<String>> {
+    let signature = |p: &Path| -> Result<Option<String>> {
+        let l = run::load(&p.to_string_lossy())?;
+        let rel = l.manifest.annotate.ontology_signature.clone();
+        Ok(rel.and_then(|r| l.recorded(&r)))
+    };
+    Ok(match (signature(from)?, signature(next)?) {
+        (Some(a), Some(b)) if run::same_file(Path::new(&a), Path::new(&b)) => vec![
+            "the GO/GMT terms were not scored again: the merged clusters have none until a \
+             new pass scores them; the other clusters keep theirs"
+                .into(),
+        ],
+        _ => vec![],
+    })
 }
 
 /// The next `{round}.mcp_decisions.{k}.jsonl` beside `round`, made empty so
