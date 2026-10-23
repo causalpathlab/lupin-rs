@@ -92,9 +92,9 @@ fn tools() -> Vec<ToolSpec> {
                     "from": { "type": "string", "description": "Run manifest or its prefix (or a round, to annotate it again)" },
                     "markers": { "type": "string", "description": "Marker panel (cell type, gene per line); a round's own panel is used when omitted" },
                     "method": { "type": "string", "enum": ["auto", "enrichment", "projection"] },
-                    "go": { "type": "boolean", "description": "Also score GO terms per cluster, with the GO annotations of the run's species (human or mouse, from its gene names), downloaded once" },
-                    "gaf": { "type": "string", "description": "Also score GO terms from this GO annotation file (.gaf)" },
-                    "gmt": { "type": "string", "description": "Also score these gene sets or pathways (.gmt: name, description, genes per line)" },
+                    "go": { "type": "boolean", "description": "Also score GO terms per cluster, with the GO annotations of the run's species (human or mouse, from its gene names), downloaded once (one of go, gaf, gmt)" },
+                    "gaf": { "type": "string", "description": "Also score GO terms from this GO annotation file (.gaf; one of go, gaf, gmt)" },
+                    "gmt": { "type": "string", "description": "Also score these gene sets or pathways (.gmt: name, description, genes per line; one of go, gaf, gmt)" },
                     "out": { "type": "string", "description": "Output prefix; the next free {stem}.L{k} when omitted" },
                     "options": options,
                     "background": background.clone(),
@@ -425,6 +425,9 @@ fn background_job(
 }
 
 fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
+    let go = a.parse::<bool>("go")?.unwrap_or(false);
+    let sets = usize::from(go) + ["gaf", "gmt"].iter().filter(|k| a.str(k).is_some()).count();
+    anyhow::ensure!(sets <= 1, "give one of go, gaf and gmt");
     let from = a.req_path("from")?;
     let Output {
         out,
@@ -441,7 +444,7 @@ fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         argv.push(flag("method", m));
         summary += &format!(" by {m}");
     }
-    if a.parse::<bool>("go")?.unwrap_or(false) {
+    if go {
         argv.push("--go".into());
         summary += " and GO terms";
     }
