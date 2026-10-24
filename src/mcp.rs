@@ -40,14 +40,25 @@ judgments, each with a written rationale that lupin keeps.
 Annotation loop:
 1. annotate_run on a run manifest (senna or pinto) writes a new round; or, \
 without a marker panel, annotate_ask writes an unlabelled round and lists \
-each cluster's specific genes for you to label.
+each cluster's specific genes for you to label. With one of `go` (the \
+species' GO annotations), `gaf` or `gmt` (a pathway file), it also tests GO \
+or pathway terms per cluster: evidence of what a cluster does, beside its \
+cell type.
 2. annotate_review shows each cluster: its calls with q, its top terms, \
 each method's top type, its Cell Ontology placement and its history. \
 annotate_genes adds the genes: what sets each cluster apart, and how the \
 panel markers of its label and of each method's top type fare in it. Where \
-the methods disagree, weigh their evidence; do not label beyond it.
+the methods disagree, weigh their evidence, terms included; do not label \
+beyond it. A round's `caveats`, when it has any, say what its statistics \
+lack: read them first.
 3. annotate_preview with your decisions shows what they would change, \
 rescored; then annotate_relabel applies them and returns the next round. \
+For a merge, the preview lists the merged cluster's top terms by effect \
+(q is null there: the saved round tests them), so weigh whether the parts \
+share a function before merging. A merge that would leave one cluster is \
+refused (each cluster is scored against the others): label the clusters \
+the same type instead. annotate_relabel's `warnings` say what the new round \
+lacks, such as terms not scored again. \
 Rounds are never overwritten, so a decision can always be revisited.
 
 Trajectory loop:
@@ -104,7 +115,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_review",
-            "Show an annotation round cluster by cluster, as `lupin review --json`: digest (size, label, calls with q, terms, evidence check), history, each method's top type and Cell Ontology placement; with `types`, every type's evidence too (large: ask for it on a few clusters).",
+            "Show an annotation round cluster by cluster, as `lupin review --json`: digest (size, label, calls with q, top GO/GMT terms with effect and q, evidence check), history, each method's top type and Cell Ontology placement; with `types`, every type's evidence too (large: ask for it on a few clusters). When the round has caveats (e.g. merged clusters whose terms were not scored again), a second item lists them.",
             schema(
                 json!({
                     "round": { "type": "string", "description": "Annotated manifest (a round) or its prefix" },
@@ -116,7 +127,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_genes",
-            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. Clusters merged since the pass list no genes.",
+            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. A merged cluster's genes are its parts' together (their cell-weighted mean profile).",
             schema(
                 json!({
                     "round": { "type": "string" },
@@ -137,7 +148,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_relabel",
-            "Apply decisions to a round and write the next round of its chain (`lupin relabel --next`); the rationales are kept in its history. Returns the new round's path.",
+            "Apply decisions to a round and write the next round of its chain (`lupin relabel --next`); the rationales are kept in its history. Returns the new round's path, and `warnings` when it lacks something (e.g. a merge whose GO/GMT terms could not be scored again).",
             schema(
                 json!({ "round": { "type": "string" }, "decisions": decisions }),
                 &["round", "decisions"],
