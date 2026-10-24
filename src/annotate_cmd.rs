@@ -109,9 +109,16 @@ pub struct AnnotateCliArgs {
     pub min_cluster_size: usize,
     #[arg(long = "cluster-seed")]
     pub cluster_seed: Option<u64>,
-    #[arg(long = "gaf")]
+    #[arg(
+        long = "gaf",
+        help = "Also score GO terms per cluster, from this GO annotation file (.gaf, plain or gzipped)"
+    )]
     pub gaf: Option<Box<str>>,
-    #[arg(long = "gmt")]
+    #[arg(
+        long = "gmt",
+        conflicts_with = "gaf",
+        help = "Also score these gene sets or pathways per cluster (.gmt: name, description, then its genes, per line)"
+    )]
     pub gmt: Option<Box<str>>,
     #[arg(
         long,
@@ -127,13 +134,13 @@ pub struct AnnotateCliArgs {
     #[arg(
         long = "go-min-overlap",
         default_value_t = crate::annotate::args::GO_MIN_OVERLAP,
-        help = "GO/GMT terms sharing at least this many genes with the data's features (the overlap, not the term's own size): the enrichment tests every term and reports these; the units train only these"
+        help = "GO/GMT terms sharing at least this many genes with the data's features (the overlap, not the term's own size): the terms the enrichment tests and reports, and the units train"
     )]
     pub go_min_overlap: usize,
     #[arg(
         long = "go-max-overlap",
         default_value_t = crate::annotate::args::GO_MAX_OVERLAP,
-        help = "GO/GMT terms sharing at most this many genes with the data's features: the enrichment tests every term and reports these; the units train only these"
+        help = "GO/GMT terms sharing at most this many genes with the data's features: the terms the enrichment tests and reports, and the units train"
     )]
     pub go_max_overlap: usize,
 

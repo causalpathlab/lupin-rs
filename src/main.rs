@@ -35,7 +35,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 #[derive(Parser)]
 #[command(
     name = "lupin",
-    version,
+    version = env!("LUPIN_VERSION"),
     about = "Label, Unfold, Place, Interpret, Narrate: text graphs, cell-type annotation, review, trajectories and description."
 )]
 struct Cli {
@@ -149,8 +149,9 @@ enum Commands {
         about = "Show an annotation round cluster by cluster: calls, terms, CL placement, history",
         long_about = "Reads an annotated manifest (a round) and prints, per cluster,\n\
                       its size and current label, the candidate labels with q and support,\n\
-                      the top GO/GMT terms, the Cell Ontology placement,\n\
-                      and every decision made on it so far with its rationale.\n\
+                      the top GO/GMT terms with effect and q, the Cell Ontology placement,\n\
+                      and every decision made on it so far with its rationale; first, the\n\
+                      round's caveats, if any.\n\
                       `--json` prints the same for a program or an agent to read."
     )]
     Review(manifest::rounds::ReviewArgs),
@@ -160,7 +161,12 @@ enum Commands {
                       relabels or merges clusters, and writes a new manifest at `-o`\n\
                       whose `annotate.source` points back to the round it started from.\n\
                       Every decision needs a rationale, kept in `{out}.annotation_history.json`.\n\
-                      Counts are not re-read; merged clusters take fresh ids."
+                      Counts are not re-read; merged clusters take fresh ids, and are rescored\n\
+                      from the pass's cached statistics: their cell types, and the GO/GMT terms\n\
+                      when the pass scored any (`--preview` ranks a merge's terms by effect\n\
+                      alone). A merge that would leave one cluster on an enrichment round is\n\
+                      refused. What the new round lacks (terms not scored again) is kept as\n\
+                      its caveats, which `lupin review` prints first."
     )]
     Relabel(manifest::rounds::RelabelArgs),
     #[command(about = "Print the method write-ups (omit the topic to list them)")]
@@ -205,6 +211,22 @@ enum Commands {
                       rescored like any enrichment run. Nothing is sent anywhere by lupin."
     )]
     Ask(manifest::ask::AskArgs),
+    #[command(
+        about = "Open lupin's screen on an output: a round, or a trajectory run",
+        long_about = "Opens the TUI on a manifest lupin wrote, by what it holds: a\n\
+                      trajectory run on the order view (as `lupin trajectory -f`), any\n\
+                      other run or round on the round view (as `lupin annotate -f`).\n\
+                      Nothing is run or written until asked for on the screen: saving\n\
+                      (s) writes the next round beside this one, never over it.\n\
+                      It needs a terminal; without one, `lupin review -f` (or the MCP\n\
+                      annotate_review) shows a round."
+    )]
+    View {
+        /// A round, a trajectory run, or any run manifest (or its prefix)
+        manifest: Box<str>,
+        #[command(flatten)]
+        session: SessionArgs,
+    },
     #[command(
         about = "Return to a detached `lupin annotate` or `lupin trajectory`",
         long_about = "Return to a detached `lupin annotate` or `lupin trajectory` in this\n\
@@ -296,10 +318,31 @@ impl Commands {
                 *job || (args.opens_tui() && pdf.pdf.is_none())
             }
             Self::Trajectory { args, job, .. } => *job || args.opens_tui(),
+            Self::View { .. } => true,
             // A screen too: the log goes to its pane's gate.
             Self::Mcp { watch: Some(_) } => true,
             _ => false,
         }
+    }
+}
+
+/// `lupin view`: a trajectory run on the order view, anything else on the
+/// round view, as `lupin trajectory -f` and `lupin annotate -f` open them.
+fn view(from: &str, session: &SessionArgs) -> Result<()> {
+    tui::ensure_terminal(&format!(
+        "without one, `lupin review -f {from}` shows a round (and the MCP trajectory_read a \
+         trajectory run)"
+    ))?;
+    let loaded = manifest::run::load(from)?;
+    let screen = if manifest::family::is_trajectory(&loaded.manifest, &loaded.file) {
+        "trajectory"
+    } else {
+        "annotate"
+    };
+    match Cli::try_parse_from(["lupin", screen, "-f", from])?.cmd {
+        Commands::Trajectory { args, .. } => tui::run_trajectory(&args, session, false),
+        Commands::Annotate { args, .. } => tui::run(&args, None, session, false),
+        _ => unreachable!("parsed as {screen}"),
     }
 }
 
@@ -367,6 +410,7 @@ fn main() -> Result<()> {
             session,
         } => tui::run_trajectory(&args, &session, true),
         Commands::Trajectory { args, session, .. } => run_trajectory(&args, &session),
+        Commands::View { manifest, session } => view(&manifest, &session),
         Commands::Data(c) => manifest::data_files::run_data(&c),
         Commands::Attach(a) => Ok(legume_tui::cli::attach(&tui::TOOL, &a)?),
         Commands::Sessions => Ok(legume_tui::cli::sessions(&tui::TOOL)?),

@@ -131,6 +131,16 @@ pub fn run_trajectory(
     run(&a, Some(order::TrajectoryRun::of(t)), session, job)
 }
 
+/// Refuse to open the screen without a terminal, saying what to do instead.
+pub fn ensure_terminal(instead: &str) -> Result<()> {
+    use std::io::IsTerminal;
+    anyhow::ensure!(
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        "no terminal for lupin's screen: {instead}"
+    );
+    Ok(())
+}
+
 /// Run the TUI on `args`; with `trajectory`, it opens on the order view and
 /// runs `lupin trajectory` with those options. It runs as a detachable
 /// session (`session`): a new one when the run is named (`--from`), else
@@ -144,11 +154,7 @@ pub fn run(
     job: bool,
 ) -> Result<()> {
     use legume_mcp::job::{End, Reporter};
-    use std::io::IsTerminal;
-    anyhow::ensure!(
-        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
-        "no terminal for the TUI: give the output prefix (-o, and -f for trajectory) to run without it"
-    );
+    ensure_terminal("give the output prefix (-o, and -f for trajectory) to run without it")?;
     // First: hosted, this process only relays the terminal from here on,
     // and the program the host starts does the rest.
     let screen = if trajectory.is_some() {

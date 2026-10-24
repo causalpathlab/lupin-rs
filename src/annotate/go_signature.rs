@@ -12,11 +12,9 @@ use std::io::Write;
 /// than emit an empty signature.
 const MIN_COVERAGE_FRAC: f32 = 0.1;
 const MIN_COVERAGE_TERMS: usize = 5;
-/// The fewest of a term's genes among the data's features for it to be
-/// tested: the scorer's own floor. Every such term is a hypothesis, so the
-/// q-values are over all of them; the report window only picks which are
-/// shown.
-pub const MIN_TESTABLE: usize = 2;
+/// The fewest of a term's genes among the data's features for it to count
+/// towards the coverage check.
+const MIN_MATCHED: usize = 2;
 /// Top terms reported per group in the signature TSV.
 const TOP_N: usize = 10;
 
@@ -129,12 +127,23 @@ pub fn load_go_gene_sets(
         gene_sets.n_annotations()
     );
 
+    // Coverage is of the gene ids, over every term the data can test; the
+    // size window then picks the terms scored, and says so when it leaves none.
     let idx = GeneIndex::build(gene_names);
-    let rec = gene_sets.reconcile(&idx, min_gene_set, max_gene_set);
+    let rec = gene_sets.reconcile(&idx, MIN_MATCHED, None);
     rec.log_coverage();
     rec.ensure_coverage(MIN_COVERAGE_FRAC, MIN_COVERAGE_TERMS)?;
     let universe = rec.universe;
-    let mut terms: Vec<(Box<str>, Vec<usize>)> = rec.term_rows.into_iter().collect();
+    let window = |n: usize| n >= min_gene_set && max_gene_set.is_none_or(|mx| n <= mx);
+    let mut terms: Vec<(Box<str>, Vec<usize>)> = (rec.term_rows.into_iter())
+        .filter(|(_, rows)| window(rows.len()))
+        .collect();
+    anyhow::ensure!(
+        !terms.is_empty(),
+        "no gene-set term shares {min_gene_set}..={} genes with the data's features; \
+         widen --go-min-overlap/--go-max-overlap",
+        max_gene_set.map_or_else(|| "∞".to_string(), |m| m.to_string()),
+    );
     terms.sort_by(|a, b| a.0.cmp(&b.0));
     info!("scoring {} size-windowed terms", terms.len());
 
@@ -155,7 +164,7 @@ pub fn requested_gene_sets(
     gaf: Option<&str>,
     gmt: Option<&str>,
     gene_names: &[Box<str>],
-    sizes: (usize, Option<usize>),
+    overlap: std::ops::RangeInclusive<usize>,
 ) -> anyhow::Result<GeneSetInputs> {
     let gaf = match (gaf, go && gmt.is_none()) {
         (Some(g), _) => Some(g.to_string()),
@@ -175,8 +184,8 @@ pub fn requested_gene_sets(
         gaf.as_deref(),
         gmt,
         !crate::annotate::args::KEEP_IEA,
-        sizes.0,
-        sizes.1,
+        *overlap.start(),
+        Some(*overlap.end()),
         gene_names,
     )
 }
@@ -188,11 +197,21 @@ pub struct TermStats<'a> {
     pub q_kt: &'a enrichment::Mat,
 }
 
+/// Row `k`'s top-[`TOP_N`] terms of a `group × term` effect matrix, by
+/// descending positive effect: `(term column, effect)`.
+pub fn ranked_terms(effect_kt: &enrichment::Mat, k: usize) -> Vec<(usize, f32)> {
+    let mut ranked: Vec<(usize, f32)> = (0..effect_kt.ncols())
+        .map(|t| (t, effect_kt[(k, t)]))
+        .filter(|&(_, e)| e > 0.0)
+        .collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    ranked.truncate(TOP_N);
+    ranked
+}
+
 /// Write a per-group top-`N` GO signature TSV from a `group × term` effect
-/// matrix, each group's terms ranked by descending positive effect, with
-/// their `stats`; only terms whose gene count is in `report` are listed.
-/// `term_ids` indexes the matrix columns and aligns 1:1 with `terms` (for the
-/// gene count).
+/// matrix ([`ranked_terms`]), with their `stats`. `term_ids` indexes the
+/// matrix columns and aligns 1:1 with `terms` (for the gene count).
 #[allow(clippy::too_many_arguments)]
 pub fn write_go_signature(
     path: &str,
@@ -201,23 +220,16 @@ pub fn write_go_signature(
     stats: &TermStats,
     term_ids: &[Box<str>],
     terms: &[(Box<str>, Vec<usize>)],
-    report: std::ops::RangeInclusive<usize>,
     group_axis: &str,
     group_names: &[Box<str>],
 ) -> anyhow::Result<()> {
-    let n_terms = term_ids.len();
     let mut f = std::fs::File::create(path)?;
     writeln!(
         f,
         "{group_axis}\trank\tterm_id\tterm_name\teffect\tn_genes\tnes\tp\tq"
     )?;
     for (k, gname) in group_names.iter().enumerate() {
-        let mut ranked: Vec<(usize, f32)> = (0..n_terms)
-            .map(|t| (t, effect_kt[(k, t)]))
-            .filter(|&(t, e)| e > 0.0 && report.contains(&terms[t].1.len()))
-            .collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        for (rank, &(t, e)) in ranked.iter().take(TOP_N).enumerate() {
+        for (rank, (t, e)) in ranked_terms(effect_kt, k).into_iter().enumerate() {
             let id = &term_ids[t];
             let name = onto.name(id).unwrap_or(id.as_ref());
             writeln!(
@@ -265,22 +277,26 @@ mod report_tests {
     use super::*;
 
     #[test]
-    fn the_report_window_picks_what_is_listed_not_what_is_tested() {
+    fn a_signature_lists_a_groups_positive_terms_by_effect() {
         let dir = tempfile::tempdir().unwrap();
         let obo = dir.path().join("t.obo");
         std::fs::write(
             &obo,
-            "[Term]\nid: GO:1\nname: small term\n\n[Term]\nid: GO:2\nname: listed term\n",
+            "[Term]\nid: GO:1\nname: weak term\n\n[Term]\nid: GO:2\nname: strong term\n\n\
+             [Term]\nid: GO:3\nname: depleted term\n",
         )
         .unwrap();
         let onto = Ontology::load_obo(obo.to_str().unwrap()).unwrap();
-        let ids: Vec<Box<str>> = vec!["GO:1".into(), "GO:2".into()];
+        let ids: Vec<Box<str>> = vec!["GO:1".into(), "GO:2".into(), "GO:3".into()];
         let terms: Vec<(Box<str>, Vec<usize>)> = vec![
             ("GO:1".into(), vec![0, 1]),
-            ("GO:2".into(), vec![0, 1, 2, 3]),
+            ("GO:2".into(), vec![0, 1, 2]),
+            ("GO:3".into(), vec![2, 3]),
         ];
-        let effect = enrichment::Mat::from_row_slice(1, 2, &[0.9, 0.5]);
-        let stat = enrichment::Mat::from_row_slice(1, 2, &[0.01, 0.02]);
+        let effect = enrichment::Mat::from_row_slice(1, 3, &[0.2, 0.9, -0.5]);
+        assert_eq!(ranked_terms(&effect, 0), vec![(1, 0.9), (0, 0.2)]);
+
+        let stat = enrichment::Mat::from_row_slice(1, 3, &[0.01, 0.02, 0.5]);
         let stats = TermStats {
             nes_kt: &stat,
             p_kt: &stat,
@@ -295,13 +311,13 @@ mod report_tests {
             &stats,
             &ids,
             &terms,
-            3..=10,
             "cluster",
             &groups,
         )
         .unwrap();
         let text = std::fs::read_to_string(&tsv).unwrap();
-        assert!(!text.contains("small term"), "{text}");
-        assert!(text.contains("K0\t1\tGO:2\tlisted term"), "{text}");
+        assert!(text.contains("K0\t1\tGO:2\tstrong term"), "{text}");
+        assert!(text.contains("K0\t2\tGO:1\tweak term"), "{text}");
+        assert!(!text.contains("depleted"), "{text}");
     }
 }

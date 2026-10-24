@@ -28,6 +28,7 @@ use crate::annotate::rounds::{
     ClPlacement, ClusterId, Decision, Digest, Evidence, History, MarkerHistory, Method, Stat,
     Table, Term, TieBreak, TypeEvidence, TypeTables,
 };
+use crate::manifest::recalibrate::Terms;
 use crate::manifest::run::{
     self, annotated_path, parent_dir, rel_to_manifest, resolve, same_file, Loaded,
 };
@@ -47,6 +48,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const CLUSTERS: &str = ".clusters.parquet";
+/// `annotate.stats`' list of what a round's readers should know of its
+/// statistics.
+pub(crate) const CAVEATS: &str = "caveats";
+/// The caveat of a merge whose GO/GMT terms could not be scored again.
+pub(crate) const TERMS_NOT_RESCORED: &str = "the GO/GMT terms were not scored again: the merged \
+     clusters have none until a new pass scores them; the other clusters keep theirs";
 pub const SUMMARY: &str = ".cluster_summary.json";
 pub const EVIDENCE: &str = ".cluster_evidence.parquet";
 pub const LOG: &str = ".annotation_log.jsonl";
@@ -262,12 +269,15 @@ pub(crate) fn read_gene_set_terms(loaded: &Loaded) -> Result<BTreeMap<ClusterId,
     let Some(rel) = a.ontology_signature.as_deref() else {
         return Ok(BTreeMap::new());
     };
-    let gmt = a
-        .settings
-        .as_ref()
-        .and_then(|s| s.pointer("/enrichment/gmt"))
-        .is_some_and(|g| !g.is_null());
-    read_terms(&resolve(&loaded.dir, rel), if gmt { "gmt" } else { "go" })
+    read_terms(&resolve(&loaded.dir, rel), term_source(loaded))
+}
+
+/// Where a round's terms come from: `gmt` when its pass read a GMT, else `go`.
+fn term_source(loaded: &Loaded) -> &'static str {
+    match (loaded.manifest.annotate.settings.as_ref()).and_then(|s| s.pointer("/enrichment/gmt")) {
+        Some(g) if !g.is_null() => "gmt",
+        _ => "go",
+    }
 }
 
 /// Whatever evidence this round records; a missing table is skipped.
@@ -908,7 +918,7 @@ impl Chain {
 fn ensure_latest(made_on: &Path, latest: &Path) -> Result<()> {
     anyhow::ensure!(
         same_file(made_on, latest),
-        "{} is not the latest round (that is {}); reload and decide again",
+        "{} is not the latest round (that is {}): review that one and decide again",
         made_on.display(),
         latest.display()
     );
@@ -958,6 +968,17 @@ fn plan(
         &now(),
     )?;
     let (mut markers, older_markers) = read_markers(source)?;
+    if super::recalibrate::rescores_by_contrast(source, &markers)
+        && decisions.iter().any(|d| d.action.regroups())
+    {
+        let mut left = cells.clusters.iter().flatten();
+        let first = left.next();
+        anyhow::ensure!(
+            left.any(|c| Some(c) != first),
+            "the decisions leave one cluster: each cluster is scored against the others, so \
+             nothing would be; to call them one type, label each cluster with it instead"
+        );
+    }
     let (edited, newer_markers) = apply_markers(&decisions, &mut markers, round)?;
     Ok(Planned {
         decisions,
@@ -1021,8 +1042,28 @@ fn relabel(
         None => None,
     };
 
-    // Rescore the new clusters and panel when the pass cached its statistics.
-    let rescored = super::recalibrate::rescore(source, &p.cells, &p.markers)?;
+    // Rescore the new clusters and panel when the pass cached its statistics;
+    // the GO/GMT terms too when the clusters changed (they do not read the
+    // panel).
+    let regrouped = p.decisions.iter().any(|d| d.action.regroups());
+    let wanted = if regrouped {
+        Terms::Tested
+    } else {
+        Terms::None
+    };
+    let (rescored, terms) =
+        match super::recalibrate::rescore_regrouped(source, &p.cells, &p.markers, wanted)? {
+            Some((r, t)) => {
+                let terms = t.map(|t| t.write(out, &r.row_names())).transpose()?;
+                (Some(r), terms)
+            }
+            None => (None, None),
+        };
+    let unscored =
+        regrouped && terms.is_none() && source.manifest.annotate.ontology_signature.is_some();
+    if unscored {
+        log::warn!("{TERMS_NOT_RESCORED}");
+    }
     let tables = rescored
         .as_ref()
         .map(|r| write_rescored(r, out))
@@ -1033,9 +1074,15 @@ fn relabel(
     // while both stand, dropped once a decision regroups the clusters or the
     // markers change (the call is then the decisions over the enrichment's
     // rescored statistics).
-    let regrouped = p.decisions.iter().any(|d| d.action.regroups());
     if regrouped || p.marker_history.is_some() {
         next.manifest.annotate.drop_susie_tables();
+    }
+    // The source's terms describe its clusters, and a merge's own under
+    // fresh ids: rescored, they describe every new cluster.
+    if let Some((sig, effect)) = &terms {
+        let a = &mut next.manifest.annotate;
+        a.ontology_signature = Some(rel_to_manifest(&next.dir, sig));
+        a.ontology_term_effect = Some(rel_to_manifest(&next.dir, effect));
     }
     // The score's and the units' per-cell calls hold over new clusters, but
     // not over a new panel: they were made on the old one.
@@ -1063,6 +1110,20 @@ fn relabel(
             "kind": "post_selection",
             "rounds_of_curation": rounds,
         }));
+    }
+    // Terms missing for merged clusters stay missing until a round scores
+    // them all again.
+    let stale =
+        terms.is_none() && (unscored || caveats(source).iter().any(|c| c == TERMS_NOT_RESCORED));
+    let stats = &mut next.manifest.annotate.stats;
+    if stale {
+        let s = stats.get_or_insert_with(|| json!({}));
+        if !s.is_object() {
+            *s = json!({ "recorded": s.take() });
+        }
+        s[CAVEATS] = json!([TERMS_NOT_RESCORED]);
+    } else if let Some(s) = stats.as_mut().and_then(Value::as_object_mut) {
+        s.remove(CAVEATS);
     }
     if let Some((panel, hist)) = &marker_paths {
         next.manifest.annotate.markers = rel(panel);
@@ -1118,6 +1179,8 @@ fn write_rescored(r: &super::recalibrate::Rescored, out: &str) -> Result<Rescore
 
 /// How many ranked calls a preview shows per cluster.
 const PREVIEW_CALLS: usize = 5;
+/// How many of a regrouped cluster's GO/GMT terms a preview shows.
+const PREVIEW_TERMS: usize = 5;
 
 /// What `decisions` would do to `source`, written nowhere: per cluster the
 /// label before and after, and the cell types re-ranked against the edited
@@ -1170,11 +1233,31 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
     // else as recorded.
     // With the clusters as they were, only the cell types the marker edits
     // touch are scored again.
-    let rescored = if after.cells.clusters == before.clusters {
+    // New clusters' GO/GMT terms are scored too, so a merge is weighed with
+    // what the merged cluster's genes do.
+    let (rescored, terms) = if after.cells.clusters == before.clusters {
         let touched = touched_types(&panel_before, &after.markers);
-        super::recalibrate::rescore_types(source, &after.cells, &after.markers, &touched)?
+        let r = super::recalibrate::rescore_types(source, &after.cells, &after.markers, &touched)?;
+        (r, BTreeMap::new())
     } else {
-        super::recalibrate::rescore(source, &after.cells, &after.markers)?
+        let rescore = super::recalibrate::rescore_regrouped;
+        match rescore(source, &after.cells, &after.markers, Terms::Effects)? {
+            Some((r, t)) => {
+                // The clusters a decision made: the others keep the round's terms.
+                let made = |id: &ClusterId| !before.clusters.contains(&Some(*id));
+                let terms: BTreeMap<ClusterId, Vec<Term>> = t
+                    .map(|t| {
+                        let src = term_source(source);
+                        (r.ids.iter().enumerate())
+                            .filter(|(_, id)| made(id))
+                            .map(|(k, id)| (*id, t.top_terms(k, src)))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (Some(r), terms)
+            }
+            None => (None, BTreeMap::new()),
+        }
     };
     let scores = rescored.as_ref().map(rescored_scores);
     let (stats, calls_before, calls_after): (&str, Option<Calls>, Calls) =
@@ -1210,15 +1293,16 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
             .take(PREVIEW_CALLS)
             .map(|c| json!({"label": c.label, "score": c.score, "q": c.q}))
             .collect();
-        clusters.insert(
-            id.to_string(),
-            json!({
-                "label_before": before_label,
-                "label_after": after_d.label,
-                "top_before": top_before,
-                "calls": calls,
-            }),
-        );
+        let mut entry = json!({
+            "label_before": before_label,
+            "label_after": after_d.label,
+            "top_before": top_before,
+            "calls": calls,
+        });
+        if let Some(t) = terms.get(id) {
+            entry["terms"] = serde_json::to_value(&t[..t.len().min(PREVIEW_TERMS)])?;
+        }
+        clusters.insert(id.to_string(), entry);
     }
     let cells_changed = before
         .labels
@@ -1364,6 +1448,50 @@ fn marker_diff(before: &[(String, String)], after: &[(String, String)]) -> Value
 /// `after` how many of its cells come from each of the profile's clusters.
 /// `None` when the round records no profile.
 type Groups = BTreeMap<ClusterId, BTreeMap<ClusterId, usize>>;
+
+/// The round's genes × clusters expression profile over its own clusters:
+/// the pass's profile ([`expression_profile`]), each of the round's clusters
+/// the cell-weighted mean of the pass clusters its cells came from, so a
+/// merge's profile is its parts'. `None` when the round records no profile.
+pub(crate) fn round_profile(loaded: &Loaded, cells: &Cells) -> Result<Option<MatWithNames<Mat>>> {
+    let Some((table, groups)) = expression_profile(loaded, cells)? else {
+        return Ok(None);
+    };
+    Ok(Some(regrouped_profile(&table, &groups)))
+}
+
+/// `table`'s columns (`K{id}`, pass clusters) mixed into `groups`' clusters,
+/// each the mean of its pass clusters weighted by the cells it took from
+/// each; a cluster none of whose pass clusters is in `table` is left out.
+fn regrouped_profile(table: &MatWithNames<Mat>, groups: &Groups) -> MatWithNames<Mat> {
+    let col: HashMap<ClusterId, usize> = (table.cols.iter().enumerate())
+        .filter_map(|(j, c)| parse_cluster_id(c).map(|id| (id, j)))
+        .collect();
+    let parts: Vec<(ClusterId, Vec<(usize, f32)>)> = groups
+        .iter()
+        .filter_map(|(id, from)| {
+            let parts: Vec<(usize, f32)> = (from.iter())
+                .filter_map(|(f, n)| col.get(f).map(|&j| (j, *n as f32)))
+                .collect();
+            (!parts.is_empty()).then_some((*id, parts))
+        })
+        .collect();
+    let mut mat = Mat::zeros(table.mat.nrows(), parts.len());
+    for (k, (_, from)) in parts.iter().enumerate() {
+        let total: f32 = from.iter().map(|(_, n)| n).sum();
+        for &(j, n) in from {
+            mat.column_mut(k).axpy(n / total, &table.mat.column(j), 1.0);
+        }
+    }
+    MatWithNames {
+        rows: table.rows.clone(),
+        cols: parts
+            .iter()
+            .map(|(id, _)| format!("K{id}").into())
+            .collect(),
+        mat,
+    }
+}
 fn expression_profile(
     source: &Loaded,
     after: &Cells,
@@ -1448,30 +1576,13 @@ fn approx_calls<const N: usize>(
         .collect();
 
     // Per cluster: log1p of its cell-weighted mean profile, marker rows only.
-    let col: HashMap<ClusterId, usize> = table
-        .cols
-        .iter()
-        .enumerate()
-        .filter_map(|(j, c)| parse_cluster_id(c).map(|id| (id, j)))
-        .collect();
-    let profiles: Vec<(ClusterId, HashMap<usize, f32>)> = groups
-        .iter()
-        .filter_map(|(id, from)| {
-            let parts: Vec<(usize, f32)> = from
-                .iter()
-                .filter_map(|(f, n)| col.get(f).map(|&j| (j, *n as f32)))
+    let merged = regrouped_profile(table, groups);
+    let profiles: Vec<(ClusterId, HashMap<usize, f32>)> = (merged.cols.iter().enumerate())
+        .filter_map(|(k, c)| {
+            let v = (marker_rows.iter())
+                .map(|&r| (r, merged.mat[(r, k)].max(0.0).ln_1p()))
                 .collect();
-            let total: f32 = parts.iter().map(|(_, n)| n).sum();
-            (total > 0.0).then(|| {
-                let v = marker_rows
-                    .iter()
-                    .map(|&r| {
-                        let m: f32 = parts.iter().map(|&(j, n)| n * table.mat[(r, j)]).sum();
-                        (r, (m / total).max(0.0).ln_1p())
-                    })
-                    .collect();
-                (*id, v)
-            })
+            Some((parse_cluster_id(c)?, v))
         })
         .collect();
     // Per marker row: its z-score in each cluster.
@@ -1522,7 +1633,7 @@ fn check_round(source: &Loaded, decisions: &[Decision], decisions_dir: &Path) ->
         let Some(named) = &d.round else { continue };
         anyhow::ensure!(
             same_file(Path::new(&resolve(decisions_dir, named)), &current),
-            "ids refer to {named}, but the round being relabelled is {}; reload and decide again",
+            "ids refer to {named}, but the round being relabelled is {}: review that one and decide again",
             source.file.display()
         );
     }
@@ -1877,14 +1988,31 @@ pub(crate) fn review_json(
 /// `review`'s text: each cluster (all, or those in `clusters`) in turn.
 pub(crate) fn review_text(loaded: &Loaded, clusters: &[ClusterId]) -> Result<String> {
     let r = Reviewed::read(loaded, false, false)?;
-    Ok(r.digests
+    let caveats = caveats(loaded)
+        .into_iter()
+        .map(|c| format!("caveat: {c}\n"));
+    let clusters = r
+        .digests
         .iter()
         .filter(|(id, _)| clusters.is_empty() || clusters.contains(id))
         .map(|(id, d)| {
             let history = r.history.get(id).map_or(&[][..], Vec::as_slice);
             render(*id, d, r.placement(d).as_ref(), history)
-        })
-        .collect())
+        });
+    Ok(caveats.chain(clusters).collect())
+}
+
+/// What `loaded`'s readers should know of its statistics
+/// (`annotate.stats.caveats`).
+pub(crate) fn caveats(loaded: &Loaded) -> Vec<String> {
+    let stats = loaded.manifest.annotate.stats.as_ref();
+    stats
+        .and_then(|s| s.get(CAVEATS))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.as_str().map(str::to_string))
+        .collect()
 }
 
 pub fn run_review(args: &ReviewArgs) -> Result<()> {
@@ -1916,8 +2044,11 @@ fn render(
     for t in &d.terms {
         let _ = writeln!(
             s,
-            "  {:<4}  {:<40} effect={:.3}",
-            t.source, t.term, t.effect
+            "  {:<4}  {:<40} effect={:.3} q={}",
+            t.source,
+            t.term,
+            t.effect,
+            num(t.q)
         );
     }
     // The ontology walk's placement, else the type tree's.
