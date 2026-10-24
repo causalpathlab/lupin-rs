@@ -49,7 +49,11 @@ each method's top type, its Cell Ontology placement and its history. \
 annotate_genes adds the genes: what sets each cluster apart, and how the \
 panel markers of its label and of each method's top type fare in it. Where \
 the methods disagree, weigh their evidence, terms included; do not label \
-beyond it. A round's `caveats`, when it has any, say what its statistics \
+beyond it. Read a cluster's terms by effect, which ranks what sets it apart \
+(NK-cell killing, platelet clotting, MHC-II presentation); their q comes \
+from a different test that favours large programmes many clusters share \
+(ribosome, spliceosome, oxidative phosphorylation), so a low q alone does \
+not name a cell type, and a high q does not rule one out. A round's `caveats`, when it has any, say what its statistics \
 lack: read them first.
 3. annotate_preview with your decisions shows what they would change, \
 rescored; then annotate_relabel applies them and returns the next round. \
@@ -127,7 +131,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_genes",
-            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. A merged cluster's genes are its parts' together (their cell-weighted mean profile).",
+            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. A merged cluster's genes are its parts' together (their cell-weighted mean profile). A coarse label (a Cell Ontology group of the panel's types) is measured on its members' markers, listed in `group_of`.",
             schema(
                 json!({
                     "round": { "type": "string" },
@@ -516,6 +520,13 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     let (expr, panel) = profile_and_panel(&loaded, &cells)?;
     let expr = expr.context("the round records no expression profile")?;
     let specific = specific_genes(&expr);
+    // A coarse label is a Cell Ontology group of the panel's types: its
+    // markers are its members'.
+    let tree = crate::manifest::rounds::read_tree(&loaded).ok().flatten();
+    let members = |t: &str| -> Option<Vec<String>> {
+        let g = (tree.as_ref()?.groups.iter()).find(|g| label_key(&g.name) == label_key(t))?;
+        (g.members.len() > 1 || label_key(&g.members[0]) != label_key(t)).then(|| g.members.clone())
+    };
     let out: Map<String, Value> = review_json(&loaded, &clusters, false)?
         .into_iter()
         .map(|(id, v)| {
@@ -529,19 +540,31 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
             let markers: Map<String, Value> = types
                 .into_iter()
                 .map(|t| {
-                    let set = panel.get(&label_key(&t));
+                    let group = (!panel.contains_key(&label_key(&t)))
+                        .then(|| members(&t))
+                        .flatten();
+                    let set: BTreeSet<&String> = match &group {
+                        Some(m) => m
+                            .iter()
+                            .filter_map(|m| panel.get(&label_key(m)))
+                            .flatten()
+                            .collect(),
+                        None => panel.get(&label_key(&t)).into_iter().flatten().collect(),
+                    };
                     let mut genes: Vec<(&String, f32)> = set
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|g| Some((g, expr.fold_change(id, g)?)))
+                        .iter()
+                        .filter_map(|&g| Some((g, expr.fold_change(id, g)?)))
                         .collect();
                     genes.sort_by(|x, y| y.1.total_cmp(&x.1));
                     let up = genes.iter().filter(|(_, f)| *f >= 1.0).count();
                     let listed: Vec<Value> =
                         genes.iter().take(top).map(|(g, f)| json!([g, f])).collect();
-                    let n = set.map_or(0, BTreeSet::len);
-                    let entry =
-                        json!({ "markers": n, "measured": genes.len(), "up": up, "top": listed });
+                    let mut entry = json!({
+                        "markers": set.len(), "measured": genes.len(), "up": up, "top": listed,
+                    });
+                    if let Some(m) = group {
+                        entry["group_of"] = json!(m);
+                    }
                     (t, entry)
                 })
                 .collect();

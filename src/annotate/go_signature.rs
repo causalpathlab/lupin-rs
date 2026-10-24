@@ -18,6 +18,69 @@ const MIN_MATCHED: usize = 2;
 /// Top terms reported per group in the signature TSV.
 const TOP_N: usize = 10;
 
+/// GAF evidence codes left out of every term: an author's statement nobody
+/// traced to its evidence (NAS), and "no data" (ND). One NAS paper alone
+/// annotates the cytosolic ribosome's proteins to "negative regulation of
+/// myoblast fusion", which then tops any cluster rich in ribosomes.
+pub const DROPPED_EVIDENCE: [&str; 2] = ["NAS", "ND"];
+
+/// `gaf` without its [`DROPPED_EVIDENCE`] rows: a copy kept in lupin's cache,
+/// made once per source file (by its path, size and modification time).
+fn without_dropped_evidence(gaf: &str) -> anyhow::Result<std::path::PathBuf> {
+    use anyhow::Context;
+    use sha2::{Digest, Sha256};
+    use std::io::BufRead;
+    let meta = std::fs::metadata(gaf).with_context(|| format!("reading {gaf}"))?;
+    let path = std::path::absolute(gaf)?;
+    let modified = meta.modified()?.duration_since(std::time::UNIX_EPOCH)?;
+    let key = Sha256::digest(format!(
+        "{}\t{}\t{}\t{}",
+        path.display(),
+        meta.len(),
+        modified.as_nanos(),
+        DROPPED_EVIDENCE.join(",")
+    ));
+    let stem = path.file_name().map_or_else(String::new, |n| {
+        let n = n.to_string_lossy();
+        n.split(".gaf").next().unwrap_or(&n).to_string()
+    });
+    let name = format!("{stem}.{}.evidence.gaf.gz", &crate::hex(&key)[..12]);
+    let to = crate::manifest::data_files::SearchPath::new(None)
+        .cached(&name)
+        .unwrap_or_else(|| std::env::temp_dir().join("lupin").join(&name));
+    if to.is_file() {
+        return Ok(to);
+    }
+    info!(
+        "leaving {} evidence out of {gaf}: {}",
+        DROPPED_EVIDENCE.join("/"),
+        to.display()
+    );
+    std::fs::create_dir_all(to.parent().context("no cache directory")?)?;
+    let tmp = to.with_extension("part");
+    let mut out = flate2::write::GzEncoder::new(
+        std::io::BufWriter::new(std::fs::File::create(&tmp)?),
+        flate2::Compression::fast(),
+    );
+    let (mut kept, mut dropped) = (0usize, 0usize);
+    for line in legume_numeric::matrix::common_io::open_buf_reader(gaf)?.lines() {
+        let line = line?;
+        let evidence = (!line.starts_with('!'))
+            .then(|| line.split('\t').nth(6))
+            .flatten();
+        if evidence.is_some_and(|e| DROPPED_EVIDENCE.contains(&e.trim())) {
+            dropped += 1;
+            continue;
+        }
+        kept += 1;
+        writeln!(out, "{line}")?;
+    }
+    out.finish()?.flush()?;
+    std::fs::rename(&tmp, &to)?;
+    info!("kept {kept} GAF lines, left out {dropped}");
+    Ok(to)
+}
+
 /// A species whose GO annotations lupin can download.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Species {
@@ -114,7 +177,8 @@ pub fn load_go_gene_sets(
 
     let gene_sets = if let Some(gaf) = gaf {
         info!("reading GAF gene-sets from {gaf} (no_iea={no_iea})");
-        read_gaf(gaf, &GafOpts { no_iea })?.into_gene_sets(Some(&onto))
+        let gaf = without_dropped_evidence(gaf)?;
+        read_gaf(&gaf.to_string_lossy(), &GafOpts { no_iea })?.into_gene_sets(Some(&onto))
     } else {
         let gmt = gmt.expect("exactly one of --gaf/--gmt is required");
         info!("reading GMT gene-sets from {gmt}");
@@ -321,3 +385,7 @@ mod report_tests {
         assert!(!text.contains("depleted"), "{text}");
     }
 }
+
+#[cfg(test)]
+#[path = "tests/go_signature.rs"]
+mod tests;

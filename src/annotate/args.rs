@@ -20,6 +20,7 @@ pub const MIN_CONFIDENCE: f32 = 0.0;
 pub fn fixed_settings() -> serde_json::Value {
     serde_json::json!({
         "keep_iea": KEEP_IEA,
+        "go_dropped_evidence": crate::annotate::go_signature::DROPPED_EVIDENCE,
         "block_size": BLOCK_SIZE,
         "num_draws": NUM_DRAWS,
         "go_num_draws": GO_NUM_DRAWS,

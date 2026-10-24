@@ -510,7 +510,7 @@ fn tie_break(loaded: &Loaded, cells: Option<&Cells>) -> Result<TieBreak> {
 
 /// The round's type tree (`annotate.celltype_tree`), when it records one
 /// that is still there.
-fn read_tree(loaded: &Loaded) -> Result<Option<TypeTree>> {
+pub(crate) fn read_tree(loaded: &Loaded) -> Result<Option<TypeTree>> {
     let Some(path) =
         (loaded.manifest.annotate.celltype_tree.as_deref()).and_then(|rel| loaded.recorded(rel))
     else {
