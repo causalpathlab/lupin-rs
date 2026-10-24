@@ -18,8 +18,7 @@ const MIN_MATCHED: usize = 2;
 /// Top terms reported per group in the signature TSV.
 const TOP_N: usize = 10;
 
-/// GAF evidence codes left out of every term (to move into data-beans'
-/// `GafOpts` beside `no_iea`, which would read the GAF once and keep no copy): an author's statement nobody
+/// GAF evidence codes left out of every term: an author's statement nobody
 /// traced to its evidence (NAS), and "no data" (ND). One NAS paper alone
 /// annotates the cytosolic ribosome's proteins to "negative regulation of
 /// myoblast fusion", which then tops any cluster rich in ribosomes.
