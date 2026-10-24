@@ -28,7 +28,6 @@ use crate::annotate::rounds::{
     ClPlacement, ClusterId, Decision, Digest, Evidence, History, MarkerHistory, Method, Stat,
     Table, Term, TieBreak, TypeEvidence, TypeTables,
 };
-use crate::manifest::recalibrate::Terms;
 use crate::manifest::run::{
     self, annotated_path, parent_dir, rel_to_manifest, resolve, same_file, Loaded,
 };
@@ -240,7 +239,7 @@ fn read_terms(path: &str, source: &str) -> Result<BTreeMap<ClusterId, Vec<Term>>
             effect: num("effect").unwrap_or(f32::NAN),
             q: num("q"),
             p: num("p"),
-            nes: num("nes"),
+            z: num("z"),
         });
     }
     Ok(out)
@@ -1046,13 +1045,8 @@ fn relabel(
     // the GO/GMT terms too when the clusters changed (they do not read the
     // panel).
     let regrouped = p.decisions.iter().any(|d| d.action.regroups());
-    let wanted = if regrouped {
-        Terms::Tested
-    } else {
-        Terms::None
-    };
     let (rescored, terms) =
-        match super::recalibrate::rescore_regrouped(source, &p.cells, &p.markers, wanted)? {
+        match super::recalibrate::rescore_regrouped(source, &p.cells, &p.markers, regrouped)? {
             Some((r, t)) => {
                 let terms = t.map(|t| t.write(out, &r.row_names())).transpose()?;
                 (Some(r), terms)
@@ -1241,7 +1235,7 @@ fn preview(source: &Loaded, decisions: Vec<Decision>, decisions_dir: &Path) -> R
         (r, BTreeMap::new())
     } else {
         let rescore = super::recalibrate::rescore_regrouped;
-        match rescore(source, &after.cells, &after.markers, Terms::Effects)? {
+        match rescore(source, &after.cells, &after.markers, true)? {
             Some((r, t)) => {
                 // The clusters a decision made: the others keep the round's terms.
                 let made = |id: &ClusterId| !before.clusters.contains(&Some(*id));

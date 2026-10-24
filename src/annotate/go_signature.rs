@@ -254,9 +254,9 @@ pub fn requested_gene_sets(
     )
 }
 
-/// Each cluster × term's test, as the cell types are tested.
+/// Each cluster × term's test ([`super::term_test`]).
 pub struct TermStats<'a> {
-    pub nes_kt: &'a enrichment::Mat,
+    pub z_kt: &'a enrichment::Mat,
     pub p_kt: &'a enrichment::Mat,
     pub q_kt: &'a enrichment::Mat,
 }
@@ -290,7 +290,7 @@ pub fn write_go_signature(
     let mut f = std::fs::File::create(path)?;
     writeln!(
         f,
-        "{group_axis}\trank\tterm_id\tterm_name\teffect\tn_genes\tnes\tp\tq"
+        "{group_axis}\trank\tterm_id\tterm_name\teffect\tn_genes\tz\tp\tq"
     )?;
     for (k, gname) in group_names.iter().enumerate() {
         for (rank, (t, e)) in ranked_terms(effect_kt, k).into_iter().enumerate() {
@@ -301,7 +301,7 @@ pub fn write_go_signature(
                 "{gname}\t{}\t{id}\t{name}\t{e:.4}\t{}\t{:.3}\t{:.3e}\t{:.3e}",
                 rank + 1,
                 terms[t].1.len(),
-                stats.nes_kt[(k, t)],
+                stats.z_kt[(k, t)],
                 stats.p_kt[(k, t)],
                 stats.q_kt[(k, t)],
             )?;
@@ -362,7 +362,7 @@ mod report_tests {
 
         let stat = enrichment::Mat::from_row_slice(1, 3, &[0.01, 0.02, 0.5]);
         let stats = TermStats {
-            nes_kt: &stat,
+            z_kt: &stat,
             p_kt: &stat,
             q_kt: &stat,
         };

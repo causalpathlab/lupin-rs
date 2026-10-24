@@ -8,10 +8,6 @@ pub const KEEP_IEA: bool = true;
 pub const BLOCK_SIZE: usize = 1024;
 /// Random gene sets in the gene-set null: its p-values go no lower than `1 / (NUM_DRAWS + 1)`.
 pub const NUM_DRAWS: usize = 10_000;
-/// Random gene sets per GO/GMT term: thousands of terms are tested, so each
-/// gets fewer draws, and fgsea's multilevel estimate resolves the p-values
-/// the draws cannot (below `1 / (GO_NUM_DRAWS + 1)`).
-pub const GO_NUM_DRAWS: usize = 1_000;
 /// Minimum per-cell label confidence (0 = keep every call).
 pub const MIN_CONFIDENCE: f32 = 0.0;
 
@@ -23,8 +19,8 @@ pub fn fixed_settings() -> serde_json::Value {
         "go_dropped_evidence": crate::annotate::go_signature::DROPPED_EVIDENCE,
         "block_size": BLOCK_SIZE,
         "num_draws": NUM_DRAWS,
-        "go_num_draws": GO_NUM_DRAWS,
-        "go_p": "gene-set null permutation p, multilevel below its floor (fgsea)",
+        "go_null_draws": crate::annotate::term_test::TERM_NULL_DRAWS,
+        "go_p": "the effect against random gene sets of the term's size and expression bins (normal tail); q by BH within each cluster",
         "min_confidence": MIN_CONFIDENCE,
         "empirical_specificity": true,
         "gene_strata": true,
