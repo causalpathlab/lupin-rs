@@ -106,11 +106,13 @@ pub struct Term {
     pub term: String,
     pub effect: f32,
     pub q: Option<f32>,
-    /// The term's test as the cell types are tested, when the pass ran it.
+    /// The term's test against random gene sets of its size and expression,
+    /// when the pass ran it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p: Option<f32>,
+    /// The effect's z against those gene sets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nes: Option<f32>,
+    pub z: Option<f32>,
 }
 
 /// Where the Cell Ontology walk placed the cluster.

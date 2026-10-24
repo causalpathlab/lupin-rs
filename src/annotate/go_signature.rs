@@ -18,6 +18,73 @@ const MIN_MATCHED: usize = 2;
 /// Top terms reported per group in the signature TSV.
 const TOP_N: usize = 10;
 
+/// GAF evidence codes left out of every term (to move into data-beans'
+/// `GafOpts` beside `no_iea`, which would read the GAF once and keep no copy): an author's statement nobody
+/// traced to its evidence (NAS), and "no data" (ND). One NAS paper alone
+/// annotates the cytosolic ribosome's proteins to "negative regulation of
+/// myoblast fusion", which then tops any cluster rich in ribosomes.
+pub const DROPPED_EVIDENCE: [&str; 2] = ["NAS", "ND"];
+
+/// `gaf` without its [`DROPPED_EVIDENCE`] rows: a copy kept in lupin's cache,
+/// made once per source file (by its path, size and modification time).
+fn without_dropped_evidence(gaf: &str) -> anyhow::Result<std::path::PathBuf> {
+    use anyhow::Context;
+    use sha2::{Digest, Sha256};
+    use std::io::BufRead;
+    let meta = std::fs::metadata(gaf).with_context(|| format!("reading {gaf}"))?;
+    let path = std::path::absolute(gaf)?;
+    let modified = meta.modified()?.duration_since(std::time::UNIX_EPOCH)?;
+    let key = Sha256::digest(format!(
+        "{}\t{}\t{}\t{}",
+        path.display(),
+        meta.len(),
+        modified.as_nanos(),
+        DROPPED_EVIDENCE.join(",")
+    ));
+    let stem = path.file_name().map_or_else(String::new, |n| {
+        let n = n.to_string_lossy();
+        n.split(".gaf").next().unwrap_or(&n).to_string()
+    });
+    let name = format!("{stem}.{}.evidence.gaf.gz", &crate::hex(&key)[..12]);
+    let to = crate::manifest::data_files::SearchPath::new(None)
+        .cached(&name)
+        .unwrap_or_else(|| std::env::temp_dir().join("lupin").join(&name));
+    if to.is_file() {
+        return Ok(to);
+    }
+    info!(
+        "leaving {} evidence out of {gaf}: {}",
+        DROPPED_EVIDENCE.join("/"),
+        to.display()
+    );
+    let dir = to.parent().context("no cache directory")?;
+    std::fs::create_dir_all(dir)?;
+    // A file of this run's own, put in place whole: two runs filtering the
+    // same GAF at once each write theirs, and the last one in stays.
+    let tmp = tempfile::NamedTempFile::new_in(dir)?;
+    let mut out = flate2::write::GzEncoder::new(
+        std::io::BufWriter::new(tmp.as_file()),
+        flate2::Compression::fast(),
+    );
+    let (mut kept, mut dropped) = (0usize, 0usize);
+    for line in legume_numeric::matrix::common_io::open_buf_reader(gaf)?.lines() {
+        let line = line?;
+        let evidence = (!line.starts_with('!'))
+            .then(|| line.split('\t').nth(6))
+            .flatten();
+        if evidence.is_some_and(|e| DROPPED_EVIDENCE.contains(&e.trim())) {
+            dropped += 1;
+            continue;
+        }
+        kept += 1;
+        writeln!(out, "{line}")?;
+    }
+    out.finish()?.flush()?;
+    tmp.persist(&to)?;
+    info!("kept {kept} GAF lines, left out {dropped}");
+    Ok(to)
+}
+
 /// A species whose GO annotations lupin can download.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Species {
@@ -114,7 +181,8 @@ pub fn load_go_gene_sets(
 
     let gene_sets = if let Some(gaf) = gaf {
         info!("reading GAF gene-sets from {gaf} (no_iea={no_iea})");
-        read_gaf(gaf, &GafOpts { no_iea })?.into_gene_sets(Some(&onto))
+        let gaf = without_dropped_evidence(gaf)?;
+        read_gaf(&gaf.to_string_lossy(), &GafOpts { no_iea })?.into_gene_sets(Some(&onto))
     } else {
         let gmt = gmt.expect("exactly one of --gaf/--gmt is required");
         info!("reading GMT gene-sets from {gmt}");
@@ -190,13 +258,6 @@ pub fn requested_gene_sets(
     )
 }
 
-/// Each cluster × term's test, as the cell types are tested.
-pub struct TermStats<'a> {
-    pub nes_kt: &'a enrichment::Mat,
-    pub p_kt: &'a enrichment::Mat,
-    pub q_kt: &'a enrichment::Mat,
-}
-
 /// Row `k`'s top-[`TOP_N`] terms of a `group × term` effect matrix, by
 /// descending positive effect: `(term column, effect)`.
 pub fn ranked_terms(effect_kt: &enrichment::Mat, k: usize) -> Vec<(usize, f32)> {
@@ -217,7 +278,7 @@ pub fn write_go_signature(
     path: &str,
     onto: &Ontology,
     effect_kt: &enrichment::Mat,
-    stats: &TermStats,
+    stats: &super::term_test::TermTest,
     term_ids: &[Box<str>],
     terms: &[(Box<str>, Vec<usize>)],
     group_axis: &str,
@@ -226,7 +287,7 @@ pub fn write_go_signature(
     let mut f = std::fs::File::create(path)?;
     writeln!(
         f,
-        "{group_axis}\trank\tterm_id\tterm_name\teffect\tn_genes\tnes\tp\tq"
+        "{group_axis}\trank\tterm_id\tterm_name\teffect\tn_genes\tz\tp\tq"
     )?;
     for (k, gname) in group_names.iter().enumerate() {
         for (rank, (t, e)) in ranked_terms(effect_kt, k).into_iter().enumerate() {
@@ -237,7 +298,7 @@ pub fn write_go_signature(
                 "{gname}\t{}\t{id}\t{name}\t{e:.4}\t{}\t{:.3}\t{:.3e}\t{:.3e}",
                 rank + 1,
                 terms[t].1.len(),
-                stats.nes_kt[(k, t)],
+                stats.z_kt[(k, t)],
                 stats.p_kt[(k, t)],
                 stats.q_kt[(k, t)],
             )?;
@@ -297,10 +358,10 @@ mod report_tests {
         assert_eq!(ranked_terms(&effect, 0), vec![(1, 0.9), (0, 0.2)]);
 
         let stat = enrichment::Mat::from_row_slice(1, 3, &[0.01, 0.02, 0.5]);
-        let stats = TermStats {
-            nes_kt: &stat,
-            p_kt: &stat,
-            q_kt: &stat,
+        let stats = super::super::term_test::TermTest {
+            z_kt: stat.clone(),
+            p_kt: stat.clone(),
+            q_kt: stat,
         };
         let tsv = dir.path().join("sig.tsv");
         let groups: Vec<Box<str>> = vec!["K0".into()];
@@ -321,3 +382,7 @@ mod report_tests {
         assert!(!text.contains("depleted"), "{text}");
     }
 }
+
+#[cfg(test)]
+#[path = "tests/go_signature.rs"]
+mod tests;

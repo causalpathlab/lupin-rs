@@ -163,8 +163,8 @@ enum Commands {
                       Every decision needs a rationale, kept in `{out}.annotation_history.json`.\n\
                       Counts are not re-read; merged clusters take fresh ids, and are rescored\n\
                       from the pass's cached statistics: their cell types, and the GO/GMT terms\n\
-                      when the pass scored any (`--preview` ranks a merge's terms by effect\n\
-                      alone). A merge that would leave one cluster on an enrichment round is\n\
+                      when the pass scored any (`--preview` shows them too). A merge that\n\
+                      would leave one cluster on an enrichment round is\n\
                       refused. What the new round lacks (terms not scored again) is kept as\n\
                       its caveats, which `lupin review` prints first."
     )]

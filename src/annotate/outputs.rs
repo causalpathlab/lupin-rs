@@ -74,8 +74,8 @@ pub const CLUSTER_CELLTYPE_NES: &str = ".cluster_celltype_nes.parquet";
 pub const CLUSTER_CELLTYPE_Z: &str = ".cluster_celltype_z.parquet";
 /// Enrichment: cluster × cell type ES restandardized by the gene-set null.
 pub const CLUSTER_CELLTYPE_ES_STD: &str = ".cluster_celltype_es_std.parquet";
-/// Enrichment: cluster × GO/GMT term NES, tested as the cell types are.
-pub const CLUSTER_TERM_NES: &str = ".cluster_term_nes.parquet";
+/// Enrichment: cluster × GO/GMT term z of its effect against matched random gene sets.
+pub const CLUSTER_TERM_Z: &str = ".cluster_term_z.parquet";
 /// Enrichment: cluster × GO/GMT term p-values.
 pub const CLUSTER_TERM_P: &str = ".cluster_term_p.parquet";
 /// Enrichment: cluster × GO/GMT term FDR q (BH over the terms within each
@@ -111,7 +111,7 @@ pub const ENRICHMENT_OUTPUT_SUFFIXES: &[&str] = &[
     CLUSTER_CELLTYPE_EXPLAINED,
     CLUSTER_CREDIBLE_SETS,
     ".cluster_expression.parquet",
-    CLUSTER_TERM_NES,
+    CLUSTER_TERM_Z,
     CLUSTER_TERM_P,
     CLUSTER_TERM_Q_VALUES,
     ".ontology_signature.tsv",

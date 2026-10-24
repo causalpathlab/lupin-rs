@@ -46,7 +46,7 @@ fn app_with_terms(terms: bool) -> App {
         effect: 0.5,
         q: Some(0.01),
         p: Some(0.001),
-        nes: Some(1.5),
+        z: Some(4.0),
     };
     app.round = Some(RoundView {
         manifest: PathBuf::new(),
