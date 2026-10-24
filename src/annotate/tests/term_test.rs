@@ -66,3 +66,20 @@ fn the_decoys_effect_is_the_module_scores() {
         }
     }
 }
+
+#[test]
+fn a_term_its_strata_cannot_hide_is_not_tested() {
+    let x = profile();
+    // Ten annotated genes in one stratum, nine of them the term's.
+    let universe: Vec<usize> = (0..10).collect();
+    let terms: Vec<(Box<str>, Vec<usize>)> = vec![("most".into(), (0..10).collect())];
+    let effect = enrichment::ontology_module_score(&x, &terms, &universe)
+        .unwrap()
+        .effect_kt;
+    let t = test_terms(&x, &terms, &universe, &effect).unwrap();
+    assert!(
+        (0..9).all(|k| t.z_kt[(k, 0)].is_nan() && t.q_kt[(k, 0)].is_nan()),
+        "z {:?}",
+        t.z_kt.column(0).as_slice()
+    );
+}

@@ -524,7 +524,9 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     let tree = crate::manifest::rounds::read_tree(&loaded).ok().flatten();
     let members = |t: &str| -> Option<Vec<String>> {
         let g = tree.as_ref()?.group(t)?;
-        (g.members.len() > 1 || label_key(&g.members[0]) != label_key(t)).then(|| g.members.clone())
+        // A group that is just the type itself adds nothing.
+        let only_itself = g.members.iter().all(|m| label_key(m) == label_key(t));
+        (!only_itself).then(|| g.members.clone())
     };
     let out: Map<String, Value> = review_json(&loaded, &clusters, false)?
         .into_iter()

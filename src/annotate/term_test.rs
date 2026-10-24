@@ -30,6 +30,9 @@ use rayon::prelude::*;
 
 /// Random gene sets per term.
 pub const TERM_NULL_DRAWS: usize = 200;
+/// The decoys' spread (log-scale effect) below which they are the term
+/// itself drawn again, and test nothing.
+const MIN_DECOY_SPREAD: f32 = 1e-6;
 /// The decoys' seed, so a round's test can be made again.
 const SEED: u64 = 0x5EED_7E57;
 
@@ -79,7 +82,13 @@ pub fn test_terms(
             Ok((0..n_clusters)
                 .map(|k| {
                     let scores: Vec<f32> = null.iter().map(|d| d[k]).collect();
-                    let z = Null::of(&scores).z(observed[k]) / widen;
+                    let z = if mad_sd(&scores) > MIN_DECOY_SPREAD {
+                        Null::of(&scores).z(observed[k]) / widen
+                    } else {
+                        // The decoys are the term again (its strata hold
+                        // little else): nothing to test it against.
+                        f32::NAN
+                    };
                     (z, normal_upper_tail(z))
                 })
                 .unzip())

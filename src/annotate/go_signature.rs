@@ -57,10 +57,13 @@ fn without_dropped_evidence(gaf: &str) -> anyhow::Result<std::path::PathBuf> {
         DROPPED_EVIDENCE.join("/"),
         to.display()
     );
-    std::fs::create_dir_all(to.parent().context("no cache directory")?)?;
-    let tmp = to.with_extension("part");
+    let dir = to.parent().context("no cache directory")?;
+    std::fs::create_dir_all(dir)?;
+    // A file of this run's own, put in place whole: two runs filtering the
+    // same GAF at once each write theirs, and the last one in stays.
+    let tmp = tempfile::NamedTempFile::new_in(dir)?;
     let mut out = flate2::write::GzEncoder::new(
-        std::io::BufWriter::new(std::fs::File::create(&tmp)?),
+        std::io::BufWriter::new(tmp.as_file()),
         flate2::Compression::fast(),
     );
     let (mut kept, mut dropped) = (0usize, 0usize);
@@ -77,7 +80,7 @@ fn without_dropped_evidence(gaf: &str) -> anyhow::Result<std::path::PathBuf> {
         writeln!(out, "{line}")?;
     }
     out.finish()?.flush()?;
-    std::fs::rename(&tmp, &to)?;
+    tmp.persist(&to)?;
     info!("kept {kept} GAF lines, left out {dropped}");
     Ok(to)
 }
