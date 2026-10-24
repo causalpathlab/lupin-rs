@@ -1023,13 +1023,13 @@ pub(crate) fn bh_where_finite(p: &[f32]) -> Vec<f32> {
 
 /// Decoy scores as a normal: their mean and sample standard deviation;
 /// `None` for the spread of fewer than two.
-struct Null {
+pub(crate) struct Null {
     mean: f64,
     sd: Option<f64>,
 }
 
 impl Null {
-    fn of(scores: &[f32]) -> Self {
+    pub(crate) fn of(scores: &[f32]) -> Self {
         let n = scores.len() as f64;
         let mean = scores.iter().map(|&x| f64::from(x)).sum::<f64>() / n.max(1.0);
         let sd = (n >= 2.0).then(|| {
@@ -1039,14 +1039,21 @@ impl Null {
         Self { mean, sd }
     }
 
+    /// `s` standardised by the null; NaN without a spread.
+    pub(crate) fn z(&self, s: f32) -> f32 {
+        self.sd.map_or(f32::NAN, |sd| {
+            ((f64::from(s) - self.mean) / sd.max(f64::MIN_POSITIVE)) as f32
+        })
+    }
+
     /// `P(Z ≥ z)`, `s` standardised by the null; NaN without a spread.
-    fn upper_tail(&self, s: f32) -> f32 {
+    pub(crate) fn upper_tail(&self, s: f32) -> f32 {
         use statrs::distribution::{ContinuousCDF, Normal};
-        let Some(sd) = self.sd else {
+        let z = self.z(s);
+        if z.is_nan() {
             return f32::NAN;
-        };
-        let z = (f64::from(s) - self.mean) / sd.max(f64::MIN_POSITIVE);
-        Normal::standard().sf(z) as f32
+        }
+        Normal::standard().sf(f64::from(z)) as f32
     }
 }
 

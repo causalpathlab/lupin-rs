@@ -24,3 +24,4 @@ pub mod provenance;
 pub mod rounds;
 pub mod susie;
 pub mod term_match;
+pub mod term_test;

@@ -204,39 +204,28 @@ pub(super) fn rescore(
     after: &Cells,
     panel: &[(String, String)],
 ) -> Result<Option<Rescored>> {
-    Ok(rescore_regrouped(source, after, panel, Terms::None)?.map(|(r, _)| r))
+    Ok(rescore_regrouped(source, after, panel, false)?.map(|(r, _)| r))
 }
 
-/// What [`rescore_regrouped`] scores of the GO/GMT terms `source`'s pass
-/// scored, on the new clusters.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Terms {
-    None,
-    /// Their effects alone, which rank them: a preview's.
-    Effects,
-    /// Their effects and test, as the pass scores them: a saved round's.
-    Tested,
-}
-
-/// [`rescore`], and the GO/GMT terms `source`'s pass scored, scored again on
-/// `after`'s clusters as `terms` asks (rows by the rescoring's `ids`). The
-/// terms are `None` when none are asked, the pass scored none, or they could
-/// not be scored again (said in the log: the cell types' rescoring stands).
+/// [`rescore`], and with `terms` the GO/GMT terms `source`'s pass scored,
+/// scored and tested again on `after`'s clusters (rows by the rescoring's
+/// `ids`). The terms are `None` when none are asked, the pass scored none,
+/// or they could not be scored again (said in the log: the cell types'
+/// rescoring stands).
 pub(super) fn rescore_regrouped(
     source: &Loaded,
     after: &Cells,
     panel: &[(String, String)],
-    terms: Terms,
+    terms: bool,
 ) -> Result<Option<(Rescored, Option<GeneSetScores>)>> {
     let Some((args, inputs, ids)) = rescore_inputs(source, after, panel)? else {
         return Ok(None);
     };
     let rescored = score_all(&args, &inputs, ids)?;
-    // After the cell types, not beside them: each holds a dense genes × sets
-    // matrix, and both are parallel inside.
-    let scored = (terms != Terms::None && args.wants_gene_sets() && args.go_obo.is_some())
+    // After the cell types, not beside them: both are parallel inside.
+    let scored = (terms && args.wants_gene_sets() && args.go_obo.is_some())
         .then(|| {
-            by_enrichment::score_gene_sets(&args, &inputs, terms == Terms::Tested)
+            by_enrichment::score_gene_sets(&args, &inputs)
                 .inspect_err(|e| log::warn!("rescoring the GO/GMT terms failed ({e:#})"))
                 .ok()
         })

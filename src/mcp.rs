@@ -49,17 +49,16 @@ each method's top type, its Cell Ontology placement and its history. \
 annotate_genes adds the genes: what sets each cluster apart, and how the \
 panel markers of its label and of each method's top type fare in it. Where \
 the methods disagree, weigh their evidence, terms included; do not label \
-beyond it. Read a cluster's terms by effect, which ranks what sets it apart \
-(NK-cell killing, platelet clotting, MHC-II presentation); their q comes \
-from a different test that favours large programmes many clusters share \
-(ribosome, spliceosome, oxidative phosphorylation), so a low q alone does \
-not name a cell type, and a high q does not rule one out. A round's `caveats`, when it has any, say what its statistics \
+beyond it. A cluster's terms rank by effect, what sets it apart (NK-cell \
+killing, platelet clotting, MHC-II presentation); their q tests that effect \
+against random gene sets and discounts programmes many clusters share \
+(ribosome, spliceosome), so a cell type split over several clusters tests \
+weaker in each than its effect reads: weigh effect and q together. A round's `caveats`, when it has any, say what its statistics \
 lack: read them first.
 3. annotate_preview with your decisions shows what they would change, \
 rescored; then annotate_relabel applies them and returns the next round. \
-For a merge, the preview lists the merged cluster's top terms by effect \
-(q is null there: the saved round tests them), so weigh whether the parts \
-share a function before merging. A merge that would leave one cluster is \
+For a merge, the preview lists the merged cluster's top terms with their \
+effect and q, so weigh whether the parts share a function before merging. A merge that would leave one cluster is \
 refused (each cluster is scored against the others): label the clusters \
 the same type instead. annotate_relabel's `warnings` say what the new round \
 lacks, such as terms not scored again. \
@@ -144,7 +143,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_preview",
-            "What decisions would change in a round, rescored, without writing anything (`lupin relabel --preview`). A merge also lists the merged cluster's top GO/GMT terms by effect when the round scored terms (the saved round tests them).",
+            "What decisions would change in a round, rescored, without writing anything (`lupin relabel --preview`). A merge also lists the merged cluster's top GO/GMT terms, with effect and q, when the round scored terms.",
             schema(
                 json!({ "round": { "type": "string" }, "decisions": decisions.clone() }),
                 &["round", "decisions"],

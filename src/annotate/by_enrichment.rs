@@ -2,16 +2,15 @@
 //! expression matrix (NB-Fisher adjusted, re-aggregated from raw counts by the
 //! caller — see [`crate::manifest::annotate`]).
 
-use super::args::{AnnotateArgs, GO_NUM_DRAWS, MIN_CONFIDENCE, NUM_DRAWS};
+use super::args::{AnnotateArgs, MIN_CONFIDENCE, NUM_DRAWS};
 use super::inputs::EnrichmentInputs;
 use super::outputs::{clean_outputs, AnnotationOutputs, ENRICHMENT_OUTPUT_SUFFIXES};
 use super::outputs::{
     write_cluster_tables, CLUSTER_CELLTYPE_ES, CLUSTER_CELLTYPE_ES_STD, CLUSTER_CELLTYPE_NES,
     CLUSTER_CELLTYPE_P, CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_CELLTYPE_Z,
-    CLUSTER_TERM_NES, CLUSTER_TERM_P, CLUSTER_TERM_Q_VALUES,
+    CLUSTER_TERM_P, CLUSTER_TERM_Q_VALUES, CLUSTER_TERM_Z,
 };
 use crate::progress::Stages;
-use anyhow::Context;
 use enrichment::{
     annotate, annotate_types, AnnotateConfig, AnnotateOutputs, GroupInputs, SpecificityMode,
     TypeScores,
@@ -479,14 +478,8 @@ fn run_ontology_gene_sets(
 pub(crate) struct GeneSetScores {
     gs: super::go_signature::GeneSetInputs,
     ms: enrichment::OntologyModuleScore,
-    /// The terms' test, when it ran: NES, p and q.
-    test: Option<TermTest>,
-}
-
-struct TermTest {
-    nes_kt: Mat,
-    p_kt: Mat,
-    q_kt: Mat,
+    /// The terms' test: z, p and q.
+    test: super::term_test::TermTest,
 }
 
 /// A round's GO/GMT signature and its effect matrix, as written.
@@ -500,14 +493,14 @@ impl GeneSetScores {
             .into_iter()
             .map(|(t, effect)| {
                 let id = &self.ms.term_ids[t];
-                let test = self.test.as_ref();
+                let test = &self.test;
                 crate::annotate::rounds::Term {
                     source: source.to_string(),
                     term: self.gs.onto.name(id).unwrap_or(id).to_string(),
                     effect,
-                    q: test.map(|x| x.q_kt[(k, t)]),
-                    p: test.map(|x| x.p_kt[(k, t)]),
-                    nes: test.map(|x| x.nes_kt[(k, t)]),
+                    q: Some(test.q_kt[(k, t)]),
+                    p: Some(test.p_kt[(k, t)]),
+                    z: Some(test.z_kt[(k, t)]),
                 }
             })
             .collect()
@@ -518,20 +511,19 @@ impl GeneSetScores {
     /// returns the signature's and the effect matrix's paths.
     pub(crate) fn write(&self, out: &str, cluster_names: &[Box<str>]) -> anyhow::Result<TermPaths> {
         let term_ids = &self.ms.term_ids;
-        let test =
-            (self.test.as_ref()).context("writing gene-set scores whose test did not run")?;
+        let test = &self.test;
         write_cluster_tables(
             out,
             cluster_names,
             term_ids,
             &[
-                (&test.nes_kt, CLUSTER_TERM_NES),
+                (&test.z_kt, CLUSTER_TERM_Z),
                 (&test.p_kt, CLUSTER_TERM_P),
                 (&test.q_kt, CLUSTER_TERM_Q_VALUES),
             ],
         )?;
         let stats = super::go_signature::TermStats {
-            nes_kt: &test.nes_kt,
+            z_kt: &test.z_kt,
             p_kt: &test.p_kt,
             q_kt: &test.q_kt,
         };
@@ -565,7 +557,7 @@ fn gene_set_signature(
     inputs: &EnrichmentInputs,
     cluster_names: &[Box<str>],
 ) -> anyhow::Result<TermPaths> {
-    score_gene_sets(args, inputs, true)?.write(out, cluster_names)
+    score_gene_sets(args, inputs)?.write(out, cluster_names)
 }
 
 /// Score the `--go`/`--gaf`/`--gmt` terms on `inputs`' cluster profile.
@@ -578,7 +570,6 @@ fn gene_set_signature(
 pub(crate) fn score_gene_sets(
     args: &AnnotateArgs,
     inputs: &EnrichmentInputs,
-    test: bool,
 ) -> anyhow::Result<GeneSetScores> {
     use enrichment::ontology_module_score;
     let (profile_gk, gene_names) = (&inputs.profile_gk, &inputs.gene_names);
@@ -606,39 +597,23 @@ pub(crate) fn score_gene_sets(
     // permutation-z + TreeBH walk, whose ÷sd reweighting rewards small,
     // stable-null terms and whose depth preference descends to narrow processes.
     let ms = ontology_module_score(profile_gk, &gs.terms, &gs.universe)?;
-    if !test {
-        return Ok(GeneSetScores { gs, ms, test: None });
-    }
 
-    // The cell types' test on the same terms: their NES, p and q stand beside
-    // the effect the signature ranks by.
-    let mut sets_gt = Mat::zeros(gene_names.len(), gs.terms.len());
-    for (t, (_, rows)) in gs.terms.iter().enumerate() {
-        for &g in rows {
-            sets_gt[(g, t)] = 1.0;
-        }
-    }
-    // Taken by value: weighted in place, so the dense matrix is held once.
-    let (group, weighted_gt, mut config) = prepare_with(args, inputs, sets_gt, None)?;
-    config.num_row_randomization = GO_NUM_DRAWS;
-    config.multilevel = Some(enrichment::fgsea::Multilevel::default());
+    // The effect's own test: against random gene sets of each term's size
+    // and expression level ([`super::term_test`]).
     info!(
-        "Testing {} GO terms over {} clusters as the cell types are tested",
+        "Testing {} GO/GMT terms over {} clusters against {} random gene sets each",
         gs.terms.len(),
-        inputs.n_clusters
+        inputs.n_clusters,
+        super::term_test::TERM_NULL_DRAWS
     );
-    let all: Vec<usize> = (0..gs.terms.len()).collect();
-    let tested = enrichment::annotate_types(&group, &weighted_gt, &ms.term_ids, &config, &all)?;
-    let adjusted = enrichment::adjust(&tested.pvalue_kc, &weighted_gt, &config)?;
-    Ok(GeneSetScores {
-        gs,
-        ms,
-        test: Some(TermTest {
-            nes_kt: tested.nes_kc,
-            p_kt: adjusted.pvalue_kc,
-            q_kt: adjusted.qvalue_kc,
-        }),
-    })
+    let test = super::term_test::test_terms(
+        profile_gk,
+        &gs.terms,
+        &gs.universe,
+        &ms.effect_kt,
+        super::term_test::TERM_NULL_DRAWS,
+    )?;
+    Ok(GeneSetScores { gs, ms, test })
 }
 
 /// Multiply each gene's marker entries by an empirical specificity score
