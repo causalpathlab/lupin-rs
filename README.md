@@ -198,8 +198,9 @@ Each cluster's top
 terms, ranked by their effect (the genes' mean in the cluster against the
 other clusters), are in `{out}.ontology_signature.tsv` and in its round
 summary entry. Every term's effect is also tested, against 200 random gene
-sets per term with as many genes from each of 20 expression bins (a ribosome
-meets other highly expressed genes): z, p (normal tail) and q (BH over the
+sets per term with as many genes from each expression stratum as the term
+has (the cell types' strata, up to 10; a ribosome meets other highly
+expressed genes): z, p (normal tail) and q (BH over the
 terms within each cluster) in `{out}.cluster_term_{z,p,q_values}.parquet`.
 Random genes do not move together as a term's genes do, so the decoys'
 spread is widened by how much more the term varies over the clusters than
@@ -208,7 +209,11 @@ does not move): a programme high in many clusters (ribosome, spliceosome,
 oxidative phosphorylation) tests weak in each, one that sets a cluster apart
 does not. A cell type split over many clusters shares its programmes among
 them in the same way, so they test weaker in each than their effect reads.
-On a PBMC run, 0.4% of the terms per cluster (at most 4%) clear q < 0.05,
+The test reads the clusters' pooled profiles, not their samples: unlike
+the cell types' test it has no sample permutation, so a programme one donor
+drives in a cluster mostly of that donor's cells is not discounted. A term
+whose strata hold little besides its own genes cannot be tested (no z).
+On a PBMC run, 0.3% of the terms per cluster (at most 4%) clear q < 0.05,
 the NK, platelet, B, dendritic and monocyte clusters by their own
 programmes, in seconds.
 A relabel round that merges clusters rescores the terms on the
