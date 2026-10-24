@@ -38,6 +38,7 @@ fn round() -> RoundView {
         cell_clusters: Vec::new(),
         expression: None,
         markers: BTreeMap::from([("CT1".into(), BTreeSet::from(["GENE1".into()]))]),
+        tree: None,
         loose_cells: 1,
         decided: BTreeSet::new(),
         rescorable: false,

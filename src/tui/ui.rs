@@ -671,13 +671,13 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         "genes",
         &[
             ("↑↓ / space", "select / mark genes"),
-            ("m", "specific genes ↔ the label's markers"),
-            ("a", "add as markers of the cluster's label"),
+            ("m", "specific genes ↔ the label's markers (a coarse label's: its types', each marked with its types)"),
+            ("a", "add as markers of the cluster's label (a coarse label: of the one of its types asked)"),
             (
                 "A",
                 "add as markers of any cell type (a new name makes a new type), then offer to label the cluster with it",
             ),
-            ("d", "drop from the label's markers"),
+            ("d", "drop from the label's markers (a coarse label: from each of its types that lists them)"),
             ("⌫", "undo the last marker edit"),
             ("h / X", "hide the genes / hide by pattern (MT-*)"),
             ("H", "show hidden genes"),
@@ -1766,7 +1766,8 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
             let listed = app.label_markers();
             let rows = listed[window.start.min(listed.len())..window.end.min(listed.len())]
                 .iter()
-                .map(|(g, fc, added)| {
+                .map(|m| {
+                    let (fc, added) = (m.fc, m.added);
                     // A marker not enriched in this cluster: missed here.
                     // One not measured is not weak.
                     let weak = fc.is_some_and(|v| v <= 0.0);
@@ -1775,11 +1776,17 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
                         (false, true) => "weak",
                         (false, false) => "",
                     };
+                    // A coarse label's marker: the types it marks.
+                    let tag = [tag.to_string(), m.types.join(" ")]
+                        .into_iter()
+                        .filter(|t| !t.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" · ");
                     let row = Row::new([
-                        mark(g).to_string(),
-                        g.clone(),
+                        mark(&m.gene).to_string(),
+                        m.gene.clone(),
                         fc.map_or_else(|| "—".into(), |v| format!("{v:+.2}")),
-                        tag.to_string(),
+                        tag,
                     ]);
                     match (added, weak) {
                         (true, _) => row.yellow(),
@@ -1790,9 +1797,9 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
                 .collect();
             let weak = listed
                 .iter()
-                .filter(|(_, fc, _)| fc.is_some_and(|v| v <= 0.0))
+                .filter(|m| m.fc.is_some_and(|v| v <= 0.0))
                 .count();
-            let unmeasured = listed.iter().filter(|(_, fc, _)| fc.is_none()).count();
+            let unmeasured = listed.iter().filter(|m| m.fc.is_none()).count();
             let fc = if r.expression.is_none() {
                 "FC not measured: no cluster expression".to_string()
             } else if unmeasured > 0 {
@@ -1803,10 +1810,11 @@ fn draw_genes(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 format!("{weak} weak (FC ≤ 0 in K{})", c.id)
             };
-            (
-                rows,
-                format!(" {} markers of {label} · {fc} ", listed.len()),
-            )
+            let of = match r.members_of(label) {
+                Some(types) => format!("{label}'s types ({})", types.join(", ")),
+                None => label.to_string(),
+            };
+            (rows, format!(" {} markers of {of} · {fc} ", listed.len()))
         }
     };
     let mut state = TableState::default().with_selected(focused.then_some(app.gene_sel - start));

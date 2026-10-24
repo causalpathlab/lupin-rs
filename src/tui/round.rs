@@ -3,6 +3,7 @@
 //! the edits made here, which become the `relabel` decisions of the next
 //! round when saved.
 
+use crate::annotate::celltype_tree::TypeTree;
 use crate::annotate::expression::profile_and_panel;
 pub use crate::annotate::expression::{panel_sets, specific_genes, Expression};
 use crate::annotate::markers::label_key;
@@ -265,6 +266,9 @@ pub struct RoundView {
     pub expression: Option<Expression>,
     /// The round's marker panel: label key → genes.
     pub markers: BTreeMap<String, BTreeSet<String>>,
+    /// The coarse level over the panel's types, when the round records one:
+    /// a coarse label's markers are its types'.
+    pub tree: Option<TypeTree>,
     /// Cells no cluster holds.
     pub loose_cells: usize,
     /// Clusters an earlier round decided (labelled or kept), from its history.
@@ -330,6 +334,7 @@ impl RoundView {
             cell_clusters: cells.clusters,
             expression,
             markers,
+            tree: crate::manifest::rounds::read_tree(&loaded).ok().flatten(),
             loose_cells,
             decided,
             rescorable: a.stats_cache.is_some() && a.expression_clusters.is_some(),
@@ -381,10 +386,42 @@ impl RoundView {
         self.expression.as_ref()?.fold_change(id, gene)
     }
 
+    /// The panel types a coarse label (a group of the round's type tree)
+    /// stands for; `None` for a type of the panel.
+    #[must_use]
+    pub fn members_of(&self, label: &str) -> Option<&[String]> {
+        self.tree.as_ref()?.coarse_members(label, &self.markers)
+    }
+
     /// `label`'s markers with the edits applied, each with whether an edit
-    /// added it (dropped ones are gone), by name.
+    /// added it (dropped ones are gone), by name. A coarse label's are its
+    /// types' together, added where every type listing it had it added.
     #[must_use]
     pub fn markers_of(&self, label: &str, edits: &[Edit]) -> Vec<(String, bool)> {
+        let Some(types) = self.members_of(label) else {
+            return self.type_markers(label, edits);
+        };
+        let mut out: BTreeMap<String, bool> = BTreeMap::new();
+        for t in types {
+            for (g, added) in self.type_markers(t, edits) {
+                *out.entry(g).or_insert(added) &= added;
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// Of coarse label `label`'s types, those `gene` is a marker of (the
+    /// edits applied); empty for a type of the panel.
+    #[must_use]
+    pub fn types_marked(&self, label: &str, gene: &str, edits: &[Edit]) -> Vec<String> {
+        (self.members_of(label).into_iter().flatten())
+            .filter(|t| self.type_markers(t, edits).iter().any(|(g, _)| g == gene))
+            .cloned()
+            .collect()
+    }
+
+    /// [`Self::markers_of`] of a type of the panel (or a new one).
+    fn type_markers(&self, label: &str, edits: &[Edit]) -> Vec<(String, bool)> {
         let key = label_key(label);
         let mut out: BTreeMap<String, bool> = self
             .markers

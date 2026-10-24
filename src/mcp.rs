@@ -522,12 +522,6 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     // A coarse label is a Cell Ontology group of the panel's types: its
     // markers are its members'.
     let tree = crate::manifest::rounds::read_tree(&loaded).ok().flatten();
-    let members = |t: &str| -> Option<Vec<String>> {
-        let g = tree.as_ref()?.group(t)?;
-        // A group that is just the type itself adds nothing.
-        let only_itself = g.members.iter().all(|m| label_key(m) == label_key(t));
-        (!only_itself).then(|| g.members.clone())
-    };
     let out: Map<String, Value> = review_json(&loaded, &clusters, false)?
         .into_iter()
         .map(|(id, v)| {
@@ -541,10 +535,8 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
             let markers: Map<String, Value> = types
                 .into_iter()
                 .map(|t| {
-                    let group = (!panel.contains_key(&label_key(&t)))
-                        .then(|| members(&t))
-                        .flatten();
-                    let names = group.as_deref().unwrap_or(std::slice::from_ref(&t));
+                    let group = tree.as_ref().and_then(|tr| tr.coarse_members(&t, &panel));
+                    let names = group.unwrap_or(std::slice::from_ref(&t));
                     let set: BTreeSet<&String> = (names.iter())
                         .filter_map(|m| panel.get(&label_key(m)))
                         .flatten()

@@ -887,6 +887,17 @@ impl TypeTree {
         self.groups.iter().find(|g| label_key(&g.name) == key)
     }
 
+    /// The panel types a coarse label stands for: the members of the group
+    /// it names, when it is not itself one of `panel`'s types (keyed by
+    /// [`label_key`]) and the group is more than that type.
+    #[must_use]
+    pub fn coarse_members<V>(&self, label: &str, panel: &BTreeMap<String, V>) -> Option<&[String]> {
+        let key = label_key(label);
+        let g = self.group(label).filter(|_| !panel.contains_key(&key))?;
+        let only_itself = g.members.iter().all(|m| label_key(m) == key);
+        (!only_itself).then_some(g.members.as_slice())
+    }
+
     /// The group a fine type belongs to.
     #[cfg(test)]
     #[must_use]
