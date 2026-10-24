@@ -48,6 +48,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const CLUSTERS: &str = ".clusters.parquet";
+/// `annotate.stats`' list of what a round's readers should know of its
+/// statistics.
+pub(crate) const CAVEATS: &str = "caveats";
+/// The caveat of a merge whose GO/GMT terms could not be scored again.
+pub(crate) const TERMS_NOT_RESCORED: &str = "the GO/GMT terms were not scored again: the merged \
+     clusters have none until a new pass scores them; the other clusters keep theirs";
 pub const SUMMARY: &str = ".cluster_summary.json";
 pub const EVIDENCE: &str = ".cluster_evidence.parquet";
 pub const LOG: &str = ".annotation_log.jsonl";
@@ -961,18 +967,18 @@ fn plan(
         round,
         &now(),
     )?;
-    // An enrichment pass's clusters are rescored each against the others.
-    let contrasted = source.manifest.annotate.stats_cache.is_some();
-    if contrasted && decisions.iter().any(|d| d.action.regroups()) {
-        let left: BTreeSet<ClusterId> = cells.clusters.iter().flatten().copied().collect();
+    let (mut markers, older_markers) = read_markers(source)?;
+    if super::recalibrate::rescores_by_contrast(source, &markers)
+        && decisions.iter().any(|d| d.action.regroups())
+    {
+        let mut left = cells.clusters.iter().flatten();
+        let first = left.next();
         anyhow::ensure!(
-            left.len() >= 2,
-            "the decisions leave {} cluster(s): each cluster is scored against the others, so \
-             nothing would be; to call them one type, label each cluster with it instead",
-            left.len()
+            left.any(|c| Some(c) != first),
+            "the decisions leave one cluster: each cluster is scored against the others, so \
+             nothing would be; to call them one type, label each cluster with it instead"
         );
     }
-    let (mut markers, older_markers) = read_markers(source)?;
     let (edited, newer_markers) = apply_markers(&decisions, &mut markers, round)?;
     Ok(Planned {
         decisions,
@@ -1053,11 +1059,10 @@ fn relabel(
             }
             None => (None, None),
         };
-    if regrouped && terms.is_none() && source.manifest.annotate.ontology_signature.is_some() {
-        log::warn!(
-            "the GO/GMT terms were not rescored: the merged clusters have none until a new \
-             pass scores them; the others keep theirs"
-        );
+    let unscored =
+        regrouped && terms.is_none() && source.manifest.annotate.ontology_signature.is_some();
+    if unscored {
+        log::warn!("{TERMS_NOT_RESCORED}");
     }
     let tables = rescored
         .as_ref()
@@ -1105,6 +1110,20 @@ fn relabel(
             "kind": "post_selection",
             "rounds_of_curation": rounds,
         }));
+    }
+    // Terms missing for merged clusters stay missing until a round scores
+    // them all again.
+    let stale =
+        terms.is_none() && (unscored || caveats(source).iter().any(|c| c == TERMS_NOT_RESCORED));
+    let stats = &mut next.manifest.annotate.stats;
+    if stale {
+        let s = stats.get_or_insert_with(|| json!({}));
+        if !s.is_object() {
+            *s = json!({ "recorded": s.take() });
+        }
+        s[CAVEATS] = json!([TERMS_NOT_RESCORED]);
+    } else if let Some(s) = stats.as_mut().and_then(Value::as_object_mut) {
+        s.remove(CAVEATS);
     }
     if let Some((panel, hist)) = &marker_paths {
         next.manifest.annotate.markers = rel(panel);
@@ -1969,14 +1988,31 @@ pub(crate) fn review_json(
 /// `review`'s text: each cluster (all, or those in `clusters`) in turn.
 pub(crate) fn review_text(loaded: &Loaded, clusters: &[ClusterId]) -> Result<String> {
     let r = Reviewed::read(loaded, false, false)?;
-    Ok(r.digests
+    let caveats = caveats(loaded)
+        .into_iter()
+        .map(|c| format!("caveat: {c}\n"));
+    let clusters = r
+        .digests
         .iter()
         .filter(|(id, _)| clusters.is_empty() || clusters.contains(id))
         .map(|(id, d)| {
             let history = r.history.get(id).map_or(&[][..], Vec::as_slice);
             render(*id, d, r.placement(d).as_ref(), history)
-        })
-        .collect())
+        });
+    Ok(caveats.chain(clusters).collect())
+}
+
+/// What `loaded`'s readers should know of its statistics
+/// (`annotate.stats.caveats`).
+pub(crate) fn caveats(loaded: &Loaded) -> Vec<String> {
+    let stats = loaded.manifest.annotate.stats.as_ref();
+    stats
+        .and_then(|s| s.get(CAVEATS))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.as_str().map(str::to_string))
+        .collect()
 }
 
 pub fn run_review(args: &ReviewArgs) -> Result<()> {

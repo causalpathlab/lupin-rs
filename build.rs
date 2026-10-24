@@ -6,10 +6,12 @@ use std::process::Command;
 
 fn main() {
     // HEAD moves on a checkout, its branch's ref on a commit (or
-    // packed-refs), the index on a staging, and the sources on an edit
-    // (`-dirty`).
+    // packed-refs), and the sources on an edit (`-dirty`). Only paths that
+    // exist: cargo reruns for a missing one every build. Optional locks off,
+    // so `describe` leaves the index alone.
     let git = |args: &[&str]| {
         Command::new("git")
+            .env("GIT_OPTIONAL_LOCKS", "0")
             .args(args)
             .output()
             .ok()
@@ -19,20 +21,17 @@ fn main() {
             .filter(|s| !s.is_empty())
     };
     let mut watched = vec!["src".to_string()];
-    for path in ["HEAD", "index", "packed-refs"] {
+    for path in ["HEAD", "packed-refs"] {
         watched.extend(git(&["rev-parse", "--git-path", path]));
     }
     if let Some(r) = git(&["symbolic-ref", "-q", "HEAD"]) {
         watched.extend(git(&["rev-parse", "--git-path", &r]));
     }
-    for w in watched {
+    for w in watched.iter().filter(|w| std::path::Path::new(w).exists()) {
         println!("cargo:rerun-if-changed={w}");
     }
     let version = env!("CARGO_PKG_VERSION");
     let commit = git(&["describe", "--always", "--dirty", "--exclude", "*"]);
-    let full = match commit {
-        Some(c) => format!("{version} ({c})"),
-        None => version.to_string(),
-    };
+    let full = commit.map_or_else(|| version.to_string(), |c| format!("{version} ({c})"));
     println!("cargo:rustc-env=LUPIN_VERSION={full}");
 }

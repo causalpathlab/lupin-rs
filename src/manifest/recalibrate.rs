@@ -353,6 +353,14 @@ pub(super) fn rescore_types(
     }))
 }
 
+/// Whether `source`'s clusters are rescored against `panel` after a
+/// regrouping, each against the others: its enrichment pass cached its
+/// statistics, and there are types to score.
+pub(super) fn rescores_by_contrast(source: &Loaded, panel: &[(String, String)]) -> bool {
+    let a = &source.manifest.annotate;
+    a.stats_cache.is_some() && a.expression_clusters.is_some() && !panel.is_empty()
+}
+
 /// What [`rescore`] scores: the enrichment settings of `source`'s pass, its
 /// cached statistics regrouped by `after`'s clusters against `panel`, and the
 /// clusters' ids by row. `None` when the pass cached nothing or the panel is
@@ -362,13 +370,13 @@ fn rescore_inputs(
     after: &Cells,
     panel: &[(String, String)],
 ) -> Result<Option<(AnnotateArgs, EnrichmentInputs, Vec<ClusterId>)>> {
+    if !rescores_by_contrast(source, panel) {
+        return Ok(None);
+    }
     let a = &source.manifest.annotate;
     let (Some(cache), Some(ids_rel)) = (&a.stats_cache, &a.expression_clusters) else {
         return Ok(None);
     };
-    if panel.is_empty() {
-        return Ok(None);
-    }
     let args: AnnotateArgs = a
         .settings
         .as_ref()

@@ -732,6 +732,33 @@ fn a_merge_rescores_the_terms_on_the_merged_clusters() {
 }
 
 #[test]
+fn a_merge_whose_terms_are_not_rescored_says_so_until_a_round_rescores_them() {
+    let root = tempfile::tempdir().unwrap();
+    let src = gene_set_round(root.path());
+    fs::remove_file(root.path().join("e/sets.gmt")).unwrap();
+    let relabel = |from: &Path, decision: Value, out: &str| {
+        let d = root.path().join(format!("{out}.jsonl"));
+        fs::write(&d, line(decision)).unwrap();
+        run_relabel(&args(from, &d, Some(&root.path().join(out).join("run")))).unwrap();
+        let next = root.path().join(out).join("run.senna.json");
+        run::load(&next.to_string_lossy()).unwrap()
+    };
+    let merge =
+        json!({"clusters": [1, 2], "action": "merge", "rationale": "r", "decided_by": "user"});
+    let r1 = relabel(&src, merge, "r1");
+    assert_eq!(caveats(&r1), [TERMS_NOT_RESCORED]);
+    assert!(review_text(&r1, &[]).unwrap().starts_with("caveat: "));
+
+    let label = json!({"cluster": 0, "action": "label", "label": "CT1", "rationale": "r", "decided_by": "user"});
+    let r2 = relabel(&r1.file, label, "r2");
+    assert_eq!(
+        caveats(&r2),
+        [TERMS_NOT_RESCORED],
+        "the merged cluster still has no terms"
+    );
+}
+
+#[test]
 fn a_merge_that_leaves_one_cluster_is_refused() {
     let root = tempfile::tempdir().unwrap();
     let src = enriched_round(root.path());
@@ -744,7 +771,7 @@ fn a_merge_that_leaves_one_cluster_is_refused() {
     let err = run_relabel(&args(&src, &d, Some(&root.path().join("r1/run"))))
         .unwrap_err()
         .to_string();
-    assert!(err.contains("leave 1 cluster"), "{err}");
+    assert!(err.contains("leave one cluster"), "{err}");
     assert!(!root.path().join("r1").exists(), "nothing is written");
 }
 

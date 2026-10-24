@@ -238,7 +238,12 @@ impl Handler for Lupin {
                 let with_types = a.parse::<bool>("types")?.unwrap_or(false);
                 let loaded = run::load(&a.req_path("round")?)?;
                 let review = review_json(&loaded, &clusters, with_types)?;
-                Ok(vec![Content::Json(json!(review))])
+                let caveats = crate::manifest::rounds::caveats(&loaded);
+                let mut out = vec![Content::Json(json!(review))];
+                if !caveats.is_empty() {
+                    out.push(Content::Json(json!({ "caveats": caveats })));
+                }
+                Ok(out)
             }
             "annotate_genes" => annotate_genes(&a),
             "annotate_preview" => Ok(vec![Content::Json(relabel_preview(&a, cx)?)]),
@@ -300,12 +305,31 @@ impl Arguments {
 }
 
 /// `lupin` with `argv` as a child, refusing `--overwrite` anywhere in it:
-/// no tool replaces a manifest, whatever the agent passes on.
+/// no tool replaces a manifest, whatever the agent passes on. The command
+/// line is parsed as lupin parses it first, so a bad one is refused in a
+/// line, before anything runs.
 fn lupin(argv: &[String]) -> Result<Command> {
     anyhow::ensure!(
         !argv.iter().any(|o| o == "--overwrite"),
         "--overwrite is not taken here: choose another `out`"
     );
+    if let Err(e) = <crate::Cli as clap::Parser>::try_parse_from(
+        std::iter::once("lupin").chain(argv.iter().map(String::as_str)),
+    ) {
+        use clap::error::ErrorKind::{DisplayHelp, DisplayVersion};
+        anyhow::ensure!(
+            !matches!(e.kind(), DisplayHelp | DisplayVersion),
+            "--help and --version are not taken here: the `docs` tool describes lupin"
+        );
+        // The error and its tips, without the usage line and the pointer to --help.
+        let text = e.to_string();
+        let said: Vec<&str> = text
+            .lines()
+            .take_while(|l| !l.starts_with("Usage:"))
+            .filter(|l| !l.trim().is_empty() && !l.starts_with("For more information"))
+            .collect();
+        anyhow::bail!("{}", said.join("\n").trim_start_matches("error: "));
+    }
     lupin_command(argv)
 }
 
@@ -425,9 +449,6 @@ fn background_job(
 }
 
 fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
-    let go = a.parse::<bool>("go")?.unwrap_or(false);
-    let sets = usize::from(go) + ["gaf", "gmt"].iter().filter(|k| a.str(k).is_some()).count();
-    anyhow::ensure!(sets <= 1, "give one of go, gaf and gmt");
     let from = a.req_path("from")?;
     let Output {
         out,
@@ -444,7 +465,7 @@ fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         argv.push(flag("method", m));
         summary += &format!(" by {m}");
     }
-    if go {
+    if a.parse::<bool>("go")?.unwrap_or(false) {
         argv.push("--go".into());
         summary += " and GO terms";
     }
@@ -597,33 +618,11 @@ fn relabel_apply(a: &Arguments, cx: &Call) -> Result<(PathBuf, Vec<String>)> {
     );
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&next), &summary)?;
     cx.state(&json!({ "round": absolute(&next), "from": absolute(&round) }));
-    let merged = text
-        .lines()
-        .any(|l| serde_json::from_str::<Value>(l).is_ok_and(|d| d["action"] == json!("merge")));
-    let warnings = if merged {
-        unscored_terms(&round, &next)?
-    } else {
-        vec![]
-    };
+    // The round is written: what it says of itself is extra, not the result.
+    let warnings = run::load(&next.to_string_lossy())
+        .map(|l| crate::manifest::rounds::caveats(&l))
+        .unwrap_or_default();
     Ok((next, warnings))
-}
-
-/// A merge whose GO/GMT terms could not be scored again keeps the source's
-/// terms file, which has no row for the merged clusters.
-fn unscored_terms(from: &Path, next: &Path) -> Result<Vec<String>> {
-    let signature = |p: &Path| -> Result<Option<String>> {
-        let l = run::load(&p.to_string_lossy())?;
-        let rel = l.manifest.annotate.ontology_signature.clone();
-        Ok(rel.and_then(|r| l.recorded(&r)))
-    };
-    Ok(match (signature(from)?, signature(next)?) {
-        (Some(a), Some(b)) if run::same_file(Path::new(&a), Path::new(&b)) => vec![
-            "the GO/GMT terms were not scored again: the merged clusters have none until a \
-             new pass scores them; the other clusters keep theirs"
-                .into(),
-        ],
-        _ => vec![],
-    })
 }
 
 /// The next `{round}.mcp_decisions.{k}.jsonl` beside `round`, made empty so

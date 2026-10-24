@@ -323,11 +323,10 @@ impl Commands {
 /// `lupin view`: a trajectory run on the order view, anything else on the
 /// round view, as `lupin trajectory -f` and `lupin annotate -f` open them.
 fn view(from: &str, session: &SessionArgs) -> Result<()> {
-    use std::io::IsTerminal;
-    anyhow::ensure!(
-        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
-        "no terminal for lupin's screen: without one, `lupin review -f {from}` shows a round (and the MCP trajectory_read a trajectory run)"
-    );
+    tui::ensure_terminal(&format!(
+        "without one, `lupin review -f {from}` shows a round (and the MCP trajectory_read a \
+         trajectory run)"
+    ))?;
     let loaded = manifest::run::load(from)?;
     let screen = if manifest::family::is_trajectory(&loaded.manifest, &loaded.file) {
         "trajectory"
