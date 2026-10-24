@@ -28,7 +28,7 @@ fn a_terms_test_agrees_with_its_effect() {
     let effect = enrichment::ontology_module_score(&x, &terms, &universe)
         .unwrap()
         .effect_kt;
-    let t = test_terms(&x, &terms, &universe, &effect, 200).unwrap();
+    let t = test_terms(&x, &terms, &universe, &effect).unwrap();
     assert!(t.z_kt[(0, 0)] > 3.0, "z {}", t.z_kt[(0, 0)]);
     assert!(t.q_kt[(0, 0)] < 0.01, "q {}", t.q_kt[(0, 0)]);
     let others = (1..9).map(|k| t.z_kt[(k, 0)]).fold(f32::MIN, f32::max);
@@ -38,22 +38,31 @@ fn a_terms_test_agrees_with_its_effect() {
         t.z_kt[(0, 0)]
     );
     assert!(t.q_kt[(0, 1)] > 0.05, "a flat term is not called");
-    let again = test_terms(&x, &terms, &universe, &effect, 200).unwrap();
+    let again = test_terms(&x, &terms, &universe, &effect).unwrap();
     assert_eq!(again.p_kt, t.p_kt, "the decoys are seeded");
 }
 
 #[test]
-fn decoys_keep_a_terms_expression_levels() {
+fn the_decoys_effect_is_the_module_scores() {
     let x = profile();
     let universe: Vec<usize> = (0..400).collect();
-    let bins = AbundanceBins::of(&x, &universe);
-    let mut rng = SmallRng::seed_from_u64(2);
-    let like = [3usize, 7, 11, 15];
-    let drawn = bins.draw_like(&like, &mut rng);
-    let bin = |g: usize| bins.of_row[g].unwrap();
-    let mut want: Vec<usize> = like.iter().map(|&g| bin(g)).collect();
-    let mut got: Vec<usize> = drawn.iter().map(|&g| bin(g)).collect();
-    want.sort_unstable();
-    got.sort_unstable();
-    assert_eq!(got, want);
+    let terms: Vec<(Box<str>, Vec<usize>)> = vec![
+        ("a".into(), (0..8).collect()),
+        ("b".into(), (100..160).step_by(3).collect()),
+    ];
+    let want = enrichment::ontology_module_score(&x, &terms, &universe)
+        .unwrap()
+        .effect_kt;
+    let bg = Background::of(&x, &universe);
+    for (t, (_, rows)) in terms.iter().enumerate() {
+        let members: Vec<usize> = bg.members(rows).iter().map(|&(i, _)| i as usize).collect();
+        let got = bg.effect(members.iter().copied());
+        for (k, g) in got.iter().enumerate() {
+            assert!(
+                (g - want[(k, t)]).abs() < 1e-5,
+                "{t} {k}: {g} vs {}",
+                want[(k, t)]
+            );
+        }
+    }
 }
