@@ -2044,8 +2044,11 @@ fn render(
     for t in &d.terms {
         let _ = writeln!(
             s,
-            "  {:<4}  {:<40} effect={:.3}",
-            t.source, t.term, t.effect
+            "  {:<4}  {:<40} effect={:.3} q={}",
+            t.source,
+            t.term,
+            t.effect,
+            num(t.q)
         );
     }
     // The ontology walk's placement, else the type tree's.
