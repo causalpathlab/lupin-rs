@@ -523,7 +523,7 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     // markers are its members'.
     let tree = crate::manifest::rounds::read_tree(&loaded).ok().flatten();
     let members = |t: &str| -> Option<Vec<String>> {
-        let g = (tree.as_ref()?.groups.iter()).find(|g| label_key(&g.name) == label_key(t))?;
+        let g = tree.as_ref()?.group(t)?;
         (g.members.len() > 1 || label_key(&g.members[0]) != label_key(t)).then(|| g.members.clone())
     };
     let out: Map<String, Value> = review_json(&loaded, &clusters, false)?
@@ -542,14 +542,11 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
                     let group = (!panel.contains_key(&label_key(&t)))
                         .then(|| members(&t))
                         .flatten();
-                    let set: BTreeSet<&String> = match &group {
-                        Some(m) => m
-                            .iter()
-                            .filter_map(|m| panel.get(&label_key(m)))
-                            .flatten()
-                            .collect(),
-                        None => panel.get(&label_key(&t)).into_iter().flatten().collect(),
-                    };
+                    let names = group.as_deref().unwrap_or(std::slice::from_ref(&t));
+                    let set: BTreeSet<&String> = (names.iter())
+                        .filter_map(|m| panel.get(&label_key(m)))
+                        .flatten()
+                        .collect();
                     let mut genes: Vec<(&String, f32)> = set
                         .iter()
                         .filter_map(|&g| Some((g, expr.fold_change(id, g)?)))

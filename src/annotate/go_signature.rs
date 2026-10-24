@@ -18,7 +18,8 @@ const MIN_MATCHED: usize = 2;
 /// Top terms reported per group in the signature TSV.
 const TOP_N: usize = 10;
 
-/// GAF evidence codes left out of every term: an author's statement nobody
+/// GAF evidence codes left out of every term (to move into data-beans'
+/// `GafOpts` beside `no_iea`, which would read the GAF once and keep no copy): an author's statement nobody
 /// traced to its evidence (NAS), and "no data" (ND). One NAS paper alone
 /// annotates the cytosolic ribosome's proteins to "negative regulation of
 /// myoblast fusion", which then tops any cluster rich in ribosomes.
@@ -254,13 +255,6 @@ pub fn requested_gene_sets(
     )
 }
 
-/// Each cluster × term's test ([`super::term_test`]).
-pub struct TermStats<'a> {
-    pub z_kt: &'a enrichment::Mat,
-    pub p_kt: &'a enrichment::Mat,
-    pub q_kt: &'a enrichment::Mat,
-}
-
 /// Row `k`'s top-[`TOP_N`] terms of a `group × term` effect matrix, by
 /// descending positive effect: `(term column, effect)`.
 pub fn ranked_terms(effect_kt: &enrichment::Mat, k: usize) -> Vec<(usize, f32)> {
@@ -281,7 +275,7 @@ pub fn write_go_signature(
     path: &str,
     onto: &Ontology,
     effect_kt: &enrichment::Mat,
-    stats: &TermStats,
+    stats: &super::term_test::TermTest,
     term_ids: &[Box<str>],
     terms: &[(Box<str>, Vec<usize>)],
     group_axis: &str,
@@ -361,10 +355,10 @@ mod report_tests {
         assert_eq!(ranked_terms(&effect, 0), vec![(1, 0.9), (0, 0.2)]);
 
         let stat = enrichment::Mat::from_row_slice(1, 3, &[0.01, 0.02, 0.5]);
-        let stats = TermStats {
-            z_kt: &stat,
-            p_kt: &stat,
-            q_kt: &stat,
+        let stats = super::super::term_test::TermTest {
+            z_kt: stat.clone(),
+            p_kt: stat.clone(),
+            q_kt: stat,
         };
         let tsv = dir.path().join("sig.tsv");
         let groups: Vec<Box<str>> = vec!["K0".into()];

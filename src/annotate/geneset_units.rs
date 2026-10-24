@@ -1021,6 +1021,26 @@ pub(crate) fn bh_where_finite(p: &[f32]) -> Vec<f32> {
     q
 }
 
+/// `P(Z ≥ z)` of a standard normal; NaN for a NaN `z`.
+pub(crate) fn normal_upper_tail(z: f32) -> f32 {
+    use statrs::distribution::{ContinuousCDF, Normal};
+    if z.is_nan() {
+        return f32::NAN;
+    }
+    Normal::standard().sf(f64::from(z)) as f32
+}
+
+/// MAD → standard deviation under a normal.
+pub(crate) const MAD_TO_SD: f32 = 1.4826;
+
+/// The median absolute deviation of `x` about its median, as a normal's sd.
+pub(crate) fn mad_sd(x: &[f32]) -> f32 {
+    use legume_numeric::matrix::utils::median;
+    let centre = median(x);
+    let dev: Vec<f32> = x.iter().map(|&a| (a - centre).abs()).collect();
+    MAD_TO_SD * median(&dev)
+}
+
 /// Decoy scores as a normal: their mean and sample standard deviation;
 /// `None` for the spread of fewer than two.
 pub(crate) struct Null {
@@ -1047,13 +1067,8 @@ impl Null {
     }
 
     /// `P(Z ≥ z)`, `s` standardised by the null; NaN without a spread.
-    pub(crate) fn upper_tail(&self, s: f32) -> f32 {
-        use statrs::distribution::{ContinuousCDF, Normal};
-        let z = self.z(s);
-        if z.is_nan() {
-            return f32::NAN;
-        }
-        Normal::standard().sf(f64::from(z)) as f32
+    fn upper_tail(&self, s: f32) -> f32 {
+        normal_upper_tail(self.z(s))
     }
 }
 

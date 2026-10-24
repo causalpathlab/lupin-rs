@@ -151,23 +151,6 @@ pub fn prepare(
     args: &AnnotateArgs,
     inputs: &EnrichmentInputs,
 ) -> anyhow::Result<(GroupInputs, Mat, AnnotateConfig)> {
-    prepare_with(
-        args,
-        inputs,
-        inputs.markers_gc.clone(),
-        inputs.type_tree.clone(),
-    )
-}
-
-/// [`prepare`] for any gene × set membership `sets_gc` (a marker panel, or
-/// GO terms), its q-values TreeBH-adjusted over `type_tree` when given and
-/// flat BH within the cluster otherwise.
-fn prepare_with(
-    args: &AnnotateArgs,
-    inputs: &EnrichmentInputs,
-    sets_gc: Mat,
-    type_tree: Option<enrichment::treebh::TypeTree>,
-) -> anyhow::Result<(GroupInputs, Mat, AnnotateConfig)> {
     let n_clusters = inputs.n_clusters;
     let n_batches = inputs.n_batches;
     let profile_gk = &inputs.profile_gk;
@@ -193,7 +176,7 @@ fn prepare_with(
     // Markers that light up broadly (shared by several types) get
     // attenuated; cluster-exclusive markers keep full weight. This
     // complements the IDF that already runs on the marker TSV.
-    let mut markers_gc = sets_gc;
+    let mut markers_gc = inputs.markers_gc.clone();
     apply_empirical_specificity_weights(&mut markers_gc, profile_gk);
 
     // The per-batch β̃ profile backs the sample-permutation null.
@@ -233,7 +216,7 @@ fn prepare_with(
         // The plain permutation p of the gene-set null's draws (floor 1 / (NUM_DRAWS + 1)).
         multilevel: None,
         // TreeBH over the panel's cell-type tree; flat BH within the cluster without one.
-        type_tree,
+        type_tree: inputs.type_tree.clone(),
     };
 
     Ok((group, markers_gc, config))
@@ -493,14 +476,13 @@ impl GeneSetScores {
             .into_iter()
             .map(|(t, effect)| {
                 let id = &self.ms.term_ids[t];
-                let test = &self.test;
                 crate::annotate::rounds::Term {
                     source: source.to_string(),
                     term: self.gs.onto.name(id).unwrap_or(id).to_string(),
                     effect,
-                    q: Some(test.q_kt[(k, t)]),
-                    p: Some(test.p_kt[(k, t)]),
-                    z: Some(test.z_kt[(k, t)]),
+                    q: Some(self.test.q_kt[(k, t)]),
+                    p: Some(self.test.p_kt[(k, t)]),
+                    z: Some(self.test.z_kt[(k, t)]),
                 }
             })
             .collect()
@@ -522,17 +504,12 @@ impl GeneSetScores {
                 (&test.q_kt, CLUSTER_TERM_Q_VALUES),
             ],
         )?;
-        let stats = super::go_signature::TermStats {
-            z_kt: &test.z_kt,
-            p_kt: &test.p_kt,
-            q_kt: &test.q_kt,
-        };
         let sig_path = format!("{out}.ontology_signature.tsv");
         super::go_signature::write_go_signature(
             &sig_path,
             &self.gs.onto,
             &self.ms.effect_kt,
-            &stats,
+            &self.test,
             term_ids,
             &self.gs.terms,
             "cluster",
@@ -560,13 +537,11 @@ fn gene_set_signature(
     score_gene_sets(args, inputs)?.write(out, cluster_names)
 }
 
-/// Score the `--go`/`--gaf`/`--gmt` terms on `inputs`' cluster profile.
-/// Only terms in the overlap window are tested: the window is fixed before
-/// anything is scored, and the broadest terms tell no cluster apart. The
-/// window's thousands of terms get [`GO_NUM_DRAWS`] draws each, with fgsea's
-/// multilevel p below their floor, so a lone pathway can still clear BH.
-/// A relabel round and its preview score merged clusters through this; with
-/// `test` false only the effects are computed, which a preview ranks by.
+/// Score and test the `--go`/`--gaf`/`--gmt` terms on `inputs`' cluster
+/// profile ([`super::term_test`]). Only terms in the overlap window are
+/// scored: the window is fixed before anything is, and the broadest terms
+/// tell no cluster apart. A relabel round and its preview score merged
+/// clusters through this.
 pub(crate) fn score_gene_sets(
     args: &AnnotateArgs,
     inputs: &EnrichmentInputs,
@@ -606,13 +581,7 @@ pub(crate) fn score_gene_sets(
         inputs.n_clusters,
         super::term_test::TERM_NULL_DRAWS
     );
-    let test = super::term_test::test_terms(
-        profile_gk,
-        &gs.terms,
-        &gs.universe,
-        &ms.effect_kt,
-        super::term_test::TERM_NULL_DRAWS,
-    )?;
+    let test = super::term_test::test_terms(profile_gk, &gs.terms, &gs.universe, &ms.effect_kt)?;
     Ok(GeneSetScores { gs, ms, test })
 }
 
