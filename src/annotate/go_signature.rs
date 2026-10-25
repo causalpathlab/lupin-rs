@@ -269,6 +269,57 @@ pub fn ranked_terms(effect_kt: &enrichment::Mat, k: usize) -> Vec<(usize, f32)> 
     ranked
 }
 
+/// A scored term's measured genes, as [`write_term_genes`] keeps them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TermGenes {
+    pub id: String,
+    pub name: String,
+    pub genes: Vec<String>,
+}
+
+/// Write each of `terms` (rows into `gene_names`) with its name and its
+/// genes, one term per line: id, name, genes comma-joined.
+pub fn write_term_genes(
+    path: &str,
+    onto: &Ontology,
+    terms: &[(Box<str>, Vec<usize>)],
+    gene_names: &[Box<str>],
+) -> anyhow::Result<()> {
+    let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+    writeln!(w, "term_id\tterm_name\tgenes")?;
+    for (id, rows) in terms {
+        let genes: Vec<&str> = rows.iter().map(|&g| &*gene_names[g]).collect();
+        let name = onto.name(id).unwrap_or(id);
+        writeln!(w, "{id}\t{name}\t{}", genes.join(","))?;
+    }
+    w.flush()?;
+    info!("wrote {path}");
+    Ok(())
+}
+
+/// The terms [`write_term_genes`] wrote to `path`.
+pub fn read_term_genes(path: &str) -> anyhow::Result<Vec<TermGenes>> {
+    use anyhow::Context;
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+    Ok(text
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let mut f = l.splitn(3, '\t');
+            let (id, name, genes) = (f.next()?, f.next()?, f.next().unwrap_or_default());
+            Some(TermGenes {
+                id: id.into(),
+                name: name.into(),
+                genes: genes
+                    .split(',')
+                    .filter(|g| !g.is_empty())
+                    .map(Into::into)
+                    .collect(),
+            })
+        })
+        .collect())
+}
+
 /// Write a per-group top-`N` GO signature TSV from a `group × term` effect
 /// matrix ([`ranked_terms`]), with their `stats`. `term_ids` indexes the
 /// matrix columns and aligns 1:1 with `terms` (for the gene count).

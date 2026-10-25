@@ -81,6 +81,9 @@ pub const CLUSTER_TERM_P: &str = ".cluster_term_p.parquet";
 /// Enrichment: cluster × GO/GMT term FDR q (BH over the terms within each
 /// cluster), named as [`CLUSTER_CELLTYPE_Q_VALUES`] is.
 pub const CLUSTER_TERM_Q_VALUES: &str = ".cluster_term_q_values.parquet";
+/// GO/GMT terms: each scored term's measured genes (term id, name, genes
+/// comma-joined), beside its tables, for asking why a term or a gene.
+pub const TERM_GENES: &str = ".term_genes.tsv";
 
 /// SuSiE stage: cluster × cell type posterior inclusion probability.
 pub const CLUSTER_CELLTYPE_PIP: &str = ".cluster_celltype_pip.parquet";
@@ -114,6 +117,7 @@ pub const ENRICHMENT_OUTPUT_SUFFIXES: &[&str] = &[
     CLUSTER_TERM_Z,
     CLUSTER_TERM_P,
     CLUSTER_TERM_Q_VALUES,
+    TERM_GENES,
     ".ontology_signature.tsv",
     ".ontology_term_effect.parquet",
     ".ontology_assignment.tsv",

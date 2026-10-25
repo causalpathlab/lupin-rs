@@ -60,6 +60,12 @@ impl Expression {
         self.row.get(gene).copied()
     }
 
+    /// Cluster `id`'s column.
+    #[must_use]
+    pub fn col(&self, id: ClusterId) -> Option<usize> {
+        self.col.get(&id).copied()
+    }
+
     /// The columns of clusters `ids`.
     #[must_use]
     pub fn cols(&self, ids: &BTreeSet<ClusterId>) -> Vec<usize> {
