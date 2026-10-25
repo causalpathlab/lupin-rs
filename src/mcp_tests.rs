@@ -115,6 +115,49 @@ fn genes_show_what_sets_a_cluster_apart_and_its_labels_markers() {
 }
 
 #[test]
+fn a_coarse_label_is_measured_on_its_member_types_markers() {
+    use crate::annotate::celltype_tree::{TreeSource, TypeGroup, TypeTree};
+    let dir = tempfile::tempdir().unwrap();
+    let round = round_with_profile(dir.path());
+    let tree = TypeTree {
+        source: TreeSource::CellOntology,
+        release: None,
+        label_cl: Default::default(),
+        groups: vec![
+            TypeGroup {
+                name: "lineage23".into(),
+                cl_id: None,
+                members: vec!["CT2".into(), "CT3".into()],
+            },
+            TypeGroup {
+                name: "empty".into(),
+                cl_id: None,
+                members: vec![],
+            },
+        ],
+    };
+    let (mut m, _) = run::RunManifest::load(&round).unwrap();
+    let file = run::parent_dir(&round).join("tree.json");
+    std::fs::write(&file, serde_json::to_string(&tree).unwrap()).unwrap();
+    m.annotate.celltype_tree = Some("tree.json".into());
+    m.save(&round).unwrap();
+    let round = round.to_string_lossy().into_owned();
+    let r = calls(&[(
+        "annotate_genes",
+        json!({ "round": round, "clusters": [1], "types": ["lineage23", "empty"] }),
+    )]);
+    let group = &r[0]["structuredContent"]["1"]["markers"]["lineage23"];
+    assert_eq!(group["group_of"], json!(["CT2", "CT3"]), "{group}");
+    let empty = &r[0]["structuredContent"]["1"]["markers"]["empty"];
+    assert_eq!(empty["markers"], 0, "a group of no types: {empty}");
+    let ct2 = &r[0]["structuredContent"]["1"]["markers"]["CT2"];
+    assert!(
+        group["markers"].as_u64() > ct2["markers"].as_u64(),
+        "its members' markers together: {group} vs {ct2}"
+    );
+}
+
+#[test]
 fn outputs_are_never_replaced_and_overwrite_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let round = round_with_profile(dir.path());

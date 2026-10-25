@@ -830,8 +830,8 @@ fn a_merge_preview_shows_the_merged_clusters_terms() {
     assert!(
         terms
             .iter()
-            .all(|t| t["effect"].is_number() && t["q"].is_null()),
-        "a preview ranks by effect; the saved round tests them: {terms:?}"
+            .all(|t| t["effect"].is_number() && t["q"].is_number()),
+        "a preview tests the merged cluster's terms: {terms:?}"
     );
     let with_terms: Vec<&String> = (p["clusters"].as_object().unwrap().iter())
         .filter(|(_, c)| c.get("terms").is_some())

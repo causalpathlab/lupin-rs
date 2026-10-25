@@ -56,6 +56,7 @@ fn round() -> RoundView {
             ("CT1".into(), set(&["GENE1", "GENE2"])),
             ("CT2".into(), set(&["GENE3"])),
         ]),
+        tree: None,
         loose_cells: 0,
         decided: BTreeSet::new(),
         rescorable: false,

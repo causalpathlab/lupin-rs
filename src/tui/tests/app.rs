@@ -46,7 +46,7 @@ fn app_with_terms(terms: bool) -> App {
         effect: 0.5,
         q: Some(0.01),
         p: Some(0.001),
-        nes: Some(1.5),
+        z: Some(4.0),
     };
     app.round = Some(RoundView {
         manifest: PathBuf::new(),
@@ -67,6 +67,7 @@ fn app_with_terms(terms: bool) -> App {
         cell_clusters: Vec::new(),
         expression: None,
         markers: std::collections::BTreeMap::new(),
+        tree: None,
         loose_cells: 0,
         decided: std::collections::BTreeSet::new(),
         rescorable: false,
@@ -2104,6 +2105,71 @@ fn a_marker_edits_reason_says_specific_only_as_the_fold_change_does() {
     assert!(up.contains("UP +"), "{up}");
     let down = why(&mut app, "DOWN", false);
     assert!(down.contains("not specific"), "{down}");
+}
+
+#[test]
+fn a_coarse_labels_markers_are_its_types_and_edits_go_to_them() {
+    use super::super::app::Pending;
+    use super::super::round::{Candidate, Edit};
+    use crate::annotate::celltype_tree::{TreeSource, TypeGroup, TypeTree};
+    let mut app = app_with_terms(false);
+    if let Some(r) = app.round.as_mut() {
+        r.markers = [
+            ("CT1".into(), ["A".into(), "B".into()].into()),
+            ("CT2".into(), ["B".into(), "C".into()].into()),
+        ]
+        .into();
+        r.tree = Some(TypeTree {
+            source: TreeSource::CellOntology,
+            release: None,
+            label_cl: Default::default(),
+            groups: vec![TypeGroup {
+                name: "coarse".into(),
+                cl_id: None,
+                members: vec!["CT1".into(), "CT2".into()],
+            }],
+        });
+        r.clusters[0].candidates = vec![Candidate::new("CT2", 0.6)];
+    }
+    app.edits = vec![Edit::Label {
+        cluster: 0,
+        label: "coarse".into(),
+        reason: "why".into(),
+    }];
+    let listed = app.label_markers();
+    let genes: Vec<&str> = listed.iter().map(|m| m.gene.as_str()).collect();
+    assert_eq!(genes, ["A", "B", "C"]);
+    assert_eq!(listed[1].types, ["CT1", "CT2"]);
+    app.gene_view = GeneView::Markers;
+    assert!(drawn(&app).contains("coarse's types (CT1, CT2)"));
+
+    // Adding asks which type, the cluster's best candidate among them first.
+    app.marked = vec!["D".into()];
+    app.ask_markers_of("coarse".into(), true);
+    let p = app.prompt.take().expect("asks which type");
+    assert_eq!(p.text, "CT2");
+    assert!(matches!(p.pending, Pending::MarkerType { add: true, .. }));
+
+    // Dropping takes the gene from each type that lists it.
+    app.marked = vec!["B".into()];
+    app.ask_markers_of("coarse".into(), false);
+    press(&mut app, KeyCode::Enter);
+    let dropped: Vec<&str> = (app.edits.iter())
+        .filter_map(|e| match e {
+            Edit::Markers {
+                label, add: false, ..
+            } => Some(label.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dropped, ["CT1", "CT2"]);
+    assert!(
+        app.status.contains("B from CT1's and CT2's"),
+        "{}",
+        app.status
+    );
+    let genes: Vec<String> = app.label_markers().into_iter().map(|m| m.gene).collect();
+    assert_eq!(genes, ["A", "C"]);
 }
 
 #[test]

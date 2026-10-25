@@ -345,6 +345,9 @@ pub enum Pending {
         genes: Vec<String>,
         add: bool,
     },
+    /// Drop each type's genes from its markers: a coarse label's, the
+    /// genes dropped from the types that list them.
+    DropFromTypes { drops: Vec<(String, Vec<String>)> },
     /// State that `from` precedes `to` (or that they are unrelated) in the
     /// project's precedence file; the text is why.
     Precedence {
@@ -411,6 +414,17 @@ impl FileWant {
             Self::LabelCl => "Pick a label<TAB>CL:id file",
         }
     }
+}
+
+/// A marker of the selected cluster's label, as the genes pane lists it.
+pub struct LabelMarker {
+    pub gene: String,
+    /// Its log2 fold change in the cluster; `None` when not measured.
+    pub fc: Option<f32>,
+    /// An edit added it.
+    pub added: bool,
+    /// For a coarse label, which of its types it marks.
+    pub types: Vec<String>,
 }
 
 /// A one-line prompt for a decision's reason, prefilled.
@@ -2167,33 +2181,32 @@ impl App {
                         .collect()
                 })
                 .unwrap_or_default(),
-            GeneView::Markers => self
-                .label_markers()
-                .into_iter()
-                .map(|(g, _, _)| g)
-                .collect(),
+            GeneView::Markers => self.label_markers().into_iter().map(|m| m.gene).collect(),
         }
     }
 
-    /// The selected cluster's label's markers (the edits applied), each with
-    /// its log2 fold change in the cluster and whether an edit added it; the
+    /// The selected cluster's label's markers (the edits applied), the
     /// most specific first, unmeasured last.
-    pub fn label_markers(&self) -> Vec<(String, Option<f32>, bool)> {
+    pub fn label_markers(&self) -> Vec<LabelMarker> {
         let (Some(r), Some(c), Some(l)) = (&self.round, self.selected(), self.current_label())
         else {
             return Vec::new();
         };
-        let mut v: Vec<(String, Option<f32>, bool)> = r
+        let mut v: Vec<LabelMarker> = r
             .markers_of(&l, &self.edits)
             .into_iter()
-            .map(|(g, added)| {
-                let fc = r.fold_change(c.id, &g);
-                (g, fc, added)
+            .map(|(gene, added)| LabelMarker {
+                fc: r.fold_change(c.id, &gene),
+                types: r.types_marked(&l, &gene, &self.edits),
+                gene,
+                added,
             })
             .collect();
         v.sort_by(|a, b| {
             let f = |x: &Option<f32>| x.unwrap_or(f32::NEG_INFINITY);
-            f(&b.1).total_cmp(&f(&a.1)).then_with(|| a.0.cmp(&b.0))
+            f(&b.fc)
+                .total_cmp(&f(&a.fc))
+                .then_with(|| a.gene.cmp(&b.gene))
         });
         v
     }
@@ -2261,11 +2274,19 @@ impl App {
         });
     }
 
-    /// [`Self::ask_markers`] for cell type `label`.
+    /// [`Self::ask_markers`] for cell type `label`. A coarse label's markers
+    /// are its types': a gene is added to the one asked for, and dropped
+    /// from each that lists it.
     fn ask_markers_of(&mut self, label: String, add: bool) {
         let (Some(c), Some(r)) = (self.selected(), &self.round) else {
             return;
         };
+        let types = r.members_of(&label).map(<[String]>::to_vec);
+        if add {
+            if let Some(types) = types {
+                return self.ask_member_type(&label, types);
+            }
+        }
         let chosen = self.chosen_genes();
         let current: Vec<String> = r
             .markers_of(&label, &self.edits)
@@ -2300,10 +2321,57 @@ impl App {
             false if folds.iter().all(down) => ("drop", format!("not specific to K{id} ({fc})")),
             false => ("drop", format!("not markers of {label} (in K{id}: {fc})")),
         };
+        let pending = match types {
+            Some(types) => Pending::DropFromTypes {
+                drops: (types.into_iter())
+                    .map(|t| {
+                        let held = r.markers_of(&t, &self.edits);
+                        let genes = (genes.iter())
+                            .filter(|g| held.iter().any(|(h, _)| h == *g))
+                            .cloned()
+                            .collect();
+                        (t, genes)
+                    })
+                    .filter(|(_, g): &(String, Vec<String>)| !g.is_empty())
+                    .collect(),
+            },
+            None => Pending::Markers {
+                label: label.clone(),
+                genes: genes.clone(),
+                add,
+            },
+        };
         self.prompt = Some(Prompt {
             title: format!(" {verb} {} as markers of {label}: why? ", genes.join(", ")),
             text: reason,
-            pending: Pending::Markers { label, genes, add },
+            pending,
+        });
+    }
+
+    /// Ask which of coarse label `label`'s `types` the chosen genes are to
+    /// be markers of, prefilled with the cluster's best candidate among them.
+    fn ask_member_type(&mut self, label: &str, types: Vec<String>) {
+        let genes = self.chosen_genes();
+        if genes.is_empty() {
+            return;
+        }
+        let candidates = self
+            .selected()
+            .map(|c| c.candidates.as_slice())
+            .unwrap_or_default();
+        let best = (candidates.iter())
+            .find_map(|c| types.iter().find(|t| label_key(t) == label_key(&c.label)))
+            .or(types.first())
+            .cloned()
+            .unwrap_or_default();
+        self.prompt = Some(Prompt {
+            title: format!(
+                " add {} as markers of which of {label}'s types ({})? ",
+                genes.join(", "),
+                types.join(", ")
+            ),
+            text: best,
+            pending: Pending::MarkerType { genes, add: true },
         });
     }
 
@@ -2339,7 +2407,10 @@ impl App {
             KeyCode::Enter => {
                 let edits_clusters = matches!(
                     p.pending,
-                    Pending::Label { .. } | Pending::Keep { .. } | Pending::Markers { .. }
+                    Pending::Label { .. }
+                        | Pending::Keep { .. }
+                        | Pending::Markers { .. }
+                        | Pending::DropFromTypes { .. }
                 );
                 if edits_clusters && self.pass_running() {
                     self.status =
@@ -2498,6 +2569,32 @@ impl App {
                             },
                             Err(e) => format!("could not remember the alias: {e:#}"),
                         };
+                    }
+                    Pending::DropFromTypes { drops } => {
+                        // The same genes from every type read as one phrase.
+                        let same = drops.windows(2).all(|w| w[0].1 == w[1].1);
+                        let named: Vec<String> = match (same, drops.first()) {
+                            (true, Some((_, g))) => {
+                                let types: Vec<String> =
+                                    drops.iter().map(|(t, _)| format!("{t}'s")).collect();
+                                vec![format!("{} from {}", g.join(", "), types.join(" and "))]
+                            }
+                            _ => (drops.iter())
+                                .map(|(t, g)| format!("{} from {t}'s", g.join(", ")))
+                                .collect(),
+                        };
+                        self.status = format!(
+                            "dropped {} markers on save (the next round is rescored; u undoes one type at a time)",
+                            named.join("; ")
+                        );
+                        self.edits
+                            .extend(drops.into_iter().map(|(label, genes)| Edit::Markers {
+                                label,
+                                genes,
+                                add: false,
+                                reason: reason.clone(),
+                            }));
+                        self.marked.clear();
                     }
                     Pending::Markers { label, genes, add } => {
                         let moved = if add {

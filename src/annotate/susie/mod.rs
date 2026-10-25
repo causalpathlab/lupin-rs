@@ -42,8 +42,6 @@ const FIRST_PASS_DRAWS: usize = 200;
 const SCALE_SHRINKAGE: f64 = 10.0;
 /// The range an estimated s² is clamped to (log-scale variance).
 const SCALE2_RANGE: (f64, f64) = (1e-3, 25.0);
-/// MAD → standard deviation under a normal.
-const MAD_TO_SD: f64 = 1.4826;
 
 /// Sampler settings for every cluster.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -383,9 +381,7 @@ pub fn fit_all(
 /// keeps the clusters the gene is truly up in from setting its spread, the
 /// median keeps a few clusters where it reads zero from cancelling it.
 fn misfit_scale2(x: &[f32], v: &[f32]) -> f64 {
-    let centre = median(x);
-    let dev: Vec<f32> = x.iter().map(|&a| (a - centre).abs()).collect();
-    let sd = MAD_TO_SD * f64::from(median(&dev));
+    let sd = f64::from(crate::annotate::geneset_units::mad_sd(x));
     (sd * sd - f64::from(median(v))).clamp(SCALE2_RANGE.0, SCALE2_RANGE.1)
 }
 

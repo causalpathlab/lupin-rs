@@ -186,24 +186,42 @@ case; human and mouse), and its GO annotations (`goa_human.gaf.gz`,
 `mgi.gaf.gz`) and the Gene Ontology (`go-basic.obo`) are downloaded once from
 the GO Consortium into the cache below, looked up in the same layers as the
 Cell Ontology data. `--gaf` or `--gmt` names other gene sets, `--go-obo`
-another ontology. The terms sharing 20 to 500 genes with the data are tested
+another ontology. A GAF's annotations by an author's untraced statement
+(NAS) or with no data (ND) are left out, through a filtered copy kept in the
+cache: one NAS paper puts the cytosolic ribosome under "negative regulation
+of myoblast fusion", which would top every ribosome-rich cluster.
+The terms sharing 20 to 500 genes with the data are tested
 and reported (`--go-min-overlap`, `--go-max-overlap`; the overlap counts, not
 the term's own size): the window is fixed before anything is scored, the
 broadest terms tell no cluster apart, and q-values are over the terms in it.
 Each cluster's top
 terms, ranked by their effect (the genes' mean in the cluster against the
 other clusters), are in `{out}.ontology_signature.tsv` and in its round
-summary entry. Every term is also tested as the cell types are: fgsea's NES,
-its p-value against random gene sets and sample permutations, and q by BH
-over the terms within each cluster (`{out}.cluster_term_{nes,p,q_values}.parquet`).
-Each term gets 1,000 random gene sets, and fgsea's multilevel estimate gives
-the p-values below their floor, so one strong pathway can clear BH among
-thousands. A relabel round that merges clusters rescores the terms on the
+summary entry. Every term's effect is also tested, against 200 random gene
+sets per term with as many genes from each expression stratum as the term
+has (the cell types' strata, up to 10; a ribosome meets other highly
+expressed genes): z, p (normal tail) and q (BH over the
+terms within each cluster) in `{out}.cluster_term_{z,p,q_values}.parquet`.
+Random genes do not move together as a term's genes do, so the decoys'
+spread is widened by how much more the term varies over the clusters than
+they do (by the median absolute deviation, which one cluster standing out
+does not move): a programme high in many clusters (ribosome, spliceosome,
+oxidative phosphorylation) tests weak in each, one that sets a cluster apart
+does not. A cell type split over many clusters shares its programmes among
+them in the same way, so they test weaker in each than their effect reads.
+The test reads the clusters' pooled profiles, not their samples: unlike
+the cell types' test it has no sample permutation, so a programme one donor
+drives in a cluster mostly of that donor's cells is not discounted. A term
+whose strata hold little besides its own genes cannot be tested (no z).
+On a PBMC run, 0.3% of the terms per cluster (at most 4%) clear q < 0.05,
+the NK, platelet, B, dendritic and monocyte clusters by their own
+programmes, in seconds.
+A relabel round that merges clusters rescores the terms on the
 new clusters from the pass's cached statistics; one that keeps the clusters
 keeps the terms (a pass that cached no statistics leaves a merged cluster
 without terms until a new pass, and says so). A preview of a merge (`lupin
-relabel --preview`) lists the merged cluster's top terms by effect, so the
-merge is weighed with them; the saved round tests them. A merged cluster's
+relabel --preview`) lists the merged cluster's top terms with their effect
+and q, so the merge is weighed with them. A merged cluster's
 genes are read as its parts' cell-weighted mean.
 GO terms need `--method enrichment`.
 In the annotate TUI (`lupin annotate` without `-o`), `GO terms` in the annotation form (`r`) turns `--go` on
@@ -347,8 +365,8 @@ lupin annotates single-cell clusters with cell types and orders the types into t
 
 Annotation loop:
 1. annotate_run on a run manifest (senna or pinto) writes a new round; or, without a marker panel, annotate_ask writes an unlabelled round and lists each cluster's specific genes for you to label. With one of `go` (the species' GO annotations), `gaf` or `gmt` (a pathway file), it also tests GO or pathway terms per cluster: evidence of what a cluster does, beside its cell type.
-2. annotate_review shows each cluster: its calls with q, its top terms, each method's top type, its Cell Ontology placement and its history. annotate_genes adds the genes: what sets each cluster apart, and how the panel markers of its label and of each method's top type fare in it. Where the methods disagree, weigh their evidence, terms included; do not label beyond it. A round's `caveats`, when it has any, say what its statistics lack: read them first.
-3. annotate_preview with your decisions shows what they would change, rescored; then annotate_relabel applies them and returns the next round. For a merge, the preview lists the merged cluster's top terms by effect (q is null there: the saved round tests them), so weigh whether the parts share a function before merging. A merge that would leave one cluster is refused (each cluster is scored against the others): label the clusters the same type instead. annotate_relabel's `warnings` say what the new round lacks, such as terms not scored again. Rounds are never overwritten, so a decision can always be revisited.
+2. annotate_review shows each cluster: its calls with q, its top terms, each method's top type, its Cell Ontology placement and its history. annotate_genes adds the genes: what sets each cluster apart, and how the panel markers of its label and of each method's top type fare in it. Where the methods disagree, weigh their evidence, terms included; do not label beyond it. A cluster's terms rank by effect, what sets it apart (NK-cell killing, platelet clotting, MHC-II presentation); their q tests that effect against random gene sets and discounts programmes many clusters share (ribosome, spliceosome), so a cell type split over several clusters tests weaker in each than its effect reads: weigh effect and q together. A round's `caveats`, when it has any, say what its statistics lack: read them first.
+3. annotate_preview with your decisions shows what they would change, rescored; then annotate_relabel applies them and returns the next round. For a merge, the preview lists the merged cluster's top terms with their effect and q, so weigh whether the parts share a function before merging. A merge that would leave one cluster is refused (each cluster is scored against the others): label the clusters the same type instead. annotate_relabel's `warnings` say what the new round lacks, such as terms not scored again. Rounds are never overwritten, so a decision can always be revisited.
 
 Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence statements (from, to, precedes|unrelated, note), writes a run.
