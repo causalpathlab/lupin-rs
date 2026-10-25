@@ -229,6 +229,35 @@ for the next pass; once a round has terms, a third column lists the selected
 cluster's top terms with their effect, p and q beside its cell types (`tab`
 reaches it).
 
+## Asking why
+
+Ask why in contrasts: why X rather than Y, given Z. The answer weighs lines of evidence that rest on different data, says which side each favours, and holds the gene and term questions behind them. A tie or a disagreement is an answer: the evidence does not separate them.
+
+```sh
+lupin why -f r1 -c 0                          # K0's label against its strongest rival
+lupin why -f r1 -c 0 --label NK --over gdT    # a label against a named rival
+lupin why -f r1 -c 0 --gene NCAM1 --over CD3E --list markers:NK
+lupin why -f r1 -c 0 --term 'natural killer cell mediated immunity'
+```
+
+A label's answer has two lines of evidence. The panel line holds every
+reading that rests on the marker panel: each method's order, a test of the
+markers only one of the two types has (against random gene sets matched to
+their expression, as GO terms are tested; shared markers say nothing of the
+contrast) and the ontology walk's placement. The terms line is the check
+from outside it: GO/GMT terms that back one type, counted only where they
+still stand out once every panel gene is taken out of them. The verdict
+counts the lines; where they do not separate the two types, a label over both
+says no more than the evidence holds. On a PBMC round, K0 (NK cells) comes
+back NK over gdT on both lines, while the enrichment alone ties them; a
+cluster labelled monocyte comes back Naive CD4 T, a label its evidence does
+not back. A gene is asked within a list (its specific genes, a type's markers,
+a term's genes) and answered by its place in it, or why it is not shown; a
+term by its effect, z and q, its driving genes and the clusters that share
+it. `--json` prints the answer as a tree; `lupin docs why` gives the rules.
+A round keeps its terms' genes in `{out}.term_genes.tsv` for these answers;
+annotate a round written before it again to ask about its terms.
+
 ## Cell Ontology data
 
 lupin places panel labels on the Cell Ontology with two data files, kept out
@@ -366,6 +395,7 @@ lupin annotates single-cell clusters with cell types and orders the types into t
 Annotation loop:
 1. annotate_run on a run manifest (senna or pinto) writes a new round; or, without a marker panel, annotate_ask writes an unlabelled round and lists each cluster's specific genes for you to label. With one of `go` (the species' GO annotations), `gaf` or `gmt` (a pathway file), it also tests GO or pathway terms per cluster: evidence of what a cluster does, beside its cell type.
 2. annotate_review shows each cluster: its calls with q, its top terms, each method's top type, its Cell Ontology placement and its history. annotate_genes adds the genes: what sets each cluster apart, and how the panel markers of its label and of each method's top type fare in it. Where the methods disagree, weigh their evidence, terms included; do not label beyond it. A cluster's terms rank by effect, what sets it apart (NK-cell killing, platelet clotting, MHC-II presentation); their q tests that effect against random gene sets and discounts programmes many clusters share (ribosome, spliceosome), so a cell type split over several clusters tests weaker in each than its effect reads: weigh effect and q together. A round's `caveats`, when it has any, say what its statistics lack: read them first.
+   Ask why in contrasts: why X rather than Y, given Z. The answer weighs lines of evidence that rest on different data, says which side each favours, and holds the gene and term questions behind them. A tie or a disagreement is an answer: the evidence does not separate them. Before you label, relabel or merge, put the choice to annotate_why: why a cluster is A rather than B (left out: its label against its strongest rival), why a gene is shown rather than another, why one term rather than another. Base your rationale on its verdict and name the lines it rests on, and put its `cite` in the decision's `evidence`; where the evidence does not separate A and B, keep a label over both or say so.
 3. annotate_preview with your decisions shows what they would change, rescored; then annotate_relabel applies them and returns the next round. For a merge, the preview lists the merged cluster's top terms with their effect and q, so weigh whether the parts share a function before merging. A merge that would leave one cluster is refused (each cluster is scored against the others): label the clusters the same type instead. annotate_relabel's `warnings` say what the new round lacks, such as terms not scored again. Rounds are never overwritten, so a decision can always be revisited.
 
 Trajectory loop:
@@ -443,7 +473,7 @@ project", PLoS Comput Biol 19(1): e1010786 (2023). doi:10.1371/journal.pcbi.1010
 ## Method write-ups
 
 `lupin docs` lists them; `lupin docs <topic>` prints one (compiled into the
-binary): `annotation`, `grouping`, `ontology-plan`, `trajectory-plan`.
+binary): `annotation`, `grouping`, `ontology-plan`, `trajectory-plan`, `why`.
 
 ## Related crates
 

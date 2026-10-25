@@ -1094,6 +1094,24 @@ pub fn why_label(
 
 // ---- the command ----
 
+/// How to ask, said the same way to agents (the MCP instructions), to users
+/// (the README, the TUI help) and here.
+pub const ASKING: &str = "Ask why in contrasts: why X rather than Y, given Z. The answer weighs \
+lines of evidence that rest on different data, says which side each favours, \
+and holds the gene and term questions behind them. A tie or a disagreement is \
+an answer: the evidence does not separate them.";
+
+/// What a decision quotes in its `evidence` to keep the answer it rests on:
+/// the question and the verdict (or what the answer favours).
+#[must_use]
+pub fn citation(a: &Answer) -> Value {
+    json!({
+        "why": a.question,
+        "favours": a.favours,
+        "verdict": a.verdict,
+    })
+}
+
 /// The three slots of a question, as `lupin why` and the MCP tool take them.
 pub const WHY_HELP: &str = "\
 Ask why the round shows X rather than Y, given Z: a contrast.

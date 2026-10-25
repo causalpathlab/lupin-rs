@@ -19,6 +19,8 @@ pub enum Topic {
     OntologyPlan,
     /// Supervised trajectory: an explicit prior, checked against the data (partly implemented).
     TrajectoryPlan,
+    /// Asking why: contrasts of a round's labels, genes and terms.
+    Why,
 }
 
 /// Every write-up with its one-line blurb, so the listing can never advertise
@@ -43,6 +45,11 @@ const DOCS: &[(Topic, &str, &str)] = &[
         Topic::TrajectoryPlan,
         "PLAN    (partly implemented) supervised trajectory: prior, check, diffusion pseudotime",
         include_str!("../docs/trajectory-plan.md"),
+    ),
+    (
+        Topic::Why,
+        "METHOD  asking why: contrasts of a round's labels, genes and GO/GMT terms",
+        include_str!("../docs/why-contrasts.md"),
     ),
 ];
 
