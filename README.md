@@ -51,7 +51,9 @@ trajectory` without both `-f` and `-o`) runs as a detachable session, so a
 pass, a save or a trajectory run goes on when the connection drops.
 ctrl+alt+d detaches (the first time, it asks for a name), ctrl+alt+s
 switches to another session, and starting the TUI again with no `--from`
-offers the live sessions to return to. `lupin attach`, `lupin sessions`,
+offers the live sessions to return to. `lupin view <manifest>` opens the
+screen on an output: a trajectory run on the order view, a round on the
+round view. `lupin attach`, `lupin sessions`,
 `lupin rename` and `lupin kill` manage them; `kill` quits as `q` does,
 without asking: a save under way finishes, running jobs stop and unsaved
 edits are dropped. `--no-detach` (or `LEGUME_TUI_NO_DETACH=1`) runs it in
@@ -184,18 +186,25 @@ case; human and mouse), and its GO annotations (`goa_human.gaf.gz`,
 `mgi.gaf.gz`) and the Gene Ontology (`go-basic.obo`) are downloaded once from
 the GO Consortium into the cache below, looked up in the same layers as the
 Cell Ontology data. `--gaf` or `--gmt` names other gene sets, `--go-obo`
-another ontology. Every term with at least two of its genes among the data's
-features is tested; a cluster's top terms are reported from those sharing 20
-to 500 genes with the data (`--go-min-overlap`, `--go-max-overlap`; the
-overlap counts, not the term's own size). The window only chooses what is
-shown: q-values are over every tested term. Each cluster's top
+another ontology. The terms sharing 20 to 500 genes with the data are tested
+and reported (`--go-min-overlap`, `--go-max-overlap`; the overlap counts, not
+the term's own size): the window is fixed before anything is scored, the
+broadest terms tell no cluster apart, and q-values are over the terms in it.
+Each cluster's top
 terms, ranked by their effect (the genes' mean in the cluster against the
 other clusters), are in `{out}.ontology_signature.tsv` and in its round
 summary entry. Every term is also tested as the cell types are: fgsea's NES,
 its p-value against random gene sets and sample permutations, and q by BH
 over the terms within each cluster (`{out}.cluster_term_{nes,p,q_values}.parquet`).
-Testing every term (some thousands of genes large) takes minutes where the
-cell types take seconds.
+Each term gets 1,000 random gene sets, and fgsea's multilevel estimate gives
+the p-values below their floor, so one strong pathway can clear BH among
+thousands. A relabel round that merges clusters rescores the terms on the
+new clusters from the pass's cached statistics; one that keeps the clusters
+keeps the terms (a pass that cached no statistics leaves a merged cluster
+without terms until a new pass, and says so). A preview of a merge (`lupin
+relabel --preview`) lists the merged cluster's top terms by effect, so the
+merge is weighed with them; the saved round tests them. A merged cluster's
+genes are read as its parts' cell-weighted mean.
 GO terms need `--method enrichment`.
 In the annotate TUI (`lupin annotate` without `-o`), `GO terms` in the annotation form (`r`) turns `--go` on
 for the next pass; once a round has terms, a third column lists the selected
@@ -337,9 +346,9 @@ put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
 lupin annotates single-cell clusters with cell types and orders the types into trajectories. Its tools state facts computed by code; you make the judgments, each with a written rationale that lupin keeps.
 
 Annotation loop:
-1. annotate_run on a run manifest (senna or pinto) writes a new round; or, without a marker panel, annotate_ask writes an unlabelled round and lists each cluster's specific genes for you to label.
-2. annotate_review shows each cluster: its calls with q, its top terms, each method's top type, its Cell Ontology placement and its history. annotate_genes adds the genes: what sets each cluster apart, and how the panel markers of its label and of each method's top type fare in it. Where the methods disagree, weigh their evidence; do not label beyond it.
-3. annotate_preview with your decisions shows what they would change, rescored; then annotate_relabel applies them and returns the next round. Rounds are never overwritten, so a decision can always be revisited.
+1. annotate_run on a run manifest (senna or pinto) writes a new round; or, without a marker panel, annotate_ask writes an unlabelled round and lists each cluster's specific genes for you to label. With one of `go` (the species' GO annotations), `gaf` or `gmt` (a pathway file), it also tests GO or pathway terms per cluster: evidence of what a cluster does, beside its cell type.
+2. annotate_review shows each cluster: its calls with q, its top terms, each method's top type, its Cell Ontology placement and its history. annotate_genes adds the genes: what sets each cluster apart, and how the panel markers of its label and of each method's top type fare in it. Where the methods disagree, weigh their evidence, terms included; do not label beyond it. A round's `caveats`, when it has any, say what its statistics lack: read them first.
+3. annotate_preview with your decisions shows what they would change, rescored; then annotate_relabel applies them and returns the next round. For a merge, the preview lists the merged cluster's top terms by effect (q is null there: the saved round tests them), so weigh whether the parts share a function before merging. A merge that would leave one cluster is refused (each cluster is scored against the others): label the clusters the same type instead. annotate_relabel's `warnings` say what the new round lacks, such as terms not scored again. Rounds are never overwritten, so a decision can always be revisited.
 
 Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence statements (from, to, precedes|unrelated, note), writes a run.

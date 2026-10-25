@@ -157,3 +157,14 @@ fn a_job_opens_the_tui_on_the_step_given_whole() {
     let cli = parse(&["annotate", "--from", "r.senna.json", "--out", "p"]);
     assert!(!cli.cmd.opens_tui());
 }
+
+#[test]
+fn view_takes_a_manifest_and_the_session_flags() {
+    let cli = parse(&["view", "r1.senna.json", "--session", "look"]);
+    assert!(cli.cmd.opens_tui());
+    let Commands::View { manifest, session } = cli.cmd else {
+        panic!("view");
+    };
+    assert_eq!(&*manifest, "r1.senna.json");
+    assert_eq!(session.session.as_deref(), Some("look"));
+}

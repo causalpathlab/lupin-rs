@@ -5,10 +5,11 @@
 
 use crate::annotate::markers::{label_key, read_marker_pairs};
 use crate::annotate::rounds::{parse_cluster_id, ClusterId};
+use crate::manifest::rounds::Cells;
 use crate::manifest::run::{resolve, Loaded};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use legume_numeric::matrix::dense_mat_io::Mat;
-use legume_numeric::matrix::traits::{IoOps, MatWithNames};
+use legume_numeric::matrix::traits::MatWithNames;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
@@ -142,15 +143,11 @@ pub fn panel_sets(path: &str) -> Result<Panel> {
 
 /// The expression profile `loaded` records, and its marker panel as label
 /// key → genes (empty when it records none, or the file is gone).
-pub fn profile_and_panel(loaded: &Loaded) -> Result<(Option<Expression>, Panel)> {
+pub fn profile_and_panel(loaded: &Loaded, cells: &Cells) -> Result<(Option<Expression>, Panel)> {
     let a = &loaded.manifest.annotate;
     let at = |rel: &Option<String>| rel.as_deref().map(|r| resolve(&loaded.dir, r));
-    let expression = at(&a.cluster_expression)
-        .map(|p| {
-            Mat::from_parquet_with_row_names(&p, Some(0)).with_context(|| format!("reading {p}"))
-        })
-        .transpose()?
-        .map(Expression::new);
+    // Over the round's own clusters: a merge's profile is its parts'.
+    let expression = crate::manifest::rounds::round_profile(loaded, cells)?.map(Expression::new);
     let markers = match at(&a.markers) {
         Some(p) if Path::new(&p).is_file() => panel_sets(&p)?,
         _ => BTreeMap::new(),

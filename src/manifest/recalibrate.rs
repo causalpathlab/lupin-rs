@@ -8,7 +8,7 @@
 use super::data_files::{ClData, Fetch, SearchPath};
 use crate::annotate::aggregate::weighted_mean_profile;
 use crate::annotate::args::AnnotateArgs;
-use crate::annotate::by_enrichment;
+use crate::annotate::by_enrichment::{self, GeneSetScores};
 use crate::annotate::inputs::EnrichmentInputs;
 use crate::annotate::markers::label_key;
 use crate::annotate::rounds::{parse_cluster_id, ClusterId};
@@ -163,8 +163,13 @@ impl Rescored {
     /// Row names `K{id}`, as every cluster table uses.
     #[must_use]
     pub fn row_names(&self) -> Vec<Box<str>> {
-        self.ids.iter().map(|id| format!("K{id}").into()).collect()
+        row_names(&self.ids)
     }
+}
+
+/// Row names `K{id}` for clusters `ids`, as every cluster table uses.
+pub(super) fn row_names(ids: &[ClusterId]) -> Vec<Box<str>> {
+    ids.iter().map(|id| format!("K{id}").into()).collect()
 }
 
 /// The Cell Ontology data `source`'s pass used, read from the files it
@@ -199,16 +204,50 @@ pub(super) fn rescore(
     after: &Cells,
     panel: &[(String, String)],
 ) -> Result<Option<Rescored>> {
+    Ok(rescore_regrouped(source, after, panel, Terms::None)?.map(|(r, _)| r))
+}
+
+/// What [`rescore_regrouped`] scores of the GO/GMT terms `source`'s pass
+/// scored, on the new clusters.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Terms {
+    None,
+    /// Their effects alone, which rank them: a preview's.
+    Effects,
+    /// Their effects and test, as the pass scores them: a saved round's.
+    Tested,
+}
+
+/// [`rescore`], and the GO/GMT terms `source`'s pass scored, scored again on
+/// `after`'s clusters as `terms` asks (rows by the rescoring's `ids`). The
+/// terms are `None` when none are asked, the pass scored none, or they could
+/// not be scored again (said in the log: the cell types' rescoring stands).
+pub(super) fn rescore_regrouped(
+    source: &Loaded,
+    after: &Cells,
+    panel: &[(String, String)],
+    terms: Terms,
+) -> Result<Option<(Rescored, Option<GeneSetScores>)>> {
     let Some((args, inputs, ids)) = rescore_inputs(source, after, panel)? else {
         return Ok(None);
     };
-    score_all(&args, inputs, ids).map(Some)
+    let rescored = score_all(&args, &inputs, ids)?;
+    // After the cell types, not beside them: each holds a dense genes × sets
+    // matrix, and both are parallel inside.
+    let scored = (terms != Terms::None && args.wants_gene_sets() && args.go_obo.is_some())
+        .then(|| {
+            by_enrichment::score_gene_sets(&args, &inputs, terms == Terms::Tested)
+                .inspect_err(|e| log::warn!("rescoring the GO/GMT terms failed ({e:#})"))
+                .ok()
+        })
+        .flatten();
+    Ok(Some((rescored, scored)))
 }
 
 /// Every cluster × type of `inputs` scored, rows by `ids`.
 fn score_all(
     args: &AnnotateArgs,
-    inputs: EnrichmentInputs,
+    inputs: &EnrichmentInputs,
     ids: Vec<ClusterId>,
 ) -> Result<Rescored> {
     info!(
@@ -216,10 +255,10 @@ fn score_all(
         ids.len(),
         inputs.celltype_names.len()
     );
-    let out = by_enrichment::score(args, &inputs)?;
+    let out = by_enrichment::score(args, inputs)?;
     Ok(Rescored {
         ids,
-        types: inputs.celltype_names,
+        types: inputs.celltype_names.clone(),
         q_probs: out.q_kc,
         q_values: out.qvalue_kc,
         p_values: out.pvalue_kc,
@@ -267,7 +306,7 @@ pub(super) fn rescore_types(
         .iter()
         .all(|id| p_old.row(*id).is_some() && nes_old.row(*id).is_some());
     if !(same_types && rows_known) {
-        return score_all(&args, inputs, ids).map(Some);
+        return score_all(&args, &inputs, ids).map(Some);
     }
     let col = |t: &crate::annotate::rounds::Table, name: &str| {
         t.cols.iter().position(|c| label_key(c) == label_key(name))
@@ -314,6 +353,14 @@ pub(super) fn rescore_types(
     }))
 }
 
+/// Whether `source`'s clusters are rescored against `panel` after a
+/// regrouping, each against the others: its enrichment pass cached its
+/// statistics, and there are types to score.
+pub(super) fn rescores_by_contrast(source: &Loaded, panel: &[(String, String)]) -> bool {
+    let a = &source.manifest.annotate;
+    a.stats_cache.is_some() && a.expression_clusters.is_some() && !panel.is_empty()
+}
+
 /// What [`rescore`] scores: the enrichment settings of `source`'s pass, its
 /// cached statistics regrouped by `after`'s clusters against `panel`, and the
 /// clusters' ids by row. `None` when the pass cached nothing or the panel is
@@ -323,13 +370,13 @@ fn rescore_inputs(
     after: &Cells,
     panel: &[(String, String)],
 ) -> Result<Option<(AnnotateArgs, EnrichmentInputs, Vec<ClusterId>)>> {
+    if !rescores_by_contrast(source, panel) {
+        return Ok(None);
+    }
     let a = &source.manifest.annotate;
     let (Some(cache), Some(ids_rel)) = (&a.stats_cache, &a.expression_clusters) else {
         return Ok(None);
     };
-    if panel.is_empty() {
-        return Ok(None);
-    }
     let args: AnnotateArgs = a
         .settings
         .as_ref()

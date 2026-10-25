@@ -40,14 +40,25 @@ judgments, each with a written rationale that lupin keeps.
 Annotation loop:
 1. annotate_run on a run manifest (senna or pinto) writes a new round; or, \
 without a marker panel, annotate_ask writes an unlabelled round and lists \
-each cluster's specific genes for you to label.
+each cluster's specific genes for you to label. With one of `go` (the \
+species' GO annotations), `gaf` or `gmt` (a pathway file), it also tests GO \
+or pathway terms per cluster: evidence of what a cluster does, beside its \
+cell type.
 2. annotate_review shows each cluster: its calls with q, its top terms, \
 each method's top type, its Cell Ontology placement and its history. \
 annotate_genes adds the genes: what sets each cluster apart, and how the \
 panel markers of its label and of each method's top type fare in it. Where \
-the methods disagree, weigh their evidence; do not label beyond it.
+the methods disagree, weigh their evidence, terms included; do not label \
+beyond it. A round's `caveats`, when it has any, say what its statistics \
+lack: read them first.
 3. annotate_preview with your decisions shows what they would change, \
 rescored; then annotate_relabel applies them and returns the next round. \
+For a merge, the preview lists the merged cluster's top terms by effect \
+(q is null there: the saved round tests them), so weigh whether the parts \
+share a function before merging. A merge that would leave one cluster is \
+refused (each cluster is scored against the others): label the clusters \
+the same type instead. annotate_relabel's `warnings` say what the new round \
+lacks, such as terms not scored again. \
 Rounds are never overwritten, so a decision can always be revisited.
 
 Trajectory loop:
@@ -92,6 +103,9 @@ fn tools() -> Vec<ToolSpec> {
                     "from": { "type": "string", "description": "Run manifest or its prefix (or a round, to annotate it again)" },
                     "markers": { "type": "string", "description": "Marker panel (cell type, gene per line); a round's own panel is used when omitted" },
                     "method": { "type": "string", "enum": ["auto", "enrichment", "projection"] },
+                    "go": { "type": "boolean", "description": "Also score GO terms per cluster, with the GO annotations of the run's species (human or mouse, from its gene names), downloaded once (one of go, gaf, gmt)" },
+                    "gaf": { "type": "string", "description": "Also score GO terms from this GO annotation file (.gaf; one of go, gaf, gmt)" },
+                    "gmt": { "type": "string", "description": "Also score these gene sets or pathways (.gmt: name, description, genes per line; one of go, gaf, gmt)" },
                     "out": { "type": "string", "description": "Output prefix; the next free {stem}.L{k} when omitted" },
                     "options": options,
                     "background": background.clone(),
@@ -101,7 +115,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_review",
-            "Show an annotation round cluster by cluster, as `lupin review --json`: digest (size, label, calls with q, terms, evidence check), history, each method's top type and Cell Ontology placement; with `types`, every type's evidence too (large: ask for it on a few clusters).",
+            "Show an annotation round cluster by cluster, as `lupin review --json`: digest (size, label, calls with q, top GO/GMT terms with effect and q, evidence check), history, each method's top type and Cell Ontology placement; with `types`, every type's evidence too (large: ask for it on a few clusters). When the round has caveats (e.g. merged clusters whose terms were not scored again), a second item lists them.",
             schema(
                 json!({
                     "round": { "type": "string", "description": "Annotated manifest (a round) or its prefix" },
@@ -113,7 +127,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_genes",
-            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. Clusters merged since the pass list no genes.",
+            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. A merged cluster's genes are its parts' together (their cell-weighted mean profile).",
             schema(
                 json!({
                     "round": { "type": "string" },
@@ -126,7 +140,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_preview",
-            "What decisions would change in a round, rescored, without writing anything (`lupin relabel --preview`).",
+            "What decisions would change in a round, rescored, without writing anything (`lupin relabel --preview`). A merge also lists the merged cluster's top GO/GMT terms by effect when the round scored terms (the saved round tests them).",
             schema(
                 json!({ "round": { "type": "string" }, "decisions": decisions.clone() }),
                 &["round", "decisions"],
@@ -134,7 +148,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_relabel",
-            "Apply decisions to a round and write the next round of its chain (`lupin relabel --next`); the rationales are kept in its history. Returns the new round's path.",
+            "Apply decisions to a round and write the next round of its chain (`lupin relabel --next`); the rationales are kept in its history. Returns the new round's path, and `warnings` when it lacks something (e.g. a merge whose GO/GMT terms could not be scored again).",
             schema(
                 json!({ "round": { "type": "string" }, "decisions": decisions }),
                 &["round", "decisions"],
@@ -213,7 +227,7 @@ pub fn watch(dir: Option<PathBuf>) -> Result<()> {
 pub fn run_mcp() -> Result<()> {
     let info = ServerInfo {
         name: "lupin".into(),
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: env!("LUPIN_VERSION").into(),
         instructions: Some(INSTRUCTIONS.into()),
     };
     legume_mcp::serve(info, Lupin)
@@ -235,13 +249,22 @@ impl Handler for Lupin {
                 let with_types = a.parse::<bool>("types")?.unwrap_or(false);
                 let loaded = run::load(&a.req_path("round")?)?;
                 let review = review_json(&loaded, &clusters, with_types)?;
-                Ok(vec![Content::Json(json!(review))])
+                let caveats = crate::manifest::rounds::caveats(&loaded);
+                let mut out = vec![Content::Json(json!(review))];
+                if !caveats.is_empty() {
+                    out.push(Content::Json(json!({ "caveats": caveats })));
+                }
+                Ok(out)
             }
             "annotate_genes" => annotate_genes(&a),
             "annotate_preview" => Ok(vec![Content::Json(relabel_preview(&a, cx)?)]),
             "annotate_relabel" => {
-                let round = relabel_apply(&a, cx)?;
-                Ok(vec![Content::Json(json!({ "round": absolute(&round) }))])
+                let (round, warnings) = relabel_apply(&a, cx)?;
+                let mut out = json!({ "round": absolute(&round) });
+                if !warnings.is_empty() {
+                    out["warnings"] = json!(warnings);
+                }
+                Ok(vec![Content::Json(out)])
             }
             "annotate_ask" => annotate_ask(&a, cx),
             "trajectory_run" => trajectory_run(&a, cx),
@@ -293,12 +316,31 @@ impl Arguments {
 }
 
 /// `lupin` with `argv` as a child, refusing `--overwrite` anywhere in it:
-/// no tool replaces a manifest, whatever the agent passes on.
+/// no tool replaces a manifest, whatever the agent passes on. The command
+/// line is parsed as lupin parses it first, so a bad one is refused in a
+/// line, before anything runs.
 fn lupin(argv: &[String]) -> Result<Command> {
     anyhow::ensure!(
         !argv.iter().any(|o| o == "--overwrite"),
         "--overwrite is not taken here: choose another `out`"
     );
+    if let Err(e) = <crate::Cli as clap::Parser>::try_parse_from(
+        std::iter::once("lupin").chain(argv.iter().map(String::as_str)),
+    ) {
+        use clap::error::ErrorKind::{DisplayHelp, DisplayVersion};
+        anyhow::ensure!(
+            !matches!(e.kind(), DisplayHelp | DisplayVersion),
+            "--help and --version are not taken here: the `docs` tool describes lupin"
+        );
+        // The error and its tips, without the usage line and the pointer to --help.
+        let text = e.to_string();
+        let said: Vec<&str> = text
+            .lines()
+            .take_while(|l| !l.starts_with("Usage:"))
+            .filter(|l| !l.trim().is_empty() && !l.starts_with("For more information"))
+            .collect();
+        anyhow::bail!("{}", said.join("\n").trim_start_matches("error: "));
+    }
     lupin_command(argv)
 }
 
@@ -434,6 +476,16 @@ fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         argv.push(flag("method", m));
         summary += &format!(" by {m}");
     }
+    if a.parse::<bool>("go")?.unwrap_or(false) {
+        argv.push("--go".into());
+        summary += " and GO terms";
+    }
+    for key in ["gaf", "gmt"] {
+        if let Some(p) = a.path(key) {
+            argv.push(flag(key, &p));
+            summary += &format!(" and {}", file_name(Path::new(&p)));
+        }
+    }
     argv.extend(a.parse::<Vec<String>>("options")?.unwrap_or_default());
     if background(a)? {
         let job = background_job(cx, &argv, lupin(&argv)?, &out, &round, &summary, "round")?;
@@ -460,7 +512,8 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     let clusters: Vec<ClusterId> = a.parse("clusters")?.unwrap_or_default();
     let more: Vec<String> = a.parse("types")?.unwrap_or_default();
     let top = a.parse::<usize>("top")?.unwrap_or(20);
-    let (expr, panel) = profile_and_panel(&loaded)?;
+    let cells = crate::manifest::rounds::read_cells(&loaded)?;
+    let (expr, panel) = profile_and_panel(&loaded, &cells)?;
     let expr = expr.context("the round records no expression profile")?;
     let specific = specific_genes(&expr);
     let out: Map<String, Value> = review_json(&loaded, &clusters, false)?
@@ -549,8 +602,9 @@ fn relabel_preview(a: &Arguments, cx: &Call) -> Result<Value> {
 /// Apply the decisions as the next round of the round's chain: `--next`,
 /// told the round it must write (`--expect`), so a replay writes the same
 /// one. The decisions go to a fresh `{round}.mcp_decisions.{k}.jsonl` beside
-/// the round, and into the driver script.
-fn relabel_apply(a: &Arguments, cx: &Call) -> Result<PathBuf> {
+/// the round, and into the driver script. Also returns what the agent should
+/// know of the new round that the child's log alone would say.
+fn relabel_apply(a: &Arguments, cx: &Call) -> Result<(PathBuf, Vec<String>)> {
     let round = round_arg(a)?;
     let text = decisions_text(a, &round)?;
     // Refused here before anything is written; relabel checks again under
@@ -575,7 +629,11 @@ fn relabel_apply(a: &Arguments, cx: &Call) -> Result<PathBuf> {
     );
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&next), &summary)?;
     cx.state(&json!({ "round": absolute(&next), "from": absolute(&round) }));
-    Ok(next)
+    // The round is written: what it says of itself is extra, not the result.
+    let warnings = run::load(&next.to_string_lossy())
+        .map(|l| crate::manifest::rounds::caveats(&l))
+        .unwrap_or_default();
+    Ok((next, warnings))
 }
 
 /// The next `{round}.mcp_decisions.{k}.jsonl` beside `round`, made empty so
