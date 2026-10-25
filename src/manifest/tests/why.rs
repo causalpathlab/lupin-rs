@@ -229,3 +229,48 @@ fn a_list_of_names_with_spaces_keeps_them_apart() {
     assert_eq!(compact(&json!(["a", "c"])), "[a c]");
     assert_eq!(compact(&json!({ "x": { "y": 1 } })), "x={y=1}");
 }
+
+#[test]
+fn a_misnamed_marker_list_is_refused_not_answered() {
+    let r = round();
+    let err = why_gene(&r, 0, "G3", None, &GeneList::Markers("nope".into()))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("nope has no panel markers"), "{err}");
+}
+
+#[test]
+fn nothing_to_read_is_missing_data_not_a_tie() {
+    let mut r = round();
+    (r.expr, r.terms) = (None, None);
+    r.evidence.get_mut(&0).unwrap().1.clear();
+    let a = why_label(&r, 0, Some("a"), Some("b"), 1).unwrap();
+    assert_eq!(a.favours, Favours::CannotTell, "{a:#?}");
+    assert!(a
+        .notes
+        .iter()
+        .any(|n| n.contains("missing data, not a tie")));
+}
+
+#[test]
+fn a_foil_inside_a_coarse_fact_is_asked_against_its_other_type() {
+    let mut r = round();
+    r.tree = Some(TypeTree {
+        source: TreeSource::CellOntology,
+        release: None,
+        label_cl: Default::default(),
+        groups: vec![TypeGroup {
+            name: "grp".into(),
+            cl_id: None,
+            members: vec!["a".into(), "b".into()],
+        }],
+    });
+    let a = why_label(&r, 0, Some("grp"), Some("b"), 1).unwrap();
+    let q = a.question.as_ref().unwrap();
+    assert_eq!((q.fact.as_str(), q.foil.as_deref()), ("a", Some("b")));
+    assert!(
+        a.notes[0].contains("b is one of grp's types"),
+        "{:?}",
+        a.notes
+    );
+}

@@ -2171,7 +2171,12 @@ impl App {
                     (GeneView::Markers, Some(l)) => GeneList::Markers(l.clone()),
                     _ => GeneList::Specific,
                 };
-                let foil = self.marked.iter().find(|m| **m != gene).cloned();
+                // The gene marked last, else the one listed next on screen
+                // (hidden genes stay out of it).
+                let shown = self.listed_genes();
+                let foil = (self.marked.iter().rev().find(|m| **m != gene))
+                    .or_else(|| shown.get(self.gene_sel + 1))
+                    .cloned();
                 why::WhyArgs {
                     gene: Some(gene),
                     over: foil,
@@ -2189,19 +2194,25 @@ impl App {
                 }
             }
             Focus::Candidates => {
+                // The label against the selected candidate; an unassigned
+                // cluster's selected candidate against its strongest rival.
                 let picked = (self.listed_candidates().get(self.cand_sel)).map(|c| c.label.clone());
-                let foil =
-                    picked.filter(|p| label.as_ref().is_none_or(|l| label_key(l) != label_key(p)));
+                let (fact, foil) = match &label {
+                    Some(l) => (
+                        Some(l.clone()),
+                        picked.filter(|p| label_key(l) != label_key(p)),
+                    ),
+                    None => (picked, None),
+                };
                 why::WhyArgs {
-                    label: label
-                        .clone()
-                        .or_else(|| foil.is_none().then(|| self.label_or_top()).flatten()),
+                    label: fact,
                     over: foil,
                     ..why::WhyArgs::new(&from, k)
                 }
             }
+            // An unassigned cluster: its top candidate.
             _ => why::WhyArgs {
-                label: label.clone(),
+                label: self.label_or_top(),
                 ..why::WhyArgs::new(&from, k)
             },
         };

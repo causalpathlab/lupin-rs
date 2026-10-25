@@ -457,7 +457,11 @@ fn gene_list(r: &Round, k: ClusterId, list: &GeneList) -> Result<(Ranked, String
             "cluster_expression",
         ),
         GeneList::Markers(t) => (
-            r.by_fc(k, &r.markers(t)),
+            r.by_fc(k, &{
+                let m = r.markers(t);
+                anyhow::ensure!(!m.is_empty(), "{t} has no panel markers (is it a type or group of the panel?)");
+                m
+            }),
             format!("{t}'s panel markers, by log2 fold change in K{k}"),
             "markers",
         ),
@@ -619,12 +623,17 @@ pub fn why_term(r: &Round, k: ClusterId, fact: &str, foil: Option<&str>) -> Resu
         Some(f) => terms.find(f)?,
         None => {
             let i = ranked.iter().position(|(t, _)| t.id == a.id);
-            let pick = match i {
-                Some(i) => ranked.get(i + 1),
-                None => ranked.first(),
+            // The term ranked next; for the last, the one above it.
+            let (pick, which) = match i {
+                Some(i) if i + 1 < ranked.len() => (ranked.get(i + 1), "ranked next"),
+                Some(i) => (
+                    i.checked_sub(1).and_then(|j| ranked.get(j)),
+                    "ranked just above",
+                ),
+                None => (ranked.first(), "ranked first"),
             };
             let (b, _) = pick.context("no other term with a positive effect in the cluster")?;
-            notes.push(format!("no foil given: {}, the term ranked next", b.name));
+            notes.push(format!("no foil given: {}, the term {which}", b.name));
             b
         }
     };
@@ -762,7 +771,7 @@ fn rival(r: &Round, types: &[TypeEvidence], fact: &str) -> Option<(String, bool)
         .min_by(|a, b| {
             low(a.q)
                 .total_cmp(&low(b.q))
-                .then(low(b.nes.map(|x| -x)).total_cmp(&low(a.nes.map(|x| -x))))
+                .then(low(a.nes.map(|x| -x)).total_cmp(&low(b.nes.map(|x| -x))))
         })
         .map(|e| (e.label.clone(), false))
 }
@@ -806,9 +815,11 @@ fn panel_line(
             None => json!({ "rank": null }),
         };
         // The higher place in the method's order, unless their readings tie.
-        let tie = (a.zip(b))
-            .and_then(|((x, _), (y, _))| m.reading(x).zip(m.reading(y)))
-            .is_some_and(|(x, y)| (x - y).abs() < READING_TIE);
+        // SuSiE orders by PIP, not the share it reads: its order stands.
+        let tie = m != Method::Susie
+            && (a.zip(b))
+                .and_then(|((x, _), (y, _))| m.reading(x).zip(m.reading(y)))
+                .is_some_and(|(x, y)| (x - y).abs() < READING_TIE);
         let f = match tie {
             true => Favours::Neither,
             false => Favours::by_rank(a.map(|(_, i)| i), b.map(|(_, i)| i)),
@@ -1082,7 +1093,8 @@ pub fn why_label(
                 // A coarse label with no rival outside it: the question it
                 // leaves open is between its own types.
                 (_, Some((a, b))) => (a.clone(), b.clone(), format!(
-                    "no foil given and no rival outside {fact}: asking between its types {a} and {b}"
+                    "no foil given and the {} order puts forward no rival outside {fact}: asking between its types {a} and {b}",
+                    r.method.name()
                 )),
                 (Some((f, false)), None) => (fact, f.clone(), format!(
                     "no foil given, and the {} order puts forward no other type: {f}, the closest by q",
@@ -1094,6 +1106,24 @@ pub fn why_label(
             (a, b)
         }
     };
+    // A foil that is one of a coarse fact's own types is asked against the
+    // fact's best other type: the group holds the foil itself.
+    let members = r.types_of(&fact);
+    let fact = if members.len() > 1 && members.iter().any(|t| label_key(t) == label_key(&foil)) {
+        let mut ranked = (r.method.ranked(types).into_iter())
+            .map(|e| e.label.clone())
+            .chain(members.iter().cloned())
+            .filter(|l| members.iter().any(|t| label_key(t) == label_key(l)));
+        let other = ranked
+            .find(|l| label_key(l) != label_key(&foil))
+            .context("a group of one type")?;
+        notes.push(format!(
+            "{foil} is one of {fact}'s types: asking its best other type, {other}, rather than {foil}"
+        ));
+        other
+    } else {
+        fact
+    };
     let d = Distinct::of(r, &fact, &foil);
     let lines = vec![
         panel_line(r, k, (&fact, &foil), &d, depth)?,
@@ -1101,12 +1131,19 @@ pub fn why_label(
     ];
     let count = |f: Favours| lines.iter().filter(|l| l.favours == f).count();
     let (n_fact, n_foil) = (count(Favours::Fact), count(Favours::Foil));
+    let read = lines.iter().any(|l| l.favours != Favours::CannotTell);
     let favours = match (n_fact, n_foil) {
+        (0, 0) if !read => Favours::CannotTell,
         (0, 0) => Favours::Neither,
         (_, 0) => Favours::Fact,
         (0, _) => Favours::Foil,
         _ => Favours::Split,
     };
+    if favours == Favours::CannotTell {
+        notes.push(format!(
+            "no line has anything to read {fact} and {foil} from: this is missing data, not a tie"
+        ));
+    }
     if favours == Favours::Neither {
         notes.push(format!("the evidence does not separate {fact} and {foil}: a label over both (their group) says no more than it holds"));
     }
