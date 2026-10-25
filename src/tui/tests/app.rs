@@ -4214,3 +4214,21 @@ fn methods_that_disagree_flag_the_cluster_and_the_next_flagged_key_reaches_it() 
     let screen = drawn(&app);
     assert!(screen.contains("they disagree"), "{screen}");
 }
+
+#[test]
+fn the_guide_asks_in_contrasts_as_the_other_doors_do() {
+    let asking = super::super::ui::guide(false)
+        .flat_map(|(_, keys)| keys)
+        .any(|(_, what)| what == crate::manifest::why::ASKING);
+    assert!(asking);
+}
+
+#[test]
+fn w_on_a_round_it_cannot_read_says_so_and_opens_nothing() {
+    let mut app = app_with_terms(false);
+    app.focus = Focus::Clusters;
+    press(&mut app, KeyCode::Char('w'));
+    assert!(app.why.is_none());
+    assert!(app.status.contains("cannot answer why"), "{}", app.status);
+    assert!(super::super::ui::help(&app).contains("w why"));
+}

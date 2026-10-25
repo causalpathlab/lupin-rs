@@ -1180,12 +1180,16 @@ pub struct WhyArgs {
 /// Answer the question `args` puts to its round.
 pub fn ask(args: &WhyArgs) -> Result<Answer> {
     let loaded = super::run::load(&args.from)?;
-    let r = Round::read(&loaded)?;
+    ask_round(&Round::read(&loaded)?, args)
+}
+
+/// Answer the question `args` puts to round `r`, already read.
+pub fn ask_round(r: &Round, args: &WhyArgs) -> Result<Answer> {
     let (k, over) = (args.cluster, args.over.as_deref());
     match (&args.gene, &args.term) {
-        (Some(g), _) => why_gene(&r, k, g, over, &GeneList::parse(&args.list)?),
-        (_, Some(t)) => why_term(&r, k, t, over),
-        _ => why_label(&r, k, args.label.as_deref(), over, args.depth),
+        (Some(g), _) => why_gene(r, k, g, over, &GeneList::parse(&args.list)?),
+        (_, Some(t)) => why_term(r, k, t, over),
+        _ => why_label(r, k, args.label.as_deref(), over, args.depth),
     }
 }
 
@@ -1234,11 +1238,10 @@ fn compact_at(v: &Value, depth: usize) -> String {
         ),
         Value::String(s) => s.clone(),
         Value::Array(a) => {
-            let sep = if a.iter().any(Value::is_object) {
-                "; "
-            } else {
-                " "
-            };
+            // Items that hold spaces themselves (objects, term names) are
+            // set apart.
+            let spaced = |x: &Value| x.is_object() || x.as_str().is_some_and(|t| t.contains(' '));
+            let sep = if a.iter().any(spaced) { "; " } else { " " };
             let items: Vec<String> = a.iter().map(|x| compact_at(x, depth + 1)).collect();
             format!("[{}]", items.join(sep))
         }

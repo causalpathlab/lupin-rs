@@ -222,3 +222,10 @@ fn a_term_ranks_by_its_effect() {
     let err = why_term(&r, 0, "programme", None).unwrap_err().to_string();
     assert!(err.contains("a programme"), "names the near term: {err}");
 }
+
+#[test]
+fn a_list_of_names_with_spaces_keeps_them_apart() {
+    assert_eq!(compact(&json!(["a b", "c"])), "[a b; c]");
+    assert_eq!(compact(&json!(["a", "c"])), "[a c]");
+    assert_eq!(compact(&json!({ "x": { "y": 1 } })), "x={y=1}");
+}

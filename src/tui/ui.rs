@@ -81,6 +81,9 @@ fn draw_overlays(f: &mut Frame, app: &App, menu_area: Rect) {
     if app.help_open {
         draw_guide(f, app);
     }
+    if let Some(w) = &app.why {
+        draw_why(f, w);
+    }
     draw_progress(f, app);
     for pane in [&app.figures, &app.cell_map].into_iter().flatten() {
         pane.draw_save(f, f.area());
@@ -402,6 +405,7 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "k keep",
             "u unassign",
             "⌫ undo",
+            "w why",
             "] next flagged",
             "S method",
             "a all",
@@ -419,6 +423,7 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "k keep",
             "u unassign",
             "⌫ undo",
+            "w why",
             "] next flagged",
             "S method",
             "a all",
@@ -435,6 +440,7 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
             "A add to a type",
             "d drop",
             "⌫ undo marker",
+            "w why",
             "h hide",
             "X hide by pattern",
             "H hidden",
@@ -577,6 +583,7 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
         ],
         Focus::Go => &[
             "↑↓ term",
+            "w why",
             "← → read a long name",
             "tab pane",
             "esc clusters",
@@ -584,6 +591,7 @@ fn pane_keys(app: &App) -> &'static [&'static str] {
         Focus::Candidates => &[
             "↑↓ candidate",
             "⏎ or 1-9 take",
+            "w why",
             "S method",
             "a all",
             "tab pane",
@@ -681,6 +689,16 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ("⌫", "undo the last marker edit"),
             ("h / X", "hide the genes / hide by pattern (MT-*)"),
             ("H", "show hidden genes"),
+        ],
+    ),
+    (
+        "asking why",
+        &[
+            (
+                "w",
+                "in the clusters, candidates, genes or GO terms: why the label, gene or term rather than its rival (the selected candidate; the marked gene, else the next; the next term), answered from the saved round; ↑↓ scroll, any other key closes",
+            ),
+            ("", crate::manifest::why::ASKING),
         ],
     ),
     (
@@ -843,6 +861,61 @@ fn draw_guide(f: &mut Frame, app: &App) {
         let shown: Vec<Line> = lines.into_iter().skip(at).collect();
         f.render_widget(Paragraph::new(shown).style(POPUP), *part);
     }
+}
+
+/// An answer to `w`: its tree as text, each line wrapped under its own
+/// indent, scrolled as the guide is.
+fn draw_why(f: &mut Frame, w: &super::app::WhyView) {
+    let screen = f.area();
+    let width = screen.width.saturating_sub(4).min(140);
+    let room = usize::from(width.saturating_sub(4));
+    let mut lines: Vec<Line> = Vec::new();
+    for line in w.text.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let pad = " ".repeat(indent + 2);
+        for (i, part) in wrap(
+            line.trim_start(),
+            room.saturating_sub(indent + 2).max(20),
+            usize::MAX,
+        )
+        .into_iter()
+        .enumerate()
+        {
+            let lead = if i == 0 { &pad[..indent] } else { &pad };
+            let text = format!("{lead}{part}");
+            // The questions and verdicts stand out from the values.
+            let l = Line::from(text);
+            lines.push(
+                if i == 0
+                    && (part.starts_with("why ")
+                        || part.starts_with("verdict:")
+                        || part.ends_with(" line"))
+                {
+                    l.bold()
+                } else {
+                    l
+                },
+            );
+        }
+    }
+    let height = (lines.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    let scrolls = lines
+        .len()
+        .saturating_sub(usize::from(height.saturating_sub(2)));
+    w.scrolls.set(scrolls);
+    let at = w.scroll.min(scrolls);
+    let hint = match (scrolls, at < scrolls) {
+        (0, _) => " any key closes ",
+        (_, true) => " ↓ more · ↑↓ pgup/dn home/end scroll · any other key closes ",
+        (_, false) => " ↑↓ pgup/dn home/end scroll · any other key closes ",
+    };
+    let area = centered(screen, width, height);
+    f.render_widget(Clear, area);
+    let block = popup(w.title.clone(), hint);
+    let inner = block.inner(area);
+    f.render_widget(block.style(POPUP), area);
+    let shown: Vec<Line> = lines.into_iter().skip(at).collect();
+    f.render_widget(Paragraph::new(shown).style(POPUP), inner);
 }
 
 /// A popup's text: light on a dark ground, apart from the panes under it
