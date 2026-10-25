@@ -1942,6 +1942,20 @@ impl Reviewed {
     }
 }
 
+/// Each cluster's digest and every type's evidence, as review reads them,
+/// and the round's type tree.
+pub(crate) type ClusterEvidence = BTreeMap<ClusterId, (Digest, Vec<TypeEvidence>)>;
+
+pub(crate) fn evidence_by_cluster(loaded: &Loaded) -> Result<(ClusterEvidence, Option<TypeTree>)> {
+    let r = Reviewed::read(loaded, true, true)?;
+    let by = r
+        .digests
+        .into_iter()
+        .map(|(id, d)| (id, (d, r.tables.evidence(id))))
+        .collect();
+    Ok((by, r.tree))
+}
+
 /// `review --json`: per cluster (all, or those in `clusters`), its digest,
 /// its history, each method's top type (`tops`, the first of
 /// [`Method::ranked`], for the methods that put one forward), every type's

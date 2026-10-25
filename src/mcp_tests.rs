@@ -158,6 +158,43 @@ fn a_coarse_label_is_measured_on_its_member_types_markers() {
 }
 
 #[test]
+fn why_answers_a_contrast_and_gives_what_a_decision_cites() {
+    let dir = tempfile::tempdir().unwrap();
+    let round = round_with_profile(dir.path())
+        .to_string_lossy()
+        .into_owned();
+    let r = calls(&[
+        (
+            "annotate_why",
+            json!({ "round": round, "cluster": 1, "label": "CT2", "over": "CT1" }),
+        ),
+        (
+            "annotate_why",
+            json!({ "round": round, "cluster": 1, "gene": "GENE1", "over": "GENE2" }),
+        ),
+        (
+            "annotate_why",
+            json!({ "round": round, "cluster": 1, "gene": "GENE1", "term": "x" }),
+        ),
+    ]);
+    let label = &r[0]["structuredContent"];
+    assert_eq!(label["question"]["kind"], "label", "{}", r[0]);
+    assert!(label["favours"].is_string(), "{label}");
+    assert!(label["verdict"]["fact"].is_u64(), "{label}");
+    assert_eq!(label["cite"]["why"], label["question"]);
+    assert_eq!(label["children"][0]["line"], "panel");
+    let gene = &r[1]["structuredContent"];
+    assert_eq!(gene["question"]["list"], "specific", "{gene}");
+    assert!(error_text(&r[2]).contains("one of `label`, `gene` and `term`"));
+}
+
+#[test]
+fn the_instructions_ask_in_contrasts_as_the_other_doors_do() {
+    assert!(INSTRUCTIONS.contains(crate::manifest::why::ASKING));
+    assert!(include_str!("../README.md").contains(crate::manifest::why::ASKING));
+}
+
+#[test]
 fn outputs_are_never_replaced_and_overwrite_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let round = round_with_profile(dir.path());

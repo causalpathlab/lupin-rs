@@ -8,7 +8,7 @@ use super::outputs::{clean_outputs, AnnotationOutputs, ENRICHMENT_OUTPUT_SUFFIXE
 use super::outputs::{
     write_cluster_tables, CLUSTER_CELLTYPE_ES, CLUSTER_CELLTYPE_ES_STD, CLUSTER_CELLTYPE_NES,
     CLUSTER_CELLTYPE_P, CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_CELLTYPE_Z,
-    CLUSTER_TERM_P, CLUSTER_TERM_Q_VALUES, CLUSTER_TERM_Z,
+    CLUSTER_TERM_P, CLUSTER_TERM_Q_VALUES, CLUSTER_TERM_Z, ONTOLOGY_TERM_EFFECT, TERM_GENES,
 };
 use crate::progress::Stages;
 use enrichment::{
@@ -463,6 +463,8 @@ pub(crate) struct GeneSetScores {
     ms: enrichment::OntologyModuleScore,
     /// The terms' test: z, p and q.
     test: super::term_test::TermTest,
+    /// The profile's gene names, which the terms' rows index.
+    gene_names: Vec<Box<str>>,
 }
 
 /// A round's GO/GMT signature and its effect matrix, as written.
@@ -515,7 +517,13 @@ impl GeneSetScores {
             "cluster",
             cluster_names,
         )?;
-        let effect_path = format!("{out}.ontology_term_effect.parquet");
+        super::go_signature::write_term_genes(
+            &format!("{out}{TERM_GENES}"),
+            &self.gs.onto,
+            &self.gs.terms,
+            &self.gene_names,
+        )?;
+        let effect_path = format!("{out}{ONTOLOGY_TERM_EFFECT}");
         self.ms.effect_kt.to_parquet_with_names(
             &effect_path,
             (Some(cluster_names), Some("cluster")),
@@ -582,7 +590,12 @@ pub(crate) fn score_gene_sets(
         super::term_test::TERM_NULL_DRAWS
     );
     let test = super::term_test::test_terms(profile_gk, &gs.terms, &gs.universe, &ms.effect_kt)?;
-    Ok(GeneSetScores { gs, ms, test })
+    Ok(GeneSetScores {
+        gs,
+        ms,
+        test,
+        gene_names: gene_names.clone(),
+    })
 }
 
 /// Multiply each gene's marker entries by an empirical specificity score

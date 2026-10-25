@@ -156,6 +156,15 @@ enum Commands {
     )]
     Review(manifest::rounds::ReviewArgs),
     #[command(
+        about = "Ask why a round shows X rather than Y: a label, a gene or a GO/GMT term",
+        long_about = "Answers a contrast about a round from its own tables: why cluster K is\n\
+                      labelled A rather than B, why a gene is shown rather than another in a\n\
+                      list, why one term rather than another. Prints the rule that decides it,\n\
+                      both sides' values and which side they favour; a label's answer weighs\n\
+                      its independent lines of evidence. See the examples below."
+    )]
+    Why(manifest::why::WhyArgs),
+    #[command(
         about = "Apply a decisions file to an annotation round and write the next round",
         long_about = "Reads a round and a decisions file (JSONL; see `lupin review --help`),\n\
                       relabels or merges clusters, and writes a new manifest at `-o`\n\
@@ -401,6 +410,7 @@ fn main() -> Result<()> {
         } => annotate_command(&args, &session, &pdf),
         Commands::Describe(c) => run_describe(&c),
         Commands::Review(c) => manifest::rounds::run_review(&c),
+        Commands::Why(c) => manifest::why::run_why(&c),
         Commands::Relabel(c) => manifest::rounds::run_relabel(&c),
         Commands::Ask(c) => manifest::ask::run_ask(&c),
         Commands::Docs(c) => docs::run_docs(&c),

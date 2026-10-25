@@ -16,8 +16,7 @@
 //! inputs made for it, goes into the day's `runall.sh`, so the work can be
 //! redone without the agent.
 
-use crate::annotate::expression::{profile_and_panel, specific_genes};
-use crate::annotate::markers::label_key;
+use crate::annotate::expression::{label_marker_set, profile_and_panel, specific_genes, UP_LOG2FC};
 use crate::annotate::rounds::{ClusterId, DecidedBy};
 use crate::child::{lupin_command, relabel_argv};
 use crate::describe::trajectory::{self as order_text, OrderFacts};
@@ -55,6 +54,16 @@ against random gene sets and discounts programmes many clusters share \
 (ribosome, spliceosome), so a cell type split over several clusters tests \
 weaker in each than its effect reads: weigh effect and q together. A round's `caveats`, when it has any, say what its statistics \
 lack: read them first.
+   Ask why in contrasts: why X rather than Y, given Z. The answer weighs \
+lines of evidence that rest on different data, says which side each favours, \
+and holds the gene and term questions behind them. A tie or a disagreement is \
+an answer: the evidence does not separate them. Before you label, relabel or \
+merge, put the choice to annotate_why: why a cluster is A rather than B (left \
+out: its label against its strongest rival), why a gene is shown rather than \
+another, why one term rather than another. Base your rationale on its verdict \
+and name the lines it rests on, and put its `cite` in the decision's \
+`evidence`; where the evidence does not separate A and B, keep a label over \
+both or say so.
 3. annotate_preview with your decisions shows what they would change, \
 rescored; then annotate_relabel applies them and returns the next round. \
 For a merge, the preview lists the merged cluster's top terms with their \
@@ -118,7 +127,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_review",
-            "Show an annotation round cluster by cluster, as `lupin review --json`: digest (size, label, calls with q, top GO/GMT terms with effect and q, evidence check), history, each method's top type and Cell Ontology placement; with `types`, every type's evidence too (large: ask for it on a few clusters). When the round has caveats (e.g. merged clusters whose terms were not scored again), a second item lists them.",
+            "Show an annotation round cluster by cluster, as `lupin review --json`: digest (size, label, calls with q, top GO/GMT terms with effect and q, evidence check), history, each method's top type and Cell Ontology placement; with `types`, every type's evidence too (large: ask for it on a few clusters). When the round has caveats (e.g. merged clusters whose terms were not scored again), a second item lists them. For why one label, gene or term rather than another, use annotate_why.",
             schema(
                 json!({
                     "round": { "type": "string", "description": "Annotated manifest (a round) or its prefix" },
@@ -130,7 +139,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_genes",
-            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. A merged cluster's genes are its parts' together (their cell-weighted mean profile). A coarse label (a Cell Ontology group of the panel's types) is measured on its members' markers, listed in `group_of`.",
+            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. A merged cluster's genes are its parts' together (their cell-weighted mean profile). A coarse label (a Cell Ontology group of the panel's types) is measured on its members' markers, listed in `group_of`. For why one label, gene or term rather than another, use annotate_why.",
             schema(
                 json!({
                     "round": { "type": "string" },
@@ -139,6 +148,23 @@ fn tools() -> Vec<ToolSpec> {
                     "top": { "type": "integer", "description": "Genes listed per cluster and per type (20)" },
                 }),
                 &["round"],
+            ),
+        ),
+        ToolSpec::new(
+            "annotate_why",
+            "Ask why a round shows X rather than Y, given Z (`lupin why --json`). A label: why cluster `cluster` is `label` rather than `over` (both left out: its label against its strongest rival by the round's method; a coarse label with no rival outside it is asked between its own types). Returns each line of evidence (the panel: each method's order, a test of the markers only one type has, the ontology walk's placement, counted as one line; the GO/GMT terms that still stand out once the panel's genes are taken out of them), which side each favours, the gene and term questions behind them, and the verdict over the lines. A gene: why `gene` rather than `over` in `list`, with each one's place, or why it is not shown. A term: why `term` rather than `over`, by effect, with z, q, the genes driving each and the clusters that share it. `cite` is what a decision's `evidence` quotes to keep the answer.",
+            schema(
+                json!({
+                    "round": { "type": "string" },
+                    "cluster": { "type": "integer" },
+                    "label": { "type": "string", "description": "Why this label (one of label, gene, term; none: the cluster's label)" },
+                    "gene": { "type": "string", "description": "Why this gene, in `list`" },
+                    "term": { "type": "string", "description": "Why this GO/GMT term (an id or a name)" },
+                    "over": { "type": "string", "description": "Rather than this; left out, the strongest rival" },
+                    "list": { "type": "string", "description": "For a gene: specific (default), markers:<type> or term:<id or name>" },
+                    "depth": { "type": "integer", "description": "For a label: levels of gene and term questions under its lines (2)" },
+                }),
+                &["round", "cluster"],
             ),
         ),
         ToolSpec::new(
@@ -270,6 +296,7 @@ impl Handler for Lupin {
                 Ok(vec![Content::Json(out)])
             }
             "annotate_ask" => annotate_ask(&a, cx),
+            "annotate_why" => annotate_why(&a),
             "trajectory_run" => trajectory_run(&a, cx),
             "trajectory_read" => Ok(vec![Content::Json(trajectory_read(&a.req_path("run")?)?)]),
             "docs" => Ok(vec![Content::Text(match a.str("topic") {
@@ -510,6 +537,32 @@ fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     )])
 }
 
+fn annotate_why(a: &Arguments) -> Result<Vec<Content>> {
+    use crate::manifest::why;
+    let named = ["label", "gene", "term"]
+        .iter()
+        .filter(|k| a.str(k).is_some())
+        .count();
+    anyhow::ensure!(named <= 1, "name one of `label`, `gene` and `term`");
+    let named = |k: &str| a.str(k).map(str::to_string);
+    let mut args = why::WhyArgs::new(
+        &a.req_path("round")?,
+        a.parse("cluster")?.context("`cluster` is required")?,
+    );
+    (args.label, args.gene, args.term, args.over) =
+        (named("label"), named("gene"), named("term"), named("over"));
+    if let Some(l) = named("list") {
+        args.list = l;
+    }
+    if let Some(d) = a.parse("depth")? {
+        args.depth = d;
+    }
+    let answer = why::ask(&args)?;
+    let mut v = serde_json::to_value(&answer)?;
+    v["cite"] = why::citation(&answer);
+    Ok(vec![Content::Json(v)])
+}
+
 fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     let loaded = run::load(&a.req_path("round")?)?;
     let clusters: Vec<ClusterId> = a.parse("clusters")?.unwrap_or_default();
@@ -536,17 +589,13 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
                 .into_iter()
                 .map(|t| {
                     let group = tree.as_ref().and_then(|tr| tr.coarse_members(&t, &panel));
-                    let names = group.unwrap_or(std::slice::from_ref(&t));
-                    let set: BTreeSet<&String> = (names.iter())
-                        .filter_map(|m| panel.get(&label_key(m)))
-                        .flatten()
-                        .collect();
+                    let set = label_marker_set(tree.as_ref(), &panel, &t);
                     let mut genes: Vec<(&String, f32)> = set
                         .iter()
-                        .filter_map(|&g| Some((g, expr.fold_change(id, g)?)))
+                        .filter_map(|g| Some((g, expr.fold_change(id, g)?)))
                         .collect();
                     genes.sort_by(|x, y| y.1.total_cmp(&x.1));
-                    let up = genes.iter().filter(|(_, f)| *f >= 1.0).count();
+                    let up = genes.iter().filter(|(_, f)| *f >= UP_LOG2FC).count();
                     let listed: Vec<Value> =
                         genes.iter().take(top).map(|(g, f)| json!([g, f])).collect();
                     let mut entry = json!({

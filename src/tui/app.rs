@@ -416,6 +416,16 @@ impl FileWant {
     }
 }
 
+/// An answer to a why question, as `w` shows it.
+pub struct WhyView {
+    pub title: String,
+    pub text: String,
+    /// The first line shown, and how many lines past the first screen
+    /// there are (set as drawn).
+    pub scroll: usize,
+    pub scrolls: std::cell::Cell<usize>,
+}
+
 /// A marker of the selected cluster's label, as the genes pane lists it.
 pub struct LabelMarker {
     pub gene: String,
@@ -666,6 +676,10 @@ pub struct App {
     /// drawn (0 when it fits).
     pub help_scroll: usize,
     pub help_scrolls: std::cell::Cell<usize>,
+    /// An answer to `w`, over the screen until a key.
+    pub why: Option<WhyView>,
+    /// The saved round `w` answers from, read once per round.
+    why_round: Option<(PathBuf, crate::manifest::why::Round)>,
     pub prompt: Option<Prompt>,
     /// A choice among options (see [`super::menu`]), which takes keys.
     pub menu: Option<super::menu::Menu>,
@@ -785,6 +799,8 @@ impl App {
             help_open: false,
             help_scroll: 0,
             help_scrolls: Default::default(),
+            why: None,
+            why_round: None,
             prompt: None,
             menu: None,
             log: Vec::new(),
@@ -2132,6 +2148,108 @@ impl App {
         self.ask_label(UNASSIGNED_LABEL.into(), reason, None);
     }
 
+    /// Why the selected row rather than its rival, answered from the saved
+    /// round: in the genes, the selected gene in the list shown against the
+    /// marked one (else the next); in the GO terms, the selected term
+    /// against the next; in the candidates, the cluster's label against the
+    /// selected candidate; in the clusters, the label against its strongest
+    /// rival.
+    fn ask_why(&mut self) {
+        use crate::manifest::why::{self, GeneList};
+        let (Some(r), Some(c)) = (&self.round, self.selected()) else {
+            return;
+        };
+        let (k, manifest) = (c.id, r.manifest.clone());
+        let from = manifest.to_string_lossy().into_owned();
+        let label = self.current_label();
+        let question = match self.focus {
+            Focus::Genes => {
+                let Some(gene) = self.listed_genes().get(self.gene_sel).cloned() else {
+                    return;
+                };
+                let list = match (self.gene_view, &label) {
+                    (GeneView::Markers, Some(l)) => GeneList::Markers(l.clone()),
+                    _ => GeneList::Specific,
+                };
+                // The gene marked last, else the one listed next on screen
+                // (hidden genes stay out of it).
+                let shown = self.listed_genes();
+                let foil = (self.marked.iter().rev().find(|m| **m != gene))
+                    .or_else(|| shown.get(self.gene_sel + 1))
+                    .cloned();
+                why::WhyArgs {
+                    gene: Some(gene),
+                    over: foil,
+                    list: list.name(),
+                    ..why::WhyArgs::new(&from, k)
+                }
+            }
+            Focus::Go => {
+                let Some(t) = c.terms.get(self.go_sel) else {
+                    return;
+                };
+                why::WhyArgs {
+                    term: Some(t.term.clone()),
+                    ..why::WhyArgs::new(&from, k)
+                }
+            }
+            Focus::Candidates => {
+                // The label against the selected candidate; an unassigned
+                // cluster's selected candidate against its strongest rival.
+                let picked = (self.listed_candidates().get(self.cand_sel)).map(|c| c.label.clone());
+                let (fact, foil) = match &label {
+                    Some(l) => (
+                        Some(l.clone()),
+                        picked.filter(|p| label_key(l) != label_key(p)),
+                    ),
+                    None => (picked, None),
+                };
+                why::WhyArgs {
+                    label: fact,
+                    over: foil,
+                    ..why::WhyArgs::new(&from, k)
+                }
+            }
+            // An unassigned cluster: its top candidate.
+            _ => why::WhyArgs {
+                label: self.label_or_top(),
+                ..why::WhyArgs::new(&from, k)
+            },
+        };
+        // The answer reads the saved round: its panel, not unsaved edits.
+        if self.why_round.as_ref().is_none_or(|(m, _)| *m != manifest) {
+            let read = crate::manifest::run::load(&from).and_then(|l| why::Round::read(&l));
+            match read {
+                Ok(r) => self.why_round = Some((manifest.clone(), r)),
+                Err(e) => {
+                    self.status = format!("cannot answer why: {e:#}");
+                    return;
+                }
+            }
+        }
+        let (_, round) = self.why_round.as_ref().expect("read above");
+        match why::ask_round(round, &question) {
+            Ok(a) => {
+                let q = a.question.as_ref().expect("a root answer has its question");
+                let mut title = format!(
+                    " why {} rather than {} in K{k} ",
+                    q.fact,
+                    q.foil.as_deref().unwrap_or("-")
+                );
+                if !self.edits.is_empty() {
+                    title.push_str("· the saved round, not unsaved edits ");
+                }
+                self.why = Some(WhyView {
+                    title,
+                    text: why::render(&a),
+                    scroll: 0,
+                    scrolls: Default::default(),
+                });
+            }
+            Err(e) => self.status = format!("cannot answer why: {e:#}"),
+        }
+    }
+
     /// Drop the last marker edit not being saved.
     fn undo_marker(&mut self) {
         let saving = self.saving();
@@ -2717,6 +2835,13 @@ impl App {
             }
             return;
         }
+        if let Some(w) = &mut self.why {
+            // So does an answer to `w`.
+            if !step(&mut w.scroll, w.scrolls.get() + 1, k.code) {
+                self.why = None;
+            }
+            return;
+        }
         // `b` hides the running job's popup, or brings it back.
         if k.code == KeyCode::Char('b') && self.child.is_some() {
             self.progress_hidden = !self.progress_hidden;
@@ -2729,6 +2854,16 @@ impl App {
         }
         if self.form.is_some() {
             return self.settings_key(k);
+        }
+        // `w` asks why of the selected row; the tree pane's figures keep
+        // their own `w`.
+        if k.code == KeyCode::Char('w')
+            && matches!(
+                self.focus,
+                Focus::Clusters | Focus::Candidates | Focus::Genes | Focus::Go
+            )
+        {
+            return self.ask_why();
         }
         // `g` lists the run's family from any pane, but a units round's
         // map in the tree pane stars its GO terms with it.
