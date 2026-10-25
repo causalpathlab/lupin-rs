@@ -842,11 +842,7 @@ fn draw_guide(f: &mut Frame, app: &App) {
     let scrolls = tallest.saturating_sub(usize::from(height.saturating_sub(2)));
     app.help_scrolls.set(scrolls);
     let at = app.help_scroll.min(scrolls);
-    let hint = match (scrolls, at < scrolls) {
-        (0, _) => " any key closes ",
-        (_, true) => " ↓ more · ↑↓ pgup/dn home/end scroll · any other key closes ",
-        (_, false) => " ↑↓ pgup/dn home/end scroll · any other key closes ",
-    };
+    let hint = scroll_hint(scrolls, at);
     let area = centered(screen, width, height);
     f.render_widget(Clear, area);
     let block = popup(" keys ".into(), hint);
@@ -860,6 +856,15 @@ fn draw_guide(f: &mut Frame, app: &App) {
     for (lines, part) in cols.into_iter().zip(parts.iter()) {
         let shown: Vec<Line> = lines.into_iter().skip(at).collect();
         f.render_widget(Paragraph::new(shown).style(POPUP), *part);
+    }
+}
+
+/// The hint under a popup that scrolls `scrolls` lines, shown from `at`.
+fn scroll_hint(scrolls: usize, at: usize) -> &'static str {
+    match (scrolls, at < scrolls) {
+        (0, _) => " any key closes ",
+        (_, true) => " ↓ more · ↑↓ pgup/dn home/end scroll · any other key closes ",
+        (_, false) => " ↑↓ pgup/dn home/end scroll · any other key closes ",
     }
 }
 
@@ -904,11 +909,7 @@ fn draw_why(f: &mut Frame, w: &super::app::WhyView) {
         .saturating_sub(usize::from(height.saturating_sub(2)));
     w.scrolls.set(scrolls);
     let at = w.scroll.min(scrolls);
-    let hint = match (scrolls, at < scrolls) {
-        (0, _) => " any key closes ",
-        (_, true) => " ↓ more · ↑↓ pgup/dn home/end scroll · any other key closes ",
-        (_, false) => " ↑↓ pgup/dn home/end scroll · any other key closes ",
-    };
+    let hint = scroll_hint(scrolls, at);
     let area = centered(screen, width, height);
     f.render_widget(Clear, area);
     let block = popup(w.title.clone(), hint);

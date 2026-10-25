@@ -108,7 +108,8 @@ PBMC, K0 (NK cells; labelled `natural_killer_cell`, a group of NK and gdT),
 
 On the same round, K9, labelled monocyte, comes back favouring Naive CD4 T
 on the panel (no monocyte marker up), and K11, labelled dendritic cell,
-favouring plasma cells on both lines: labels the evidence does not back.
+favouring plasma cells on the panel (all 8 plasma markers up; its terms back
+both): labels the evidence does not back.
 
 ## Limits
 

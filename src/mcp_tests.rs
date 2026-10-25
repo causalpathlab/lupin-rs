@@ -179,7 +179,8 @@ fn why_answers_a_contrast_and_gives_what_a_decision_cites() {
     ]);
     let label = &r[0]["structuredContent"];
     assert_eq!(label["question"]["kind"], "label", "{}", r[0]);
-    assert!(label["verdict"]["favours"].is_string(), "{label}");
+    assert!(label["favours"].is_string(), "{label}");
+    assert!(label["verdict"]["fact"].is_u64(), "{label}");
     assert_eq!(label["cite"]["why"], label["question"]);
     assert_eq!(label["children"][0]["line"], "panel");
     let gene = &r[1]["structuredContent"];

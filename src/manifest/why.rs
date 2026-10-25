@@ -16,10 +16,14 @@
 use super::rounds::{caveats, evidence_by_cluster, read_cells, read_table, ClusterEvidence};
 use super::run::{resolve, Loaded};
 use crate::annotate::celltype_tree::TypeTree;
-use crate::annotate::expression::{profile_and_panel, specific_genes, Expression, Panel};
+use crate::annotate::expression::{
+    label_marker_set, profile_and_panel, specific_genes_of, Expression, Panel, UP_LOG2FC,
+};
 use crate::annotate::go_signature::{read_term_genes, TermGenes};
 use crate::annotate::markers::label_key;
-use crate::annotate::outputs::{CLUSTER_TERM_P, CLUSTER_TERM_Q_VALUES, CLUSTER_TERM_Z, TERM_GENES};
+use crate::annotate::outputs::{
+    term_prefix, CLUSTER_TERM_P, CLUSTER_TERM_Q_VALUES, CLUSTER_TERM_Z, TERM_GENES,
+};
 use crate::annotate::rounds::{ClusterId, Digest, Method, Table, TypeEvidence};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -73,7 +77,8 @@ impl GeneList {
         }
     }
 
-    fn name(&self) -> String {
+    /// The list as [`Self::parse`] reads it.
+    pub fn name(&self) -> String {
         match self {
             Self::Specific => "specific".into(),
             Self::Markers(t) => format!("markers:{t}"),
@@ -126,6 +131,26 @@ impl Favours {
         }
     }
 
+    /// The side that alone holds: `Neither` for both or none.
+    fn either(fact: bool, foil: bool) -> Favours {
+        match (fact, foil) {
+            (true, false) => Favours::Fact,
+            (false, true) => Favours::Foil,
+            _ => Favours::Neither,
+        }
+    }
+
+    /// The side placed first: the lower rank, a rank over none; `Neither`
+    /// for the same place, `CannotTell` for neither placed.
+    fn by_rank(fact: Option<usize>, foil: Option<usize>) -> Favours {
+        match (fact, foil) {
+            (Some(a), Some(b)) => Favours::higher(Some(b as f32), Some(a as f32)),
+            (Some(_), None) => Favours::Fact,
+            (None, Some(_)) => Favours::Foil,
+            (None, None) => Favours::CannotTell,
+        }
+    }
+
     /// The side with the higher `fact`/`foil`, `Neither` when equal,
     /// `CannotTell` without both.
     fn higher(fact: Option<f32>, foil: Option<f32>) -> Favours {
@@ -141,7 +166,6 @@ impl Favours {
 /// A label's verdict over its independent lines.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Verdict {
-    pub favours: Favours,
     /// How many independent lines favour each side.
     pub fact: usize,
     pub foil: usize,
@@ -204,6 +228,8 @@ pub struct Terms {
     q: Option<Table>,
     /// Each term id's column in the tables.
     col: BTreeMap<String, usize>,
+    /// Each cluster's row in the tables.
+    row: BTreeMap<ClusterId, usize>,
 }
 
 impl Terms {
@@ -213,9 +239,7 @@ impl Terms {
         };
         let path = resolve(&loaded.dir, rel);
         let effect = read_table(&path)?;
-        let prefix = path
-            .strip_suffix(".ontology_term_effect.parquet")
-            .unwrap_or(&path);
+        let prefix = term_prefix(&path);
         let at = |suffix: &str| {
             let p = format!("{prefix}{suffix}");
             std::path::Path::new(&p).is_file().then_some(p)
@@ -223,6 +247,9 @@ impl Terms {
         let table = |suffix| at(suffix).map(|p| read_table(&p)).transpose();
         let col = (effect.cols.iter().enumerate())
             .map(|(j, id)| (id.clone(), j))
+            .collect();
+        let row = (effect.rows.iter().enumerate())
+            .map(|(i, &k)| (k, i))
             .collect();
         // A round from before terms kept their genes still has their tables.
         let terms = match at(TERM_GENES) {
@@ -236,11 +263,8 @@ impl Terms {
             q: table(CLUSTER_TERM_Q_VALUES)?,
             effect,
             col,
+            row,
         }))
-    }
-
-    fn has_genes(&self) -> bool {
-        !self.terms.is_empty()
     }
 
     /// The term named `name` (an id, or a name in any case).
@@ -265,21 +289,26 @@ impl Terms {
         )
     }
 
-    fn get(table: Option<&Table>, k: ClusterId, j: usize) -> Option<f32> {
+    /// `table`'s value for cluster `k` and column `j`; the tables share the
+    /// effect matrix's rows and columns.
+    fn get(&self, table: Option<&Table>, k: ClusterId, j: usize) -> Option<f32> {
+        let i = *self.row.get(&k)?;
         let t = table?;
-        let i = t.rows.iter().position(|&r| r == k)?;
-        Some(t.values[i * t.cols.len() + j]).filter(|v| v.is_finite())
+        t.values
+            .get(i * t.cols.len() + j)
+            .copied()
+            .filter(|v| v.is_finite())
     }
 
     fn effect(&self, k: ClusterId, id: &str) -> Option<f32> {
-        Self::get(Some(&self.effect), k, *self.col.get(id)?)
+        self.get(Some(&self.effect), k, *self.col.get(id)?)
     }
 
     fn stat(&self, k: ClusterId, id: &str) -> (Option<f32>, Option<f32>, Option<f32>) {
         let Some(&j) = self.col.get(id) else {
             return (None, None, None);
         };
-        let g = |t: &Option<Table>| Self::get(t.as_ref(), k, j);
+        let g = |t: &Option<Table>| self.get(t.as_ref(), k, j);
         (g(&self.z), g(&self.p), g(&self.q))
     }
 
@@ -311,7 +340,9 @@ pub struct Round {
     expr: Option<Expression>,
     panel: Panel,
     tree: Option<TypeTree>,
-    specific: BTreeMap<ClusterId, Vec<(String, f32)>>,
+    /// The profile's rows expressed in some cluster: the background of the
+    /// marker and term tests.
+    universe: Vec<usize>,
     evidence: ClusterEvidence,
     terms: Option<Terms>,
     method: Method,
@@ -322,13 +353,13 @@ impl Round {
     pub fn read(loaded: &Loaded) -> Result<Self> {
         let cells = read_cells(loaded)?;
         let (expr, panel) = profile_and_panel(loaded, &cells)?;
-        let specific = expr.as_ref().map(specific_genes).unwrap_or_default();
+        let universe = expr.as_ref().map(expressed).unwrap_or_default();
         let (evidence, tree) = evidence_by_cluster(loaded)?;
         Ok(Self {
             expr,
             panel,
             tree,
-            specific,
+            universe,
             evidence,
             terms: Terms::read(loaded)?,
             method: super::rounds::called_by(&loaded.manifest.annotate).unwrap_or_default(),
@@ -361,11 +392,18 @@ impl Round {
 
     /// `label`'s markers (a coarse label's: its types').
     fn markers(&self, label: &str) -> BTreeSet<String> {
-        (self.types_of(label).iter())
-            .filter_map(|t| self.panel.get(&label_key(t)))
-            .flatten()
-            .cloned()
-            .collect()
+        label_marker_set(self.tree.as_ref(), &self.panel, label)
+    }
+
+    /// The round's terms, when it scored them and keeps their genes.
+    fn scored_terms(&self) -> Result<&Terms> {
+        let terms = (self.terms.as_ref())
+            .context("the round scored no GO/GMT terms (annotate with --go, --gaf or --gmt)")?;
+        anyhow::ensure!(
+            !terms.terms.is_empty(),
+            "the round does not keep its terms' genes: annotate it again"
+        );
+        Ok(terms)
     }
 
     /// The types `gene` is a marker of.
@@ -387,12 +425,20 @@ impl Round {
         v.sort_by(|a, b| f(&b.1).total_cmp(&f(&a.1)).then_with(|| a.0.cmp(&b.0)));
         v
     }
+}
 
-    fn root(&self, mut a: Answer, q: Question) -> Answer {
-        a.question = Some(q);
-        a.caveats.clone_from(&self.caveats);
-        a
-    }
+/// `a` as the answer to `q`.
+fn asked(mut a: Answer, q: Question) -> Answer {
+    a.question = Some(q);
+    a
+}
+
+/// The rows of `expr` expressed in some cluster.
+fn expressed(expr: &Expression) -> Vec<usize> {
+    let m = &expr.table.mat;
+    (0..m.nrows())
+        .filter(|&g| m.row(g).iter().any(|&v| v > 0.0))
+        .collect()
 }
 
 // ---- genes ----
@@ -404,8 +450,8 @@ type Ranked = Vec<(String, Option<f32>)>;
 fn gene_list(r: &Round, k: ClusterId, list: &GeneList) -> Result<(Ranked, String, &'static str)> {
     Ok(match list {
         GeneList::Specific => (
-            (r.specific.get(&k).into_iter().flatten())
-                .map(|(g, f)| (g.clone(), Some(*f)))
+            (r.expr.as_ref().map(|e| specific_genes_of(e, k)).unwrap_or_default().into_iter())
+                .map(|(g, f)| (g, Some(f)))
                 .collect(),
             format!("K{k}'s specific genes: those above the cluster's mean expression, by log2 fold change over the other clusters"),
             "cluster_expression",
@@ -416,9 +462,7 @@ fn gene_list(r: &Round, k: ClusterId, list: &GeneList) -> Result<(Ranked, String
             "markers",
         ),
         GeneList::Term(t) => {
-            let terms = r.terms.as_ref().context("the round scored no GO/GMT terms")?;
-            anyhow::ensure!(terms.has_genes(), "the round does not keep its terms' genes: annotate it again");
-            let term = terms.find(t)?;
+            let term = r.scored_terms()?.find(t)?;
             (
                 r.by_fc(k, &term.genes),
                 format!("{}'s measured genes, by log2 fold change in K{k}", term.name),
@@ -512,12 +556,11 @@ pub fn why_gene(
             next
         }
     };
-    let favours = match (at(fact), foil.as_deref().map(at)) {
-        (_, None) => Favours::CannotTell,
-        (Some(a), Some(Some(b))) => Favours::higher(Some(-(a as f32)), Some(-(b as f32))),
-        (Some(_), Some(None)) => Favours::Fact,
-        (None, Some(Some(_))) => Favours::Foil,
-        (None, Some(None)) => Favours::Neither,
+    // Neither shown is no lead for either.
+    let favours = match foil.as_deref().map(|f| Favours::by_rank(at(fact), at(f))) {
+        None => Favours::CannotTell,
+        Some(Favours::CannotTell) => Favours::Neither,
+        Some(f) => f,
     };
     let side = |g: &str| gene_side(r, k, g, &shown, list);
     let mut a = Answer::new(
@@ -528,7 +571,7 @@ pub fn why_gene(
     );
     a.notes = notes;
     a.sources = vec![source, "cluster_expression"];
-    Ok(r.root(
+    Ok(asked(
         a,
         Question {
             kind: Kind::Gene,
@@ -568,14 +611,7 @@ fn term_side(r: &Round, terms: &Terms, k: ClusterId, t: &TermGenes) -> Value {
 /// fact not ranked).
 pub fn why_term(r: &Round, k: ClusterId, fact: &str, foil: Option<&str>) -> Result<Answer> {
     r.cluster(k)?;
-    let terms = r
-        .terms
-        .as_ref()
-        .context("the round scored no GO/GMT terms")?;
-    anyhow::ensure!(
-        terms.has_genes(),
-        "the round does not keep its terms' genes: annotate it again"
-    );
+    let terms = r.scored_terms()?;
     let a = terms.find(fact)?;
     let ranked = terms.ranked(k);
     let mut notes = Vec::new();
@@ -621,7 +657,7 @@ pub fn why_term(r: &Round, k: ClusterId, fact: &str, foil: Option<&str>) -> Resu
         "cluster_term_q_values",
         "term_genes",
     ];
-    Ok(r.root(
+    Ok(asked(
         ans,
         Question {
             kind: Kind::Term,
@@ -635,39 +671,61 @@ pub fn why_term(r: &Round, k: ClusterId, fact: &str, foil: Option<&str>) -> Resu
 
 // ---- labels ----
 
-/// Each set's effect in cluster `k` against matched random gene sets, as
-/// the GO/GMT terms are tested ([`crate::annotate::term_test`]): its z and p,
+/// A set's effect in a cluster against matched random gene sets.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq)]
+struct Test {
+    z: f32,
+    p: f32,
+}
+
+/// Each set's effect in cluster `k` against random gene sets of its size
+/// matched to its genes' expression strata, as the GO/GMT terms are tested
+/// ([`crate::annotate::term_test`]), over the genes the round expresses;
 /// `None` for a set with no measured gene.
-fn set_test(
-    expr: &Expression,
-    k: ClusterId,
-    sets: &[&BTreeSet<String>],
-) -> Result<Vec<Option<(f32, f32)>>> {
-    let profile = &expr.table.mat;
-    let Some(c) = expr.col(k) else {
-        return Ok(vec![None; sets.len()]);
-    };
-    let rows: Vec<Vec<usize>> = (sets.iter())
-        .map(|s| s.iter().filter_map(|g| expr.row(g)).collect())
-        .collect();
-    let named: Vec<(Box<str>, Vec<usize>)> = (rows.iter().enumerate())
-        .filter(|(_, r)| !r.is_empty())
-        .map(|(i, r)| (i.to_string().into_boxed_str(), r.clone()))
-        .collect();
-    if named.is_empty() {
-        return Ok(vec![None; sets.len()]);
-    }
-    let universe: Vec<usize> = (0..profile.nrows())
-        .filter(|&g| profile.row(g).iter().any(|&v| v > 0.0))
-        .collect();
-    let ms = enrichment::ontology_module_score(profile, &named, &universe)?;
-    let test = crate::annotate::term_test::test_terms(profile, &named, &universe, &ms.effect_kt)?;
+fn set_test(r: &Round, k: ClusterId, sets: &[&BTreeSet<String>]) -> Result<Vec<Option<Test>>> {
     let mut out = vec![None; sets.len()];
-    for (j, (i, _)) in named.iter().enumerate() {
-        let i: usize = i.parse().expect("an index");
-        out[i] = Some((test.z_kt[(c, j)], test.p_kt[(c, j)]));
+    let (Some(expr), false) = (r.expr.as_ref(), r.universe.is_empty()) else {
+        return Ok(out);
+    };
+    let Some(c) = expr.col(k) else {
+        return Ok(out);
+    };
+    let (at, named): (Vec<usize>, Vec<_>) = (sets.iter().enumerate())
+        .map(|(i, s)| (i, s.iter().filter_map(|g| expr.row(g)).collect::<Vec<_>>()))
+        .filter(|(_, rows)| !rows.is_empty())
+        .map(|(i, rows)| (i, (i.to_string().into_boxed_str(), rows)))
+        .unzip();
+    if named.is_empty() {
+        return Ok(out);
+    }
+    let profile = &expr.table.mat;
+    let ms = enrichment::ontology_module_score(profile, &named, &r.universe)?;
+    let test = crate::annotate::term_test::test_terms(profile, &named, &r.universe, &ms.effect_kt)?;
+    for (j, &i) in at.iter().enumerate() {
+        out[i] = Some(Test {
+            z: test.z_kt[(c, j)],
+            p: test.p_kt[(c, j)],
+        });
     }
     Ok(out)
+}
+
+/// The markers that tell two labels apart, and those they share.
+struct Distinct {
+    fact: BTreeSet<String>,
+    foil: BTreeSet<String>,
+    shared: Vec<String>,
+}
+
+impl Distinct {
+    fn of(r: &Round, fact: &str, foil: &str) -> Self {
+        let (a, b) = (r.markers(fact), r.markers(foil));
+        Self {
+            fact: a.difference(&b).cloned().collect(),
+            foil: b.difference(&a).cloned().collect(),
+            shared: a.intersection(&b).cloned().collect(),
+        }
+    }
 }
 
 /// `label`'s evidence from `types`: its own, or for a coarse label its best
@@ -726,7 +784,13 @@ fn inner_pair(r: &Round, types: &[TypeEvidence], label: &str) -> Option<(String,
 
 /// The panel line: each method's reading, the distinguishing markers' test
 /// and the ontology walk's placement.
-fn panel_line(r: &Round, k: ClusterId, fact: &str, foil: &str, depth: usize) -> Result<Answer> {
+fn panel_line(
+    r: &Round,
+    k: ClusterId,
+    (fact, foil): (&str, &str),
+    d: &Distinct,
+    depth: usize,
+) -> Result<Answer> {
     let (digest, types) = r.cluster(k)?;
     let mut readings = Vec::new();
     let (mut fa, mut fo) = (serde_json::Map::new(), serde_json::Map::new());
@@ -741,19 +805,13 @@ fn panel_line(r: &Round, k: ClusterId, fact: &str, foil: &str, depth: usize) -> 
             }
             None => json!({ "rank": null }),
         };
-        // The higher place in the method's order; one it does not put
-        // forward loses to one it does.
-        let f = Favours::higher(a.map(|(_, i)| -(i as f32)), b.map(|(_, i)| -(i as f32)));
-        let f = match (a, b, f) {
-            (Some(_), None, _) => Favours::Fact,
-            (None, Some(_), _) => Favours::Foil,
-            (Some((x, _)), Some((y, _)), _)
-                if (m.reading(x).zip(m.reading(y)))
-                    .is_some_and(|(x, y)| (x - y).abs() < READING_TIE) =>
-            {
-                Favours::Neither
-            }
-            (_, _, f) => f,
+        // The higher place in the method's order, unless their readings tie.
+        let tie = (a.zip(b))
+            .and_then(|((x, _), (y, _))| m.reading(x).zip(m.reading(y)))
+            .is_some_and(|(x, y)| (x - y).abs() < READING_TIE);
+        let f = match tie {
+            true => Favours::Neither,
+            false => Favours::by_rank(a.map(|(_, i)| i), b.map(|(_, i)| i)),
         };
         readings.push((m.name(), f));
         fa.insert(m.name().into(), side(a));
@@ -761,54 +819,39 @@ fn panel_line(r: &Round, k: ClusterId, fact: &str, foil: &str, depth: usize) -> 
     }
 
     // The markers that tell the two apart, tested on the cluster's profile.
-    let (ma, mb) = (r.markers(fact), r.markers(foil));
-    let only_a: BTreeSet<String> = ma.difference(&mb).cloned().collect();
-    let only_b: BTreeSet<String> = mb.difference(&ma).cloned().collect();
-    let shared: Vec<&String> = ma.intersection(&mb).collect();
     let mut notes = Vec::new();
-    if let Some(expr) = r.expr.as_ref() {
-        let tested = set_test(expr, k, &[&only_a, &only_b])?;
-        let up = |s: &BTreeSet<String>| {
-            r.by_fc(k, s)
-                .iter()
-                .filter(|(_, f)| f.is_some_and(|f| f >= 1.0))
-                .count()
-        };
-        let side = |s: &BTreeSet<String>, t: Option<(f32, f32)>| {
-            let top: Vec<Value> = r
-                .by_fc(k, s)
-                .into_iter()
-                .take(DRIVERS)
+    if r.expr.is_some() {
+        let tested = set_test(r, k, &[&d.fact, &d.foil])?;
+        let side = |s: &BTreeSet<String>, t: Option<Test>| {
+            let ranked = r.by_fc(k, s);
+            let up = (ranked.iter())
+                .filter(|(_, f)| f.is_some_and(|f| f >= UP_LOG2FC))
+                .count();
+            let top: Vec<Value> = (ranked.into_iter().take(DRIVERS))
                 .map(|(g, f)| json!([g, f]))
                 .collect();
-            json!({ "distinct": s.len(), "up": up(s), "z": t.map(|t| t.0), "p": t.map(|t| t.1), "top": top })
+            json!({ "distinct": s.len(), "up": up, "z": t.map(|t| t.z), "p": t.map(|t| t.p), "top": top })
         };
         let (ta, tb) = (tested[0], tested[1]);
-        let stands = |t: Option<(f32, f32)>| t.is_some_and(|(_, p)| p < ALPHA);
+        let stands = |t: Option<Test>| t.is_some_and(|t| t.p < ALPHA);
         let f = match (stands(ta), stands(tb)) {
-            (true, false) => Favours::Fact,
-            (false, true) => Favours::Foil,
-            (true, true) => Favours::higher(ta.map(|t| t.0), tb.map(|t| t.0)),
+            (true, true) => Favours::higher(ta.map(|t| t.z), tb.map(|t| t.z)),
             (false, false) if ta.is_none() || tb.is_none() => Favours::CannotTell,
-            (false, false) => Favours::Neither,
+            (a, b) => Favours::either(a, b),
         };
         readings.push(("markers", f));
-        fa.insert("markers".into(), side(&only_a, ta));
-        fo.insert("markers".into(), side(&only_b, tb));
-        if only_a.is_empty() || only_b.is_empty() {
+        fa.insert("markers".into(), side(&d.fact, ta));
+        fo.insert("markers".into(), side(&d.foil, tb));
+        if d.fact.is_empty() || d.foil.is_empty() {
             notes.push(
                 "one side has no marker the other lacks: its markers cannot tell them apart".into(),
             );
         }
-        if !shared.is_empty() {
+        if !d.shared.is_empty() {
             notes.push(format!(
                 "{} shared markers say nothing of the contrast: {}",
-                shared.len(),
-                shared
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                d.shared.len(),
+                d.shared.join(", ")
             ));
         }
     }
@@ -826,12 +869,7 @@ fn panel_line(r: &Round, k: ClusterId, fact: &str, foil: &str, depth: usize) -> 
             ids.extend(tree.placement(l).map(|p| p.id));
             ids.contains(&cl.id)
         };
-        let f = match (on(fact), on(foil)) {
-            (true, false) => Favours::Fact,
-            (false, true) => Favours::Foil,
-            _ => Favours::Neither,
-        };
-        readings.push(("placement", f));
+        readings.push(("placement", Favours::either(on(fact), on(foil))));
         fa.insert("placement".into(), json!(on(fact)));
         fo.insert("placement".into(), json!(on(foil)));
         notes.push(format!(
@@ -865,32 +903,45 @@ fn panel_line(r: &Round, k: ClusterId, fact: &str, foil: &str, depth: usize) -> 
     ];
     if depth > 1 {
         let top = |s: &BTreeSet<String>| r.by_fc(k, s).into_iter().next().map(|(g, _)| g);
-        if let (Some(a), Some(b)) = (top(&only_a), top(&only_b)) {
-            let mut child = why_gene(r, k, &a, Some(&b), &GeneList::Specific)?;
-            child.caveats.clear();
-            line.children.push(child);
+        if let (Some(a), Some(b)) = (top(&d.fact), top(&d.foil)) {
+            line.children
+                .push(why_gene(r, k, &a, Some(&b), &GeneList::Specific)?);
         }
     }
     Ok(line)
 }
 
+/// A term backing one side of a label's contrast.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+struct Backing {
+    term: String,
+    id: String,
+    q: Option<f32>,
+    effect: Option<f32>,
+    /// The side's distinct markers it holds.
+    markers_in_it: Vec<String>,
+    genes: usize,
+    genes_without_panel: usize,
+    /// Its test with every panel gene taken out.
+    without_panel: Option<Test>,
+    /// What remains still stands out.
+    independent: bool,
+}
+
 /// The terms backing one side: among the cluster's top terms by effect,
 /// significant, and holding more of this side's distinct markers that are
-/// up in the cluster (log2 FC ≥ 1) than of the other's; each tested again
-/// without any panel gene.
+/// up in the cluster than of the other's; each tested again without any
+/// panel gene.
 fn backing(
     r: &Round,
     terms: &Terms,
     k: ClusterId,
     (distinct, other): (&BTreeSet<String>, &BTreeSet<String>),
     panel_genes: &BTreeSet<String>,
-) -> Result<Vec<Value>> {
-    let Some(expr) = r.expr.as_ref() else {
-        return Ok(Vec::new());
-    };
+) -> Result<Vec<Backing>> {
     let up = |t: &TermGenes, s: &BTreeSet<String>| {
         (t.genes.iter())
-            .filter(|g| s.contains(*g) && r.fc(k, g).is_some_and(|f| f >= 1.0))
+            .filter(|g| s.contains(*g) && r.fc(k, g).is_some_and(|f| f >= UP_LOG2FC))
             .count()
     };
     let picked: Vec<&TermGenes> = (terms.ranked(k).into_iter())
@@ -902,23 +953,27 @@ fn backing(
         .collect();
     let rest: Vec<BTreeSet<String>> = (picked.iter())
         .map(|t| {
-            t.genes
-                .iter()
+            (t.genes.iter())
                 .filter(|g| !panel_genes.contains(*g))
                 .cloned()
                 .collect()
         })
         .collect();
-    let tested = set_test(expr, k, &rest.iter().collect::<Vec<_>>())?;
+    let tested = set_test(r, k, &rest.iter().collect::<Vec<_>>())?;
     Ok((picked.iter().zip(&rest).zip(tested))
-        .map(|((t, rest), without)| {
-            let overlap: Vec<&String> = t.genes.iter().filter(|g| distinct.contains(*g)).collect();
-            json!({
-                "term": t.name, "id": t.id, "q": terms.stat(k, &t.id).2, "effect": terms.effect(k, &t.id),
-                "markers_in_it": overlap, "genes": t.genes.len(), "genes_without_panel": rest.len(),
-                "without_panel": without.map(|(z, p)| json!({ "z": z, "p": p })),
-                "independent": without.is_some_and(|(_, p)| p < ALPHA),
-            })
+        .map(|((t, rest), without)| Backing {
+            term: t.name.clone(),
+            id: t.id.clone(),
+            q: terms.stat(k, &t.id).2,
+            effect: terms.effect(k, &t.id),
+            markers_in_it: (t.genes.iter())
+                .filter(|g| distinct.contains(*g))
+                .cloned()
+                .collect(),
+            genes: t.genes.len(),
+            genes_without_panel: rest.len(),
+            without_panel: without,
+            independent: without.is_some_and(|t| t.p < ALPHA),
         })
         .collect())
 }
@@ -938,29 +993,22 @@ fn holding<'a>(
 
 /// The GO/GMT line: the terms that back each side, counted only where they
 /// still stand out without the panel's genes.
-fn terms_line(r: &Round, k: ClusterId, fact: &str, foil: &str, depth: usize) -> Result<Answer> {
+fn terms_line(r: &Round, k: ClusterId, d: &Distinct, depth: usize) -> Result<Answer> {
     let rule = "GO/GMT terms among the cluster's top 50 by effect, significant, and holding more of one type's up distinct markers than of the other's; counted where the term still stands out once every panel gene is taken out of it";
-    let Some(terms) = r.terms.as_ref().filter(|t| t.has_genes()) else {
-        let mut a = Answer::new(rule, Value::Null, Value::Null, Favours::CannotTell);
-        a.line = Some("terms".into());
-        a.notes.push(match r.terms {
-            None => "the round scored no GO/GMT terms (annotate with --go, --gaf or --gmt)".into(),
-            Some(_) => "the round does not keep its terms' genes: annotate it again".into(),
-        });
-        return Ok(a);
+    let terms = match r.scored_terms() {
+        Ok(t) => t,
+        Err(e) => {
+            let mut a = Answer::new(rule, Value::Null, Value::Null, Favours::CannotTell);
+            a.line = Some("terms".into());
+            a.notes.push(e.to_string());
+            return Ok(a);
+        }
     };
-    let (ma, mb) = (r.markers(fact), r.markers(foil));
     let panel_genes: BTreeSet<String> = r.panel.values().flatten().cloned().collect();
-    let only_a: BTreeSet<String> = ma.difference(&mb).cloned().collect();
-    let only_b: BTreeSet<String> = mb.difference(&ma).cloned().collect();
-    let ba = backing(r, terms, k, (&only_a, &only_b), &panel_genes)?;
-    let bb = backing(r, terms, k, (&only_b, &only_a), &panel_genes)?;
-    let backed = |v: &[Value]| v.iter().any(|t| t["independent"] == json!(true));
-    let favours = match (backed(&ba), backed(&bb)) {
-        (true, false) => Favours::Fact,
-        (false, true) => Favours::Foil,
-        _ => Favours::Neither,
-    };
+    let ba = backing(r, terms, k, (&d.fact, &d.foil), &panel_genes)?;
+    let bb = backing(r, terms, k, (&d.foil, &d.fact), &panel_genes)?;
+    let backed = |v: &[Backing]| v.iter().any(|t| t.independent);
+    let favours = Favours::either(backed(&ba), backed(&bb));
     let mut a = Answer::new(
         rule,
         json!({ "terms": ba }),
@@ -981,18 +1029,13 @@ fn terms_line(r: &Round, k: ClusterId, fact: &str, foil: &str, depth: usize) -> 
     if depth > 1 {
         // Each side's best term: a backing one, else the term holding its
         // distinct markers with the largest effect in the cluster.
-        let best = |backing: &[Value], distinct: &BTreeSet<String>| {
-            (backing
-                .first()
-                .and_then(|t| t["id"].as_str())
-                .map(str::to_string))
-            .or_else(|| holding(terms, k, distinct).map(|t| t.id.clone()))
+        let best = |backing: &[Backing], distinct: &BTreeSet<String>| {
+            (backing.first().map(|t| t.id.clone()))
+                .or_else(|| holding(terms, k, distinct).map(|t| t.id.clone()))
         };
-        if let (Some(x), Some(y)) = (best(&ba, &only_a), best(&bb, &only_b)) {
+        if let (Some(x), Some(y)) = (best(&ba, &d.fact), best(&bb, &d.foil)) {
             if x != y {
-                let mut child = why_term(r, k, &x, Some(&y))?;
-                child.caveats.clear();
-                a.children.push(child);
+                a.children.push(why_term(r, k, &x, Some(&y))?);
             }
         }
     }
@@ -1051,9 +1094,10 @@ pub fn why_label(
             (a, b)
         }
     };
+    let d = Distinct::of(r, &fact, &foil);
     let lines = vec![
-        panel_line(r, k, &fact, &foil, depth)?,
-        terms_line(r, k, &fact, &foil, depth)?,
+        panel_line(r, k, (&fact, &foil), &d, depth)?,
+        terms_line(r, k, &d, depth)?,
     ];
     let count = |f: Favours| lines.iter().filter(|l| l.favours == f).count();
     let (n_fact, n_foil) = (count(Favours::Fact), count(Favours::Foil));
@@ -1073,14 +1117,13 @@ pub fn why_label(
         favours,
     );
     a.verdict = Some(Verdict {
-        favours,
         fact: n_fact,
         foil: n_foil,
         neither: lines.len() - n_fact - n_foil,
     });
     a.notes = notes;
     a.children = lines;
-    Ok(r.root(
+    Ok(asked(
         a,
         Question {
             kind: Kind::Label,
@@ -1177,6 +1220,25 @@ pub struct WhyArgs {
     pub json: bool,
 }
 
+impl WhyArgs {
+    /// A question about cluster `cluster` of round `from`, with the
+    /// command's defaults: the cluster's label against its strongest rival.
+    #[must_use]
+    pub fn new(from: &str, cluster: ClusterId) -> Self {
+        Self {
+            from: from.into(),
+            cluster,
+            label: None,
+            gene: None,
+            term: None,
+            over: None,
+            list: "specific".into(),
+            depth: 2,
+            json: false,
+        }
+    }
+}
+
 /// Answer the question `args` puts to its round.
 pub fn ask(args: &WhyArgs) -> Result<Answer> {
     let loaded = super::run::load(&args.from)?;
@@ -1186,11 +1248,13 @@ pub fn ask(args: &WhyArgs) -> Result<Answer> {
 /// Answer the question `args` puts to round `r`, already read.
 pub fn ask_round(r: &Round, args: &WhyArgs) -> Result<Answer> {
     let (k, over) = (args.cluster, args.over.as_deref());
-    match (&args.gene, &args.term) {
+    let mut a = match (&args.gene, &args.term) {
         (Some(g), _) => why_gene(r, k, g, over, &GeneList::parse(&args.list)?),
         (_, Some(t)) => why_term(r, k, t, over),
         _ => why_label(r, k, args.label.as_deref(), over, args.depth),
-    }
+    }?;
+    a.caveats.clone_from(&r.caveats);
+    Ok(a)
 }
 
 pub fn run_why(args: &WhyArgs) -> Result<()> {
@@ -1296,7 +1360,7 @@ fn render_into(a: &Answer, depth: usize, names: (&str, &str), s: &mut String) {
             let _ = writeln!(
                 s,
                 "{pad}  verdict: {} ({} lines for {fact}, {} for {foil}, {} neither)",
-                favours_word(v.favours),
+                favours_word(a.favours),
                 v.fact,
                 v.foil,
                 v.neither

@@ -16,8 +16,7 @@
 //! inputs made for it, goes into the day's `runall.sh`, so the work can be
 //! redone without the agent.
 
-use crate::annotate::expression::{profile_and_panel, specific_genes};
-use crate::annotate::markers::label_key;
+use crate::annotate::expression::{label_marker_set, profile_and_panel, specific_genes, UP_LOG2FC};
 use crate::annotate::rounds::{ClusterId, DecidedBy};
 use crate::child::{lupin_command, relabel_argv};
 use crate::describe::trajectory::{self as order_text, OrderFacts};
@@ -545,17 +544,19 @@ fn annotate_why(a: &Arguments) -> Result<Vec<Content>> {
         .filter(|k| a.str(k).is_some())
         .count();
     anyhow::ensure!(named <= 1, "name one of `label`, `gene` and `term`");
-    let args = why::WhyArgs {
-        from: a.req_path("round")?.into(),
-        cluster: a.parse("cluster")?.context("`cluster` is required")?,
-        label: a.str("label").map(str::to_string),
-        gene: a.str("gene").map(str::to_string),
-        term: a.str("term").map(str::to_string),
-        over: a.str("over").map(str::to_string),
-        list: a.str("list").unwrap_or("specific").to_string(),
-        depth: a.parse("depth")?.unwrap_or(2),
-        json: true,
-    };
+    let named = |k: &str| a.str(k).map(str::to_string);
+    let mut args = why::WhyArgs::new(
+        &a.req_path("round")?,
+        a.parse("cluster")?.context("`cluster` is required")?,
+    );
+    (args.label, args.gene, args.term, args.over) =
+        (named("label"), named("gene"), named("term"), named("over"));
+    if let Some(l) = named("list") {
+        args.list = l;
+    }
+    if let Some(d) = a.parse("depth")? {
+        args.depth = d;
+    }
     let answer = why::ask(&args)?;
     let mut v = serde_json::to_value(&answer)?;
     v["cite"] = why::citation(&answer);
@@ -588,17 +589,13 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
                 .into_iter()
                 .map(|t| {
                     let group = tree.as_ref().and_then(|tr| tr.coarse_members(&t, &panel));
-                    let names = group.unwrap_or(std::slice::from_ref(&t));
-                    let set: BTreeSet<&String> = (names.iter())
-                        .filter_map(|m| panel.get(&label_key(m)))
-                        .flatten()
-                        .collect();
+                    let set = label_marker_set(tree.as_ref(), &panel, &t);
                     let mut genes: Vec<(&String, f32)> = set
                         .iter()
-                        .filter_map(|&g| Some((g, expr.fold_change(id, g)?)))
+                        .filter_map(|g| Some((g, expr.fold_change(id, g)?)))
                         .collect();
                     genes.sort_by(|x, y| y.1.total_cmp(&x.1));
-                    let up = genes.iter().filter(|(_, f)| *f >= 1.0).count();
+                    let up = genes.iter().filter(|(_, f)| *f >= UP_LOG2FC).count();
                     let listed: Vec<Value> =
                         genes.iter().take(top).map(|(g, f)| json!([g, f])).collect();
                     let mut entry = json!({

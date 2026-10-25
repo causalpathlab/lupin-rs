@@ -102,7 +102,7 @@ impl Expression {
     /// `None` when either is not in the table.
     #[must_use]
     pub fn fold_change(&self, id: ClusterId, gene: &str) -> Option<f32> {
-        self.log2fc(self.row(gene)?, &self.cols(&BTreeSet::from([id])))
+        self.log2fc(self.row(gene)?, &[self.col(id)?])
     }
 }
 
@@ -117,19 +117,49 @@ fn top_by(items: impl Iterator<Item = (String, f32)>) -> Vec<(String, f32)> {
 /// the cluster's average, by [`Expression::log2fc`] over the others.
 #[must_use]
 pub fn specific_genes(expr: &Expression) -> BTreeMap<ClusterId, Vec<(String, f32)>> {
-    let m = &expr.table.mat;
     expr.col
+        .keys()
+        .map(|&id| (id, specific_genes_of(expr, id)))
+        .collect()
+}
+
+/// [`specific_genes`] of cluster `id` alone.
+#[must_use]
+pub fn specific_genes_of(expr: &Expression, id: ClusterId) -> Vec<(String, f32)> {
+    let m = &expr.table.mat;
+    let Some(k) = expr.col(id) else {
+        return Vec::new();
+    };
+    let floor = m.column(k).mean();
+    let scored = (0..m.nrows())
+        .filter(|&g| m[(g, k)] > floor)
+        .filter_map(|g| {
+            expr.log2fc(g, &[k])
+                .map(|fc| (expr.table.rows[g].to_string(), fc))
+        });
+    top_by(scored)
+}
+
+/// A marker is up in a cluster at this log2 fold change over the others.
+pub const UP_LOG2FC: f32 = 1.0;
+
+/// The panel markers of `label`: a coarse label's ([`TypeTree::coarse_members`])
+/// are its types' together.
+#[must_use]
+pub fn label_marker_set(
+    tree: Option<&crate::annotate::celltype_tree::TypeTree>,
+    panel: &Panel,
+    label: &str,
+) -> BTreeSet<String> {
+    let own = [label.to_string()];
+    let types = tree
+        .and_then(|t| t.coarse_members(label, panel))
+        .unwrap_or(&own);
+    types
         .iter()
-        .map(|(&id, &k)| {
-            let floor = m.column(k).mean();
-            let scored = (0..m.nrows())
-                .filter(|&g| m[(g, k)] > floor)
-                .filter_map(|g| {
-                    expr.log2fc(g, &[k])
-                        .map(|fc| (expr.table.rows[g].to_string(), fc))
-                });
-            (id, top_by(scored))
-        })
+        .filter_map(|t| panel.get(&label_key(t)))
+        .flatten()
+        .cloned()
         .collect()
 }
 

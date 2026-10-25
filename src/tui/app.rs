@@ -437,22 +437,6 @@ pub struct LabelMarker {
     pub types: Vec<String>,
 }
 
-/// A why question about cluster `k` of `manifest`, its fact and foil to be
-/// named.
-fn why_args(manifest: &Path, k: ClusterId) -> crate::manifest::why::WhyArgs {
-    crate::manifest::why::WhyArgs {
-        from: manifest.to_string_lossy().into(),
-        cluster: k,
-        label: None,
-        gene: None,
-        term: None,
-        over: None,
-        list: "specific".into(),
-        depth: 2,
-        json: false,
-    }
-}
-
 /// A one-line prompt for a decision's reason, prefilled.
 pub struct Prompt {
     pub title: String,
@@ -2176,6 +2160,7 @@ impl App {
             return;
         };
         let (k, manifest) = (c.id, r.manifest.clone());
+        let from = manifest.to_string_lossy().into_owned();
         let label = self.current_label();
         let question = match self.focus {
             Focus::Genes => {
@@ -2190,11 +2175,8 @@ impl App {
                 why::WhyArgs {
                     gene: Some(gene),
                     over: foil,
-                    list: match &list {
-                        GeneList::Markers(l) => format!("markers:{l}"),
-                        _ => "specific".into(),
-                    },
-                    ..why_args(&manifest, k)
+                    list: list.name(),
+                    ..why::WhyArgs::new(&from, k)
                 }
             }
             Focus::Go => {
@@ -2203,7 +2185,7 @@ impl App {
                 };
                 why::WhyArgs {
                     term: Some(t.term.clone()),
-                    ..why_args(&manifest, k)
+                    ..why::WhyArgs::new(&from, k)
                 }
             }
             Focus::Candidates => {
@@ -2215,18 +2197,17 @@ impl App {
                         .clone()
                         .or_else(|| foil.is_none().then(|| self.label_or_top()).flatten()),
                     over: foil,
-                    ..why_args(&manifest, k)
+                    ..why::WhyArgs::new(&from, k)
                 }
             }
             _ => why::WhyArgs {
                 label: label.clone(),
-                ..why_args(&manifest, k)
+                ..why::WhyArgs::new(&from, k)
             },
         };
         // The answer reads the saved round: its panel, not unsaved edits.
         if self.why_round.as_ref().is_none_or(|(m, _)| *m != manifest) {
-            let read = crate::manifest::run::load(&manifest.to_string_lossy())
-                .and_then(|l| why::Round::read(&l));
+            let read = crate::manifest::run::load(&from).and_then(|l| why::Round::read(&l));
             match read {
                 Ok(r) => self.why_round = Some((manifest.clone(), r)),
                 Err(e) => {

@@ -48,7 +48,6 @@ fn evidence(label: &str, share: f32, q: f32) -> TypeEvidence {
 /// labelled `a`, the enrichment's first over `b`.
 fn round() -> Round {
     let expr = expression();
-    let specific = specific_genes(&expr);
     let panel: Panel = [
         ("a".to_string(), (0..8).map(gene).collect()),
         ("b".to_string(), [6, 7, 300, 301, 302, 303].map(gene).into()),
@@ -79,12 +78,13 @@ fn round() -> Round {
         p: Some(column(1e-6)),
         q: Some(column(1e-4)),
         col: [("T:1".to_string(), 0)].into(),
+        row: ids.iter().enumerate().map(|(i, &k)| (k, i)).collect(),
     };
     Round {
         expr: Some(expr),
         panel,
         tree: None,
-        specific,
+        universe: (0..GENES).collect(),
         evidence: [(0, (digest, types))].into(),
         terms: Some(terms),
         method: Method::Enrichment,
@@ -144,7 +144,7 @@ fn a_label_weighs_the_panel_as_one_line_and_terms_without_its_genes() {
     let q = a.question.as_ref().unwrap();
     assert_eq!((q.fact.as_str(), q.foil.as_deref()), ("a", Some("b")));
     let v = a.verdict.as_ref().unwrap();
-    assert_eq!((v.favours, v.fact, v.foil), (Favours::Fact, 2, 0), "{a:#?}");
+    assert_eq!((a.favours, v.fact, v.foil), (Favours::Fact, 2, 0), "{a:#?}");
 
     let panel = &a.children[0];
     assert_eq!(panel.line.as_deref(), Some("panel"));

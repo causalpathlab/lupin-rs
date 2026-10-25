@@ -81,6 +81,17 @@ pub const CLUSTER_TERM_P: &str = ".cluster_term_p.parquet";
 /// Enrichment: cluster × GO/GMT term FDR q (BH over the terms within each
 /// cluster), named as [`CLUSTER_CELLTYPE_Q_VALUES`] is.
 pub const CLUSTER_TERM_Q_VALUES: &str = ".cluster_term_q_values.parquet";
+/// GO/GMT terms: cluster × term effect, which the term tables sit beside.
+pub const ONTOLOGY_TERM_EFFECT: &str = ".ontology_term_effect.parquet";
+
+/// The `{out}` prefix a round's term effect matrix and its tables share.
+#[must_use]
+pub fn term_prefix(effect_path: &str) -> &str {
+    effect_path
+        .strip_suffix(ONTOLOGY_TERM_EFFECT)
+        .unwrap_or(effect_path)
+}
+
 /// GO/GMT terms: each scored term's measured genes (term id, name, genes
 /// comma-joined), beside its tables, for asking why a term or a gene.
 pub const TERM_GENES: &str = ".term_genes.tsv";
@@ -119,7 +130,7 @@ pub const ENRICHMENT_OUTPUT_SUFFIXES: &[&str] = &[
     CLUSTER_TERM_Q_VALUES,
     TERM_GENES,
     ".ontology_signature.tsv",
-    ".ontology_term_effect.parquet",
+    ONTOLOGY_TERM_EFFECT,
     ".ontology_assignment.tsv",
     ".ontology_node_mass.parquet",
     // written by the marker bootstrap of older builds; erased so none outlive it
