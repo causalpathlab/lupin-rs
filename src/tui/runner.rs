@@ -66,7 +66,8 @@ impl Held {
     }
 
     /// Its process id, while it runs.
-    #[cfg(test)]
+    // Its only callers are tests of Linux processes.
+    #[cfg(all(test, target_os = "linux"))]
     pub fn id(&self) -> u32 {
         self.stopper.id().expect("a child held")
     }

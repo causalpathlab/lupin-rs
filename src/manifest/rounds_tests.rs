@@ -415,12 +415,15 @@ fn review_prints_the_names_decisions_files_use() {
 /// GENE1 marks CT1 and peaks in K0, GENE2 marks CT2 and peaks in K1, GENE3
 /// marks CT3 and peaks in K2; GENE4, on no panel, also peaks in K1.
 pub(crate) fn round_with_profile(root: &Path) -> PathBuf {
+    round_with_profile_rows(root, ["GENE1", "GENE2", "GENE3", "GENE4"])
+}
+
+/// [`round_with_profile`], its profile's rows named `rows` (GENE1 to GENE4
+/// as a data file names them), its panel still naming GENE1 to GENE3.
+pub(crate) fn round_with_profile_rows(root: &Path, rows: [&str; 4]) -> PathBuf {
     let src = first_round(root);
     let r0 = root.join("r0");
-    let genes: Vec<Box<str>> = ["GENE1", "GENE2", "GENE3", "GENE4"]
-        .iter()
-        .map(|s| Box::from(*s))
-        .collect();
+    let genes: Vec<Box<str>> = rows.iter().map(|s| Box::from(*s)).collect();
     let cols: Vec<Box<str>> = ["K0", "K1", "K2"].iter().map(|s| Box::from(*s)).collect();
     let mut m = Mat::zeros(4, 3);
     for (g, k) in [(0, 0), (1, 1), (2, 2), (3, 1)] {

@@ -16,7 +16,10 @@
 //! inputs made for it, goes into the day's `runall.sh`, so the work can be
 //! redone without the agent.
 
-use crate::annotate::expression::{label_marker_set, profile_and_panel, specific_genes, UP_LOG2FC};
+use crate::annotate::expression::{
+    label_marker_set, profile_and_panel_on, specific_genes, Expression, Panel, UP_LOG2FC,
+};
+use crate::annotate::gene_rows::CHANNELS;
 use crate::annotate::rounds::{ClusterId, DecidedBy};
 use crate::child::{lupin_command, relabel_argv};
 use crate::describe::trajectory::{self as order_text, OrderFacts};
@@ -25,6 +28,7 @@ use crate::manifest::rounds::{review_json, Chain};
 use crate::manifest::run::{self, annotated_path, derive_out_prefix, manifest_file};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
+use data_beans::aux::feature_rows::SPLICED;
 use legume_mcp::{Call, Content, Handler, ServerInfo, ToolSpec};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -76,6 +80,7 @@ Rounds are never overwritten, so a decision can always be revisited.
 Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence \
 statements (from, to, precedes|unrelated, note), writes a run.
+A first round's labels are coarse; give `level: fine` (or a fine type as a root) to order its fine labels.
 2. trajectory_read returns its lineages, each edge's connectivity and \
 verdict (supported, unsupported, candidate, inferred) and the order in words. \
 Revise the statements where the data disagree and run again.
@@ -84,6 +89,10 @@ annotate_run and trajectory_run take `background`: on a large run set it, \
 and the call returns a job id at once; the step runs on lupin's own screen in \
 a session the user can watch with `lupin attach`, and goes on if this server \
 ends.
+
+Figures: annotate_heatmap draws a round's markers × clusters and returns its \
+numbers too; trajectory_figure draws a trajectory run's map, order and \
+connectivity. Both write into today's results folder like any step.
 
 docs prints the method write-ups. Paths are resolved against the server's \
 working directory; results give the paths written.";
@@ -139,13 +148,31 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_genes",
-            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. A merged cluster's genes are its parts' together (their cell-weighted mean profile). A coarse label (a Cell Ontology group of the panel's types) is measured on its members' markers, listed in `group_of`. For why one label, gene or term rather than another, use annotate_why.",
+            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. A merged cluster's genes are its parts' together (their cell-weighted mean profile). A coarse label (a Cell Ontology group of the panel's types) is measured on its members' markers, listed in `group_of`. Markers match genes by case, ENSG..._SYMBOL either way and without a faba file's /count/spliced suffix; when under half the panel's markers are measured, a second item warns, with names that did not match. For why one label, gene or term rather than another, use annotate_why.",
             schema(
                 json!({
                     "round": { "type": "string" },
                     "clusters": { "type": "array", "items": { "type": "integer" }, "description": "Only these clusters" },
                     "types": { "type": "array", "items": { "type": "string" }, "description": "More cell types whose markers to show" },
                     "top": { "type": "integer", "description": "Genes listed per cluster and per type (20)" },
+                    "channel": { "type": "string", "enum": CHANNELS, "description": "Where a gene has several rows (a faba file's GENE/count/spliced and GENE/count/unspliced), the count channel its level is read from (spliced)" },
+                }),
+                &["round"],
+            ),
+        ),
+        ToolSpec::new(
+            "annotate_heatmap",
+            "A round's marker genes × clusters as a heatmap (`lupin figure heatmap`): for each type its `top` markers, by their largest log2 fold change in any cluster, and their `value` in every cluster. Markers match genes as annotate_genes matches them. Writes the figure (.pdf, .svg or .png, by `out`) and its numbers beside it (.json) into today's results folder, recorded as any step; returns the numbers (clusters left to right, rows top to bottom, `unmeasured`: types none of whose markers is measured) and the image.",
+            schema(
+                json!({
+                    "round": { "type": "string" },
+                    "types": { "type": "array", "items": { "type": "string" }, "description": "Cell types whose markers to show (every panel type when omitted)" },
+                    "top": { "type": "integer", "description": "Markers per type (5)" },
+                    "value": { "type": "string", "enum": ["log2fc", "mean", "zscore", "frac"], "description": "log2 fold change over the other clusters, mean level, that level z-scored across clusters (default), or the share of the cluster's cells the gene is detected in (read from the run's raw counts)" },
+                    "source": { "type": "string", "enum": ["observed", "expected"], "description": "The round's observed profile (default), or the topic model's expected level (a topic run's)" },
+                    "order": { "type": "string", "enum": ["label", "id"], "description": "Clusters by label, following the types' rows (default), or by lupin's cluster id" },
+                    "channel": { "type": "string", "enum": CHANNELS, "description": "Where a gene has several rows, the count channel its level is read from (spliced)" },
+                    "out": { "type": "string", "description": "The figure, ending .pdf, .svg or .png; {round}.heatmap.pdf in today's results folder when omitted" },
                 }),
                 &["round"],
             ),
@@ -204,6 +231,7 @@ fn tools() -> Vec<ToolSpec> {
                     "from": { "type": "string", "description": "Annotated round (or run) manifest or its prefix" },
                     "out": { "type": "string", "description": "Output prefix; the next free {stem}.T{k} when omitted" },
                     "roots": { "type": "array", "items": { "type": "string" }, "description": "Cell types the trajectory starts from" },
+                    "level": { "type": "string", "enum": ["coarse", "fine"], "description": "Which of the round's labels to order: its own (coarse: a first round's are Cell Ontology groups) or the fine labels a coarse first round keeps. Left out: fine when a root is a fine label and not a coarse one; the result's `level` says which" },
                     "statements": {
                         "type": "array",
                         "description": "Precedence statements for this run, written to {out}.precedence.tsv",
@@ -227,9 +255,20 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "trajectory_read",
-            "Read a trajectory run: its lineages (root to leaf), its roots, branch points and ends, each type pair's connectivity, place in the prior, verdict and order agreement, and the order in words.",
+            "Read a trajectory run: the level of the round's labels it ordered (coarse or fine), its lineages (root to leaf), its roots, branch points and ends, each type pair's connectivity, place in the prior, verdict and order agreement, and the order in words.",
             schema(
                 json!({ "run": { "type": "string", "description": "Trajectory manifest or its prefix" } }),
+                &["run"],
+            ),
+        ),
+        ToolSpec::new(
+            "trajectory_figure",
+            "A trajectory run's figures (`lupin figure trajectory`): pseudotime on its map (PHATE or another layout, else the diffusion map) with the prior's edges as arrows between the types, as PNG and PDF; the types in pseudotime order and the connectivity between them (the lineage graph), as SVG and PDF. Written into today's results folder, recorded as any step; returns the files and the map's image.",
+            schema(
+                json!({
+                    "run": { "type": "string", "description": "Trajectory manifest or its prefix" },
+                    "out": { "type": "string", "description": "Output prefix; {run}.figure in today's results folder when omitted" },
+                }),
                 &["run"],
             ),
         ),
@@ -297,6 +336,8 @@ impl Handler for Lupin {
             }
             "annotate_ask" => annotate_ask(&a, cx),
             "annotate_why" => annotate_why(&a),
+            "annotate_heatmap" => annotate_heatmap(&a, cx),
+            "trajectory_figure" => trajectory_figure(&a, cx),
             "trajectory_run" => trajectory_run(&a, cx),
             "trajectory_read" => Ok(vec![Content::Json(trajectory_read(&a.req_path("run")?)?)]),
             "docs" => Ok(vec![Content::Text(match a.str("topic") {
@@ -407,15 +448,9 @@ fn output(a: &Arguments, cx: &Call, from: &str, tag: Tag) -> Result<Output> {
         }
     };
     let manifest = annotated_path(&source, &out);
-    anyhow::ensure!(
-        !manifest.exists(),
-        "{} exists; not replacing it: choose another `out`, or omit it for the next free name",
-        manifest.display()
-    );
+    none_exist(std::slice::from_ref(&manifest))?;
     cx.ensure_free(std::slice::from_ref(&manifest))?;
-    if let Some(dir) = Path::new(&out).parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
-    }
+    legume_numeric::matrix::common_io::mkdir_parent(&out)?;
     Ok(Output {
         out,
         manifest,
@@ -455,9 +490,7 @@ fn background_job(
         let started = cx.start_session_job(legume_mcp::SessionJob {
             tool: crate::tui::TOOL,
             screen: argv[0].clone(),
-            label: Path::new(out)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned()),
+            label: Some(session_label(out)),
             watch: lupin_command(&words)?,
             record,
             outputs: vec![manifest.to_path_buf()],
@@ -486,6 +519,32 @@ fn background_job(
             key: absolute(manifest),
             "note": "running as a background job: job_wait or job_status until it is done, then use it",
         }))
+    }
+}
+
+/// A background job's session label: the start of its output's name, to
+/// know it by, and a short hash of the whole prefix, to tell it apart. The
+/// label is in the session's socket name, whose whole path a Unix socket
+/// holds to about a hundred bytes, so a long name cannot be all of it.
+fn session_label(out: &str) -> String {
+    use sha2::{Digest, Sha256};
+    const NAME: usize = 6;
+    let name: String = (Path::new(out).file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .trim_start_matches('.')
+        .chars()
+        .map(|c| match c {
+            c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') => c,
+            _ => '-',
+        })
+        .take(NAME)
+        .collect();
+    let hash = crate::hex(&Sha256::digest(out.as_bytes())[..4]);
+    if name.is_empty() {
+        hash
+    } else {
+        format!("{name}-{hash}")
     }
 }
 
@@ -568,9 +627,11 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     let clusters: Vec<ClusterId> = a.parse("clusters")?.unwrap_or_default();
     let more: Vec<String> = a.parse("types")?.unwrap_or_default();
     let top = a.parse::<usize>("top")?.unwrap_or(20);
+    let channel = channel_arg(a)?;
     let cells = crate::manifest::rounds::read_cells(&loaded)?;
-    let (expr, panel) = profile_and_panel(&loaded, &cells)?;
+    let (expr, panel) = profile_and_panel_on(&loaded, &cells, channel)?;
     let expr = expr.context("the round records no expression profile")?;
+    let warnings = unmatched_warning(&expr, &panel);
     let specific = specific_genes(&expr);
     // A coarse label is a Cell Ontology group of the panel's types: its
     // markers are its members'.
@@ -618,7 +679,167 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
             (id.to_string(), entry)
         })
         .collect();
-    Ok(vec![Content::Json(Value::Object(out))])
+    let mut content = vec![Content::Json(Value::Object(out))];
+    if let Some(w) = warnings {
+        content.push(Content::Json(json!({ "warnings": [w] })));
+    }
+    Ok(content)
+}
+
+/// The `channel` `a` names, spliced when none: one of [`CHANNELS`].
+fn channel_arg(a: &Arguments) -> Result<&str> {
+    let channel = a.str("channel").unwrap_or(SPLICED);
+    anyhow::ensure!(
+        CHANNELS.contains(&channel),
+        "`channel` is one of {}, not {channel:?}",
+        CHANNELS.join(", ")
+    );
+    Ok(channel)
+}
+
+/// Below this share of the panel's markers measured, the genes shown say
+/// little of the panel, and a warning says so.
+const MATCHED_SHARE: f32 = 0.5;
+
+/// What to say when few of `panel`'s markers are rows of `expr`: how many,
+/// with some that are not and some row names, so a naming mismatch shows.
+fn unmatched_warning(expr: &Expression, panel: &Panel) -> Option<String> {
+    let genes: BTreeSet<&String> = panel.values().flatten().collect();
+    let (matched, unmatched): (Vec<&String>, Vec<&String>) =
+        genes.iter().partition(|g| expr.row(g).is_some());
+    let share = matched.len() as f32 / genes.len().max(1) as f32;
+    if genes.is_empty() || share >= MATCHED_SHARE {
+        return None;
+    }
+    let some = |names: Vec<&str>| names.into_iter().take(5).collect::<Vec<_>>().join(", ");
+    Some(format!(
+        "{} of the panel's {} markers are measured in the round's expression profile, \
+         so its markers' counts here say little: not matched, e.g. {}; the profile's rows \
+         are named e.g. {}",
+        matched.len(),
+        genes.len(),
+        some(unmatched.iter().map(|g| g.as_str()).collect()),
+        some(expr.table.rows.iter().map(|r| &**r).collect()),
+    ))
+}
+
+/// A free name `base` in today's results folder, else beside `beside`
+/// when the server keeps no records, with the outputs `plan` says it
+/// writes.
+fn free_name(
+    cx: &Call,
+    beside: &Path,
+    base: &str,
+    plan: impl Fn(&str) -> Result<Vec<PathBuf>>,
+) -> Result<(String, Vec<PathBuf>)> {
+    if cx.results_dir().is_some() {
+        cx.free_prefix(base, plan, |_| false)
+    } else {
+        legume_mcp::free_prefix(&run::parent_dir(beside), base, plan, |_| false)
+    }
+}
+
+/// `outputs` at a name the agent gave: none may exist yet.
+fn none_exist(outputs: &[PathBuf]) -> Result<()> {
+    if let Some(p) = outputs.iter().find(|p| p.exists()) {
+        anyhow::bail!(
+            "{} exists; not replacing it: choose another `out`, or omit it for the next free name",
+            p.display()
+        );
+    }
+    Ok(())
+}
+
+/// The name of the manifest `file` without its `.{kind}.json`.
+fn stem(file: &Path) -> String {
+    file_name(Path::new(&derive_out_prefix(&file.to_string_lossy())))
+}
+
+fn annotate_heatmap(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
+    use crate::figures::heatmap::{self, figure_base, numbers_path};
+    let round = round_arg(a)?;
+    channel_arg(a)?;
+    let plan = |figure: &str| -> Result<Vec<PathBuf>> {
+        figure_base(figure)?;
+        Ok(vec![PathBuf::from(figure), numbers_path(figure)])
+    };
+    let (out, outputs) = match a.path("out") {
+        Some(o) => {
+            let outputs = plan(&o)?;
+            none_exist(&outputs)?;
+            (o, outputs)
+        }
+        None => {
+            let base = format!("{}.heatmap", stem(&round));
+            let (b, outputs) = free_name(cx, &round, &base, |b| plan(&format!("{b}.pdf")))?;
+            (format!("{b}.pdf"), outputs)
+        }
+    };
+    let mut argv: Vec<String> = vec![
+        "figure".into(),
+        "heatmap".into(),
+        flag("from", &round.to_string_lossy()),
+        flag("out", &out),
+    ];
+    let types: Vec<String> = a.parse("types")?.unwrap_or_default();
+    argv.extend(types.iter().map(|t| flag("type", t)));
+    if let Some(n) = a.parse::<usize>("top")? {
+        argv.push(flag("top", &n.to_string()));
+    }
+    for key in ["value", "source", "order", "channel"] {
+        if let Some(v) = a.str(key) {
+            argv.push(flag(key, v));
+        }
+    }
+    let summary = format!(
+        "marker heatmap ({}) of {}",
+        a.str("value").unwrap_or("zscore"),
+        file_name(&round)
+    );
+    cx.run_making(lupin(&argv)?, &outputs, &summary)?;
+    let text = std::fs::read_to_string(&outputs[1])
+        .with_context(|| format!("reading {}", outputs[1].display()))?;
+    let data: heatmap::HeatData = serde_json::from_str(&text)?;
+    let mut v = serde_json::to_value(&data)?;
+    v["figure"] = json!(absolute(Path::new(&out)));
+    v["numbers"] = json!(absolute(&outputs[1]));
+    Ok(vec![Content::Json(v), Content::Png(heatmap::png(&data)?)])
+}
+
+fn trajectory_figure(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
+    let from = a.req_path("run")?;
+    let figures = crate::figures::trajectory_figures(&from)?;
+    let file = manifest_file(&from);
+    let (out, files) = match a.path("out") {
+        Some(o) => {
+            let files = figures.trajectory_files(&o);
+            none_exist(&files)?;
+            (o, files)
+        }
+        None => {
+            let base = format!("{}.figure", stem(&file));
+            free_name(cx, &file, &base, |b| Ok(figures.trajectory_files(b)))?
+        }
+    };
+    let argv = vec![
+        "figure".into(),
+        "trajectory".into(),
+        flag("from", &from),
+        flag("out", &out),
+    ];
+    let summary = format!("trajectory figures of {}", file_name(&file));
+    cx.run_making(lupin(&argv)?, &files, &summary)?;
+    let shown: Vec<String> = files.iter().map(|f| absolute(f)).collect();
+    let mut content = vec![Content::Json(json!({ "files": shown }))];
+    if let Some(png) = files
+        .first()
+        .filter(|f| f.extension().is_some_and(|e| e == "png"))
+    {
+        content.push(Content::Png(
+            std::fs::read(png).with_context(|| format!("reading {}", png.display()))?,
+        ));
+    }
+    Ok(content)
 }
 
 /// The round `a` names, which must exist.
@@ -766,6 +987,9 @@ fn trajectory_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         summary += &format!(" from {}", roots.join(", "));
     }
     argv.extend(roots.iter().map(|r| flag("root", r)));
+    if let Some(l) = a.str("level") {
+        argv.push(flag("level", l));
+    }
     let statements: Vec<Statement> = a.parse("statements")?.unwrap_or_default();
     let mut written = None;
     match (a.path("prior"), statements.is_empty()) {
@@ -851,8 +1075,13 @@ fn trajectory_read(path: &str) -> Result<Value> {
         .into_iter()
         .map(|t| json!({ "type": t.subject, "text": t.text }))
         .collect();
+    let level = (loaded.manifest.trajectory.settings.as_ref())
+        .and_then(|s| s.get("level"))
+        .cloned()
+        .unwrap_or(Value::Null);
     Ok(json!({
         "run": absolute(&loaded.file),
+        "level": level,
         "roots": facts.roots(),
         "branch_points": facts.branch_points(),
         "ends": facts.ends(),

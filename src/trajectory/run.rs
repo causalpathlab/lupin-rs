@@ -57,6 +57,14 @@ pub struct TrajectoryArgs {
 
     #[arg(
         long,
+        value_enum,
+        conflicts_with = "labels",
+        help = "Which of a round's labels to order: its own (coarse), or the fine labels a coarse first round keeps (annotate.fine_argmax). Left out: fine when a --root is a fine label and not a coarse one"
+    )]
+    pub level: Option<Level>,
+
+    #[arg(
+        long,
         help = "A precedence file for this run (from<TAB>to<TAB>precedes|unrelated[<TAB>note]), or a {out}.trajectory_prior.tsv to replay"
     )]
     pub prior: Option<Box<str>>,
@@ -125,6 +133,25 @@ pub struct TrajectoryArgs {
     pub graphics: crate::tui::Graphics,
 }
 
+/// Which of a round's per-cell labels a trajectory orders.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    /// The round's own labels (`annotate.argmax`): a first round's are
+    /// coarse Cell Ontology groups.
+    Coarse,
+    /// The fine labels a coarse first round keeps (`annotate.fine_argmax`).
+    Fine,
+}
+
+impl Level {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Coarse => "coarse",
+            Self::Fine => "fine",
+        }
+    }
+}
+
 impl TrajectoryArgs {
     /// Without both `--from` and `--out`, the command opens its TUI, which
     /// asks for what is missing.
@@ -143,6 +170,9 @@ impl TrajectoryArgs {
         };
         for r in &self.root {
             val("root", r.to_string());
+        }
+        if let Some(l) = self.level {
+            val("level", l.as_str().into());
         }
         for (flag, x) in [
             ("labels", &self.labels),
@@ -183,19 +213,26 @@ pub const PSEUDOTIME_SUFFIX: &str = ".cell_pseudotime.parquet";
 
 /// What the manifest at `dir` records about the run; input files
 /// manifest-relative, as every path in a manifest is.
-fn settings(args: &TrajectoryArgs, dir: &std::path::Path) -> serde_json::Value {
+fn settings(
+    args: &TrajectoryArgs,
+    level: Option<Level>,
+    dir: &std::path::Path,
+) -> serde_json::Value {
     let rel = |p: &Option<Box<str>>| p.as_deref().map(|p| rel_to_manifest(dir, p));
     serde_json::json!({
         "knn": args.knn, "n_dcs": args.n_dcs, "dc_min_share": args.dc_min_share,
         "min_cells": args.min_cells,
         "min_connectivity": args.min_connectivity,
         "roots": args.root, "prior": rel(&args.prior), "prior_only": args.prior_only,
-        "labels": rel(&args.labels), "obo": rel(&args.obo), "label_cl": rel(&args.label_cl),
+        "labels": rel(&args.labels), "level": level.map(Level::as_str),
+        "obo": rel(&args.obo), "label_cl": rel(&args.label_cl),
     })
 }
 
 /// The cells, their prepared geometry and their types.
 struct Inputs {
+    /// Which of the round's labels the types are; `None` for `--labels`.
+    pub(crate) level: Option<Level>,
     pub(crate) cells: Vec<Box<str>>,
     pub(crate) geometry: Mat,
     /// The distinct labels, sorted.
@@ -337,7 +374,7 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     }
     STAGES.start(6);
     let written = write(&inputs, &t, out)?;
-    record(&loaded, &manifest_out, &written, args)?;
+    record(&loaded, &manifest_out, &written, args, inputs.level)?;
     STAGES.finish();
     let (found, run) = crate::figures::layouts_along(&loaded.manifest, &loaded.dir, &loaded.file);
     if let Some(h) = crate::figures::layout_hint(found.iter().map(|(m, _)| m.as_deref()), &run) {
@@ -350,18 +387,65 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     Ok(())
 }
 
+/// The per-cell labels to order, and the level of the round's they are
+/// (`None` for `labels`, a file of the user's): `level`'s, else the fine
+/// labels when the round keeps them and some root is a fine label that is
+/// not a coarse one, else the round's own.
+pub(crate) fn label_source(
+    loaded: &Loaded,
+    level: Option<Level>,
+    labels: Option<&str>,
+    roots: &[Box<str>],
+) -> Result<(String, Option<Level>)> {
+    if let Some(p) = labels {
+        return Ok((p.to_string(), None));
+    }
+    let a = &loaded.manifest.annotate;
+    let at = |rel: &Option<String>| rel.as_deref().map(|r| resolve(&loaded.dir, r));
+    let coarse =
+        || at(&a.argmax).context("the run has no annotation; annotate it or pass --labels");
+    let fine = || {
+        at(&a.fine_argmax).context(
+            "the round keeps no fine labels (annotate.fine_argmax: only a coarse first round \
+             does); its own labels are --level coarse",
+        )
+    };
+    if let Some(l) = level {
+        let path = match l {
+            Level::Coarse => coarse()?,
+            Level::Fine => fine()?,
+        };
+        return Ok((path, Some(l)));
+    }
+    let coarse = coarse()?;
+    let Some(fine) = at(&a.fine_argmax).filter(|_| !roots.is_empty()) else {
+        return Ok((coarse, Some(Level::Coarse)));
+    };
+    let types = |p: &str| -> Result<BTreeSet<Box<str>>> {
+        Ok(read_cell_labels(p)?.unique_groups().into_iter().collect())
+    };
+    // The fine labels are read only for a root the coarse ones lack.
+    let in_coarse = types(&coarse)?;
+    let outside: Vec<&Box<str>> = roots.iter().filter(|r| !in_coarse.contains(*r)).collect();
+    if outside.is_empty() {
+        return Ok((coarse, Some(Level::Coarse)));
+    }
+    let in_fine = types(&fine)?;
+    let fine_root = outside.into_iter().find(|r| in_fine.contains(*r));
+    match fine_root {
+        Some(r) => {
+            info!(
+                "--root {r} is a fine label of this round: ordering its fine labels (--level fine)"
+            );
+            Ok((fine, Some(Level::Fine)))
+        }
+        None => Ok((coarse, Some(Level::Coarse))),
+    }
+}
+
 fn load_inputs(loaded: &Loaded, args: &TrajectoryArgs) -> Result<Inputs> {
     let x = loaded.prepared_geometry()?;
-    let label_path = match args.labels.as_deref() {
-        Some(p) => p.to_string(),
-        None => loaded
-            .manifest
-            .annotate
-            .argmax
-            .as_deref()
-            .map(|rel| resolve(&loaded.dir, rel))
-            .context("the run has no annotation; annotate it or pass --labels")?,
-    };
+    let (label_path, level) = label_source(loaded, args.level, args.labels.as_deref(), &args.root)?;
     let membership = read_cell_labels(&label_path)?;
     let mut missing = Vec::new();
     let labels: Vec<&str> = x
@@ -417,6 +501,7 @@ fn load_inputs(loaded: &Loaded, args: &TrajectoryArgs) -> Result<Inputs> {
         );
     }
     Ok(Inputs {
+        level,
         cells: x.rows,
         geometry: x.mat,
         names,
@@ -959,9 +1044,10 @@ fn record(
     manifest_out: &std::path::Path,
     written: &BTreeMap<&'static str, String>,
     args: &TrajectoryArgs,
+    level: Option<Level>,
 ) -> Result<()> {
     let mut copy = loaded.copy_to(manifest_out.to_path_buf())?;
-    let settings = settings(args, &copy.dir);
+    let settings = settings(args, level, &copy.dir);
     let rel = |k: &str| written.get(k).map(|p| rel_to_manifest(&copy.dir, p));
     let t = &mut copy.manifest.trajectory;
     t.prior = rel("prior");

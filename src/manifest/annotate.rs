@@ -1041,3 +1041,64 @@ pub(crate) mod projection_score_tests;
 #[cfg(test)]
 #[path = "tests/projection_units.rs"]
 pub(crate) mod projection_units_tests;
+
+/// Per cluster of `ids`, the share of its cells in which each of `rows`
+/// (the data's own row names) is detected, a count above zero, read from
+/// the run's raw counts, those rows alone: `rows.len()` lists of
+/// `ids.len()` shares, `None` for a row the data lacks or a cluster with no
+/// cell. A cell's cluster is `cluster_of` its name; a cell it does not name
+/// counts for none.
+pub(crate) fn detected_share(
+    loaded: &Loaded,
+    cluster_of: &std::collections::HashMap<&str, crate::annotate::rounds::ClusterId>,
+    ids: &[crate::annotate::rounds::ClusterId],
+    rows: &[&str],
+) -> Result<Vec<Vec<Option<f32>>>> {
+    anyhow::ensure!(
+        matches!(
+            super::no_counts::source(loaded),
+            super::no_counts::Source::Counts
+        ),
+        "the run's raw counts (data.input) cannot be read here, and the share of cells \
+         detected is counted from them"
+    );
+    let load = raw_counts_load(&loaded.manifest, &loaded.dir)?;
+    let data = read_data_on_shared_rows(load)?.data;
+    let index: HashMap<Box<str>, usize> = (data.row_names()?.into_iter().enumerate())
+        .map(|(g, n)| (n, g))
+        .collect();
+    // Each data row once, however many of `rows` name it.
+    let mut wanted: Vec<usize> = rows.iter().filter_map(|n| index.get(*n).copied()).collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    let col: HashMap<_, usize> = ids.iter().enumerate().map(|(k, id)| (*id, k)).collect();
+    let labels: Vec<Option<usize>> = (data.column_names()?.iter())
+        .map(|n| cluster_of.get(&**n).and_then(|id| col.get(id).copied()))
+        .collect();
+    let mut cells = vec![0u32; ids.len()];
+    labels.iter().flatten().for_each(|&k| cells[k] += 1);
+    let csr = data.read_rows_csr(wanted.iter().copied())?;
+    let seen: Vec<Vec<u32>> = (0..wanted.len())
+        .map(|i| {
+            let mut n = vec![0u32; ids.len()];
+            let r = csr.row(i);
+            for (&c, &v) in r.col_indices().iter().zip(r.values()) {
+                if let (Some(k), true) = (labels[c], v > 0.0) {
+                    n[k] += 1;
+                }
+            }
+            n
+        })
+        .collect();
+    Ok((rows.iter())
+        .map(|n| {
+            let at = index.get(*n).and_then(|g| wanted.binary_search(g).ok());
+            (0..ids.len())
+                .map(|k| {
+                    let s = &seen[at?];
+                    (cells[k] > 0).then(|| s[k] as f32 / cells[k] as f32)
+                })
+                .collect()
+        })
+        .collect())
+}

@@ -52,6 +52,18 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum FigureCmd {
+    #[command(
+        about = "A round's marker genes × clusters, as .pdf, .svg or .png, its numbers beside it as .json"
+    )]
+    Heatmap(figures::heatmap::HeatmapArgs),
+    #[command(
+        about = "A trajectory run's figures: pseudotime on its map (a layout, else the diffusion map), the order of its types and their connectivity"
+    )]
+    Trajectory(figures::TrajectoryFigureArgs),
+}
+
+#[derive(Subcommand)]
 enum Commands {
     #[command(
         name = "text-qc",
@@ -220,6 +232,13 @@ enum Commands {
                       rescored like any enrichment run. Nothing is sent anywhere by lupin."
     )]
     Ask(manifest::ask::AskArgs),
+    #[command(
+        about = "Write a figure without the screen: a round's marker heatmap, or a trajectory run's figures"
+    )]
+    Figure {
+        #[command(subcommand)]
+        of: FigureCmd,
+    },
     #[command(
         about = "Open lupin's screen on an output: a round, or a trajectory run",
         long_about = "Opens the TUI on a manifest lupin wrote, by what it holds: a\n\
@@ -421,6 +440,12 @@ fn main() -> Result<()> {
         } => tui::run_trajectory(&args, &session, true),
         Commands::Trajectory { args, session, .. } => run_trajectory(&args, &session),
         Commands::View { manifest, session } => view(&manifest, &session),
+        Commands::Figure {
+            of: FigureCmd::Heatmap(a),
+        } => figures::heatmap::run_heatmap(&a),
+        Commands::Figure {
+            of: FigureCmd::Trajectory(a),
+        } => figures::run_trajectory_figures(&a),
         Commands::Data(c) => manifest::data_files::run_data(&c),
         Commands::Attach(a) => Ok(legume_tui::cli::attach(&tui::TOOL, &a)?),
         Commands::Sessions => Ok(legume_tui::cli::sessions(&tui::TOOL)?),

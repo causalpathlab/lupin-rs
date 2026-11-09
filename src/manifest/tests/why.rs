@@ -118,6 +118,21 @@ fn readings_favour_a_side_only_when_none_leans_the_other_way() {
 }
 
 #[test]
+fn a_gene_asked_by_its_panel_name_is_found_under_its_faba_row() {
+    let mut r = round();
+    let mut table = r.expr.take().unwrap().table;
+    table.rows = (0..GENES)
+        .map(|g| format!("{}/count/spliced", gene(g)).into())
+        .collect();
+    r.expr = Some(Expression::with_channel(table, "spliced"));
+    let a = why_gene(&r, 0, "G3", Some("G300"), &GeneList::Specific).unwrap();
+    assert!(a.fact["rank"].as_u64().is_some(), "{}", a.fact);
+    assert_eq!(a.fact["marker_of"], json!(["a"]));
+    assert_eq!(a.fact["in_terms"], json!(["a programme"]));
+    assert_eq!(a.foil["shown"], json!(false));
+}
+
+#[test]
 fn a_gene_shown_is_placed_and_one_not_shown_says_why() {
     let r = round();
     let a = why_gene(&r, 0, "G3", Some("G300"), &GeneList::Specific).unwrap();

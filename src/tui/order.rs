@@ -38,6 +38,39 @@ impl TrajectoryRun {
             .unwrap_or(crate::trajectory::run::DEFAULT_MIN_CELLS)
     }
 
+    /// Whether the run orders a round's fine labels: the last `--level`
+    /// among its options is `fine`.
+    #[must_use]
+    pub fn fine_level(&self) -> bool {
+        let mut level = None;
+        for (i, a) in self.argv.iter().enumerate() {
+            if a == "--level" {
+                level = self.argv.get(i + 1).map(String::as_str);
+            } else if let Some(l) = a.strip_prefix("--level=") {
+                level = Some(l);
+            }
+        }
+        level == Some("fine")
+    }
+
+    /// Order the round's fine labels (`--level fine`), or its own (no
+    /// `--level`).
+    pub fn set_fine_level(&mut self, fine: bool) {
+        let mut kept = Vec::with_capacity(self.argv.len() + 2);
+        let mut words = std::mem::take(&mut self.argv).into_iter();
+        while let Some(a) = words.next() {
+            if a == "--level" {
+                words.next();
+            } else if !a.starts_with("--level=") {
+                kept.push(a);
+            }
+        }
+        if fine {
+            kept.extend(["--level".into(), "fine".into()]);
+        }
+        self.argv = kept;
+    }
+
     /// How the TUI runs `lupin trajectory` with `t`'s options: `--labels`
     /// is kept apart, so the order view lists its types and a round on
     /// screen stands in for it.

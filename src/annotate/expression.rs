@@ -3,11 +3,13 @@
 //! how a type's markers fare in it. The TUI's gene views and `lupin mcp`'s
 //! `annotate_genes` both read them here.
 
+use crate::annotate::gene_rows::LevelRows;
 use crate::annotate::markers::{label_key, read_marker_pairs};
 use crate::annotate::rounds::{parse_cluster_id, ClusterId};
 use crate::manifest::rounds::Cells;
 use crate::manifest::run::{resolve, Loaded};
 use anyhow::Result;
+use data_beans::aux::feature_rows::SPLICED;
 use legume_numeric::matrix::dense_mat_io::Mat;
 use legume_numeric::matrix::traits::MatWithNames;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -15,10 +17,11 @@ use std::path::Path;
 
 /// A genes × clusters expression table with what fold changes over it need,
 /// computed once: each gene's row, each cluster's column, each gene's total,
-/// and the pseudo-count.
+/// and the pseudo-count. A gene is found as the panel names it, whatever
+/// the table's row names add ([`LevelRows`]).
 pub struct Expression {
     pub table: MatWithNames<Mat>,
-    row: HashMap<String, usize>,
+    row: LevelRows,
     col: HashMap<ClusterId, usize>,
     totals: Vec<f32>,
     /// The table's mean: a pseudo-count on its scale, so a gene near zero
@@ -27,25 +30,34 @@ pub struct Expression {
 }
 
 impl Expression {
-    /// Index `table` (columns `K{id}`).
+    /// Index `table` (columns `K{id}`), a gene with several rows read from
+    /// its spliced counts. The tests' shorthand; code names its channel.
+    #[cfg(test)]
     #[must_use]
     pub fn new(table: MatWithNames<Mat>) -> Self {
-        let row = table
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(r, g)| (g.to_string(), r))
-            .collect();
+        Self::with_channel(table, SPLICED)
+    }
+
+    /// Index `table` (columns `K{id}`), a gene with several rows read from
+    /// its count channel `channel`.
+    #[must_use]
+    pub fn with_channel(table: MatWithNames<Mat>, channel: &str) -> Self {
+        let row = LevelRows::build(&table.rows, channel);
         let col = table
             .cols
             .iter()
             .enumerate()
             .filter_map(|(k, c)| parse_cluster_id(c).map(|id| (id, k)))
             .collect();
-        let totals = (0..table.mat.nrows())
+        let totals: Vec<f32> = (0..table.mat.nrows())
             .map(|g| table.mat.row(g).sum())
             .collect();
-        let eps = table.mat.mean().max(f32::MIN_POSITIVE);
+        // Over the genes' level rows: a gene's other rows (unspliced,
+        // per-site) are not on its scale.
+        let level = row.rows();
+        let eps = (level.iter().map(|&r| totals[r]).sum::<f32>()
+            / (level.len() * table.mat.ncols()).max(1) as f32)
+            .max(f32::MIN_POSITIVE);
         Self {
             table,
             row,
@@ -55,9 +67,16 @@ impl Expression {
         }
     }
 
+    /// The row gene `gene`'s level is read from.
     #[must_use]
     pub fn row(&self, gene: &str) -> Option<usize> {
-        self.row.get(gene).copied()
+        self.row.row(gene)
+    }
+
+    /// Each gene's level row, one per gene.
+    #[must_use]
+    pub fn level_rows(&self) -> &[usize] {
+        self.row.rows()
     }
 
     /// Cluster `id`'s column.
@@ -114,7 +133,8 @@ fn top_by(items: impl Iterator<Item = (String, f32)>) -> Vec<(String, f32)> {
 }
 
 /// Per cluster, the genes that set it apart, all of them: the genes above
-/// the cluster's average, by [`Expression::log2fc`] over the others.
+/// the cluster's average, by [`Expression::log2fc`] over the others, each
+/// by its level row alone.
 #[must_use]
 pub fn specific_genes(expr: &Expression) -> BTreeMap<ClusterId, Vec<(String, f32)>> {
     expr.col
@@ -130,8 +150,10 @@ pub fn specific_genes_of(expr: &Expression, id: ClusterId) -> Vec<(String, f32)>
     let Some(k) = expr.col(id) else {
         return Vec::new();
     };
-    let floor = m.column(k).mean();
-    let scored = (0..m.nrows())
+    // The cluster's average gene, each by its level row.
+    let level = expr.level_rows();
+    let floor = level.iter().map(|&g| m[(g, k)]).sum::<f32>() / level.len().max(1) as f32;
+    let scored = (expr.level_rows().iter().copied())
         .filter(|&g| m[(g, k)] > floor)
         .filter_map(|g| {
             expr.log2fc(g, &[k])
@@ -180,13 +202,28 @@ pub fn panel_sets(path: &str) -> Result<Panel> {
 /// The expression profile `loaded` records, and its marker panel as label
 /// key → genes (empty when it records none, or the file is gone).
 pub fn profile_and_panel(loaded: &Loaded, cells: &Cells) -> Result<(Option<Expression>, Panel)> {
-    let a = &loaded.manifest.annotate;
-    let at = |rel: &Option<String>| rel.as_deref().map(|r| resolve(&loaded.dir, r));
+    profile_and_panel_on(loaded, cells, SPLICED)
+}
+
+/// [`profile_and_panel`], a gene with several rows read from its count
+/// channel `channel`.
+pub fn profile_and_panel_on(
+    loaded: &Loaded,
+    cells: &Cells,
+    channel: &str,
+) -> Result<(Option<Expression>, Panel)> {
     // Over the round's own clusters: a merge's profile is its parts'.
-    let expression = crate::manifest::rounds::round_profile(loaded, cells)?.map(Expression::new);
-    let markers = match at(&a.markers) {
-        Some(p) if Path::new(&p).is_file() => panel_sets(&p)?,
-        _ => BTreeMap::new(),
-    };
-    Ok((expression, markers))
+    let expression = crate::manifest::rounds::round_profile(loaded, cells)?
+        .map(|t| Expression::with_channel(t, channel));
+    Ok((expression, round_panel(loaded)?))
+}
+
+/// The marker panel `loaded` records, as label key → genes (empty when it
+/// records none, or the file is gone).
+pub fn round_panel(loaded: &Loaded) -> Result<Panel> {
+    let rel = loaded.manifest.annotate.markers.as_deref();
+    match rel.map(|r| resolve(&loaded.dir, r)) {
+        Some(p) if Path::new(&p).is_file() => panel_sets(&p),
+        _ => Ok(BTreeMap::new()),
+    }
 }

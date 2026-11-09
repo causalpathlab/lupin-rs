@@ -323,3 +323,80 @@ fn an_agents_relabel_is_recorded_and_replays() {
     );
     s.stop();
 }
+
+/// [`round`] with a profile whose rows a faba file names
+/// (`GENE1/count/spliced` …) and a panel naming the genes bare.
+fn round_with_profile(dir: &Path) -> PathBuf {
+    let manifest = round(dir);
+    let rows: Vec<Box<str>> = (1..=3)
+        .map(|g| format!("GENE{g}/count/spliced").into())
+        .collect();
+    let cols: Vec<Box<str>> = ["K0", "K1", "K2"].map(Box::from).into();
+    let mut m = Mat::from_element(3, 3, 1.0);
+    for g in 0..3 {
+        m[(g, g)] = 50.0;
+    }
+    m.to_parquet_with_names(
+        &dir.join("run.cluster_expression.parquet").to_string_lossy(),
+        (Some(&rows), Some("gene")),
+        Some(&cols),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("markers.tsv"),
+        "gene\tcelltype\nGENE1\tCT1\nGENE2\tCT2\nGENE3\tCT3\n",
+    )
+    .unwrap();
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    v["annotate"]["cluster_expression"] = json!("run.cluster_expression.parquet");
+    v["annotate"]["expression_clusters"] = json!("run.clusters.parquet");
+    v["annotate"]["markers"] = json!("markers.tsv");
+    std::fs::write(&manifest, v.to_string()).unwrap();
+    manifest
+}
+
+#[test]
+fn a_heatmap_is_drawn_returned_and_recorded() {
+    let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("results");
+    std::fs::create_dir_all(&local).unwrap();
+    let project = tempfile::tempdir_in(&local).unwrap();
+    let data = project.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let r0 = round_with_profile(&data).to_string_lossy().into_owned();
+    let mut s = Server::start(project.path());
+    let r = s.request(
+        "tools/call",
+        json!({ "name": "annotate_heatmap", "arguments": { "round": r0, "value": "log2fc" } }),
+    );
+    let r = &r["result"];
+    assert_ne!(r["isError"], true, "{r}");
+    let image = r["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"] == "image");
+    assert!(image.is_some(), "the image comes back: {r}");
+    let got = &r["structuredContent"];
+    let figure = got["figure"].as_str().unwrap();
+    assert!(figure.ends_with("run.heatmap.pdf"), "{figure}");
+    assert!(Path::new(figure).is_file());
+    assert_eq!(
+        got["rows"].as_array().unwrap().len(),
+        3,
+        "faba rows match: {got}"
+    );
+    assert_eq!(got["rows"][0]["gene"], "GENE1");
+    let refused = s.call("annotate_heatmap", json!({ "round": r0, "out": "h.txt" }));
+    assert!(refused.unwrap_err().contains(".pdf, .svg or .png"));
+    s.stop();
+
+    let results = project.path().join("results");
+    let index = std::fs::read_to_string(results.join("INDEX.tsv")).unwrap();
+    assert!(
+        index.contains("run.heatmap.pdf\tmarker heatmap (log2fc) of run.senna.json"),
+        "{index}"
+    );
+    let day = Path::new(figure).parent().unwrap();
+    let script = std::fs::read_to_string(day.join("runall.sh")).unwrap();
+    assert!(script.contains("lupin figure heatmap"), "{script}");
+}

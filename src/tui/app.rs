@@ -547,7 +547,8 @@ impl Ranking {
         .collect()
     }
 
-    #[cfg(test)]
+    // Its only callers are tests of Linux processes.
+    #[cfg(all(test, target_os = "linux"))]
     pub fn pid(&self) -> u32 {
         self.child.id()
     }
@@ -733,6 +734,9 @@ pub struct App {
     pub trajectory: super::order::TrajectoryRun,
     /// Started as `lupin trajectory`'s TUI: only it has the order view.
     pub trajectory_tui: bool,
+    /// The fine labels of the round on screen (by its manifest), counted
+    /// once: the order view asks for them on every reload.
+    fine_labels: std::sync::Mutex<Option<(PathBuf, FineLabels)>>,
     /// A file to pick in the file browser, which the main loop opens.
     pub want_file: Option<FileWant>,
     /// The file browser, open in a popup over the form or menu that asked.
@@ -828,6 +832,7 @@ impl App {
             out_typed: true,
             trajectory: super::order::TrajectoryRun::default(),
             trajectory_tui: false,
+            fine_labels: std::sync::Mutex::default(),
             want_file: None,
             browser: None,
             after_pass: AfterPass::Nothing,
@@ -3398,6 +3403,9 @@ impl App {
         }
         self.show_trajectory();
         self.status = "order view: space marks a type, then > states the first precedes the second, u that they are unrelated".into();
+        if !self.trajectory.fine_level() && self.fine_types().is_ok() {
+            self.status += " · L the round's fine labels";
+        }
     }
 
     /// The manifests whose trajectory outputs the order view shows: the
@@ -4168,6 +4176,12 @@ impl App {
     /// The labels on screen with their cell counts: the round's labels, else
     /// the panel's types.
     fn order_types(&self) -> Vec<(String, usize)> {
+        if self.trajectory.fine_level() && self.round.is_some() {
+            match self.fine_types() {
+                Ok(types) => return types,
+                Err(e) => log::warn!("the round's fine labels: {e:#}"),
+            }
+        }
         match &self.round {
             Some(r) => r
                 .summary(&self.edits)
@@ -4198,22 +4212,47 @@ impl App {
     /// The trajectory's labels file's types with their cells.
     fn labels_file_types(&self) -> Option<Vec<(String, usize)>> {
         let path = self.trajectory.labels.as_deref()?;
-        let labels = match crate::cell_labels::read_cell_labels(path) {
-            Ok(l) => l,
-            Err(e) => {
-                log::warn!("the labels file: {e:#}");
-                return None;
-            }
-        };
-        let mut n: std::collections::BTreeMap<String, usize> = Default::default();
-        for (_, t) in labels.iter() {
-            *n.entry(t.to_string()).or_default() += 1;
+        count_labels(path)
+            .map_err(|e| log::warn!("the labels file: {e:#}"))
+            .ok()
+    }
+
+    /// The fine labels the round on screen keeps (a coarse first round's),
+    /// with their cells; why not.
+    fn fine_types(&self) -> anyhow::Result<Vec<(String, usize)>> {
+        use crate::trajectory::run::{label_source, Level};
+        let r = self.round.as_ref().context("no round on screen")?;
+        let mut kept = self.fine_labels.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, types)) = kept.as_ref().filter(|(m, _)| *m == r.manifest) {
+            return types.clone().map_err(|e| anyhow::anyhow!(e));
         }
-        Some(
-            n.into_iter()
-                .filter(|(l, _)| l != UNASSIGNED_LABEL)
-                .collect(),
-        )
+        let read = || -> anyhow::Result<Vec<(String, usize)>> {
+            let loaded = crate::manifest::run::load(&r.manifest.to_string_lossy())?;
+            let (path, _) = label_source(&loaded, Some(Level::Fine), None, &[])?;
+            count_labels(&path)
+        };
+        let types = read().map_err(|e| format!("{e:#}"));
+        *kept = Some((r.manifest.clone(), types.clone()));
+        types.map_err(|e| anyhow::anyhow!(e))
+    }
+
+    /// Order the round's fine labels, or back to its own (`L` in the order
+    /// view); a round that keeps none says so.
+    fn toggle_level(&mut self) {
+        let fine = !self.trajectory.fine_level();
+        if fine {
+            if let Err(e) = self.fine_types() {
+                self.status = format!("{e:#}");
+                return;
+            }
+        }
+        self.trajectory.set_fine_level(fine);
+        self.reload_order();
+        self.status = if fine {
+            "ordering the round's fine labels (--level fine); L for its own".into()
+        } else {
+            "ordering the round's own labels; L for its fine labels".into()
+        };
     }
 
     /// (Re)build the order view from the labels on screen, the data files
@@ -4353,6 +4392,10 @@ impl App {
         let relation = match code {
             KeyCode::Char('r') => {
                 self.ask_trajectory_out();
+                return true;
+            }
+            KeyCode::Char('L') => {
+                self.toggle_level();
                 return true;
             }
             KeyCode::Char('>') => Relation::Precedes,
@@ -5252,3 +5295,19 @@ pub(super) fn step(sel: &mut usize, n: usize, code: KeyCode) -> bool {
 #[cfg(test)]
 #[path = "tests/app.rs"]
 mod tests;
+
+/// A round's fine labels with their cells, or why it has none.
+type FineLabels = Result<Vec<(String, usize)>, String>;
+
+/// The labels file at `path` as its types with their cells, unassigned
+/// cells left out.
+fn count_labels(path: &str) -> anyhow::Result<Vec<(String, usize)>> {
+    let labels = crate::cell_labels::read_cell_labels(path)?;
+    let mut n: std::collections::BTreeMap<String, usize> = Default::default();
+    for (_, t) in labels.iter() {
+        *n.entry(t.to_string()).or_default() += 1;
+    }
+    Ok(n.into_iter()
+        .filter(|(l, _)| l != UNASSIGNED_LABEL)
+        .collect())
+}

@@ -582,3 +582,24 @@ fn the_order_views_edges_and_texts_come_from_one_trajectory() {
     app.focus = Focus::Clusters;
     assert_eq!(app.order_line().map(str::to_string), Some(paragraph_of(&a)));
 }
+
+#[test]
+fn the_level_is_one_of_the_runs_options() {
+    let mut t = super::TrajectoryRun {
+        argv: vec![
+            "--root".into(),
+            "CT1".into(),
+            "--level".into(),
+            "coarse".into(),
+        ],
+        ..Default::default()
+    };
+    assert!(!t.fine_level());
+    t.set_fine_level(true);
+    assert_eq!(t.argv, ["--root", "CT1", "--level", "fine"]);
+    assert!(t.fine_level());
+    t.argv.push("--level=coarse".into());
+    assert!(!t.fine_level(), "the last one given");
+    t.set_fine_level(false);
+    assert_eq!(t.argv, ["--root", "CT1"]);
+}

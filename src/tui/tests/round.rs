@@ -44,6 +44,7 @@ fn round() -> RoundView {
         rescorable: false,
         by: Default::default(),
         figures: Default::default(),
+        marker_rows: Default::default(),
     }
 }
 
@@ -117,6 +118,52 @@ fn specific_genes_rank_high_and_exclusive_first() {
     let k0: Vec<&str> = g[&0].iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(k0, ["G2", "G1"]);
     assert_eq!(g[&1][0].0, "G1");
+}
+
+#[test]
+fn a_faba_genes_level_is_its_spliced_row_and_it_is_listed_once() {
+    let expr = Expression::new(MatWithNames {
+        rows: vec![
+            "G1/count/unspliced".into(),
+            "G1/count/spliced".into(),
+            "ENSG2_G2/count/spliced".into(),
+        ],
+        cols: vec!["K0".into(), "K1".into()],
+        mat: Mat::from_row_slice(3, 2, &[0.0, 9.0, 9.0, 0.0, 1.0, 1.0]),
+    });
+    assert!(expr.fold_change(0, "G1").unwrap() > 0.0, "the spliced row");
+    assert!(expr.fold_change(0, "g2").is_some(), "by case and symbol");
+    let g = specific_genes(&expr);
+    let k1: Vec<&str> = g[&1].iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        !k1.contains(&"G1/count/unspliced"),
+        "the unspliced row is not G1's level: {k1:?}"
+    );
+    let k0: Vec<&str> = g[&0].iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(k0, ["G1/count/spliced"]);
+}
+
+#[test]
+fn a_genes_floor_is_its_clusters_average_gene_not_every_row() {
+    // Twenty empty per-site rows would drag the column's mean below G1's 2.
+    let mut rows: Vec<Box<str>> = ["G1", "G2", "G3"]
+        .map(|g| format!("{g}/count/spliced").into())
+        .into();
+    rows.extend((0..20).map(|i| format!("G{}/m6a/chr1:{i}/methylated", 1 + i % 3).into()));
+    let mut values = vec![2.0, 1.0, 18.0, 1.0, 12.0, 1.0];
+    values.extend(std::iter::repeat_n(0.0, 40));
+    let expr = Expression::new(MatWithNames {
+        rows,
+        cols: vec!["K0".into(), "K1".into()],
+        mat: Mat::from_row_slice(23, 2, &values),
+    });
+    let g = specific_genes(&expr);
+    let k0: Vec<&str> = g[&0].iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        k0,
+        ["G2/count/spliced", "G3/count/spliced"],
+        "G1 is below K0's average gene"
+    );
 }
 
 #[test]

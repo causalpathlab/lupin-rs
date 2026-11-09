@@ -409,9 +409,16 @@ impl Round {
     /// The types `gene` is a marker of.
     fn marker_of(&self, gene: &str) -> Vec<String> {
         (self.panel.iter())
-            .filter(|(_, g)| g.contains(gene))
+            .filter(|(_, gs)| gs.iter().any(|g| self.same(g, gene)))
             .map(|(t, _)| t.clone())
             .collect()
+    }
+
+    /// Whether `a` and `b` name the same gene: the same name, or the same
+    /// row of the profile (a faba row `GENE/count/spliced` is `GENE`).
+    fn same(&self, a: &str, b: &str) -> bool {
+        let row = |g: &str| self.expr.as_ref()?.row(g);
+        a == b || row(a).is_some_and(|r| row(b) == Some(r))
     }
 
     /// `genes` by their fold change in `k`, the largest first, unmeasured
@@ -486,7 +493,7 @@ fn gene_side(
 ) -> Value {
     let fc = r.fc(k, gene);
     let mut v = json!({ "gene": gene, "log2fc": fc });
-    match shown.iter().position(|(g, _)| g == gene) {
+    match shown.iter().position(|(g, _)| r.same(g, gene)) {
         Some(i) => {
             v["rank"] = json!(i + 1);
             v["of"] = json!(shown.len());
@@ -502,7 +509,7 @@ fn gene_side(
     }
     if let Some(terms) = r.terms.as_ref() {
         let top: Vec<&str> = (terms.ranked(k).into_iter())
-            .filter(|(t, _)| t.genes.iter().any(|g| g == gene))
+            .filter(|(t, _)| t.genes.iter().any(|g| r.same(g, gene)))
             .take(3)
             .map(|(t, _)| t.name.as_str())
             .collect();
@@ -546,7 +553,7 @@ pub fn why_gene(
 ) -> Result<Answer> {
     r.cluster(k)?;
     let (shown, rule, source) = gene_list(r, k, list)?;
-    let at = |g: &str| shown.iter().position(|(s, _)| s == g);
+    let at = |g: &str| shown.iter().position(|(s, _)| r.same(s, g));
     let mut notes = Vec::new();
     let foil = match foil {
         Some(f) => Some(f.to_string()),
