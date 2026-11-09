@@ -41,6 +41,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use units::{GoTerm, Marks, UnitMap};
 
 pub(crate) mod charts;
+pub(crate) mod heatmap;
 pub(crate) mod units;
 
 /// Pairs outside the prior on the connectivity panel, and the pairs it
@@ -912,19 +913,7 @@ impl CellFigures {
             let img = self.write_chart(panel, size, EXPORT_DPI, &pdf)?;
             (vec![pdf], Some(img))
         } else {
-            let Picture::Svg(fig) = self.figure(panel, size, style, view, moved)? else {
-                unreachable!("only a scatter is a map")
-            };
-            let formats = FigureFormats {
-                svg: true,
-                png: false,
-                pdf: true,
-            };
-            legume_plot::write_figure(&fig.svg, fig.w, fig.h, &b, formats)?;
-            let files = vec![
-                PathBuf::from(format!("{b}.svg")),
-                PathBuf::from(format!("{b}.pdf")),
-            ];
+            let (files, fig) = self.write_svg_panel(panel, size, style, view, moved, &b)?;
             // The thumbnail is a nicety: a figure resvg cannot draw is
             // still exported.
             (files, render_svg(&fig).ok())
@@ -943,6 +932,76 @@ impl CellFigures {
             ),
             picture,
         })
+    }
+
+    /// The files panel `panel` of a trajectory's figures is written to
+    /// under `base`: a scatter as `{base}.map.png` and `.pdf`, any other
+    /// panel as `{base}.{slug}.svg` and `.pdf`.
+    fn panel_files(panel: Panel, base: &str) -> [PathBuf; 2] {
+        let (b, first) = if panel.is_scatter() {
+            (format!("{base}.map"), "png")
+        } else {
+            (format!("{base}.{}", panel.slug()), "svg")
+        };
+        [format!("{b}.{first}"), format!("{b}.pdf")].map(PathBuf::from)
+    }
+
+    /// The files [`Self::write_trajectory`] writes under `base`, the map's
+    /// PNG first.
+    pub(crate) fn trajectory_files(&self, base: &str) -> Vec<PathBuf> {
+        (self.panels().into_iter())
+            .flat_map(|p| Self::panel_files(p, base))
+            .collect()
+    }
+
+    /// A trajectory run's figures, whole and as it opens, as files under
+    /// `base` ([`Self::trajectory_files`]): its map (the best layout, else
+    /// the diffusion map, coloured by pseudotime, the prior's edges as
+    /// arrows); the types in pseudotime order and the connectivity between
+    /// them (the lineage graph).
+    pub(crate) fn write_trajectory(&self, base: &str) -> Result<Vec<PathBuf>> {
+        legume_numeric::matrix::common_io::mkdir_parent(base)?;
+        let size = export_size(None);
+        let style = Style::opening(self);
+        let (view, moved) = (View::default(), Offsets::default());
+        for panel in self.panels() {
+            let [first, pdf] = Self::panel_files(panel, base);
+            if panel.is_scatter() {
+                self.write_map(panel, size, EXPORT_DPI, &style, view, &moved, &pdf)?;
+                // The PDF sets its text over the image; the PNG has it drawn.
+                let drawn = self.cell_map(panel, size, &style, view, false, &moved)?;
+                (drawn.frame.to_image().save(&first))
+                    .with_context(|| format!("writing {}", first.display()))?;
+            } else {
+                let b = first.with_extension("");
+                self.write_svg_panel(panel, size, &style, view, &moved, &b.to_string_lossy())?;
+            }
+        }
+        Ok(self.trajectory_files(base))
+    }
+
+    /// Panel `panel`, an SVG figure, written as `{base}.svg` and `.pdf`:
+    /// the files and the figure.
+    fn write_svg_panel(
+        &self,
+        panel: Panel,
+        size: Size,
+        style: &Style,
+        view: View,
+        moved: &Offsets<String>,
+        base: &str,
+    ) -> Result<(Vec<PathBuf>, Figure)> {
+        let Picture::Svg(fig) = self.figure(panel, size, style, view, moved)? else {
+            unreachable!("only a scatter is a map")
+        };
+        let formats = FigureFormats {
+            svg: true,
+            png: false,
+            pdf: true,
+        };
+        legume_plot::write_figure(&fig.svg, fig.w, fig.h, base, formats)?;
+        let files = ["svg", "pdf"].map(|e| PathBuf::from(format!("{base}.{e}")));
+        Ok((files.into(), fig))
     }
 
     /// The scatter `panel` as a PDF at `path`, as senna saves its map: the
@@ -998,9 +1057,9 @@ impl CellFigures {
         while !job.step(layers) {}
         let mut frame = job.finish();
         let finite: Vec<usize> = layer.shuffled.iter().map(|&i| i as usize).collect();
-        // The type medians over all cells anchor the arrows; only made when
-        // they are drawn.
-        if matches!(panel, Panel::Layout { .. }) && !self.edges.is_empty() {
+        // The type medians over all cells anchor the arrows, on a layout or
+        // the diffusion map; only made when they are drawn.
+        if !self.edges.is_empty() {
             let all = self.medians(panel, LabelBy::Type, x, y, &finite);
             let stroke = (size.w.min(size.h) as f32 / 400.0).clamp(1.0, 3.0) * 1.2;
             self.draw_arrows(&mut frame, &all, &vp, stroke);
@@ -2026,6 +2085,35 @@ fn free_base(base: &str) -> PathBuf {
         .find(|b| !taken(b))
         .map(PathBuf::from)
         .expect("some suffix is free")
+}
+
+#[derive(clap::Args, Debug)]
+pub struct TrajectoryFigureArgs {
+    #[arg(short, long, help = "A trajectory run (its manifest or prefix)")]
+    pub from: Box<str>,
+    #[arg(
+        short,
+        long,
+        help = "Output prefix: {out}.map.png and .pdf, {out}.order and {out}.connectivity as .svg and .pdf"
+    )]
+    pub out: Box<str>,
+}
+
+/// `lupin figure trajectory`: a trajectory run's figures as files.
+pub fn run_trajectory_figures(args: &TrajectoryFigureArgs) -> Result<()> {
+    let figures = trajectory_figures(&args.from)?;
+    let files = figures.write_trajectory(&args.out)?;
+    for f in files {
+        log::info!("wrote {}", f.display());
+    }
+    Ok(())
+}
+
+/// The figures of the trajectory run `from`.
+pub(crate) fn trajectory_figures(from: &str) -> Result<CellFigures> {
+    let loaded = crate::manifest::run::load(from)?;
+    CellFigures::load(&loaded.manifest, &loaded.dir, &loaded.file)?
+        .with_context(|| format!("{} records no trajectory.pseudotime", loaded.file.display()))
 }
 
 /// `picture` as pixels: a cell map's frame as it is, an SVG through resvg.

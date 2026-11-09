@@ -8,9 +8,11 @@
 //! says which instead of drawing.
 
 use super::{cell_index, cluster_name, distinct_colours, Colouring, Panel, Size, THEME};
+use crate::annotate::gene_rows::LevelRows;
 use crate::manifest::rounds::read_table;
 use crate::manifest::run::{Loaded, RunKind};
 use anyhow::{Context, Result};
+use data_beans::aux::feature_rows::SPLICED;
 use legume_numeric::matrix::dense_mat_io::Mat;
 use legume_numeric::matrix::parquet::read_table_columns;
 use legume_numeric::matrix::traits::IoOps;
@@ -300,19 +302,14 @@ impl super::CellFigures {
             .with_context(|| format!("reading {path}"))
             .map_err(|e| format!("{e:#}"))?;
         let panel = read_panel(markers).map_err(|e| format!("{e:#}"))?;
-        // A marker matches its row as written, else by case.
-        let exact: HashMap<&str, usize> = (t.rows.iter().enumerate())
-            .map(|(r, g)| (&**g, r))
-            .collect();
-        let folded: HashMap<String, usize> = (t.rows.iter().enumerate())
-            .map(|(r, g)| (g.to_ascii_uppercase(), r))
-            .collect();
+        // A marker matches its gene's level row, as the round's other gene
+        // views read it.
+        let level = LevelRows::build(&t.rows, SPLICED);
         let cols = t.cols.len();
         let (mut rows, mut z) = (Vec::new(), Vec::new());
         for (ty, genes) in &panel {
             for g in genes {
-                let found = exact.get(g.as_str()).copied();
-                let Some(r) = found.or_else(|| folded.get(&g.to_ascii_uppercase()).copied()) else {
+                let Some(r) = level.row(g) else {
                     continue;
                 };
                 rows.push(format!("{g} · {ty}"));

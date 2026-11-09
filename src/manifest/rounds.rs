@@ -1956,6 +1956,12 @@ pub(crate) fn evidence_by_cluster(loaded: &Loaded) -> Result<(ClusterEvidence, O
     Ok((by, r.tree))
 }
 
+/// Each cluster's label as review shows it, without the rest of the review.
+pub(crate) fn cluster_labels(loaded: &Loaded) -> Result<BTreeMap<ClusterId, Option<String>>> {
+    let r = Reviewed::read(loaded, false, false)?;
+    Ok(r.digests.into_iter().map(|(id, d)| (id, d.label)).collect())
+}
+
 /// `review --json`: per cluster (all, or those in `clusters`), its digest,
 /// its history, each method's top type (`tops`, the first of
 /// [`Method::ranked`], for the methods that put one forward), every type's

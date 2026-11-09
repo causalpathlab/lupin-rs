@@ -717,6 +717,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             (">", "the first marked type precedes the second (asks why)"),
             ("u", "the two marked types are unrelated (asks why); + - zoom the figures, as on the cell map"),
             ("r", "from any pane: run lupin trajectory on the labels on screen (asks for the output prefix; when nothing orders the types, asks how)"),
+            ("L", "the round's own labels ↔ the fine labels a coarse first round keeps (--level fine): the types listed, ordered and offered as roots"),
             ("A", "in the clusters: the annotation form, then a choice to run the trajectory"),
             ("tab", "panes: clusters → genes → candidates → ordering → ontology; the Cell Ontology beside the table: ↑↓ selects a type in both, space marks it, o the full ontology, there d in the data ↔ all"),
             ("T / esc", "back to the tree / to the clusters (t restyles the figures' labels)"),

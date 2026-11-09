@@ -134,7 +134,15 @@ fn a_background_pass_runs_on_lupin_s_screen_and_is_recorded() {
         .as_str()
         .unwrap_or_else(|| panic!("{}", results[0]))
         .to_string();
-    assert_eq!(session, "lupin-annotate-pass", "{started}");
+    // Labelled by a short hash of the output, so the socket's path stays
+    // short whatever the output is called.
+    let hash = session
+        .strip_prefix("lupin-annotate-pass-")
+        .unwrap_or_default();
+    assert!(
+        hash.len() == 8 && hash.chars().all(|c| c.is_ascii_hexdigit()),
+        "{started}"
+    );
     sessions.wait_listed(&session);
     let size = Size {
         rows: 40,

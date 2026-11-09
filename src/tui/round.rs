@@ -282,6 +282,9 @@ pub struct RoundView {
     /// The round's cells on its run's layouts, for the cell map; taken by
     /// the app when it shows the round.
     pub figures: crate::figures::CellFigures,
+    /// The panel's types of each profile row a panel gene is read from,
+    /// made on first use: [`Self::marker_of`] asks for every gene drawn.
+    pub(super) marker_rows: std::sync::OnceLock<HashMap<usize, Vec<String>>>,
 }
 
 impl RoundView {
@@ -339,6 +342,7 @@ impl RoundView {
             decided,
             rescorable: a.stats_cache.is_some() && a.expression_clusters.is_some(),
             by,
+            marker_rows: Default::default(),
         })
     }
 
@@ -453,11 +457,27 @@ impl RoundView {
     /// The types `gene` is a marker of in the round's panel.
     #[must_use]
     pub fn marker_of(&self, gene: &str) -> Vec<&str> {
+        // A panel gene is this one when it is read from the same profile
+        // row (a faba row `GENE/count/spliced` is its panel's `GENE`).
+        let types = (self.expression.as_ref()).and_then(|e| self.marker_rows(e).get(&e.row(gene)?));
         self.markers
             .iter()
-            .filter(|(_, g)| g.contains(gene))
+            .filter(|(l, gs)| gs.contains(gene) || types.is_some_and(|ts| ts.contains(l)))
             .map(|(l, _)| l.as_str())
             .collect()
+    }
+
+    /// [`Self::marker_rows`], made on first use from `e`, the profile.
+    fn marker_rows(&self, e: &Expression) -> &HashMap<usize, Vec<String>> {
+        self.marker_rows.get_or_init(|| {
+            let mut rows: HashMap<usize, Vec<String>> = HashMap::new();
+            for (l, gs) in &self.markers {
+                for r in gs.iter().filter_map(|g| e.row(g)) {
+                    rows.entry(r).or_default().push(l.clone());
+                }
+            }
+            rows
+        })
     }
 }
 

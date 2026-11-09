@@ -11,6 +11,7 @@ use crate::manifest::run::load;
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
 use crate::trajectory::lineages;
 use crate::trajectory::prior::{self, Prior, Relation, Source, Statement};
+use crate::trajectory::run::Level;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -36,6 +37,27 @@ impl TrajectoryRun {
             .find(|w| w[0] == "--min-cells")
             .and_then(|w| w[1].parse().ok())
             .unwrap_or(crate::trajectory::run::DEFAULT_MIN_CELLS)
+    }
+
+    /// Whether the run orders a round's fine labels: the last `--level`
+    /// among its options is `fine`.
+    #[must_use]
+    pub fn fine_level(&self) -> bool {
+        (self.argv.windows(2).rev())
+            .find(|w| w[0] == "--level")
+            .is_some_and(|w| w[1] == Level::Fine.as_str())
+    }
+
+    /// Order the round's fine labels (`--level fine`), or its own (no
+    /// `--level`).
+    pub fn set_fine_level(&mut self, fine: bool) {
+        while let Some(i) = self.argv.iter().position(|a| a == "--level") {
+            self.argv.drain(i..(i + 2).min(self.argv.len()));
+        }
+        if fine {
+            self.argv
+                .extend(["--level".into(), Level::Fine.as_str().into()]);
+        }
     }
 
     /// How the TUI runs `lupin trajectory` with `t`'s options: `--labels`

@@ -73,6 +73,7 @@ fn app_with_terms(terms: bool) -> App {
         rescorable: false,
         by: Default::default(),
         figures: Default::default(),
+        marker_rows: Default::default(),
     });
     app.focus = Focus::Genes;
     app
@@ -4231,4 +4232,90 @@ fn w_on_a_round_it_cannot_read_says_so_and_opens_nothing() {
     assert!(app.why.is_none());
     assert!(app.status.contains("cannot answer why"), "{}", app.status);
     assert!(super::super::ui::help(&app).contains("w why"));
+}
+
+/// [`app_with_terms`] on a coarse first round in `dir`: its cluster
+/// labelled `G1` over cells a and b, its fine labels `CT1` and `CT2`,
+/// or none kept; in the order view.
+fn coarse_round_app(dir: &std::path::Path, keeps_fine: bool) -> App {
+    let write = |file: &str, text: &str| std::fs::write(dir.join(file), text).unwrap();
+    write("run.argmax.tsv", "a\tG1\nb\tG1\n");
+    write("fine.argmax.tsv", "a\tCT1\nb\tCT2\n");
+    let mut m = crate::manifest::run::RunManifest::new(crate::manifest::run::RunKind::Topic, "run");
+    m.annotate.argmax = Some("run.argmax.tsv".into());
+    if keeps_fine {
+        m.annotate.fine_argmax = Some("fine.argmax.tsv".into());
+    }
+    let file = dir.join("run.senna.json");
+    m.save(&file).unwrap();
+    let mut app = app_with_terms(false);
+    if let Some(r) = &mut app.round {
+        r.manifest = file;
+        r.clusters[0].label = Some("G1".into());
+    }
+    app.data_search = crate::manifest::data_files::SearchPath::new(Some(dir));
+    app.reload_order();
+    app.focus = Focus::Order;
+    app
+}
+
+fn order_types(app: &App) -> Vec<String> {
+    let TreeMode::Order(v) = &app.tree_mode else {
+        panic!("not the order view");
+    };
+    v.types.iter().map(|(t, _)| t.clone()).collect()
+}
+
+#[test]
+fn the_order_view_switches_to_the_rounds_fine_labels_and_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = coarse_round_app(dir.path(), true);
+    assert_eq!(order_types(&app), ["G1"]);
+    press(&mut app, KeyCode::Char('L'));
+    assert_eq!(order_types(&app), ["CT1", "CT2"]);
+    assert!(app.trajectory.fine_level(), "{:?}", app.trajectory.argv);
+    assert!(app.status.contains("fine"), "{}", app.status);
+    press(&mut app, KeyCode::Char('L'));
+    assert_eq!(order_types(&app), ["G1"]);
+    assert!(!app.trajectory.argv.iter().any(|a| a.contains("level")));
+}
+
+#[test]
+fn a_round_with_no_fine_labels_says_so_and_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = coarse_round_app(dir.path(), false);
+    press(&mut app, KeyCode::Char('L'));
+    assert_eq!(order_types(&app), ["G1"]);
+    assert!(app.status.contains("no fine labels"), "{}", app.status);
+    assert!(!app.trajectory.fine_level());
+}
+
+#[test]
+fn a_listed_gene_named_otherwise_than_the_panel_is_still_its_marker() {
+    let mut app = app_with_terms(false);
+    if let Some(r) = &mut app.round {
+        use legume_numeric::matrix::dense_mat_io::Mat;
+        r.expression = Some(super::super::round::Expression::new(
+            legume_numeric::matrix::traits::MatWithNames {
+                rows: vec!["ENSG1_GENE1".into(), "GENE2".into()],
+                cols: vec!["K0".into(), "K1".into()],
+                mat: Mat::from_row_slice(2, 2, &[5.0, 1.0, 1.0, 1.0]),
+            },
+        ));
+        r.clusters[0].genes = vec![("ENSG1_GENE1".into(), 1.0)];
+        r.markers = [("CT1".into(), ["GENE1".to_string()].into())].into();
+    }
+    app.focus = Focus::Genes;
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char('a'));
+    assert_eq!(app.status, "already markers of CT1", "GENE1 is the panel's");
+    press(&mut app, KeyCode::Char('d'));
+    assert!(
+        matches!(
+            app.prompt.as_ref().map(|p| &p.pending),
+            Some(Pending::Markers { add: false, .. })
+        ),
+        "{}",
+        app.status
+    );
 }

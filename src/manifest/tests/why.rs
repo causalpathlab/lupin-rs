@@ -118,6 +118,36 @@ fn readings_favour_a_side_only_when_none_leans_the_other_way() {
 }
 
 #[test]
+fn a_gene_asked_by_its_panel_name_is_found_under_its_faba_row() {
+    let mut r = round();
+    // Each gene's spliced row, and an empty unspliced row that is not its
+    // level: the cluster's average gene is over the spliced rows alone.
+    let table = r.expr.take().unwrap().table;
+    let mut mat = Mat::zeros(2 * GENES, CLUSTERS);
+    mat.rows_mut(0, GENES).copy_from(&table.mat);
+    let rows = (0..GENES)
+        .map(|g| format!("{}/count/spliced", gene(g)).into())
+        .chain((0..GENES).map(|g| format!("{}/count/unspliced", gene(g)).into()))
+        .collect();
+    let table = MatWithNames {
+        rows,
+        cols: table.cols,
+        mat,
+    };
+    r.expr = Some(Expression::with_channel(table, "spliced"));
+    let a = why_gene(&r, 0, "G3", Some("G300"), &GeneList::Specific).unwrap();
+    assert!(a.fact["rank"].as_u64().is_some(), "{}", a.fact);
+    assert_eq!(a.fact["marker_of"], json!(["a"]));
+    assert_eq!(a.fact["in_terms"], json!(["a programme"]));
+    assert_eq!(a.foil["shown"], json!(false));
+    // Why not shown: below the cluster's average gene, as the list has it.
+    let e = r.expr.as_ref().unwrap();
+    let k = e.col(0).unwrap();
+    let why = a.foil["why_not"].as_str().unwrap();
+    assert!(why.contains(&format!("{:.3}", e.level_mean(&[k]))), "{why}");
+}
+
+#[test]
 fn a_gene_shown_is_placed_and_one_not_shown_says_why() {
     let r = round();
     let a = why_gene(&r, 0, "G3", Some("G300"), &GeneList::Specific).unwrap();

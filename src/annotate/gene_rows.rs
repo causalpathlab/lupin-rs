@@ -99,6 +99,88 @@ impl GeneRows {
     }
 }
 
+/// The count channels a faba gene's level can be read from.
+pub const CHANNELS: [&str; 3] = [fr::SPLICED, fr::UNSPLICED, fr::TOTAL];
+
+/// Each gene's one row to read its level from, where a gene owns several
+/// (a faba matrix): its gene-level count row of the channel asked for,
+/// else of [`fr::SPLICED`], [`fr::TOTAL`], then any other channel, else
+/// any gene-level row, else a per-site row (ties by row order); a plain
+/// row is its own.
+/// Markers match genes as [`GeneRows`] matches them: by case, `ENSG…_SYMBOL`
+/// either way, and without the `/{modality}/{channel}` suffix.
+pub struct LevelRows {
+    index: GeneIndex,
+    /// Per gene, its level row.
+    level: Vec<usize>,
+    /// Each name asked for, matched: a name that matches no gene is
+    /// matched by a scan of every gene, which a screen redrawn many times
+    /// a second should not repeat.
+    asked: std::sync::Mutex<HashMap<Box<str>, Option<usize>>>,
+}
+
+impl LevelRows {
+    #[must_use]
+    pub fn build(row_names: &[Box<str>], channel: &str) -> Self {
+        let genes = GeneRows::build(row_names);
+        let rank = |r: usize| match parse(&row_names[r]) {
+            None => 0,
+            Some(row) if row.subunit.is_some() => 6,
+            Some(row) if row.modality != fr::COUNT => 5,
+            Some(row) if row.channel == channel => 0,
+            Some(row) if row.channel == fr::SPLICED => 1,
+            Some(row) if row.channel == fr::TOTAL => 2,
+            Some(_) => 3,
+        };
+        let level = genes
+            .rows
+            .iter()
+            .map(|rows| {
+                *rows
+                    .iter()
+                    .min_by_key(|&&r| rank(r))
+                    .expect("a gene has a row")
+            })
+            .collect();
+        Self {
+            index: genes.index,
+            level,
+            asked: std::sync::Mutex::default(),
+        }
+    }
+
+    /// The row gene `gene`'s level is read from; `None` when no gene
+    /// matches.
+    #[must_use]
+    pub fn row(&self, gene: &str) -> Option<usize> {
+        let mut asked = self.asked.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&r) = asked.get(gene) {
+            return r;
+        }
+        let r = self.index.match_gene(gene).map(|g| self.level[g]);
+        asked.insert(gene.into(), r);
+        r
+    }
+
+    /// `row_names` with each gene's level row (by [`fr::SPLICED`]) kept
+    /// and its other rows blank: a [`GeneIndex`] built over them, which
+    /// takes a key's first row, then finds each gene at its level row.
+    #[must_use]
+    pub fn level_names(row_names: &[Box<str>]) -> Vec<Box<str>> {
+        let mut out: Vec<Box<str>> = vec![Box::from(""); row_names.len()];
+        for &r in Self::build(row_names, fr::SPLICED).rows() {
+            out[r] = row_names[r].clone();
+        }
+        out
+    }
+
+    /// Every gene's level row, in the order the genes first appear.
+    #[must_use]
+    pub fn rows(&self) -> &[usize] {
+        &self.level
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +239,42 @@ mod tests {
         assert_eq!(gr.match_rows("GENE3"), Some(&[2][..]));
         assert_eq!(gr.match_rows("GENE4"), Some(&[3][..]));
         assert_eq!(gr.modality_summary().as_deref(), Some("count: 1"));
+    }
+
+    #[test]
+    fn a_genes_level_is_read_from_its_spliced_count_row_by_default() {
+        let names = rows(&[
+            "ENSG1_GENE1/m6a/chr1:100/methylated",
+            "ENSG1_GENE1/count/unspliced",
+            "ENSG1_GENE1/m6a/methylated",
+            "ENSG1_GENE1/count/spliced",
+            "GENE2/count/unspliced",
+            "GENE3/m6a/chr2:9/methylated",
+            "GENE3/m6a/methylated",
+            "GENE4",
+        ]);
+        let spliced = LevelRows::build(&names, fr::SPLICED);
+        assert_eq!(spliced.row("GENE1"), Some(3));
+        assert_eq!(spliced.row("gene1"), Some(3), "by case too");
+        assert_eq!(spliced.row("ENSG1"), Some(3));
+        assert_eq!(spliced.row("ENSG1_GENE1"), Some(3));
+        assert_eq!(spliced.row("GENE2"), Some(4), "the count row it has");
+        assert_eq!(spliced.row("GENE3"), Some(6), "gene level before a site");
+        assert_eq!(spliced.row("GENE4"), Some(7));
+        assert_eq!(spliced.row("GENE5"), None);
+        assert_eq!(spliced.rows(), [3, 4, 6, 7], "one row per gene");
+
+        // A gene index over the level names finds the spliced row, not the
+        // first row of the gene.
+        let index = GeneIndex::build(&LevelRows::level_names(&names));
+        assert_eq!(index.match_gene("GENE1"), Some(3));
+        assert_eq!(index.match_gene("GENE3"), Some(6));
+
+        let unspliced = LevelRows::build(&names, fr::UNSPLICED);
+        assert_eq!(unspliced.row("GENE1"), Some(1));
+        // A channel the gene lacks: its spliced row, whatever the order.
+        let total = LevelRows::build(&names, fr::TOTAL);
+        assert_eq!(total.row("GENE1"), Some(3));
     }
 
     #[test]

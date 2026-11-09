@@ -30,7 +30,7 @@ use std::path::Path;
 
 /// Counts per cell the decoder's expected proportions are scaled to, so the
 /// gene sums read like counts.
-const NOMINAL_DEPTH: f64 = 1e4;
+pub(crate) const NOMINAL_DEPTH: f64 = 1e4;
 
 /// What a stand-in for the counts gives: the per-cluster and per-batch
 /// expression over the cells, and where it came from.
@@ -234,7 +234,7 @@ impl Decoder {
 /// empirical dictionary when it wrote one: per gene, from the counts, where
 /// the model's own β is per gene module, split evenly over its genes when
 /// the run coarsened them. A `vae`'s is its decoder's loadings.
-fn decoder_of(loaded: &Loaded) -> Option<(Decoder, &str, &str)> {
+pub(crate) fn decoder_of(loaded: &Loaded) -> Option<(Decoder, &str, &str)> {
     let o = &loaded.manifest.outputs;
     let latent = o.latent.as_deref()?;
     let model = o.softmax_dictionary.as_deref().or(o.dictionary.as_deref());
@@ -252,7 +252,7 @@ fn decoder_of(loaded: &Loaded) -> Option<(Decoder, &str, &str)> {
 /// Each column of `dict` as a distribution over the genes: weights (the
 /// empirical dictionary) normalised, log weights (the model's `log β`)
 /// exponentiated first.
-fn gene_distributions(dict: &Mat) -> Mat {
+pub(crate) fn gene_distributions(dict: &Mat) -> Mat {
     if dict.iter().all(|&v| v >= 0.0) {
         let mut beta = dict.clone();
         for mut col in beta.column_iter_mut() {

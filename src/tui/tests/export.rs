@@ -62,6 +62,7 @@ fn round() -> RoundView {
         rescorable: false,
         by: Default::default(),
         figures: Default::default(),
+        marker_rows: Default::default(),
     }
 }
 
@@ -278,4 +279,64 @@ fn a_named_mix_is_placed_by_its_parts() {
     let calls = cluster_calls(&round(), &tree(), None, &mixed, &[relabel(0, "mix1")]);
     assert_eq!(calls[&0].label, "mix1");
     assert!((calls[&0].share - 0.9).abs() < 1e-6, "CT1 0.7 + CT2 0.2");
+}
+
+#[test]
+fn faba_rows_neither_suggest_a_panel_marker_nor_a_genes_second_row() {
+    let mut r = round();
+    r.expression = Some(crate::tui::round::Expression::new(MatWithNames {
+        rows: [
+            "GENE1/count/spliced",
+            "GENE1/count/unspliced",
+            "GENE3/count/spliced",
+            "NEW/count/spliced",
+            "NEW/count/unspliced",
+            "GENE4/count/spliced",
+        ]
+        .map(Box::from)
+        .into(),
+        cols: vec!["K0".into(), "K1".into()],
+        mat: Mat::from_row_slice(
+            6,
+            2,
+            &[
+                16.0, 1.0, 10.0, 0.5, 1.0, 8.0, 12.0, 0.0, 11.0, 0.0, 5.0, 5.0,
+            ],
+        ),
+    }));
+    let t = tree();
+    let mixed = crate::tui::ontology::Mixed::default();
+    let calls = cluster_calls(&r, &t, None, &mixed, &[]);
+    let rows = marker_rows(&r, &t, &mixed, &calls, &r.markers.clone());
+    let ct1: Vec<(&str, &str)> = (rows.iter())
+        .filter(|m| m.celltype == "CT1")
+        .map(|m| (m.gene.as_str(), m.source))
+        .collect();
+    assert_eq!(
+        ct1,
+        [
+            ("GENE1", "panel"),
+            ("GENE2", "panel"),
+            ("NEW/count/spliced", "suggested")
+        ]
+    );
+}
+
+#[test]
+fn a_faba_row_names_the_panel_types_of_its_gene() {
+    let mut r = round();
+    r.expression = Some(crate::tui::round::Expression::new(MatWithNames {
+        rows: ["GENE1/count/spliced", "NEW/count/spliced"]
+            .map(Box::from)
+            .into(),
+        cols: vec!["K0".into(), "K1".into()],
+        mat: Mat::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]),
+    }));
+    assert_eq!(r.marker_of("GENE1/count/spliced"), ["CT1"]);
+    assert_eq!(
+        r.marker_of("GENE3"),
+        ["CT2"],
+        "a name as the panel writes it"
+    );
+    assert!(r.marker_of("NEW/count/spliced").is_empty());
 }

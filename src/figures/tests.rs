@@ -1104,3 +1104,48 @@ fn the_cell_under_a_pixel_is_the_nearest_within_reach() {
     assert_eq!(t.cell_at(panel, &vp, px + 1.0, py, 4.0), Some(5));
     assert_eq!(t.cell_at(panel, &vp, px, py - 60.0, 4.0), None, "none near");
 }
+
+#[test]
+fn a_trajectory_without_a_layout_draws_its_map_on_the_diffusion_map() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut t = data();
+    t.layouts.clear();
+    let base = tmp
+        .path()
+        .join("new")
+        .join("t")
+        .to_string_lossy()
+        .into_owned();
+    let files = t.write_trajectory(&base).unwrap();
+    let names: Vec<String> = (files.iter())
+        .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "t.map.png",
+            "t.map.pdf",
+            "t.order.svg",
+            "t.order.pdf",
+            "t.connectivity.svg",
+            "t.connectivity.pdf"
+        ]
+    );
+    assert!(files.iter().all(|f| f.is_file()), "{files:?}");
+}
+
+#[test]
+fn the_prior_edges_are_drawn_on_the_diffusion_map_too() {
+    let mut t = data();
+    t.layouts.clear();
+    let style = Style {
+        labels: None,
+        ..Style::default()
+    };
+    let panel = t.scatters()[0];
+    assert!(matches!(panel, Panel::Diffusion { .. }), "{panel:?}");
+    let with = render(&draw(&t, panel, &style)).unwrap();
+    t.edges.clear();
+    let without = render(&draw(&t, panel, &style)).unwrap();
+    assert_ne!(with, without, "the arrow is drawn");
+}

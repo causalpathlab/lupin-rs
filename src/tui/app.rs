@@ -12,6 +12,7 @@ use super::round::{decisions, Edit, RoundView};
 use super::runner::{self, Held};
 use crate::annotate::args::ProjectionMethod;
 use crate::annotate::celltype_tree::ClTerms;
+use crate::annotate::expression::same_gene;
 use crate::annotate::markers::label_key;
 use crate::annotate::panel_tree::PanelTree;
 use crate::annotate::rounds::ClusterId;
@@ -547,7 +548,8 @@ impl Ranking {
         .collect()
     }
 
-    #[cfg(test)]
+    // Its only callers are tests of Linux processes.
+    #[cfg(all(test, target_os = "linux"))]
     pub fn pid(&self) -> u32 {
         self.child.id()
     }
@@ -733,6 +735,9 @@ pub struct App {
     pub trajectory: super::order::TrajectoryRun,
     /// Started as `lupin trajectory`'s TUI: only it has the order view.
     pub trajectory_tui: bool,
+    /// The fine labels of the round on screen (by its manifest), counted
+    /// once: the order view asks for them on every reload.
+    fine_labels: Option<(PathBuf, Vec<(String, usize)>)>,
     /// A file to pick in the file browser, which the main loop opens.
     pub want_file: Option<FileWant>,
     /// The file browser, open in a popup over the form or menu that asked.
@@ -828,6 +833,7 @@ impl App {
             out_typed: true,
             trajectory: super::order::TrajectoryRun::default(),
             trajectory_tui: false,
+            fine_labels: None,
             want_file: None,
             browser: None,
             after_pass: AfterPass::Nothing,
@@ -2411,9 +2417,15 @@ impl App {
             .into_iter()
             .map(|(g, _)| g)
             .collect();
+        // A gene listed by another name than the panel's (`ENSG…_GENE1`
+        // for `GENE1`) is the panel's all the same.
+        let expr = r.expression.as_ref();
         let genes: Vec<String> = chosen
             .into_iter()
-            .filter(|g| current.contains(g) != add)
+            .filter(|g| {
+                let is = same_gene(expr, g);
+                current.iter().any(|c| is(c)) != add
+            })
             .collect();
         if genes.is_empty() {
             self.status = if add {
@@ -3398,6 +3410,9 @@ impl App {
         }
         self.show_trajectory();
         self.status = "order view: space marks a type, then > states the first precedes the second, u that they are unrelated".into();
+        if !self.trajectory.fine_level() && self.fine_path().is_ok() {
+            self.status += " · L the round's fine labels";
+        }
     }
 
     /// The manifests whose trajectory outputs the order view shows: the
@@ -4167,7 +4182,13 @@ impl App {
 
     /// The labels on screen with their cell counts: the round's labels, else
     /// the panel's types.
-    fn order_types(&self) -> Vec<(String, usize)> {
+    fn order_types(&mut self) -> Vec<(String, usize)> {
+        if self.trajectory.fine_level() && self.round.is_some() {
+            match self.fine_types() {
+                Ok(types) => return types,
+                Err(e) => log::warn!("the round's fine labels: {e:#}"),
+            }
+        }
         match &self.round {
             Some(r) => r
                 .summary(&self.edits)
@@ -4178,15 +4199,7 @@ impl App {
             // types with their cells, else the labels file's, else the
             // panel's types.
             None => match &self.figures {
-                Some(f) => {
-                    let mut n: std::collections::BTreeMap<String, usize> = Default::default();
-                    for t in &f.data.types {
-                        *n.entry(t.to_string()).or_default() += 1;
-                    }
-                    n.into_iter()
-                        .filter(|(l, _)| l != UNASSIGNED_LABEL)
-                        .collect()
-                }
+                Some(f) => count_types(f.data.types.iter().map(|t| &**t)),
                 None => match self.labels_file_types() {
                     Some(types) => types,
                     None => self.original.keys().map(|k| (k.clone(), 0)).collect(),
@@ -4198,22 +4211,51 @@ impl App {
     /// The trajectory's labels file's types with their cells.
     fn labels_file_types(&self) -> Option<Vec<(String, usize)>> {
         let path = self.trajectory.labels.as_deref()?;
-        let labels = match crate::cell_labels::read_cell_labels(path) {
-            Ok(l) => l,
-            Err(e) => {
-                log::warn!("the labels file: {e:#}");
-                return None;
+        count_labels(path)
+            .map_err(|e| log::warn!("the labels file: {e:#}"))
+            .ok()
+    }
+
+    /// The fine labels file the round on screen keeps (a coarse first
+    /// round's), from its manifest alone; why not.
+    fn fine_path(&self) -> anyhow::Result<String> {
+        use crate::trajectory::run::{label_source, Level};
+        let r = self.round.as_ref().context("no round on screen")?;
+        let loaded = crate::manifest::run::load(&r.manifest.to_string_lossy())?;
+        Ok(label_source(&loaded, Some(Level::Fine), None, &[])?.0)
+    }
+
+    /// [`Self::fine_path`]'s labels with their cells, counted once per
+    /// round: the order view asks for them on every reload.
+    fn fine_types(&mut self) -> anyhow::Result<Vec<(String, usize)>> {
+        let manifest = self.round.as_ref().map(|r| r.manifest.clone());
+        if let Some((m, types)) = &self.fine_labels {
+            if Some(m) == manifest.as_ref() {
+                return Ok(types.clone());
             }
-        };
-        let mut n: std::collections::BTreeMap<String, usize> = Default::default();
-        for (_, t) in labels.iter() {
-            *n.entry(t.to_string()).or_default() += 1;
         }
-        Some(
-            n.into_iter()
-                .filter(|(l, _)| l != UNASSIGNED_LABEL)
-                .collect(),
-        )
+        let types = count_labels(&self.fine_path()?)?;
+        self.fine_labels = manifest.map(|m| (m, types.clone()));
+        Ok(types)
+    }
+
+    /// Order the round's fine labels, or back to its own (`L` in the order
+    /// view); a round that keeps none says so.
+    fn toggle_level(&mut self) {
+        let fine = !self.trajectory.fine_level();
+        if fine {
+            if let Err(e) = self.fine_types() {
+                self.status = format!("{e:#}");
+                return;
+            }
+        }
+        self.trajectory.set_fine_level(fine);
+        self.reload_order();
+        self.status = if fine {
+            "ordering the round's fine labels (--level fine); L for its own".into()
+        } else {
+            "ordering the round's own labels; L for its fine labels".into()
+        };
     }
 
     /// (Re)build the order view from the labels on screen, the data files
@@ -4353,6 +4395,10 @@ impl App {
         let relation = match code {
             KeyCode::Char('r') => {
                 self.ask_trajectory_out();
+                return true;
+            }
+            KeyCode::Char('L') => {
+                self.toggle_level();
                 return true;
             }
             KeyCode::Char('>') => Relation::Precedes,
@@ -5252,3 +5298,19 @@ pub(super) fn step(sel: &mut usize, n: usize, code: KeyCode) -> bool {
 #[cfg(test)]
 #[path = "tests/app.rs"]
 mod tests;
+
+/// The labels file at `path` as its types with their cells.
+fn count_labels(path: &str) -> anyhow::Result<Vec<(String, usize)>> {
+    let labels = crate::cell_labels::read_cell_labels(path)?;
+    Ok(count_types(labels.iter().map(|(_, t)| &**t)))
+}
+
+/// Each type of `labels` (one per cell) with its cells, by name,
+/// unassigned cells left out.
+fn count_types<'a>(labels: impl Iterator<Item = &'a str>) -> Vec<(String, usize)> {
+    let mut n: std::collections::BTreeMap<&str, usize> = Default::default();
+    for t in labels.filter(|&t| t != UNASSIGNED_LABEL) {
+        *n.entry(t).or_default() += 1;
+    }
+    n.into_iter().map(|(t, n)| (t.to_string(), n)).collect()
+}

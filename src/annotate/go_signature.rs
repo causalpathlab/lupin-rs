@@ -196,7 +196,11 @@ pub fn load_go_gene_sets(
 
     // Coverage is of the gene ids, over every term the data can test; the
     // size window then picks the terms scored, and says so when it leaves none.
-    let idx = GeneIndex::build(gene_names);
+    // A gene of several rows (a faba matrix's) is read from its level row,
+    // as the round's gene views read it.
+    let idx = GeneIndex::build(&crate::annotate::gene_rows::LevelRows::level_names(
+        gene_names,
+    ));
     let rec = gene_sets.reconcile(&idx, MIN_MATCHED, None);
     rec.log_coverage();
     rec.ensure_coverage(MIN_COVERAGE_FRAC, MIN_COVERAGE_TERMS)?;
