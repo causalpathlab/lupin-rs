@@ -3,7 +3,7 @@
 //! how a type's markers fare in it. The TUI's gene views and `lupin mcp`'s
 //! `annotate_genes` both read them here.
 
-use crate::annotate::gene_rows::LevelRows;
+use crate::annotate::gene_rows::{gene_of, LevelRows};
 use crate::annotate::markers::{label_key, read_marker_pairs};
 use crate::annotate::rounds::{parse_cluster_id, ClusterId};
 use crate::manifest::rounds::Cells;
@@ -52,25 +52,31 @@ impl Expression {
         let totals: Vec<f32> = (0..table.mat.nrows())
             .map(|g| table.mat.row(g).sum())
             .collect();
-        // Over the genes' level rows: a gene's other rows (unspliced,
-        // per-site) are not on its scale.
-        let level = row.rows();
-        let eps = (level.iter().map(|&r| totals[r]).sum::<f32>()
-            / (level.len() * table.mat.ncols()).max(1) as f32)
-            .max(f32::MIN_POSITIVE);
-        Self {
+        let mut e = Self {
             table,
             row,
             col,
             totals,
-            eps,
-        }
+            eps: f32::MIN_POSITIVE,
+        };
+        let all: Vec<usize> = (0..e.table.mat.ncols()).collect();
+        e.eps = e.level_mean(&all).max(f32::MIN_POSITIVE);
+        e
     }
 
     /// The row gene `gene`'s level is read from.
     #[must_use]
     pub fn row(&self, gene: &str) -> Option<usize> {
         self.row.row(gene)
+    }
+
+    /// The average gene over columns `inside`: the mean, over each gene's
+    /// level row, of its mean there. A gene's other rows (unspliced,
+    /// per-site) are not on its scale.
+    #[must_use]
+    pub fn level_mean(&self, inside: &[usize]) -> f32 {
+        let level = self.level_rows();
+        level.iter().map(|&r| self.mean_in(r, inside)).sum::<f32>() / level.len().max(1) as f32
     }
 
     /// Each gene's level row, one per gene.
@@ -150,16 +156,26 @@ pub fn specific_genes_of(expr: &Expression, id: ClusterId) -> Vec<(String, f32)>
     let Some(k) = expr.col(id) else {
         return Vec::new();
     };
-    // The cluster's average gene, each by its level row.
-    let level = expr.level_rows();
-    let floor = level.iter().map(|&g| m[(g, k)]).sum::<f32>() / level.len().max(1) as f32;
+    let floor = expr.level_mean(&[k]);
     let scored = (expr.level_rows().iter().copied())
         .filter(|&g| m[(g, k)] > floor)
-        .filter_map(|g| {
-            expr.log2fc(g, &[k])
-                .map(|fc| (expr.table.rows[g].to_string(), fc))
-        });
+        .filter_map(|g| expr.log2fc(g, &[k]).map(|fc| (gene_name(expr, g), fc)));
     top_by(scored)
+}
+
+/// Row `r`'s gene, as a panel names it: a faba row `GENE/count/spliced`
+/// is `GENE`.
+fn gene_name(expr: &Expression, r: usize) -> String {
+    let name = &expr.table.rows[r];
+    gene_of(name).unwrap_or(name).to_string()
+}
+
+/// A test of whether a name is `gene`: the same name, or one read from the
+/// same row of `expr` (`GENE1/count/spliced`, `ENSG…_GENE1` and `GENE1`
+/// alike); by name alone without a profile. `gene` is looked up once.
+pub fn same_gene<'a>(expr: Option<&'a Expression>, gene: &'a str) -> impl Fn(&str) -> bool + 'a {
+    let at = expr.and_then(|e| e.row(gene));
+    move |name: &str| name == gene || at.is_some_and(|r| expr.and_then(|e| e.row(name)) == Some(r))
 }
 
 /// A marker is up in a cluster at this log2 fold change over the others.

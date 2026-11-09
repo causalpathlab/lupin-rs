@@ -17,7 +17,7 @@ use super::rounds::{caveats, evidence_by_cluster, read_cells, read_table, Cluste
 use super::run::{resolve, Loaded};
 use crate::annotate::celltype_tree::TypeTree;
 use crate::annotate::expression::{
-    label_marker_set, profile_and_panel, specific_genes_of, Expression, Panel, UP_LOG2FC,
+    label_marker_set, profile_and_panel, same_gene, specific_genes_of, Expression, Panel, UP_LOG2FC,
 };
 use crate::annotate::go_signature::{read_term_genes, TermGenes};
 use crate::annotate::markers::label_key;
@@ -408,17 +408,16 @@ impl Round {
 
     /// The types `gene` is a marker of.
     fn marker_of(&self, gene: &str) -> Vec<String> {
+        let is = self.is(gene);
         (self.panel.iter())
-            .filter(|(_, gs)| gs.iter().any(|g| self.same(g, gene)))
+            .filter(|(_, gs)| gs.iter().any(|g| is(g)))
             .map(|(t, _)| t.clone())
             .collect()
     }
 
-    /// Whether `a` and `b` name the same gene: the same name, or the same
-    /// row of the profile (a faba row `GENE/count/spliced` is `GENE`).
-    fn same(&self, a: &str, b: &str) -> bool {
-        let row = |g: &str| self.expr.as_ref()?.row(g);
-        a == b || row(a).is_some_and(|r| row(b) == Some(r))
+    /// A test of whether a name is `gene` ([`same_gene`]).
+    fn is<'a>(&'a self, gene: &'a str) -> impl Fn(&str) -> bool + 'a {
+        same_gene(self.expr.as_ref(), gene)
     }
 
     /// `genes` by their fold change in `k`, the largest first, unmeasured
@@ -440,10 +439,10 @@ fn asked(mut a: Answer, q: Question) -> Answer {
     a
 }
 
-/// The rows of `expr` expressed in some cluster.
+/// The genes of `expr` expressed in some cluster, each by its level row.
 fn expressed(expr: &Expression) -> Vec<usize> {
     let m = &expr.table.mat;
-    (0..m.nrows())
+    (expr.level_rows().iter().copied())
         .filter(|&g| m.row(g).iter().any(|&v| v > 0.0))
         .collect()
 }
@@ -493,7 +492,8 @@ fn gene_side(
 ) -> Value {
     let fc = r.fc(k, gene);
     let mut v = json!({ "gene": gene, "log2fc": fc });
-    match shown.iter().position(|(g, _)| r.same(g, gene)) {
+    let is = r.is(gene);
+    match shown.iter().position(|(g, _)| is(g)) {
         Some(i) => {
             v["rank"] = json!(i + 1);
             v["of"] = json!(shown.len());
@@ -509,7 +509,7 @@ fn gene_side(
     }
     if let Some(terms) = r.terms.as_ref() {
         let top: Vec<&str> = (terms.ranked(k).into_iter())
-            .filter(|(t, _)| t.genes.iter().any(|g| r.same(g, gene)))
+            .filter(|(t, _)| t.genes.iter().any(|g| is(g)))
             .take(3)
             .map(|(t, _)| t.name.as_str())
             .collect();
@@ -531,7 +531,8 @@ fn why_not_shown(r: &Round, k: ClusterId, gene: &str, list: &GeneList) -> String
     match list {
         GeneList::Specific => {
             let m = &e.table.mat;
-            let floor = m.column(c).mean();
+            // The list's own floor: the cluster's average gene.
+            let floor = e.level_mean(&[c]);
             format!(
                 "at or below K{k}'s mean expression ({:.3} against a mean of {floor:.3})",
                 m[(g, c)]
@@ -553,7 +554,7 @@ pub fn why_gene(
 ) -> Result<Answer> {
     r.cluster(k)?;
     let (shown, rule, source) = gene_list(r, k, list)?;
-    let at = |g: &str| shown.iter().position(|(s, _)| r.same(s, g));
+    let at = |g: &str| shown.iter().position(|(s, _)| r.is(g)(s));
     let mut notes = Vec::new();
     let foil = match foil {
         Some(f) => Some(f.to_string()),

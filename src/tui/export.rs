@@ -265,8 +265,7 @@ pub fn marker_rows(
             // suggestion must be above the label's clusters' average.
             let level = e.level_rows();
             let panel: BTreeSet<usize> = genes.iter().filter_map(|g| e.row(g)).collect();
-            let floor = level.iter().map(|&r| e.mean_in(r, &inside)).sum::<f32>()
-                / level.len().max(1) as f32;
+            let floor = e.level_mean(&inside);
             let mut suggested: Vec<(usize, f32)> = (level.iter().copied())
                 .filter(|r| !panel.contains(r) && e.mean_in(*r, &inside) > floor)
                 .filter_map(|r| e.log2fc(r, &inside).map(|f| (r, f)))

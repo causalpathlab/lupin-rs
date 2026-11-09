@@ -284,7 +284,7 @@ pub struct RoundView {
     pub figures: crate::figures::CellFigures,
     /// The panel's types of each profile row a panel gene is read from,
     /// made on first use: [`Self::marker_of`] asks for every gene drawn.
-    pub marker_rows: std::sync::OnceLock<HashMap<usize, Vec<String>>>,
+    pub(super) marker_rows: std::sync::OnceLock<HashMap<usize, Vec<String>>>,
 }
 
 impl RoundView {

@@ -11,6 +11,7 @@ use crate::manifest::run::load;
 use crate::trajectory::edges::{self, EdgeRow, Verdict};
 use crate::trajectory::lineages;
 use crate::trajectory::prior::{self, Prior, Relation, Source, Statement};
+use crate::trajectory::run::Level;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -42,33 +43,21 @@ impl TrajectoryRun {
     /// among its options is `fine`.
     #[must_use]
     pub fn fine_level(&self) -> bool {
-        let mut level = None;
-        for (i, a) in self.argv.iter().enumerate() {
-            if a == "--level" {
-                level = self.argv.get(i + 1).map(String::as_str);
-            } else if let Some(l) = a.strip_prefix("--level=") {
-                level = Some(l);
-            }
-        }
-        level == Some("fine")
+        (self.argv.windows(2).rev())
+            .find(|w| w[0] == "--level")
+            .is_some_and(|w| w[1] == Level::Fine.as_str())
     }
 
     /// Order the round's fine labels (`--level fine`), or its own (no
     /// `--level`).
     pub fn set_fine_level(&mut self, fine: bool) {
-        let mut kept = Vec::with_capacity(self.argv.len() + 2);
-        let mut words = std::mem::take(&mut self.argv).into_iter();
-        while let Some(a) = words.next() {
-            if a == "--level" {
-                words.next();
-            } else if !a.starts_with("--level=") {
-                kept.push(a);
-            }
+        while let Some(i) = self.argv.iter().position(|a| a == "--level") {
+            self.argv.drain(i..(i + 2).min(self.argv.len()));
         }
         if fine {
-            kept.extend(["--level".into(), "fine".into()]);
+            self.argv
+                .extend(["--level".into(), Level::Fine.as_str().into()]);
         }
-        self.argv = kept;
     }
 
     /// How the TUI runs `lupin trajectory` with `t`'s options: `--labels`

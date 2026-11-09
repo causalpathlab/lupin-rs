@@ -140,7 +140,7 @@ fn a_faba_genes_level_is_its_spliced_row_and_it_is_listed_once() {
         "the unspliced row is not G1's level: {k1:?}"
     );
     let k0: Vec<&str> = g[&0].iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(k0, ["G1/count/spliced"]);
+    assert_eq!(k0, ["G1"], "listed by its gene, as the panel names it");
 }
 
 #[test]
@@ -159,11 +159,7 @@ fn a_genes_floor_is_its_clusters_average_gene_not_every_row() {
     });
     let g = specific_genes(&expr);
     let k0: Vec<&str> = g[&0].iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(
-        k0,
-        ["G2/count/spliced", "G3/count/spliced"],
-        "G1 is below K0's average gene"
-    );
+    assert_eq!(k0, ["G2", "G3"], "G1 is below K0's average gene");
 }
 
 #[test]

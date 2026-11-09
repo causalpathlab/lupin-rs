@@ -4289,3 +4289,33 @@ fn a_round_with_no_fine_labels_says_so_and_stays() {
     assert!(app.status.contains("no fine labels"), "{}", app.status);
     assert!(!app.trajectory.fine_level());
 }
+
+#[test]
+fn a_listed_gene_named_otherwise_than_the_panel_is_still_its_marker() {
+    let mut app = app_with_terms(false);
+    if let Some(r) = &mut app.round {
+        use legume_numeric::matrix::dense_mat_io::Mat;
+        r.expression = Some(super::super::round::Expression::new(
+            legume_numeric::matrix::traits::MatWithNames {
+                rows: vec!["ENSG1_GENE1".into(), "GENE2".into()],
+                cols: vec!["K0".into(), "K1".into()],
+                mat: Mat::from_row_slice(2, 2, &[5.0, 1.0, 1.0, 1.0]),
+            },
+        ));
+        r.clusters[0].genes = vec![("ENSG1_GENE1".into(), 1.0)];
+        r.markers = [("CT1".into(), ["GENE1".to_string()].into())].into();
+    }
+    app.focus = Focus::Genes;
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char('a'));
+    assert_eq!(app.status, "already markers of CT1", "GENE1 is the panel's");
+    press(&mut app, KeyCode::Char('d'));
+    assert!(
+        matches!(
+            app.prompt.as_ref().map(|p| &p.pending),
+            Some(Pending::Markers { add: false, .. })
+        ),
+        "{}",
+        app.status
+    );
+}

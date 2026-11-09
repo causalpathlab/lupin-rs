@@ -598,8 +598,6 @@ fn the_level_is_one_of_the_runs_options() {
     t.set_fine_level(true);
     assert_eq!(t.argv, ["--root", "CT1", "--level", "fine"]);
     assert!(t.fine_level());
-    t.argv.push("--level=coarse".into());
-    assert!(!t.fine_level(), "the last one given");
     t.set_fine_level(false);
     assert_eq!(t.argv, ["--root", "CT1"]);
 }
