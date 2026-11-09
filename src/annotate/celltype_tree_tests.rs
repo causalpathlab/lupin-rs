@@ -21,7 +21,7 @@ is_a: CL:9000000 ! root cell
 [Term]
 id: CL:9000002
 name: group b
-subset: blood_and_immune_upper_slim
+subset: tis1_upper_slim
 is_a: CL:9000000 ! root cell
 
 [Term]
@@ -125,11 +125,12 @@ fn a_label_that_leaves_off_cell_matches_the_term_that_ends_in_it() {
     assert_eq!(mapped["Pro-CT2"], "CL:2", "a hyphen parts two words");
     assert_eq!(mapped["CT3"], "CL:3", "a name as written wins");
     assert_eq!(unmapped, ["CT9"]);
-    let names_only = "[Term]\nid: CL:5\nname: alpha retinal ganglion cell\nsynonym: \"alpha type cell\" EXACT []\n\n\
-                      [Term]\nid: CL:6\nname: endothelial cell\n";
+    let names_only =
+        "[Term]\nid: CL:5\nname: alpha ganglion cell\nsynonym: \"alpha type cell\" EXACT []\n\n\
+         [Term]\nid: CL:6\nname: lining cell\n";
     let t1 = ClTerms::parse(names_only, &crate::annotate::cl_rules::shipped());
-    let (m1, u1) = t1.map_labels(["Alpha_Type", "Endothelial"]);
-    assert_eq!(m1["Endothelial"], "CL:6", "one word completes a name");
+    let (m1, u1) = t1.map_labels(["Alpha_Type", "Lining"]);
+    assert_eq!(m1["Lining"], "CL:6", "one word completes a name");
     assert_eq!(u1, ["Alpha_Type"], "but not a synonym");
     let literal = ClTerms::parse(obo, &crate::annotate::cl_rules::MatchRules::default());
     assert_eq!(
@@ -404,12 +405,12 @@ fn an_ambiguous_implied_word_gives_way_to_the_next() {
     use crate::annotate::cl_rules::MatchRules;
     let rules = MatchRules::from_layers(&[serde_json::json!({
         "synonyms": {"EXACT": []},
-        "implied": {"suffixes": ["cell", "lymphocyte"]}
+        "implied": {"suffixes": ["cell", "xenocyte"]}
     })])
     .unwrap();
     let obo = "[Term]\nid: CL:1\nname: memory CT9 cell\n\n\
                [Term]\nid: CL:2\nname: memory CT9 cell\n\n\
-               [Term]\nid: CL:3\nname: memory CT9 lymphocyte\n";
+               [Term]\nid: CL:3\nname: memory CT9 xenocyte\n";
     let t = ClTerms::parse(obo, &rules);
     assert_eq!(t.map_labels(["Memory_CT9"]).0["Memory_CT9"], "CL:3");
 }
@@ -566,20 +567,20 @@ fn a_search_ranks_terms_named_by_the_query_above_synonym_hits() {
 
 [Term]
 id: CL:1
-name: T cell
-synonym: \"T lymphocyte\" EXACT []
+name: CT1 cell
+synonym: \"CT1 xenocyte\" EXACT []
 
 [Term]
 id: CL:2
-name: lymphocyte
+name: xenocyte
 
 [Term]
 id: CL:3
-name: innate lymphoid cell
+name: innate xenoid cell
 ";
     let t = ClTerms::parse(obo, &crate::annotate::cl_rules::shipped());
     assert_eq!(
-        t.search("lympho", 10),
+        t.search("xeno", 10),
         ["CL:2", "CL:3", "CL:1"],
         "a name starting with it, then a name with it, then a synonym"
     );

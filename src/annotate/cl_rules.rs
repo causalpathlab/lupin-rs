@@ -112,10 +112,10 @@ pub struct PartRules {
 #[serde(default)]
 pub struct ImpliedRules {
     /// A label that matches no term is tried again with each of these
-    /// appended (`Immature_B` → `immature B cell`), taking the first that
-    /// completes exactly one term's name: not a synonym, already a looser
-    /// link (`alpha cell` is a retinal ganglion cell's synonym; a pancreas
-    /// panel's Alpha is not one). A label with no word completes nothing.
+    /// appended (`Immature_CT1` → `immature CT1 cell`), taking the first
+    /// that completes exactly one term's name: not a synonym, already a
+    /// looser link (a synonym can belong to a term of another tissue than
+    /// the panel's own). A label with no word completes nothing.
     pub suffixes: Vec<String>,
 }
 

@@ -687,7 +687,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
             ),
             ("d", "drop from the label's markers (a coarse label: from each of its types that lists them)"),
             ("⌫", "undo the last marker edit"),
-            ("h / X", "hide the genes / hide by pattern (MT-*)"),
+            ("h / X", "hide the genes / hide by pattern (PFX-*)"),
             ("H", "show hidden genes"),
         ],
     ),

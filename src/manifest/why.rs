@@ -1214,8 +1214,8 @@ disagreement is an answer: the evidence does not separate them.
 
 Examples:
   lupin why -f run.r1 -c 0                       K0's label against its strongest rival
-  lupin why -f run.r1 -c 0 --label NK --over gdT
-  lupin why -f run.r1 -c 0 --gene NCAM1 --over CD3E --list markers:NK
+  lupin why -f run.r1 -c 0 --label CT1 --over CT2
+  lupin why -f run.r1 -c 0 --gene GENE1 --over GENE2 --list markers:CT1
   lupin why -f run.r1 -c 5 --term 'inflammatory response'";
 
 #[derive(clap::Args, Debug)]

@@ -15,8 +15,8 @@ fn untraced_and_no_data_annotations_are_left_out_once() {
     let gaf = dir.path().join("x.gaf");
     let lines = [
         "!gaf-version: 2.2".to_string(),
-        gaf_line("RPL10", "GO:1901740", "NAS"),
-        gaf_line("CFLAR", "GO:1901740", "IDA"),
+        gaf_line("GENE9", "GO:1901740", "NAS"),
+        gaf_line("GENE0", "GO:1901740", "IDA"),
         gaf_line("GENE1", "GO:0008150", "ND"),
         gaf_line("GENE2", "GO:0006915", "IEA"),
     ];
@@ -33,7 +33,7 @@ fn untraced_and_no_data_annotations_are_left_out_once() {
         .filter(|l| !l.starts_with('!'))
         .map(|l| l.split('\t').nth(2).unwrap())
         .collect();
-    assert_eq!(genes, ["CFLAR", "GENE2"], "NAS and ND rows are left out");
+    assert_eq!(genes, ["GENE0", "GENE2"], "NAS and ND rows are left out");
     assert!(text.starts_with("!gaf-version"), "the header stays");
     assert_eq!(without_dropped_evidence(&gaf).unwrap(), kept, "made once");
     std::fs::remove_file(kept).unwrap();

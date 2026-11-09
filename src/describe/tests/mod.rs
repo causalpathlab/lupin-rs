@@ -164,7 +164,7 @@ fn enrichment_q_table_calls_each_cluster_by_its_lowest_q() {
     let q =
         legume_numeric::matrix::dense_mat_io::Mat::from_row_slice(2, 2, &[0.01, 0.05, 0.5, 0.3]);
     let rows: Vec<Box<str>> = vec!["K0".into(), "K1".into()];
-    let cols: Vec<Box<str>> = vec!["CT_A".into(), "T_cells".into()];
+    let cols: Vec<Box<str>> = vec!["CT_A".into(), "CT_B".into()];
     q.to_parquet_with_names(&path, (Some(&rows), Some("cluster")), Some(&cols))
         .unwrap();
 
@@ -174,13 +174,10 @@ fn enrichment_q_table_calls_each_cluster_by_its_lowest_q() {
     assert_eq!(ev[0].coarse_label, "CT_A");
     assert!(ev[0].best_significant);
     assert_eq!(ev[1].coarse_label, UNASSIGNED_LABEL);
-    assert_eq!(ev[1].best_label, "T_cells");
+    assert_eq!(ev[1].best_label, "CT_B");
 
     attach_second_best(&mut ev, &files, 0.1).unwrap();
-    assert_eq!(
-        ev[0].second.as_ref().map(|(l, _)| l.as_str()),
-        Some("T_cells")
-    );
+    assert_eq!(ev[0].second.as_ref().map(|(l, _)| l.as_str()), Some("CT_B"));
 }
 
 #[test]

@@ -97,7 +97,7 @@ fn markers_are_panel_or_added_and_the_rest_suggested() {
     let r = round();
     let t = tree();
     let calls = cluster_calls(&r, &t, None, &crate::tui::ontology::Mixed::default(), &[]);
-    // CD2 was added this session: not in the original panel.
+    // GENE2 was added this session: not in the original panel.
     let original = BTreeMap::from([
         ("CT1".to_string(), BTreeSet::from(["GENE1".to_string()])),
         ("CT2".to_string(), BTreeSet::from(["GENE3".to_string()])),
@@ -238,10 +238,10 @@ fn a_mixed_labels_markers_are_its_parts_markers() {
 #[test]
 fn unmeasured_markers_come_last() {
     let mut r = round();
-    // CD2 sorts before GENE1 by name but is not measured.
+    // AAA sorts before GENE1 by name but is not measured.
     r.markers.insert(
         "CT1".into(),
-        ["GENE2", "GENE1", "ZZZ"].map(String::from).into(),
+        ["AAA", "GENE1", "ZZZ"].map(String::from).into(),
     );
     let t = tree();
     let calls = cluster_calls(&r, &t, None, &crate::tui::ontology::Mixed::default(), &[]);

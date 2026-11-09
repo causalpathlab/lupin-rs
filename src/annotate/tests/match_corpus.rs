@@ -119,7 +119,7 @@ is_a: CL:9100021
 [Term]
 id: CL:9100030
 name: CS1 cell
-subset: blood_and_immune_upper_slim
+subset: tis1_upper_slim
 synonym: \"CS1X\" RELATED OMO:0003000 []
 is_a: CL:9100001
 is_a: CL:9100003

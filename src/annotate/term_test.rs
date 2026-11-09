@@ -7,15 +7,15 @@
 //!
 //! The null holds the term's genes per expression stratum (the cell types'
 //! [`GeneStrata`]), so a set of highly expressed genes (a ribosome) meets
-//! highly expressed decoys. Random genes
-//! do not move together as a term's do, so the decoys alone would make any
-//! coherent programme significant (a third of all terms in a monocyte
-//! cluster of a PBMC run). The decoys' spread is therefore widened by how
-//! much more the term varies over the clusters than they do, both measured
-//! by the median absolute deviation, which one cluster standing out does
-//! not move: a programme high in many clusters (ribosome, spliceosome) is
-//! widened, one high in a single cluster is not. The p is the normal tail
-//! of that z, as the units' decoys give theirs ([`super::geneset_units`]).
+//! highly expressed decoys. Random genes do not move together as a term's
+//! do, so the decoys alone would make any coherent programme significant (a
+//! large share of a cluster's terms). The decoys' spread is therefore
+//! widened by how much more the term varies over the clusters than they do,
+//! both measured by the median absolute deviation, which one cluster
+//! standing out does not move: a programme high in many clusters (ribosome,
+//! spliceosome) is widened, one high in a single cluster is not. The p is
+//! the normal tail of that z, as the units' decoys give theirs
+//! ([`super::geneset_units`]).
 //! A cell type split over many clusters shares its programmes among them,
 //! so they test weaker in each than their effect reads.
 
