@@ -539,7 +539,7 @@ pub fn type_ancestry(cl: &ClTerms, tree: &PanelTree) -> Vec<(String, BTreeSet<St
 /// evidence cannot separate, one per line of `mixed_labels.tsv`
 /// (`name<TAB>type<TAB>type…`), read from the user's config and the project's
 /// `lupin/` folder and added to from the TUI. Only a listed label is a mix:
-/// a `+` inside a panel type's name (`CD14+ Monocytes`) means nothing.
+/// a `+` inside a panel type's name (`GENE1+ CT1`) means nothing.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Mixed {
     by_name: std::collections::BTreeMap<String, Vec<String>>,

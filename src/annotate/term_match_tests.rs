@@ -4,9 +4,9 @@ use super::*;
 use crate::annotate::celltype_tree::ClTerms;
 use std::collections::HashMap;
 
-const OBO: &str = "[Term]\nid: CL:1\nname: burst forming unit erythroid\nsynonym: \"BFU-E\" RELATED OMO:0003000 []\n\n\
-                   [Term]\nid: CL:2\nname: colony forming unit erythroid\n\n\
-                   [Term]\nid: CL:3\nname: pancreatic A cell\nsynonym: \"alpha cell\" EXACT []\n\n\
+const OBO: &str = "[Term]\nid: CL:1\nname: burst forming unit xenoid\nsynonym: \"BFU-X\" RELATED OMO:0003000 []\n\n\
+                   [Term]\nid: CL:2\nname: colony forming unit xenoid\n\n\
+                   [Term]\nid: CL:3\nname: glandular A cell\nsynonym: \"alpha cell\" EXACT []\n\n\
                    [Term]\nid: CL:4\nname: retired cell\nis_obsolete: true\n";
 
 /// Texts as unit vectors on named axes; an unknown text is the zero vector.
@@ -28,16 +28,16 @@ fn unit(v: [f32; 3]) -> Vec<f32> {
 
 fn fake() -> Fake {
     Fake(HashMap::from([
-        ("burst forming unit erythroid", unit([1.0, 0.0, 0.0])),
-        ("bfu e", unit([1.0, 0.1, 0.0])),
-        ("colony forming unit erythroid", unit([0.9, 0.44, 0.0])),
-        ("pancreatic a cell", unit([0.0, 0.0, 1.0])),
+        ("burst forming unit xenoid", unit([1.0, 0.0, 0.0])),
+        ("bfu x", unit([1.0, 0.1, 0.0])),
+        ("colony forming unit xenoid", unit([0.9, 0.44, 0.0])),
+        ("glandular a cell", unit([0.0, 0.0, 1.0])),
         ("alpha cell", unit([0.0, 0.2, 1.0])),
         ("retired cell", unit([0.0, 1.0, 0.0])),
         // labels, as normalised
-        ("bfue", unit([1.0, 0.05, 0.0])),
+        ("bfux", unit([1.0, 0.05, 0.0])),
         ("alpha", unit([0.0, 0.15, 1.0])),
-        ("erythroid unit", unit([0.95, 0.31, 0.0])),
+        ("xenoid unit", unit([0.95, 0.31, 0.0])),
         ("retired", unit([0.0, 1.0, 0.0])),
     ]))
 }
@@ -67,24 +67,14 @@ fn an_obsolete_term_is_never_a_candidate() {
 #[test]
 fn a_label_gets_its_nearest_terms_by_name_and_score_and_none_is_taken() {
     let (terms, idx) = index();
-    let found = suggest(
-        &terms,
-        &idx,
-        &fake(),
-        &["Alpha", "BFUE", "Erythroid unit"],
-        2,
-    )
-    .unwrap();
+    let found = suggest(&terms, &idx, &fake(), &["Alpha", "BFUX", "Xenoid unit"], 2).unwrap();
     let alpha = &found["Alpha"];
     assert_eq!(alpha[0].id, "CL:3");
-    assert_eq!(alpha[0].name, "pancreatic A cell");
-    assert_eq!(found["BFUE"][0].id, "CL:1");
-    assert!(found["BFUE"][0].score > found["BFUE"][1].score);
+    assert_eq!(alpha[0].name, "glandular A cell");
+    assert_eq!(found["BFUX"][0].id, "CL:1");
+    assert!(found["BFUX"][0].score > found["BFUX"][1].score);
     // Two terms about as close are both offered: the user decides.
-    let ids: Vec<&str> = found["Erythroid unit"]
-        .iter()
-        .map(|s| s.id.as_str())
-        .collect();
+    let ids: Vec<&str> = found["Xenoid unit"].iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids.len(), 2);
     assert!(ids.contains(&"CL:1") && ids.contains(&"CL:2"));
 }

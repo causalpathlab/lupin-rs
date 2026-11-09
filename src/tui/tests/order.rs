@@ -307,10 +307,10 @@ fn relineage(t: &Path, paths: &[&str]) {
 fn the_shown_run_notices_a_rewrite_of_the_same_size() {
     let dir = tempfile::tempdir().unwrap();
     let t = fixture_trajectory(dir.path());
-    relineage(&t, &["HSC_like > MPP_like > ERY"]);
+    relineage(&t, &["TY3 > TY5 > TY2"]);
     let mut shown = Shown::find(vec![t.clone()]);
     assert!(!shown.refresh(), "nothing changed");
-    relineage(&t, &["HSC_like > MPP_like > MON"]);
+    relineage(&t, &["TY3 > TY5 > TY7"]);
     assert!(shown.refresh());
     assert_eq!(shown.run.unwrap().texts, texts_of(&t));
 }
@@ -403,12 +403,12 @@ fn the_order_view_shows_the_selected_types_line_or_the_runs_paragraph() {
     // A type the trajectory does not order has no line: the paragraph.
     select(&mut app, "CT2");
     assert_eq!(app.order_line(), Some(paragraph.as_str()));
-    select(&mut app, "MPP_like");
-    let mpp = texts_of(&t)
+    select(&mut app, "TY5");
+    let ty5 = texts_of(&t)
         .into_iter()
-        .find(|x| x.subject.as_deref() == Some("MPP_like"))
+        .find(|x| x.subject.as_deref() == Some("TY5"))
         .unwrap();
-    assert_eq!(app.order_line().map(str::to_string), Some(mpp.text));
+    assert_eq!(app.order_line().map(str::to_string), Some(ty5.text));
 }
 
 #[test]
@@ -416,7 +416,7 @@ fn another_trajectory_shown_shows_its_own_texts() {
     let dir = tempfile::tempdir().unwrap();
     let a = fixture_trajectory(&mkdir(dir.path().join("a")));
     let b = fixture_trajectory(&mkdir(dir.path().join("b")));
-    relineage(&b, &["HSC_like > ERY"]);
+    relineage(&b, &["TY3 > TY2"]);
     let mut app = order_on(dir.path(), &a);
     assert_eq!(shown(&app).map(|t| &t.manifest), Some(&a));
     app.source = b.clone();
@@ -470,7 +470,7 @@ fn a_new_output_shows_the_new_trajectorys_edges_with_its_texts() {
     let fewer = edges::read(&b_edges).unwrap()[..2].to_vec();
     edges::write(&b_edges, &fewer).unwrap();
     let fewer = pairs(&fewer);
-    relineage(&b, &["HSC_like > MPP_like"]);
+    relineage(&b, &["TY3 > TY5"]);
     let (first, other) = (paragraph_of(&a), paragraph_of(&b));
     assert_ne!(first, other);
     let mut app = order_on(dir.path(), &a);
@@ -509,21 +509,21 @@ fn a_new_output_shows_the_new_trajectorys_edges_with_its_texts() {
 fn the_order_view_entered_again_reads_the_texts_again() {
     let dir = tempfile::tempdir().unwrap();
     let a = fixture_trajectory(&mkdir(dir.path().join("a")));
-    relineage(&a, &["HSC_like > MPP_like > ERY"]);
+    relineage(&a, &["TY3 > TY5 > TY2"]);
     let early = paragraph_of(&a);
     let mut app = order_on(dir.path(), &a);
     app.focus = Focus::Clusters;
     assert_eq!(app.order_line().map(str::to_string), Some(early.clone()));
     app.toggle_order(false);
     // Run anew while the view is away, its lineages file the same size.
-    relineage(&a, &["HSC_like > MPP_like > MON"]);
+    relineage(&a, &["TY3 > TY5 > TY7"]);
     let later = paragraph_of(&a);
     assert_ne!(later, early);
     app.toggle_order(false);
     app.focus = Focus::Clusters;
     assert_eq!(app.order_line().map(str::to_string), Some(later));
     // So does opening the run again, the view up.
-    relineage(&a, &["HSC_like > MPP_like > ERY"]);
+    relineage(&a, &["TY3 > TY5 > TY2"]);
     let pick = crate::manifest::family::Pick {
         path: a.clone(),
         kind: crate::manifest::family::Kind::Trajectory,
@@ -539,7 +539,7 @@ fn a_trajectory_run_again_on_its_output_leaves_no_stale_texts() {
     let a = fixture_trajectory(&mkdir(dir.path().join("a")));
     let mut app = order_on(dir.path(), &a);
     // The run made again on the same output orders other types.
-    relineage(&a, &["HSC_like > ERY"]);
+    relineage(&a, &["TY3 > TY2"]);
     let child = std::process::Command::new("true").spawn().unwrap();
     app.child = Some(Running::new(child.into(), Job::Trajectory(a.clone())));
     finish(&mut app);
@@ -555,7 +555,7 @@ fn the_order_views_edges_and_texts_come_from_one_trajectory() {
     let b_edges = b.with_file_name("t.trajectory_edges.parquet");
     let b_edges = b_edges.to_string_lossy();
     edges::write(&b_edges, &edges::read(&b_edges).unwrap()[..2]).unwrap();
-    relineage(&b, &["HSC_like > MPP_like"]);
+    relineage(&b, &["TY3 > TY5"]);
     // A round made on A carries A's trajectory, borrowed; it is looked at
     // before B.
     let loaded = crate::manifest::run::load(&a.to_string_lossy()).unwrap();

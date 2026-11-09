@@ -96,8 +96,8 @@ fn round() -> Round {
 fn a_gene_list_is_named_by_its_kind() {
     assert_eq!(GeneList::parse("specific").unwrap(), GeneList::Specific);
     assert_eq!(
-        GeneList::parse("markers:NK").unwrap(),
-        GeneList::Markers("NK".into())
+        GeneList::parse("markers:CT1").unwrap(),
+        GeneList::Markers("CT1".into())
     );
     assert_eq!(
         GeneList::parse("term:GO:0002228").unwrap(),

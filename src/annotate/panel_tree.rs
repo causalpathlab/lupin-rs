@@ -385,7 +385,7 @@ impl PanelTree {
     /// This tree as TreeBH's hypothesis tree over `celltypes` (the columns of an enrichment
     /// pass): a root over the tree's roots, then every node; each cell type on a leaf of its own,
     /// which is its node when that node is childless and holds only it, else a new leaf under the
-    /// node, so a coarse type (`T_cells` over `T_helper_cells`) is tested as its own hypothesis
+    /// node, so a coarse type (`CT1` over `CT1_a`) is tested as its own hypothesis
     /// inside its class's family. Types not on the tree are left to hang under the root.
     #[must_use]
     pub fn treebh(&self, celltypes: &[Box<str>]) -> enrichment::treebh::TypeTree {

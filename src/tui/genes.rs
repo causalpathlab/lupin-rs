@@ -1,5 +1,5 @@
 //! Genes kept out of the specific-genes view: exact names or `*` patterns
-//! (`MT-*`, `RP[SL]` as `RPL*` and `RPS*`), one per line in
+//! (`PFX-*`, `AB[CD]` as `ABC*` and `ABD*`), one per line in
 //! `hidden_genes.txt`, read from the user's config and the project's `lupin/`
 //! folder (see [`crate::manifest::data_files`]) and added to from the TUI.
 //! Data, not code: nothing is hidden unless a file says so.
@@ -78,7 +78,7 @@ impl GeneFilter {
 }
 
 /// A pattern to hide genes like `gene`: its stem before the first `-` or
-/// `.` with a `*`, else the name itself (`MT-ND3` → `MT-*`).
+/// `.` with a `*`, else the name itself (`PFX-GENE1` → `PFX-*`).
 #[must_use]
 pub fn suggest(gene: &str) -> String {
     match gene.find(['-', '.']) {

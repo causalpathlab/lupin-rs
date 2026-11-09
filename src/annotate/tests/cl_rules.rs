@@ -8,8 +8,8 @@ fn without_a_rules_file_matching_is_literal() {
     let r = MatchRules::from_layers(&[]).unwrap();
     assert!(r.counts("EXACT", &[]));
     assert!(!r.counts("RELATED", &["OMO:0003000"]), "no abbreviations");
-    assert_eq!(r.normalise("T Cells"), "t cells", "no plural rule");
-    assert_eq!(r.singular("t cells"), "t cells");
+    assert_eq!(r.normalise("CT Cells"), "ct cells", "no plural rule");
+    assert_eq!(r.singular("ct cells"), "ct cells");
     assert!(!r.any_word_order);
     assert!(r.implied.suffixes.is_empty(), "no word is implied");
     assert!(!r.classes.is_class("CL:1", &["cellxgene_subset".into()]));
@@ -36,9 +36,7 @@ fn the_shipped_rules_reproduce_the_matching_lupin_had() {
     );
     assert!(r.any_word_order);
     assert_eq!(r.implied.suffixes, ["cell"]);
-    assert!(r
-        .classes
-        .is_class("CL:1", &["blood_and_immune_upper_slim".into()]));
+    assert!(r.classes.is_class("CL:1", &["tis1_upper_slim".into()]));
     assert!(!r
         .classes
         .is_class("CL:1", &["cellxgene_subset".into(), "upper_level".into()]));
@@ -66,12 +64,12 @@ fn a_later_layer_overrides_only_what_it_sets() {
 fn aliases_layer_and_compare_as_labels() {
     let mut a = Aliases::default();
     a.add_tsv(
-        "# note\nlabel\tcl_id\tnote\nPro B\tCL:1\tbuilt-in\nNK\tCL:2\n",
+        "# note\nlabel\tcl_id\tnote\nPro CT1\tCL:1\tbuilt-in\nCT2\tCL:2\n",
         "built-in",
     );
-    a.add_tsv("pro_b\tCL:9\tmine\n", "project");
-    assert_eq!(a.get("PRO B"), Some("CL:9"), "the later file wins");
-    assert_eq!(a.get("nk"), Some("CL:2"));
+    a.add_tsv("pro_ct1\tCL:9\tmine\n", "project");
+    assert_eq!(a.get("PRO CT1"), Some("CL:9"), "the later file wins");
+    assert_eq!(a.get("ct2"), Some("CL:2"));
     assert_eq!(a.len(), 2);
     // As `--label-cl` maps have been written: commas, a header, an NA row.
     let n = a.add_tsv(

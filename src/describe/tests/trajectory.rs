@@ -23,21 +23,21 @@ fn lineage(name: &str, component: &str, path: &[&str]) -> lineages::Lineage {
     }
 }
 
-/// HSC_like → MPP_like, which parts toward ERY and toward MONO; DC is a
-/// component of its own; NK_cells pairs with MONO as a candidate only.
+/// TY3 → TY5, which parts toward TY2 and toward TY4; TY1 is a
+/// component of its own; TY6 pairs with TY4 as a candidate only.
 fn facts() -> OrderFacts {
     OrderFacts {
         lineages: vec![
-            lineage("L0", "0", &["HSC_like", "MPP_like", "ERY"]),
-            lineage("L1", "0", &["HSC_like", "MPP_like", "MONO"]),
-            lineage("L2", "1", &["DC"]),
+            lineage("L0", "0", &["TY3", "TY5", "TY2"]),
+            lineage("L1", "0", &["TY3", "TY5", "TY4"]),
+            lineage("L2", "1", &["TY1"]),
         ],
         edges: vec![
-            edge("HSC_like", "MPP_like", Some(Verdict::Supported)),
-            edge("MPP_like", "ERY", Some(Verdict::Supported)),
-            edge("MPP_like", "MONO", Some(Verdict::Unsupported)),
-            edge("MONO", "NK_cells", Some(Verdict::Candidate)),
-            edge("ERY", "DC", None),
+            edge("TY3", "TY5", Some(Verdict::Supported)),
+            edge("TY5", "TY2", Some(Verdict::Supported)),
+            edge("TY5", "TY4", Some(Verdict::Unsupported)),
+            edge("TY4", "TY6", Some(Verdict::Candidate)),
+            edge("TY2", "TY1", None),
         ],
     }
 }
@@ -45,13 +45,13 @@ fn facts() -> OrderFacts {
 #[test]
 fn the_facts_give_roots_branch_points_and_ends() {
     let f = facts();
-    assert_eq!(f.roots(), ["HSC_like", "DC"]);
-    assert_eq!(f.branch_points(), ["MPP_like"], "where L0 and L1 part");
-    assert_eq!(f.ends(), ["ERY", "MONO", "DC"]);
+    assert_eq!(f.roots(), ["TY3", "TY1"]);
+    assert_eq!(f.branch_points(), ["TY5"], "where L0 and L1 part");
+    assert_eq!(f.ends(), ["TY2", "TY4", "TY1"]);
     assert_eq!(f.components(), 2);
     assert_eq!(
         f.types(),
-        ["HSC_like", "MPP_like", "ERY", "MONO", "DC", "NK_cells"],
+        ["TY3", "TY5", "TY2", "TY4", "TY1", "TY6"],
         "the lineages' types, then those only an edge names"
     );
 }
@@ -60,22 +60,19 @@ fn the_facts_give_roots_branch_points_and_ends() {
 fn the_texts_say_the_order_and_each_types_place() {
     let f = facts();
     let run = run_text(&f);
+    assert!(run.contains("The order starts at TY3 and TY1."), "{run}");
+    assert!(run.contains("It branches after TY5."), "{run}");
+    assert!(run.contains("end at TY2, TY4 and TY1."), "{run}");
+    assert!(run.contains("L0: TY3 > TY5 > TY2"), "{run}");
+    let ty5 = type_text(&f, "TY5");
     assert!(
-        run.contains("The order starts at HSC_like and DC."),
-        "{run}"
+        ty5.starts_with("TY5 is on L0 and L1, after TY3 and before TY2 and TY4."),
+        "{ty5}"
     );
-    assert!(run.contains("It branches after MPP_like."), "{run}");
-    assert!(run.contains("end at ERY, MONO and DC."), "{run}");
-    assert!(run.contains("L0: HSC_like > MPP_like > ERY"), "{run}");
-    let mpp = type_text(&f, "MPP_like");
-    assert!(
-        mpp.starts_with("MPP_like is on L0 and L1, after HSC_like and before ERY and MONO."),
-        "{mpp}"
-    );
-    assert!(mpp.contains("MPP_like → MONO unsupported"), "{mpp}");
-    let nk = type_text(&f, "NK_cells");
-    assert!(nk.starts_with("NK_cells is on no lineage."), "{nk}");
-    assert!(nk.contains("MONO → NK_cells candidate"), "{nk}");
+    assert!(ty5.contains("TY5 → TY4 unsupported"), "{ty5}");
+    let ty6 = type_text(&f, "TY6");
+    assert!(ty6.starts_with("TY6 is on no lineage."), "{ty6}");
+    assert!(ty6.contains("TY4 → TY6 candidate"), "{ty6}");
 }
 
 #[test]
@@ -90,17 +87,14 @@ fn the_texts_are_the_runs_paragraph_then_each_types_line_and_read_as_markdown() 
             text: run_text(&f)
         }
     );
-    let mpp = t
+    let ty5 = t
         .iter()
-        .find(|t| t.subject.as_deref() == Some("MPP_like"))
+        .find(|t| t.subject.as_deref() == Some("TY5"))
         .unwrap();
-    assert_eq!(mpp.text, type_text(&f, "MPP_like"));
+    assert_eq!(ty5.text, type_text(&f, "TY5"));
     let md = markdown("t.senna.json", &t);
     assert!(md.starts_with("# Trajectory description\n\nFrom `t.senna.json`.\n\n"));
-    assert!(
-        md.contains(&format!("## MPP_like\n\n{}\n", mpp.text)),
-        "{md}"
-    );
+    assert!(md.contains(&format!("## TY5\n\n{}\n", ty5.text)), "{md}");
 }
 
 /// A trajectory manifest in `dir` with the facts' lineages and edges and a
@@ -113,7 +107,7 @@ pub(crate) fn fixture_trajectory(dir: &Path) -> PathBuf {
     lineages::write(&at("t.trajectory_lineages.tsv"), &f.lineages).unwrap();
     edges::write(&at("t.trajectory_edges.parquet"), &f.edges).unwrap();
     let cells: Vec<Box<str>> = (0..6).map(|i| format!("c{i}").into()).collect();
-    let types: Vec<Box<str>> = ["HSC_like", "HSC_like", "MPP_like", "ERY", "ERY", "MONO"]
+    let types: Vec<Box<str>> = ["TY3", "TY3", "TY5", "TY2", "TY2", "TY4"]
         .iter()
         .map(|s| Box::from(*s))
         .collect();

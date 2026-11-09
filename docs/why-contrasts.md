@@ -2,7 +2,7 @@
 
 `lupin why` (and the MCP tool `annotate_why`) answers the questions people
 ask of an annotation, which are contrasts: why X rather than Y, given Z. A
-cell type is asked against a rival ("why NK and not gdT?"), a gene against
+cell type is asked against a rival ("why CT1 and not CT2?"), a gene against
 another in the list it is shown in, a GO term against another term. Each
 answer comes from the round's own tables, by fixed rules; nothing is
 written by a language model.
@@ -95,30 +95,29 @@ other type of the smallest q.
 
 ## An example
 
-PBMC, K0 (NK cells; labelled `natural_killer_cell`, a group of NK and gdT),
-`lupin why -f pbmc.r1 -c 0`:
+A made-up case: K0 is labelled `GRP1`, a group of the panel types CT1 and CT2,
+and `lupin why -f r1 -c 0` asks CT1 against CT2:
 
-- the panel line favours NK: the enrichment ties (shares 0.500 against
-  0.500), but NK's 8 distinct markers stand out (z 6.5) more than gdT's 2
-  (z 3.5); CD160, GNLY, KLRD1 and NKG7 are shared and say nothing;
-- the terms line favours NK: NK-cell mediated immunity (q 0.005) holds KLRC1
-  and GZMB, and its 32 genes outside the panel still stand out (z 2.5); no
-  term holds gdT's TRDC or TRGC1;
-- the verdict: 2 lines for NK, none for gdT.
+- the panel line favours CT1: the enrichment ties the two, but CT1's
+  distinct markers stand out more than CT2's few; the markers both types
+  list (GENE3, GENE4) are shared and say nothing;
+- the terms line favours CT1: a term that holds CT1's markers GENE1 and
+  GENE2 still stands out once the panel's genes are taken out of it; no
+  term holds CT2's distinct markers;
+- the verdict: 2 lines for CT1, none for CT2.
 
-On the same round, K9, labelled monocyte, comes back favouring Naive CD4 T
-on the panel (no monocyte marker up), and K11, labelled dendritic cell,
-favouring plasma cells on the panel (all 8 plasma markers up; its terms back
-both): labels the evidence does not back.
+A cluster whose label's markers are not up, while another type's are, comes
+back favouring that other type on the panel: a label the evidence does not
+back.
 
 ## Limits
 
 - The lines are only as independent as their data: the terms line uses the
   same expression profile as the panel line, but different genes.
 - A term's genes are its GO annotations: a term with an unexpected name can
-  back a type through its genes (S100A9 puts "astrocyte development" among a
-  monocyte cluster's terms).
-- A type with few distinct markers (gdT's 2) has a weak marker test by size
-  alone; the answer shows the counts.
+  back a type through its genes (one shared gene can put a term named for
+  another tissue among a cluster's terms).
+- A type with few distinct markers (two, say) has a weak marker test by
+  size alone; the answer shows the counts.
 - The test reads the clusters' pooled profiles, as the GO terms' does: no
   sample permutation.

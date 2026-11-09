@@ -192,15 +192,15 @@ fn a_type_off_the_ontology_joins_the_class_it_shares_markers_with() {
 
 #[test]
 fn a_class_with_no_type_below_or_only_one_way_down_is_left_out() {
-    // A and B are under both mid and other; mid is nearer, so other holds
+    // CT1 and CT2 are under both mid and other; mid is nearer, so other holds
     // nothing, and lin has only mid below it.
     let obo = "[Term]\nid: CL:0\nname: root cell\n\n\
                [Term]\nid: CL:1\nname: lin\nsubset: cellxgene_subset\nis_a: CL:0\n\n\
                [Term]\nid: CL:2\nname: mid\nsubset: cellxgene_subset\nis_a: CL:1\n\n\
                [Term]\nid: CL:3\nname: other\nsubset: cellxgene_subset\nis_a: CL:0\n\n\
-               [Term]\nid: CL:10\nname: A cell\nis_a: CL:2\nis_a: CL:3\n\n\
-               [Term]\nid: CL:11\nname: B cell\nis_a: CL:2\nis_a: CL:3\n";
-    let panel: Vec<(String, String)> = [("G1", "A"), ("G2", "B"), ("G3", "Stray")]
+               [Term]\nid: CL:10\nname: CT1 cell\nis_a: CL:2\nis_a: CL:3\n\n\
+               [Term]\nid: CL:11\nname: CT2 cell\nis_a: CL:2\nis_a: CL:3\n";
+    let panel: Vec<(String, String)> = [("G1", "CT1"), ("G2", "CT2"), ("G3", "Stray")]
         .iter()
         .map(|(g, t)| ((*g).to_string(), (*t).to_string()))
         .collect();
@@ -211,10 +211,10 @@ fn a_class_with_no_type_below_or_only_one_way_down_is_left_out() {
     .unwrap();
     assert_eq!(
         names(&t, &t.visible()),
-        ["mid", "A_cell", "B_cell", "Stray"]
+        ["mid", "CT1_cell", "CT2_cell", "Stray"]
     );
     assert_eq!(t.nodes.len(), 4);
-    let a = t.node_of("A").unwrap();
+    let a = t.node_of("CT1").unwrap();
     assert_eq!(t.nodes[a].depth, 1);
     assert_eq!(names(&t, &t.roots), ["mid", "Stray"]);
 }

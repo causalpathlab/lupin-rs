@@ -5237,7 +5237,7 @@ fn decisions_file(round: &Path) -> PathBuf {
     PathBuf::from(format!("{stem}.decisions.jsonl"))
 }
 
-/// Joins the parts of a mixed label (`Basophils+Mast_cells`).
+/// Joins the parts of a mixed label (`CT1+CT2`).
 pub const MIX: &str = "+";
 
 /// The Cell Ontology's root, where browsing starts without a better place.

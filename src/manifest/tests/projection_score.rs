@@ -280,7 +280,7 @@ fn the_scores_calls_take_the_panels_spelling() {
     let dir = tempfile::tempdir().unwrap();
     let (manifest, _) = toy::write_run(dir.path());
     let mut loaded = run::load(&manifest).unwrap();
-    let call: Vec<Box<str>> = vec!["CD4  T, cell".into()];
+    let call: Vec<Box<str>> = vec!["CT1  sub, cell".into()];
     write_named_table(
         &dir.path()
             .join("run.marker_score.parquet")
@@ -299,7 +299,7 @@ fn the_scores_calls_take_the_panels_spelling() {
     let score = crate::manifest::rounds::read_score_cells(&loaded, &cells)
         .unwrap()
         .unwrap();
-    assert_eq!(score.types, ["CD4_T_cell".into()] as [Box<str>; 1]);
+    assert_eq!(score.types, ["CT1_sub_cell".into()] as [Box<str>; 1]);
 }
 
 #[test]

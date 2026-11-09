@@ -52,8 +52,8 @@ each method's top type, its Cell Ontology placement and its history. \
 annotate_genes adds the genes: what sets each cluster apart, and how the \
 panel markers of its label and of each method's top type fare in it. Where \
 the methods disagree, weigh their evidence, terms included; do not label \
-beyond it. A cluster's terms rank by effect, what sets it apart (NK-cell \
-killing, platelet clotting, MHC-II presentation); their q tests that effect \
+beyond it. A cluster's terms rank by effect, what sets it apart (killing, \
+clotting, antigen presentation); their q tests that effect \
 against random gene sets and discounts programmes many clusters share \
 (ribosome, spliceosome), so a cell type split over several clusters tests \
 weaker in each than its effect reads: weigh effect and q together. A round's `caveats`, when it has any, say what its statistics \
