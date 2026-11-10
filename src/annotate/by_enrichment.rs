@@ -85,43 +85,52 @@ pub fn plan(args: &AnnotateArgs) -> anyhow::Result<EnrichmentPlan> {
     })
 }
 
-/// Score the aggregated cluster expression against the marker panel (or, in
-/// GO/GMT mode, against the gene sets) and write the artifacts under
-/// `plan.out`. Returns their paths; recording them in a run manifest is the
-/// caller's job.
-/// Fewest batches the sample-permutation null may shuffle. It permutes whole
-/// batches, so `P` batches allow only `P!` distinct orderings: with one or
-/// two, null (cluster, type) pairs came out "significant" far above the
-/// nominal rate on synthetic data, while four or more were calibrated.
-pub const MIN_PERM_BATCHES: usize = 4;
-
-/// The sample permutations to run for `n_batches`: the requested number, or
-/// none when there are too few batches to permute. The gene-set
-/// randomization null, which stays calibrated at any batch count, then
-/// carries the test alone.
+/// How a pass tests a cluster's cell types: against the gene-set null
+/// (random gene sets matched to the markers' abundance and weights), with
+/// fgsea's multilevel estimate where the draws cannot resolve the tail, so
+/// two strong types are told apart rather than tied at the draws' floor.
+/// No sample permutation: the batch permutation the enrichment crate offers
+/// standardises each permuted score by its own spread, so on simulated data
+/// it called a programme one donor carried as readily as this null does,
+/// and tied every strong type at its pooled floor.
 #[must_use]
-pub fn sample_perm_draws(n_batches: usize, requested: usize) -> usize {
-    if n_batches < MIN_PERM_BATCHES {
-        0
-    } else {
-        requested
+pub fn null_config(
+    seed: u64,
+    fdr_alpha: f32,
+    q_temperature: f32,
+    min_markers: usize,
+    type_tree: Option<enrichment::treebh::TypeTree>,
+) -> AnnotateConfig {
+    AnnotateConfig {
+        specificity: SpecificityMode::Simplex,
+        num_row_randomization: NUM_DRAWS,
+        num_sample_perm: 0,
+        batch_labels: None,
+        fdr_alpha,
+        q_softmax_temperature: q_temperature,
+        min_confidence: MIN_CONFIDENCE,
+        seed,
+        min_markers,
+        stratify_null: true,
+        bootstrap: None,
+        multilevel: Some(enrichment::fgsea::Multilevel::default()),
+        // TreeBH over the panel's cell-type tree; flat BH within the cluster without one.
+        type_tree,
     }
 }
 
 /// The marker-path scoring of one enrichment pass: marker enrichment per
-/// cluster against the gene-set null (and the sample-permutation null with
-/// enough batches), and FDR.
+/// cluster against the gene-set null, and FDR.
 /// Writes nothing; [`run`] writes the outputs, and a relabel round rescores
 /// through this on its merged clusters and edited panel.
 pub fn score(args: &AnnotateArgs, inputs: &EnrichmentInputs) -> anyhow::Result<AnnotateOutputs> {
     let (group, markers_gc, config) = prepare(args, inputs)?;
     info!(
         "Running cluster × marker enrichment: {} clusters × {} celltypes, \
-         row-rand B={}, sample-perm B={}",
+         gene-set null B={}",
         inputs.n_clusters,
         inputs.celltype_names.len(),
         NUM_DRAWS,
-        args.num_perm,
     );
     annotate(&group, &markers_gc, &inputs.celltype_names, &config)
 }
@@ -179,7 +188,8 @@ pub fn prepare(
     let mut markers_gc = inputs.markers_gc.clone();
     apply_empirical_specificity_weights(&mut markers_gc, profile_gk);
 
-    // The per-batch β̃ profile backs the sample-permutation null.
+    // The enrichment's inputs carry the per-batch profile; the test here
+    // does not read it.
     let pb_gene_gp = inputs.pb_gene_gp.clone();
     let group = GroupInputs {
         profile_gk: profile_gk.clone(),
@@ -190,34 +200,13 @@ pub fn prepare(
         cell_names: inputs.cell_names.clone(),
     };
 
-    let perm_draws = sample_perm_draws(n_batches, args.num_perm);
-    if perm_draws < args.num_perm {
-        log::warn!(
-            "{n_batches} batch(es): too few for the sample-permutation null (needs \
-             {MIN_PERM_BATCHES}); testing against the gene-set null alone"
-        );
-    }
-    let config = AnnotateConfig {
-        specificity: SpecificityMode::Simplex,
-        num_row_randomization: NUM_DRAWS,
-        num_sample_perm: perm_draws,
-        // pb_membership_pk's rows ARE batches (one pseudobulk per batch),
-        // so the sample-permutation null shuffles batches directly with no
-        // inner stratification. Cell-level labels would be the wrong length
-        // (caused a panic in `permute_indices`).
-        batch_labels: None,
-        fdr_alpha: args.fdr_alpha,
-        q_softmax_temperature: args.q_temperature,
-        min_confidence: MIN_CONFIDENCE,
-        seed: args.seed,
-        min_markers: args.min_markers,
-        stratify_null: true,
-        bootstrap: None,
-        // The plain permutation p of the gene-set null's draws (floor 1 / (NUM_DRAWS + 1)).
-        multilevel: None,
-        // TreeBH over the panel's cell-type tree; flat BH within the cluster without one.
-        type_tree: inputs.type_tree.clone(),
-    };
+    let config = null_config(
+        args.seed,
+        args.fdr_alpha,
+        args.q_temperature,
+        args.min_markers,
+        inputs.type_tree.clone(),
+    );
 
     Ok((group, markers_gc, config))
 }
@@ -252,6 +241,10 @@ pub(crate) fn pass_stages(go: bool) -> &'static Stages {
     }
 }
 
+/// Score the aggregated cluster expression against the marker panel (or, in
+/// GO/GMT mode, against the gene sets) and write the artifacts under
+/// `plan.out`. Returns their paths; recording them in a run manifest is the
+/// caller's job.
 pub fn run(
     args: &AnnotateArgs,
     plan: &EnrichmentPlan,
@@ -289,7 +282,7 @@ pub fn run(
         nes_kc,
         z_kc,
         p_log2err_kc: _,
-        perm_z_kc,
+        perm_z_kc: _,
         pvalue_kc,
         qvalue_kc,
         cell_annotation_nc,
@@ -352,17 +345,6 @@ pub fn run(
     )?;
     let [q_path, es_path, _, nes_path, _, p_path, q_val_path] =
         <[String; 7]>::try_from(written).map_err(|_| anyhow::anyhow!("seven tables written"))?;
-    // Correlation-preserving sample-permutation z (when num_perm > 0): the
-    // preferred ontology input — graded, unlike the pooled p-value.
-    if let Some(pz) = &perm_z_kc {
-        write_cluster_tables(
-            out,
-            &cluster_names,
-            &inputs.celltype_names,
-            &[(pz, ".cluster_celltype_perm_z.parquet")],
-        )?;
-    }
-
     display_annotation_histogram(&cell_annotation_nc, &inputs.celltype_names);
 
     // Optional inline ontology annotation (TreeBH) — reuses the freshly computed
@@ -378,9 +360,8 @@ pub fn run(
             obo,
             args.ontology_fdr_q,
             args.ontology_by,
-            // Prefer the correlation-preserving permutation z; fall back to the
-            // row-randomization restandardized ES when no sample permutations ran.
-            super::ontology::OntologyScore::Z(perm_z_kc.as_ref().unwrap_or(&es_restandardized_kc)),
+            // The score against the gene-set null, restandardised.
+            super::ontology::OntologyScore::Z(&es_restandardized_kc),
             Some(&q_kc),
             &cluster_names,
             &inputs.celltype_names,
@@ -790,14 +771,13 @@ fn display_annotation_histogram(annot: &Mat, annot_names: &[Box<str>]) {
 }
 
 #[cfg(test)]
-mod perm_tests {
+mod null_tests {
     use super::*;
 
     #[test]
-    fn too_few_batches_skip_the_sample_permutation() {
-        assert_eq!(sample_perm_draws(1, 500), 0);
-        assert_eq!(sample_perm_draws(MIN_PERM_BATCHES - 1, 500), 0);
-        assert_eq!(sample_perm_draws(MIN_PERM_BATCHES, 500), 500);
-        assert_eq!(sample_perm_draws(1, 0), 0, "none requested, none run");
+    fn a_pass_tests_against_the_gene_set_null_with_the_multilevel_tail() {
+        let c = null_config(1, 0.1, 1.0, 3, None);
+        assert_eq!(c.num_sample_perm, 0, "no sample permutation");
+        assert!(c.multilevel.is_some(), "strong types are graded, not tied");
     }
 }

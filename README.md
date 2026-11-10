@@ -209,8 +209,8 @@ does not move): a programme high in many clusters (ribosome, spliceosome,
 oxidative phosphorylation) tests weak in each, one that sets a cluster apart
 does not. A cell type split over many clusters shares its programmes among
 them in the same way, so they test weaker in each than their effect reads.
-The test reads the clusters' pooled profiles, not their samples: unlike
-the cell types' test it has no sample permutation, so a programme one donor
+The test reads the clusters' pooled profiles, not their samples, as the
+cell types' test does: neither permutes samples, so a programme one donor
 drives in a cluster mostly of that donor's cells is not discounted. A term
 whose strata hold little besides its own genes cannot be tested (no z).
 A relabel round that merges clusters rescores the terms on the
@@ -417,7 +417,7 @@ Annotation loop:
 Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence statements (from, to, precedes|unrelated, note), writes a run.
 A first round's labels are coarse; give `level: fine` (or a fine type as a root) to order its fine labels.
-2. trajectory_read returns its lineages, each edge's connectivity and verdict (supported, unsupported, candidate, inferred) and the order in words. Revise the statements where the data disagree and run again.
+2. trajectory_read returns its lineages, each edge's connectivity and verdict (supported; weak: joined by the kNN graph, thinly; unsupported: not joined; candidate; inferred) and the order in words. Revise the statements where the data disagree and run again.
 
 annotate_run and trajectory_run take `background`: on a large run set it, and the call returns a job id at once; the step runs on lupin's own screen in a session the user can watch with `lupin attach`, and goes on if this server ends.
 

@@ -99,7 +99,6 @@ pub enum Setting {
     Knn,
     Resolution,
     NumClusters,
-    NumPerm,
     Go,
     /// The enrichment's SuSiE stage, which makes the marker call.
     Susie,
@@ -109,13 +108,11 @@ pub enum Setting {
 
 /// The form's rows for `a`'s method: the enrichment's own (GO, SuSiE) only
 /// when it may run, projection's way of calling only when projection may,
-/// permutations when the enrichment's null permutes, and GO terms where
-/// the enrichment tests them or the units align them.
+/// and GO terms where the enrichment tests them or the units align them.
 #[must_use]
 pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
     use Setting::{
-        Call, Go, Knn, Markers, Method, NumClusters, NumPerm, Output, Projection, Resolution, Run,
-        Susie,
+        Call, Go, Knn, Markers, Method, NumClusters, Output, Projection, Resolution, Run, Susie,
     };
     let enrichment = a.method != AnnotateMethod::Projection;
     let projection = a.method != AnnotateMethod::Enrichment;
@@ -129,7 +126,6 @@ pub fn settings(a: &AnnotateCliArgs) -> Vec<Setting> {
         (Knn, true),
         (Resolution, true),
         (NumClusters, true),
-        (NumPerm, enrichment),
         (Go, enrichment || units),
         (Susie, enrichment),
         (Run, true),
@@ -163,7 +159,6 @@ impl Setting {
             Self::Knn => "knn",
             Self::Resolution => "resolution",
             Self::NumClusters => "clusters (k)",
-            Self::NumPerm => "permutations",
             Self::Go => "GO terms",
             Self::Susie => "SuSiE call",
         }
@@ -200,7 +195,6 @@ impl Setting {
             ),
             Self::Resolution => format!("{:.2}", a.resolution),
             Self::NumClusters => a.num_clusters.map_or("auto".into(), |k| k.to_string()),
-            Self::NumPerm => a.num_perm.to_string(),
             Self::Go => match (&a.gaf, &a.gmt) {
                 (Some(_), _) => "--gaf".into(),
                 (_, Some(_)) => "--gmt".into(),
@@ -268,7 +262,6 @@ impl Setting {
                     (Some(k), _) => Some(step(k, 1, 2)),
                 };
             }
-            Self::NumPerm => a.num_perm = step(a.num_perm, 100, 0),
             Self::Susie => a.no_susie = !a.no_susie,
             // Named gene sets are the command line's; only `--go` toggles.
             Self::Go if a.gaf.is_none() && a.gmt.is_none() => a.go = !a.go,
@@ -287,7 +280,6 @@ impl Setting {
             Self::Knn => "neighbours per cell in the clustering graph",
             Self::Resolution => "Leiden resolution: higher gives more, smaller clusters",
             Self::NumClusters => "a fixed number of clusters, or auto from the resolution",
-            Self::NumPerm => "permutations for the enrichment null: more is slower and finer",
             Self::Go => "also score GO terms for each cluster (slower)",
             Self::Susie => "call each cluster by SuSiE (its counts on the panel; types compete for shared markers), or by the enrichment's share",
             Self::Run => "start the pass with these settings",

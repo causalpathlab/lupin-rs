@@ -83,8 +83,10 @@ pub struct AnnotateCliArgs {
     pub resolution: f64,
     #[arg(long, default_value_t = 42)]
     pub seed: u64,
-    #[arg(long = "num-perm", default_value_t = 1000)]
-    pub num_perm: usize,
+    /// Taken and ignored, so a command recorded before 0.9.6 still runs:
+    /// the sample permutation it set was removed.
+    #[arg(long = "num-perm", hide = true)]
+    pub num_perm: Option<usize>,
     #[arg(long = "min-markers", default_value_t = 3)]
     pub min_markers: usize,
     #[arg(long = "fdr-alpha", default_value_t = 0.1)]
@@ -271,7 +273,6 @@ impl AnnotateCliArgs {
         val("out", self.out.to_string());
         val("resolution", self.resolution.to_string());
         val("seed", self.seed.to_string());
-        val("num-perm", self.num_perm.to_string());
         val("min-markers", self.min_markers.to_string());
         val("fdr-alpha", self.fdr_alpha.to_string());
         val("q-temperature", self.q_temperature.to_string());
@@ -345,6 +346,9 @@ pub fn run_annotate(args: &AnnotateCliArgs, session: &legume_tui::cli::SessionAr
     }
     if let Some(cfg) = build_enrichment_args(args).susie {
         cfg.validate()?;
+    }
+    if args.num_perm.is_some() {
+        log::warn!("--num-perm is ignored: the sample permutation was removed");
     }
     if args.no_idf || args.no_assign_qc || args.assign_mad.is_some() {
         log::warn!(
@@ -828,7 +832,6 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
         go_min_overlap: args.go_min_overlap,
         go_max_overlap: args.go_max_overlap,
         out: args.out.clone(),
-        num_perm: args.num_perm,
         min_markers: args.min_markers,
         fdr_alpha: args.fdr_alpha,
         q_temperature: args.q_temperature,

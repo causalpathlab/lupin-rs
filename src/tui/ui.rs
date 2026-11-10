@@ -2510,7 +2510,8 @@ fn draw_order(f: &mut Frame, area: Rect, app: &App, v: &super::order::OrderView)
             .style(dim),
         );
         for d in candidates.iter().take(8) {
-            rows.push(pair(&d.a, "~", &d.b, d.summary()));
+            let link = if d.directed() { "⇢" } else { "~" };
+            rows.push(pair(&d.a, link, &d.b, d.summary()));
         }
     }
     let red = Style::default().fg(Color::Red);

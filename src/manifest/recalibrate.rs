@@ -294,7 +294,16 @@ pub(super) fn rescore_types(
     let rows_known = ids
         .iter()
         .all(|id| p_old.row(*id).is_some() && nes_old.row(*id).is_some());
-    if !(same_types && rows_known) {
+    // A round of an earlier build was tested against another null: its
+    // p-values do not mix with ones scored now.
+    let same_null = a
+        .settings
+        .as_ref()
+        .and_then(|s| s.pointer("/enrichment/null"))
+        .is_some_and(|null| {
+            *null == crate::manifest::annotate::null_record(null["batches"].clone())
+        });
+    if !(same_types && rows_known && same_null) {
         return score_all(&args, &inputs, ids).map(Some);
     }
     let col = |t: &crate::annotate::rounds::Table, name: &str| {

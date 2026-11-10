@@ -107,3 +107,52 @@ fn coarse_roots_never_read_the_fine_labels() {
     assert!(path.ends_with("run.argmax.tsv"), "{path}");
     assert_eq!(level, Some(Level::Coarse));
 }
+
+#[test]
+fn a_candidate_pair_runs_from_the_earlier_type_to_the_later() {
+    let candidate = || EdgeCheck {
+        from: 0,
+        to: 1,
+        verdict: Verdict::Candidate,
+        order_agreement: f32::NAN,
+    };
+    // Type 0 is late (median 0.8), type 1 early (median 0.2).
+    let by_type = vec![vec![0.7, 0.8, 0.9], vec![0.1, 0.2, 0.75]];
+    let mut c = candidate();
+    let same = [Some(0), Some(0)];
+    direct(&mut c, &by_type, &same);
+    assert_eq!((c.from, c.to), (1, 0), "the earlier median first");
+    assert_eq!(c.order_agreement, 1.0, "all of the late type beyond 0.2");
+
+    // A type no root reaches has no pseudotime: the pair keeps no direction.
+    let mut c = candidate();
+    direct(&mut c, &[vec![0.5], vec![]], &same);
+    assert_eq!((c.from, c.to), (0, 1));
+    assert!(c.order_agreement.is_nan());
+
+    // Two components measure pseudotime from their own roots, and equal
+    // medians say nothing: neither pair is given a direction.
+    let mut c = candidate();
+    direct(&mut c, &by_type, &[Some(0), Some(1)]);
+    assert_eq!((c.from, c.to), (0, 1));
+    assert!(c.order_agreement.is_nan());
+    let mut c = candidate();
+    direct(&mut c, &[vec![1.0, 1.0], vec![1.0, 1.0]], &same);
+    assert!(c.order_agreement.is_nan());
+}
+
+#[test]
+fn a_prior_edge_is_supported_weak_or_unsupported_by_its_edges() {
+    use crate::trajectory::type_connectivity::Connectivity;
+    let verdict = |edges, expected| verdict_of(&Connectivity::pair(edges, expected), 0, 1, 0.1);
+    assert_eq!(verdict(400.0, 1450.0), Verdict::Supported);
+    assert_eq!(verdict(72.0, 1450.0), Verdict::Weak, "joined, thinly");
+    assert_eq!(verdict(18.0, 908.0), Verdict::Unsupported);
+    assert_eq!(
+        verdict(2.0, 9.3),
+        Verdict::Unsupported,
+        "a ratio of 0.2 on two edges is no evidence"
+    );
+    assert_eq!(Verdict::parse("weak"), Some(Verdict::Weak));
+    assert_eq!(Verdict::Weak.as_str(), "weak");
+}

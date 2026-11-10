@@ -82,7 +82,8 @@ Trajectory loop:
 statements (from, to, precedes|unrelated, note), writes a run.
 A first round's labels are coarse; give `level: fine` (or a fine type as a root) to order its fine labels.
 2. trajectory_read returns its lineages, each edge's connectivity and \
-verdict (supported, unsupported, candidate, inferred) and the order in words. \
+verdict (supported; weak: joined by the kNN graph, thinly; unsupported: not \
+joined; candidate; inferred) and the order in words. \
 Revise the statements where the data disagree and run again.
 
 annotate_run and trajectory_run take `background`: on a large run set it, \

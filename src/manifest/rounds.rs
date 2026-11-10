@@ -1091,6 +1091,11 @@ fn relabel(
         a.cluster_celltype_q_values = rel(&t.q_values);
         a.cluster_celltype_p = rel(&t.p);
         a.cluster_celltype_nes = rel(&t.nes);
+        // The tables were scored now, whatever null the source's pass used.
+        if let Some(e) = a.settings.as_mut().and_then(|s| s.get_mut("enrichment")) {
+            let batches = e.pointer("/null/batches").cloned().unwrap_or(Value::Null);
+            e["null"] = super::annotate::null_record(batches);
+        }
         let rounds = source
             .manifest
             .annotate

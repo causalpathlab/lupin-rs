@@ -2300,15 +2300,11 @@ fn the_form_lists_the_rows_of_its_method() {
     a.projection = Some(crate::annotate::args::ProjectionMethod::Score);
     let rows = settings(&a);
     assert!(rows.contains(&Setting::Projection));
-    for s in [Setting::Susie, Setting::Go, Setting::NumPerm] {
+    for s in [Setting::Susie, Setting::Go] {
         assert!(!rows.contains(&s), "{s:?} is not the score's");
     }
     a.projection = Some(crate::annotate::args::ProjectionMethod::Units);
     let rows = settings(&a);
-    assert!(
-        !rows.contains(&Setting::NumPerm),
-        "the units' null is decoys"
-    );
     assert!(rows.contains(&Setting::Go), "units align GO terms");
     assert_eq!(
         rows.iter().position(|&s| s == Setting::Method),
@@ -3087,7 +3083,7 @@ fn the_settings_note_goes_once_a_pass_runs_with_them_or_they_are_set_back() {
     app.open_run(pick(tmp.path(), "X.L0"), false);
     let perm = |app: &mut App, right: bool| {
         app.form = Some(Form::default());
-        app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
+        app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Susie);
         press(app, if right { KeyCode::Right } else { KeyCode::Left });
         app.form = None;
     };
@@ -3120,7 +3116,7 @@ fn the_settings_note_stays_when_g_shows_another_round() {
     let mut app = family_app(tmp.path());
     app.open_run(pick(tmp.path(), "X.L0"), false);
     app.form = Some(Form::default());
-    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Susie);
     press(&mut app, KeyCode::Right);
     app.form = None;
     assert!(app.stale());
@@ -3136,7 +3132,7 @@ fn the_settings_note_stays_when_g_shows_another_round() {
     assert!(app.stale());
     // Set back, they are the round's again, whichever run passes start from.
     app.form = Some(Form::default());
-    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Susie);
     press(&mut app, KeyCode::Left);
     assert!(!app.stale(), "{:?}", app.args.from);
 }
@@ -3152,7 +3148,7 @@ fn a_long_status_gives_way_to_the_headers_notes_and_manifest() {
     let mut app = family_app(&here);
     app.open_run(pick(&here, "X.L0"), false);
     app.form = Some(Form::default());
-    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::NumPerm);
+    app.form.as_mut().unwrap().row = setting_row(&app.args, Setting::Susie);
     press(&mut app, KeyCode::Right);
     app.form = None;
     app.status = "a status of many words ".repeat(12);
