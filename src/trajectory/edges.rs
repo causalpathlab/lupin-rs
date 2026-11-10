@@ -8,11 +8,16 @@ use legume_numeric::matrix::parquet::{read_table_columns, write_named_table, Col
 /// What the connectivity check says about a pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verdict {
-    /// A prior edge whose connectivity reaches the threshold.
+    /// A prior edge the graph joins, whose connectivity reaches the
+    /// threshold.
     Supported,
-    /// A prior edge below it.
+    /// A prior edge the graph joins (its edges are more than noise gives)
+    /// below the threshold: a thin interface.
+    Weak,
+    /// A prior edge the graph does not join.
     Unsupported,
-    /// A pair the prior does not order whose connectivity reaches it.
+    /// A pair the prior does not order that the graph joins at the
+    /// threshold.
     Candidate,
     /// An edge the run added: a node type the prior leaves without an edge
     /// joins it along its strongest connectivity.
@@ -23,6 +28,7 @@ impl Verdict {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Supported => "supported",
+            Self::Weak => "weak",
             Self::Unsupported => "unsupported",
             Self::Candidate => "candidate",
             Self::Inferred => "inferred",
@@ -33,6 +39,7 @@ impl Verdict {
     pub(crate) fn parse(s: &str) -> Option<Self> {
         match s {
             "supported" => Some(Self::Supported),
+            "weak" => Some(Self::Weak),
             "unsupported" => Some(Self::Unsupported),
             "candidate" => Some(Self::Candidate),
             "inferred" => Some(Self::Inferred),
@@ -50,8 +57,9 @@ pub(crate) struct EdgeRow {
     pub(crate) connectivity: f32,
     pub(crate) in_prior: bool,
     pub(crate) verdict: Option<Verdict>,
-    /// Fraction of `b`'s cells beyond `a`'s median pseudotime; NaN unless the
-    /// pair is a prior edge and pseudotime was computed.
+    /// Fraction of `b`'s cells beyond `a`'s median pseudotime; NaN before
+    /// pseudotime is computed, and for a pair it gives no direction (a
+    /// candidate across two components, or of equal medians).
     pub(crate) order_agreement: f32,
 }
 
@@ -60,6 +68,12 @@ impl EdgeRow {
     pub(crate) fn is_pair(&self, x: &str, y: &str) -> bool {
         (self.a.as_ref() == x && self.b.as_ref() == y)
             || (self.a.as_ref() == y && self.b.as_ref() == x)
+    }
+
+    /// Whether `a` to `b` is a direction: every pair's but a candidate's
+    /// the run could not order by pseudotime (written in name order).
+    pub(crate) fn directed(&self) -> bool {
+        self.verdict != Some(Verdict::Candidate) || self.order_agreement.is_finite()
     }
 
     /// The verdict and numbers in a few words, for a table cell.

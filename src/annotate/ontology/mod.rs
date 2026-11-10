@@ -20,7 +20,6 @@ use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dense_mat_io::Mat;
 use legume_numeric::matrix::traits::IoOps;
 use log::info;
-use std::path::Path;
 
 // Re-export the score enum so sibling modules (e.g. `by_enrichment`) name it
 // through `crate::ontology::OntologyScore`, keeping their call sites stable.
@@ -94,25 +93,19 @@ pub fn run(args: &AnnotateOntologyArgs, q_abs: &str) -> Result<AnnotationOutputs
     let out = args.out.to_string();
     mkdir_parent(&out)?;
 
-    // Score preference: explicit --use-perm-p → pooled count p; otherwise the
-    // correlation-preserving permutation z when present, else the row-
-    // randomization restandardized ES. Both z forms use leaf p = Φ(−z).
-    let (score_abs, from_z) = if args.use_perm_p {
-        (
-            sibling_artifact(q_abs, "cluster_celltype_p.parquet")?,
-            false,
-        )
-    } else {
-        let perm_z = sibling_artifact(q_abs, "cluster_celltype_perm_z.parquet")?;
-        if Path::new(&perm_z).exists() {
-            (perm_z, true)
+    // The score: with --use-perm-p the gene-set null's p; otherwise the
+    // score restandardised against that null, a z with leaf p = Φ(−z). A
+    // round from before 0.9.6 may hold a sample-permutation z beside them:
+    // it is not read (its spread was the batch mixing's, not the null's).
+    let from_z = !args.use_perm_p;
+    let score_abs = sibling_artifact(
+        q_abs,
+        if from_z {
+            "cluster_celltype_es_std.parquet"
         } else {
-            (
-                sibling_artifact(q_abs, "cluster_celltype_es_std.parquet")?,
-                true,
-            )
-        }
-    };
+            "cluster_celltype_p.parquet"
+        },
+    )?;
 
     let score = Mat::from_parquet_with_row_names(&score_abs, Some(0))
         .with_context(|| format!("reading score matrix {score_abs}"))?;

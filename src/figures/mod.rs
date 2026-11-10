@@ -1411,13 +1411,15 @@ impl CellFigures {
     }
 
     /// The prior's direct edges as arrows between the type `medians`:
-    /// supported ones solid, the rest faded, inferred ones in grey.
+    /// supported ones solid, weak ones lighter, unsupported ones faded,
+    /// inferred ones in grey.
     fn draw_arrows(&self, frame: &mut Frame, medians: &Medians, vp: &Viewport, stroke: f32) {
         let drawn = |e: &&EdgeRow| e.in_prior || e.verdict == Some(Verdict::Inferred);
         for e in self.edges.iter().filter(drawn) {
             if let (Some(&(a, _)), Some(&(b, _))) = (medians.get(&e.a), medians.get(&e.b)) {
                 let (ink, alpha) = match e.verdict {
                     Some(Verdict::Supported) => (ARROW, 0.9),
+                    Some(Verdict::Weak) => (ARROW, 0.6),
                     Some(Verdict::Inferred) => (INFERRED, 0.9),
                     _ => (ARROW, 0.3),
                 };

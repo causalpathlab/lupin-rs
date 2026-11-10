@@ -1,4 +1,4 @@
-//! Marker genes resolved to every data row that measures the gene.
+//! Marker genes resolved to the data rows that measure the gene.
 //!
 //! A plain expression matrix has one row per gene, so matching a marker to a
 //! row name is enough. A faba matrix names its rows
@@ -7,9 +7,13 @@
 //! rows, per-site rows. Matching the name alone picks whichever row came
 //! first, often a modification site rather than the gene's expression.
 //!
-//! Here each row is read for its gene and its data type, a marker matches the
-//! gene, and it marks every row of that gene: each modality, channel and
-//! site. Allele rows are keyed by locus, not gene, and never carry a marker.
+//! Here each row is read for its gene and its data type, and a marker
+//! matches the gene: [`GeneRows`] gives every row of it (each modality,
+//! channel and site), [`LevelRows`] the one row its level is read from. The
+//! annotation pass and a round's gene views mark and read that one row: a
+//! gene's rows move together, so marking them all counts one gene several
+//! times against a null that draws rows one by one. Allele rows are keyed by
+//! locus, not gene, and never carry a marker.
 
 use data_beans::aux::feature_rows::{self as fr, parse_feature_row, FeatureRow};
 use data_beans::utilities::name_matching::GeneIndex;
@@ -111,6 +115,8 @@ pub const CHANNELS: [&str; 3] = [fr::SPLICED, fr::UNSPLICED, fr::TOTAL];
 /// either way, and without the `/{modality}/{channel}` suffix.
 pub struct LevelRows {
     index: GeneIndex,
+    /// [`GeneRows::modality_summary`] of the rows it was built over.
+    modalities: Option<String>,
     /// Per gene, its level row.
     level: Vec<usize>,
     /// Each name asked for, matched: a name that matches no gene is
@@ -143,6 +149,7 @@ impl LevelRows {
             })
             .collect();
         Self {
+            modalities: genes.modality_summary(),
             index: genes.index,
             level,
             asked: std::sync::Mutex::default(),
@@ -160,6 +167,13 @@ impl LevelRows {
         let r = self.index.match_gene(gene).map(|g| self.level[g]);
         asked.insert(gene.into(), r);
         r
+    }
+
+    /// `modality: rows` for each modality among the rows, or `None` for a
+    /// matrix with no feature rows.
+    #[must_use]
+    pub fn modality_summary(&self) -> Option<&str> {
+        self.modalities.as_deref()
     }
 
     /// `row_names` with each gene's level row (by [`fr::SPLICED`]) kept

@@ -6,7 +6,8 @@
 pub const KEEP_IEA: bool = true;
 /// Cells per block when streaming the raw counts.
 pub const BLOCK_SIZE: usize = 1024;
-/// Random gene sets in the gene-set null: its p-values go no lower than `1 / (NUM_DRAWS + 1)`.
+/// Random gene sets in the gene-set null; a score fewer than 10 of them
+/// reach gets fgsea's multilevel estimate of its p-value.
 pub const NUM_DRAWS: usize = 10_000;
 /// Minimum per-cell label confidence (0 = keep every call).
 pub const MIN_CONFIDENCE: f32 = 0.0;
@@ -29,7 +30,7 @@ pub fn fixed_settings() -> serde_json::Value {
         "support_perm": 0,
         "effect": "nes",
         "share": "softmax of z = probit(1 - p) over the FDR survivors",
-        "p": "gene-set null permutation p (fgsea sign-aware)",
+        "p": "gene-set null permutation p (fgsea sign-aware), fgsea's multilevel estimate where fewer than 10 draws reach the score",
         "q": "treebh over the panel's cell-type tree",
     })
 }
@@ -83,9 +84,6 @@ pub struct AnnotateArgs {
 
     /// Output prefix for annotation artifacts
     pub out: Box<str>,
-
-    /// Number of PB-level sample permutations for the correlation-preserving null
-    pub num_perm: usize,
 
     /// Drop a cell type with fewer than this many matched markers
     pub min_markers: usize,

@@ -191,10 +191,18 @@ The connectivity check does not depend on the root.
   its cells' list lengths. Every cell is in a group, as scanpy requires: the
   node types, and the unassigned and small-type cells as groups of their own,
   which take part in the statistic but get no verdict.
-- **Verdicts**: a direct prior edge is `supported` when its connectivity
-  reaches `--min-connectivity` and `unsupported` below it; a pair of nodes
-  joined by no path of the prior whose connectivity reaches it is a
-  `candidate`. PAGA's spanning tree is not used: with many pairs saturated at
+- **Verdicts**: the ratio is on the scale of random mixing, so it falls as
+  two types grow and is large on a handful of edges between two small ones.
+  A pair is therefore *joined* only when its edge count is more than noise
+  gives: a Poisson test (p < 0.001) against 1% of the random expectation,
+  what cells labelled at random at that rate would put between the two. A
+  direct prior edge is `supported` when the graph joins it at a connectivity
+  of `--min-connectivity` or more, `weak` when it joins it below that (a
+  thin interface) and `unsupported` when it does not join it; a pair of
+  nodes joined by no path of the prior that is joined at that connectivity
+  is a `candidate`, written from the type of the earlier median pseudotime
+  to the later once pseudotime is computed. A type the prior leaves out is
+  attached only along a joined pair. PAGA's spanning tree is not used: with many pairs saturated at
   1 its tied edges follow the order of the type names.
 - **What it can and cannot show**: on the bench data every edge of the known
   hierarchy sits above the default threshold and every planted

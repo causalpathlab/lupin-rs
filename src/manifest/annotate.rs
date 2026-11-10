@@ -169,8 +169,6 @@ pub fn annotate_by_enrichment(
         });
         Pass::Markers(&args.markers, called)
     };
-    // Which nulls actually ran: the sample permutation is skipped when there
-    // are too few batches to shuffle.
     let mut used = settings(args)?;
     if let serde_json::Value::Object(m) = &mut used {
         // The SuSiE settings that made the call, or none when it was skipped
@@ -178,7 +176,6 @@ pub fn annotate_by_enrichment(
         if outputs.cluster_celltype_pip.is_none() {
             m.insert("susie".into(), serde_json::Value::Null);
         }
-        let draws = by_enrichment::sample_perm_draws(inputs.n_batches, args.num_perm);
         if let Some(r) = &inputs.cl_record {
             m.insert("cell_ontology".into(), r.clone());
         }
@@ -186,14 +183,7 @@ pub fn annotate_by_enrichment(
         if let Some(e) = &inputs.expression_source {
             m.insert("expression".into(), e.clone());
         }
-        m.insert(
-            "null".into(),
-            serde_json::json!({
-                "gene_set_randomization": crate::annotate::args::NUM_DRAWS,
-                "sample_permutation": draws,
-                "batches": inputs.n_batches,
-            }),
-        );
+        m.insert("null".into(), null_record(inputs.n_batches.into()));
     }
     stages.start(stages.named(crate::annotate::by_enrichment::STAGE_RECORD));
     record(loaded, &args.out, pass, &outputs, "enrichment", used)?;
@@ -453,6 +443,17 @@ pub fn annotate_ontology(args: &AnnotateOntologyArgs, loaded: &Loaded) -> Result
         "ontology",
         settings(args)?,
     )
+}
+
+/// The record of the null the cell types are tested against, over `batches`
+/// batches (as a pass counted them).
+pub(crate) fn null_record(batches: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "gene_set_randomization": crate::annotate::args::NUM_DRAWS,
+        "multilevel": true,
+        "sample_permutation": 0,
+        "batches": batches,
+    })
 }
 
 /// A pass's effective settings: its own arguments plus the fixed constants.

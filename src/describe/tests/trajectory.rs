@@ -73,6 +73,11 @@ fn the_texts_say_the_order_and_each_types_place() {
     let ty6 = type_text(&f, "TY6");
     assert!(ty6.starts_with("TY6 is on no lineage."), "{ty6}");
     assert!(ty6.contains("TY4 → TY6 candidate"), "{ty6}");
+    // A candidate the run gave no direction (no pseudotime) has no arrow.
+    let mut f = facts();
+    f.edges[3].order_agreement = f32::NAN;
+    let ty6 = type_text(&f, "TY6");
+    assert!(ty6.contains("TY4 ~ TY6 candidate"), "{ty6}");
 }
 
 #[test]

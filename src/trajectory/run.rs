@@ -7,7 +7,7 @@ use super::edges::{self, EdgeRow, Verdict};
 use super::encode_groups;
 use super::lineages::Lineage;
 use super::prior::{self, Prior, Source, Statement};
-use super::type_connectivity::connectivity;
+use super::type_connectivity::{connectivity, Connectivity};
 use crate::cell_labels::read_cell_labels;
 use crate::manifest::data_files::Fetch;
 use crate::manifest::run::{
@@ -114,7 +114,7 @@ pub struct TrajectoryArgs {
     #[arg(
         long,
         default_value_t = 0.1,
-        help = "PAGA connectivity at or above which a prior edge is supported and a pair outside the prior is a candidate"
+        help = "PAGA connectivity at or above which a prior edge the graph joins is supported (below it, weak) and a pair outside the prior is a candidate; a pair is joined when its kNN edges are more than 1% of random mixing gives (p < 0.001)"
     )]
     pub min_connectivity: f32,
 
@@ -265,12 +265,13 @@ struct EdgeCheck {
 /// What a run computes.
 struct Trajectory {
     pub(crate) prior: Prior,
-    /// PAGA connectivity between every pair of types.
-    pub(crate) connectivity: DMatrix<f64>,
+    /// The kNN edges between every pair of types, with PAGA's ratio.
+    pub(crate) connectivity: Connectivity,
     pub(crate) edges: Vec<EdgeCheck>,
-    /// Pairs of nodes the prior does not order whose connectivity reaches the
-    /// threshold, strongest first.
-    pub(crate) candidates: Vec<(usize, usize)>,
+    /// Pairs of nodes the prior does not order that are joined with a
+    /// connectivity at the threshold or above, strongest first: in name order with no agreement until
+    /// pseudotime gives them a direction ([`direct`]).
+    pub(crate) candidates: Vec<EdgeCheck>,
     /// `None` before pseudotime is computed (`--check-only`).
     pub(crate) ordering: Option<Ordering>,
 }
@@ -288,6 +289,9 @@ struct Ordering {
     pub(crate) type_weights: Vec<Vec<f32>>,
     /// Each type's finite pseudotimes.
     pub(crate) by_type: Vec<Vec<f32>>,
+    /// Per type, the prior component its cells are measured in: its own or
+    /// its host's (`None` for a type that is no node, or that no root reaches).
+    pub(crate) type_component: Vec<Option<usize>>,
     /// Node types in order of median pseudotime: `(median, type)`; a type no
     /// root reaches has an infinite median.
     pub(crate) order: Vec<(f32, usize)>,
@@ -358,7 +362,10 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     let mut t = check(&inputs, &nb, prior, args.min_connectivity);
     report_check(&inputs, &t);
     if !args.check_only {
-        let (ordering, inferred) = order(&inputs, &nb, &t.prior, &t.connectivity, args)?;
+        // A type the prior leaves out joins it only along a pair the graph
+        // joins: a stray edge attaches nothing.
+        let joined = t.connectivity.joined_ratio();
+        let (ordering, inferred) = order(&inputs, &nb, &t.prior, &joined, args)?;
         t.ordering = Some(ordering);
         // The inferred edges join the prior's, to be measured and written
         // as they are.
@@ -596,11 +603,7 @@ fn check(inputs: &Inputs, nb: &Neighbours, prior: Prior, min_connectivity: f32) 
         .map(|e| EdgeCheck {
             from: e.from,
             to: e.to,
-            verdict: if conn[(e.from, e.to)] as f32 >= min_connectivity {
-                Verdict::Supported
-            } else {
-                Verdict::Unsupported
-            },
+            verdict: verdict_of(&conn, e.from, e.to, min_connectivity),
             order_agreement: f32::NAN,
         })
         .collect();
@@ -610,16 +613,38 @@ fn check(inputs: &Inputs, nb: &Neighbours, prior: Prior, min_connectivity: f32) 
             inputs.is_node[a]
                 && inputs.is_node[b]
                 && !prior.related(a, b)
-                && conn[(a, b)] as f32 >= min_connectivity
+                && verdict_of(&conn, a, b, min_connectivity) == Verdict::Supported
         })
         .collect();
-    candidates.sort_by(|&p, &q| conn[q].total_cmp(&conn[p]));
+    candidates.sort_by(|&p, &q| conn.ratio[q].total_cmp(&conn.ratio[p]));
+    let candidates = candidates
+        .into_iter()
+        .map(|(from, to)| EdgeCheck {
+            from,
+            to,
+            verdict: Verdict::Candidate,
+            order_agreement: f32::NAN,
+        })
+        .collect();
     Trajectory {
         prior,
         connectivity: conn,
         edges,
         candidates,
         ordering: None,
+    }
+}
+
+/// What the graph says of the pair `a`, `b` as an edge: supported when it
+/// joins them ([`Connectivity::joined`]) at a ratio of `min_connectivity` or
+/// more, weak when it joins them below that, unsupported when it does not.
+fn verdict_of(conn: &Connectivity, a: usize, b: usize, min_connectivity: f32) -> Verdict {
+    if !conn.joined(a, b) {
+        Verdict::Unsupported
+    } else if conn.ratio[(a, b)] as f32 >= min_connectivity {
+        Verdict::Supported
+    } else {
+        Verdict::Weak
     }
 }
 
@@ -635,19 +660,23 @@ fn report_check(inputs: &Inputs, t: &Trajectory) {
         t.candidates.len()
     );
     for e in t.edges.iter().filter(|e| e.verdict != Verdict::Supported) {
+        let at = (e.from, e.to);
         info!(
-            "  unsupported: {} → {} (connectivity {:.3})",
+            "  {}: {} → {} (connectivity {:.3}: {} edge(s), {:.1} expected by chance)",
+            e.verdict.as_str(),
             inputs.names[e.from],
             inputs.names[e.to],
-            t.connectivity[(e.from, e.to)]
+            t.connectivity.ratio[at],
+            t.connectivity.edges[at],
+            t.connectivity.expected[at]
         );
     }
-    for &(a, b) in t.candidates.iter().take(10) {
+    for c in t.candidates.iter().take(10) {
         info!(
-            "  candidate: {} — {} (connectivity {:.3})",
-            inputs.names[a],
-            inputs.names[b],
-            t.connectivity[(a, b)]
+            "  candidate: {} ~ {} (connectivity {:.3})",
+            inputs.names[c.from],
+            inputs.names[c.to],
+            t.connectivity.ratio[(c.from, c.to)]
         );
     }
 }
@@ -709,11 +738,18 @@ fn order(
     }
     // A node type's cell belongs to its type's (or host's) component; any
     // other cell to the component whose root is nearest.
+    let type_component: Vec<Option<usize>> = (0..inputs.names.len())
+        .map(|g| {
+            inputs.is_node[g]
+                .then(|| prior.component[host[g].unwrap_or(g)])
+                .flatten()
+        })
+        .collect();
     let component: Vec<Option<usize>> = (0..n)
         .map(|i| {
             let g = inputs.group[i];
             if inputs.is_node[g] {
-                prior.component[host[g].unwrap_or(g)]
+                type_component[g]
             } else {
                 (0..dist.len())
                     .filter(|&c| dist[c][i].is_finite())
@@ -807,6 +843,7 @@ fn order(
         lineages,
         type_weights,
         by_type,
+        type_component,
         order,
     };
     Ok((ordering, inferred))
@@ -872,12 +909,46 @@ pub(crate) fn hosts(
 fn agreement(t: &mut Trajectory) {
     let Some(o) = &t.ordering else { return };
     for e in &mut t.edges {
-        let (from, to) = (&o.by_type[e.from], &o.by_type[e.to]);
-        if from.is_empty() || to.is_empty() {
-            continue;
+        if let Some(a) = agreement_of(&o.by_type[e.from], &o.by_type[e.to]) {
+            e.order_agreement = a;
         }
-        let m = median(from);
-        e.order_agreement = to.iter().filter(|&&p| p > m).count() as f32 / to.len() as f32;
+    }
+    for c in &mut t.candidates {
+        direct(c, &o.by_type, &o.type_component);
+    }
+}
+
+/// The share of `to`'s pseudotimes beyond `from`'s median; `None` when
+/// either type has none.
+fn agreement_of(from: &[f32], to: &[f32]) -> Option<f32> {
+    if from.is_empty() || to.is_empty() {
+        return None;
+    }
+    let m = median(from);
+    Some(to.iter().filter(|&&p| p > m).count() as f32 / to.len() as f32)
+}
+
+/// Give candidate pair `c` the direction the data gives it: from the type
+/// of the earlier median pseudotime (`by_type`: each type's pseudotimes) to
+/// the later, with its order agreement. The prior does not order the pair,
+/// so the direction is a reading of the data to weigh, never a lineage.
+/// Pseudotime is measured from each component's own roots (`component`: per
+/// type), so a pair keeps no direction unless both types are in one
+/// component and their medians differ.
+fn direct(c: &mut EdgeCheck, by_type: &[Vec<f32>], component: &[Option<usize>]) {
+    let (a, b) = (&by_type[c.from], &by_type[c.to]);
+    if a.is_empty() || b.is_empty() || component[c.from] != component[c.to] {
+        return;
+    }
+    let (ma, mb) = (median(a), median(b));
+    if ma == mb {
+        return;
+    }
+    if ma > mb {
+        std::mem::swap(&mut c.from, &mut c.to);
+    }
+    if let Some(x) = agreement_of(&by_type[c.from], &by_type[c.to]) {
+        c.order_agreement = x;
     }
 }
 
@@ -952,12 +1023,11 @@ fn write(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<BTreeMap<&'static
 /// `{out}.trajectory_edges.parquet`: every node pair, so the table is the
 /// connectivity matrix as well as the verdicts.
 fn write_edges(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<String> {
-    let edge_at: BTreeMap<(usize, usize), &EdgeCheck> = t
-        .edges
-        .iter()
+    // A pair's edge, else its candidate, either way round.
+    let edge_at: BTreeMap<(usize, usize), &EdgeCheck> = (t.candidates.iter())
+        .chain(&t.edges)
         .flat_map(|e| [((e.from, e.to), e), ((e.to, e.from), e)])
         .collect();
-    let candidate: BTreeSet<(usize, usize)> = t.candidates.iter().copied().collect();
     let nodes: Vec<usize> = (0..inputs.names.len())
         .filter(|&g| inputs.is_node[g])
         .collect();
@@ -969,13 +1039,10 @@ fn write_edges(inputs: &Inputs, t: &Trajectory, out: &str) -> Result<String> {
             rows.push(EdgeRow {
                 a: inputs.names[from].clone(),
                 b: inputs.names[to].clone(),
-                connectivity: t.connectivity[(p, q)] as f32,
-                in_prior: edge.is_some_and(|e| e.verdict != Verdict::Inferred),
-                verdict: match edge {
-                    Some(e) => Some(e.verdict),
-                    None if candidate.contains(&(p, q)) => Some(Verdict::Candidate),
-                    None => None,
-                },
+                connectivity: t.connectivity.ratio[(p, q)] as f32,
+                in_prior: edge
+                    .is_some_and(|e| !matches!(e.verdict, Verdict::Inferred | Verdict::Candidate)),
+                verdict: edge.map(|e| e.verdict),
                 order_agreement: edge.map_or(f32::NAN, |e| e.order_agreement),
             });
         }

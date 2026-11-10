@@ -145,7 +145,8 @@ fn and_list(items: &[String]) -> String {
 
 fn edge_text(e: &EdgeRow) -> String {
     let verdict = e.verdict.map_or("", |v| v.as_str());
-    format!("{} → {} {verdict}", e.a, e.b)
+    let link = if e.directed() { "→" } else { "~" };
+    format!("{} {link} {} {verdict}", e.a, e.b)
 }
 
 /// The run paragraph.
