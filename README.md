@@ -282,7 +282,8 @@ channel). The trajectory's map is its PHATE or other layout, else its
 diffusion map; `--map` draws the ones named instead (a layout by name, `best`,
 `all`, `suggested` or `diffusion`, or two diffusion components as `dc1,dc3`),
 each as `{out}.{map}.{colour}.png` and `.pdf`, in the colouring `--colour`
-names (pseudotime, type, lineage or component). The diffusion map opens on
+names (pseudotime, type, fine, lineage or component; fine colours each cell
+by the fine label a coarse first round keeps for it). The diffusion map opens on
 its suggested pair: of the components the run kept, the one that follows
 pseudotime best (|Spearman ρ|) on x and the one that best parts the lineages
 (η²) on y. The MCP `trajectory_figure` tool's `list` gives those numbers for
@@ -296,7 +297,7 @@ aligned terms), z-scored by row and blank where q is not below the cut;
 `types`, the cell types × clusters; `markers`; and the `structure` and
 `topics` plots. A heatmap's numbers (its z, the unscaled values and their q)
 go beside it as `.json`. `--map` draws the round's cells on a layout,
-coloured by type, cluster, call or margin.
+coloured by type, fine type, cluster, call or margin.
 
 A figure is drawn for where it goes, `--page paper` (the default here and on
 the screen's saves) or `--page slide`, and a chart is sized to what it shows,
@@ -464,7 +465,7 @@ Annotation loop:
 
 Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence statements (from, to, precedes|unrelated, note), writes a run.
-A first round's labels are coarse; give `level: fine` (or a fine type as a root) to order its fine labels.
+A first round's labels are coarse; give `level: fine` (or a fine type as a root) to order its fine labels. On fine labels a coarse root stands for the fine types mostly under it.
 2. trajectory_read returns its lineages, each edge's connectivity and verdict (supported; weak: joined by the kNN graph, thinly; unsupported: not joined; candidate; inferred) and the order in words. Revise the statements where the data disagree and run again.
 
 annotate_run and trajectory_run take `background`: on a large run set it, and the call returns a job id at once; the step runs on lupin's own screen in a session the user can watch with `lupin attach`, and goes on if this server ends.

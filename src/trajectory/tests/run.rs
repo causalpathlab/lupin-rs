@@ -108,6 +108,97 @@ fn coarse_roots_never_read_the_fine_labels() {
     assert_eq!(level, Some(Level::Coarse));
 }
 
+/// Fine labels over six cells (one with none) and the coarse label of
+/// each: `CT1` and the unlabelled cell under `G1`; `CT2` and `CT3` under
+/// `G2`; `CT4` mostly under `G2`, one cell under `G1`.
+struct FineOverCoarse {
+    names: Vec<Box<str>>,
+    group: Vec<usize>,
+    is_node: Vec<bool>,
+    coarse: Vec<&'static str>,
+}
+
+fn fine_over_coarse() -> FineOverCoarse {
+    let fine = [
+        "CT1",
+        "CT1",
+        enrichment::UNASSIGNED_LABEL,
+        "CT2",
+        "CT3",
+        "CT3",
+        "CT4",
+        "CT4",
+        "CT4",
+    ];
+    let coarse = ["G1", "G1", "G1", "G2", "G2", "G2", "G1", "G2", "G2"];
+    let (names, group) = encode_groups(&fine);
+    let is_node = names
+        .iter()
+        .map(|n| n.as_ref() != enrichment::UNASSIGNED_LABEL)
+        .collect();
+    FineOverCoarse {
+        names,
+        group,
+        is_node,
+        coarse: coarse.to_vec(),
+    }
+}
+
+#[test]
+fn on_fine_labels_a_coarse_root_stands_for_the_fine_types_mostly_under_it() {
+    let FineOverCoarse {
+        names,
+        group,
+        is_node,
+        coarse,
+    } = fine_over_coarse();
+    let roots = |rs: &[&str]| rs.iter().map(|r| Box::from(*r)).collect::<Vec<Box<str>>>();
+    let on = |rs: &[&str]| fine_roots(&names, &group, &is_node, &coarse, &roots(rs));
+    assert_eq!(
+        on(&["G1"]).unwrap(),
+        roots(&["CT1"]),
+        "the unlabelled cell takes no part"
+    );
+    assert_eq!(
+        on(&["G2"]).unwrap(),
+        roots(&["CT2", "CT3", "CT4"]),
+        "CT4 is mostly under G2"
+    );
+    assert_eq!(
+        on(&["CT2"]).unwrap(),
+        roots(&["CT2"]),
+        "a fine root stands as it is"
+    );
+    assert_eq!(
+        on(&["G2", "CT3"]).unwrap(),
+        roots(&["CT2", "CT3", "CT4"]),
+        "each once"
+    );
+    let e = on(&["X"]).unwrap_err().to_string();
+    assert!(e.contains("X") && e.contains("G1"), "neither label: {e}");
+    assert!(
+        !e.contains(enrichment::UNASSIGNED_LABEL),
+        "never offered as a label: {e}"
+    );
+    assert!(on(&[enrichment::UNASSIGNED_LABEL]).is_err(), "never a root");
+}
+
+#[test]
+fn a_coarse_root_over_no_fine_node_is_refused_saying_why() {
+    let FineOverCoarse {
+        names,
+        group,
+        mut is_node,
+        coarse,
+    } = fine_over_coarse();
+    let ct1 = names.iter().position(|n| n.as_ref() == "CT1").unwrap();
+    is_node[ct1] = false;
+    let e = fine_roots(&names, &group, &is_node, &coarse, &[Box::from("G1")])
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("G1") && e.contains("--min-cells"), "{e}");
+}
+
 #[test]
 fn a_candidate_pair_runs_from_the_earlier_type_to_the_later() {
     let candidate = || EdgeCheck {
@@ -155,4 +246,38 @@ fn a_prior_edge_is_supported_weak_or_unsupported_by_its_edges() {
     );
     assert_eq!(Verdict::parse("weak"), Some(Verdict::Weak));
     assert_eq!(Verdict::Weak.as_str(), "weak");
+}
+
+#[test]
+fn a_fine_runs_coarse_root_is_read_from_the_rounds_own_labels_by_cell() {
+    let dir = tempfile::tempdir().unwrap();
+    let loaded = coarse_round(dir.path(), true);
+    // The run's cells in another order than the label files'.
+    let cells: Vec<Box<str>> = ["c", "a", "b"].map(Box::from).into();
+    let (names, group) = encode_groups(&["CT3", "CT1", "CT2"]);
+    let inputs = Inputs {
+        level: Some(Level::Fine),
+        geometry: Mat::zeros(3, 1),
+        cells_of: Vec::new(),
+        is_node: vec![true; names.len()],
+        cells,
+        names,
+        group,
+    };
+    let root = |r: &str| roots_of(&loaded, &inputs, &[Box::from(r)]).unwrap();
+    assert_eq!(root("G1"), [Box::from("CT1"), Box::from("CT2")]);
+    assert_eq!(root("G2"), [Box::from("CT3")]);
+    assert_eq!(
+        root("CT2"),
+        [Box::from("CT2")],
+        "a fine root reads nothing more"
+    );
+    let coarse = Inputs {
+        level: Some(Level::Coarse),
+        ..inputs
+    };
+    assert_eq!(
+        roots_of(&loaded, &coarse, &[Box::from("G1")]).unwrap(),
+        [Box::from("G1")]
+    );
 }

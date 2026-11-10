@@ -210,7 +210,7 @@ pub struct RoundFigureArgs {
     #[arg(
         long,
         visible_alias = "color",
-        help = "Colour the map's cells by type (default), cluster, call or margin"
+        help = "Colour the map's cells by type (default), fine (a coarse first round's fine labels), cluster, call or margin"
     )]
     pub colour: Option<Box<str>>,
     #[command(flatten)]

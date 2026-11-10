@@ -72,6 +72,13 @@ pub fn read_cell_labels(path: &str) -> Result<Membership> {
     Ok(Membership::from_pairs(pairs, false).with_delimiter('@'))
 }
 
+/// Each of `cells`' label in `m`, the unassigned label for a cell it lacks.
+pub fn labels_of<'a>(m: &'a Membership, cells: &[Box<str>]) -> Vec<&'a str> {
+    (cells.iter())
+        .map(|c| m.get(c).unwrap_or(enrichment::UNASSIGNED_LABEL))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
