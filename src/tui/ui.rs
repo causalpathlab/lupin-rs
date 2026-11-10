@@ -729,7 +729,7 @@ const GUIDE: &[(&str, &[(&str, &str)])] = &[
         &[
             ("v / V", "next figure: scatter, order, connectivity / back to the table"),
             ("t", "type labels on the scatter: small, medium, large, largest, off"),
-            ("c", "colour the cells by what the run has: pseudotime, cell type, cluster, score call, score margin, lineage or component"),
+            ("c", "colour the cells by what the run has: pseudotime, cell type, fine type (the fine labels a coarse first round keeps, by cell), cluster, score call, score margin, lineage or component"),
             ("m", "the scatter's layout: each layout the run has (PHATE first), then the diffusion map"),
             (", .", "the diffusion map's y axis: the previous or next component"),
             ("[ ]", "the diffusion map's x axis: the previous or next component"),

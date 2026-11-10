@@ -286,7 +286,9 @@ fn member(dir: &Path, path: PathBuf, m: &RunManifest, source: Option<&RunManifes
                 .trajectory
                 .settings
                 .as_ref()
-                .and_then(|s| s.get("roots"))
+                // The roots the run ordered from (a coarse root on fine
+                // labels stands for fine ones), else those given.
+                .and_then(|s| s.get("roots_used").or_else(|| s.get("roots")))
                 .and_then(|r| r.as_array())
                 .map(|r| r.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
                 .unwrap_or_default();

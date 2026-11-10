@@ -84,7 +84,7 @@ Rounds are never overwritten, so a decision can always be revisited.
 Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence \
 statements (from, to, precedes|unrelated, note), writes a run.
-A first round's labels are coarse; give `level: fine` (or a fine type as a root) to order its fine labels.
+A first round's labels are coarse; give `level: fine` (or a fine type as a root) to order its fine labels. On fine labels a coarse root stands for the fine types mostly under it.
 2. trajectory_read returns its lineages, each edge's connectivity and \
 verdict (supported; weak: joined by the kNN graph, thinly; unsupported: not \
 joined; candidate; inferred) and the order in words. \
@@ -212,13 +212,13 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_figure",
-            "A round's charts and cell maps (`lupin figure round`), as the screen draws them. Charts: `terms`, each cluster's top GO/GMT terms × clusters (by effect, z by row, blank where q is not below `q`; a round annotated with go, gaf or gmt); `types`, the cell types × clusters; `markers`, the panel's markers × clusters; `structure`, each cell's cell types stacked by cluster; `topics`, a topic run's topics so. Maps: the round's cells on a layout, coloured by type, cluster, call or margin. Each chart is sized to what it shows and to its `page`: on a slide as wide as it needs at the slide's height, and one taller than the slide (many rows) turned right across it; on paper as tall as it needs at the page's width, and one wider than the page (many clusters) turned left onto it; PNG and PDF alike, listed in `turned`. Each chart as {out}.{chart}.png and .pdf, a heatmap's numbers as .json too (rows, cols, z, the unscaled values and their q); each map as {out}.{map}.{colour}.png and .pdf. Written into today's results folder, recorded as any step; returns the files, each heatmap's numbers, the images, and what the round offers (each chart, or why it has none; its layouts and colourings). `list` returns that alone, drawing nothing. For the markers heatmap with its own options (types, value, source), use annotate_heatmap.",
+            "A round's charts and cell maps (`lupin figure round`), as the screen draws them. Charts: `terms`, each cluster's top GO/GMT terms × clusters (by effect, z by row, blank where q is not below `q`; a round annotated with go, gaf or gmt); `types`, the cell types × clusters; `markers`, the panel's markers × clusters; `structure`, each cell's cell types stacked by cluster; `topics`, a topic run's topics so. Maps: the round's cells on a layout, coloured by type, fine type (a coarse first round's fine labels), cluster, call or margin. Each chart is sized to what it shows and to its `page`: on a slide as wide as it needs at the slide's height, and one taller than the slide (many rows) turned right across it; on paper as tall as it needs at the page's width, and one wider than the page (many clusters) turned left onto it; PNG and PDF alike, listed in `turned`. Each chart as {out}.{chart}.png and .pdf, a heatmap's numbers as .json too (rows, cols, z, the unscaled values and their q); each map as {out}.{map}.{colour}.png and .pdf. Written into today's results folder, recorded as any step; returns the files, each heatmap's numbers, the images, and what the round offers (each chart, or why it has none; its layouts and colourings). `list` returns that alone, drawing nothing. For the markers heatmap with its own options (types, value, source), use annotate_heatmap.",
             schema(
                 json!({
                     "round": { "type": "string" },
                     "charts": { "type": "array", "items": { "type": "string", "enum": ["terms", "types", "markers", "structure", "topics"] }, "description": "The charts to draw; every one the round records when neither charts nor maps is given" },
                     "maps": { "type": "array", "items": { "type": "string" }, "description": "Layouts to draw the cells on: phate, umap, …, best or all" },
-                    "colour": { "type": "string", "enum": ["type", "cluster", "call", "margin"], "description": "What colours the map's cells (type)" },
+                    "colour": { "type": "string", "enum": ["type", "fine", "cluster", "call", "margin"], "description": "What colours the map's cells (type); fine: the fine labels a coarse first round keeps, by cell" },
                     "labels": { "type": "string", "enum": ["small", "medium", "large", "largest", "off"], "description": "The type labels on a map (medium)" },
                     "focus": { "type": "integer", "description": "Light this cluster's cells, the others grey" },
                     "page": { "type": "string", "enum": ["slide", "paper"], "description": "What the figures are set on: slide (default: the day's report deck, a figure box 3.5 in tall and as wide as needed; a chart too tall is turned onto it) or paper (a journal page 7 in wide, as tall as needed; a chart too wide is turned onto it)" },
@@ -287,7 +287,7 @@ fn tools() -> Vec<ToolSpec> {
                     "from": { "type": "string", "description": "Annotated round (or run) manifest or its prefix" },
                     "out": { "type": "string", "description": "Output prefix; the next free {stem}.T{k} when omitted" },
                     "roots": { "type": "array", "items": { "type": "string" }, "description": "Cell types the trajectory starts from" },
-                    "level": { "type": "string", "enum": ["coarse", "fine"], "description": "Which of the round's labels to order: its own (coarse: a first round's are Cell Ontology groups) or the fine labels a coarse first round keeps. Left out: fine when a root is a fine label and not a coarse one; the result's `level` says which" },
+                    "level": { "type": "string", "enum": ["coarse", "fine"], "description": "Which of the round's labels to order: its own (coarse: a first round's are Cell Ontology groups) or the fine labels a coarse first round keeps. Left out: fine when a root is a fine label and not a coarse one; the result's `level` says which. On fine labels, a root that is one of the round's own labels stands for each fine type most of whose cells carry it" },
                     "statements": {
                         "type": "array",
                         "description": "Precedence statements for this run, written to {out}.precedence.tsv",
@@ -325,7 +325,7 @@ fn tools() -> Vec<ToolSpec> {
                     "run": { "type": "string", "description": "Trajectory manifest or its prefix" },
                     "out": { "type": "string", "description": "Output prefix; {run}.figure in today's results folder when omitted" },
                     "maps": { "type": "array", "items": { "type": "string" }, "description": "The maps to draw: a layout by name (phate, umap, …), best, all (every layout and the diffusion map), suggested or diffusion (the diffusion map on its suggested pair: of the kept components, the one following pseudotime best on x, the one parting the lineages best on y), or two diffusion components as dc1,dc3 (DC0 is trivial and refused)" },
-                    "colour": { "type": "string", "enum": ["pseudotime", "type", "lineage", "component"], "description": "What colours the cells (pseudotime); type is the run's level of labels" },
+                    "colour": { "type": "string", "enum": ["pseudotime", "type", "fine", "lineage", "component"], "description": "What colours the cells (pseudotime); type is the run's level of labels; fine, on a run of a coarse first round's labels, the fine labels it keeps, by cell" },
                     "labels": { "type": "string", "enum": ["small", "medium", "large", "largest", "off"], "description": "The type labels on a map (medium)" },
                     "focus": { "type": "integer", "description": "Light this cluster's cells, the others grey" },
                     "page": { "type": "string", "enum": ["slide", "paper"], "description": "What the figures are set on: slide (default: the day's report deck, a figure box 3.5 in tall and as wide as needed; a chart too tall is turned onto it) or paper (a journal page 7 in wide, as tall as needed; a chart too wide is turned onto it)" },

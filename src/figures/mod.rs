@@ -102,6 +102,9 @@ pub(crate) enum Colouring {
     /// The projection score's margin: how far its call leads the runner-up.
     #[value(alias = "score margin")]
     Margin,
+    /// The fine labels a coarse first round keeps, by cell.
+    #[value(alias = "fine type")]
+    Fine,
 }
 
 impl Colouring {
@@ -114,6 +117,7 @@ impl Colouring {
             Self::Cluster => "cluster",
             Self::Call => "score call",
             Self::Margin => "score margin",
+            Self::Fine => "fine type",
         }
     }
 
@@ -502,6 +506,9 @@ pub(crate) struct CellFigures {
     /// Per cell; NaN for cells no root reaches.
     pub(crate) pseudotime: Vec<f32>,
     pub(crate) types: Vec<Box<str>>,
+    /// Per cell: the fine label a coarse first round keeps for it
+    /// (`annotate.fine_argmax`); empty when the round keeps none.
+    pub(crate) fine: Vec<Box<str>>,
     /// Per cell: its prior component, -1 for none.
     pub(crate) component: Vec<i32>,
     /// Per cell: the one lineage its type lies on, -1 for a type shared by
@@ -520,7 +527,7 @@ pub(crate) struct CellFigures {
     pub(crate) layout_hint: Option<String>,
     pub(crate) edges: Vec<EdgeRow>,
     /// Each colouring's cell colours and legend, made on first use.
-    pub(crate) colours: [OnceLock<CellColours>; 7],
+    pub(crate) colours: [OnceLock<CellColours>; 8],
     /// Every cell, grey first, then by pseudotime: the draw order, made on
     /// first use.
     pub(crate) by_pseudotime: OnceLock<Vec<usize>>,
@@ -575,6 +582,8 @@ pub(crate) enum LabelBy {
     Type,
     Cluster,
     Call,
+    /// The fine labels a coarse first round keeps.
+    Fine,
 }
 
 /// A 2D layout of the run's cells, NaN where a cell has none.
@@ -615,6 +624,7 @@ impl CellFigures {
             manifest: file.to_path_buf(),
             trajectory_of: crate::manifest::family::borrowed_trajectory(manifest, file),
             pseudotime,
+            fine: fine_labels(manifest, dir, &cells, &types),
             types,
             component,
             lineage,
@@ -649,16 +659,16 @@ impl CellFigures {
             log::warn!("the units on the cell map: {e:#}");
             None
         });
+        let types: Vec<Box<str>> = (cells.labels.iter())
+            .map(|l| l.as_deref().unwrap_or(UNASSIGNED_LABEL).into())
+            .collect();
         Self {
             source: Source::Round,
             charts: Charts::of(loaded, &cells.names),
+            fine: fine_labels(&loaded.manifest, &loaded.dir, &cells.names, &types),
             units,
             manifest: loaded.file.clone(),
-            types: cells
-                .labels
-                .iter()
-                .map(|l| l.as_deref().unwrap_or(UNASSIGNED_LABEL).into())
-                .collect(),
+            types,
             cluster: cells
                 .clusters
                 .iter()
@@ -668,6 +678,16 @@ impl CellFigures {
             layout_hint,
             score,
             ..Self::default()
+        }
+    }
+
+    /// The cells' labels: the fine ones a coarse first round keeps when
+    /// `fine`, else the ones the figures are of.
+    fn labels(&self, fine: bool) -> &[Box<str>] {
+        if fine {
+            &self.fine
+        } else {
+            &self.types
         }
     }
 
@@ -805,6 +825,9 @@ impl CellFigures {
             out.push(Colouring::Pseudotime);
         }
         out.push(Colouring::Type);
+        if !self.fine.is_empty() {
+            out.push(Colouring::Fine);
+        }
         if several(&self.cluster) {
             out.push(Colouring::Cluster);
         }
@@ -1181,6 +1204,7 @@ impl CellFigures {
             let by = match style.colouring {
                 Colouring::Cluster => LabelBy::Cluster,
                 Colouring::Call => LabelBy::Call,
+                Colouring::Fine => LabelBy::Fine,
                 _ => LabelBy::Type,
             };
             let medians = if view.is_whole() {
@@ -1420,10 +1444,8 @@ impl CellFigures {
                     .collect(),
                 Vec::new(),
             ),
-            Colouring::Type => {
-                let keys: Vec<Option<&str>> = self
-                    .types
-                    .iter()
+            Colouring::Type | Colouring::Fine => {
+                let keys: Vec<Option<&str>> = (self.labels(colouring == Colouring::Fine).iter())
                     .map(|t| Some(t.as_ref()).filter(|&t| t != UNASSIGNED_LABEL))
                     .collect();
                 categorical(&keys, str::to_string)
@@ -1528,11 +1550,12 @@ impl CellFigures {
                 .collect()
         }
         match by {
-            LabelBy::Type | LabelBy::Call => {
-                let calls = match (by, &self.score) {
-                    (LabelBy::Call, Some(s)) => s.calls(),
-                    (LabelBy::Call, None) => Vec::new(),
-                    _ => self.types.iter().map(|t| Some(t.as_ref())).collect(),
+            LabelBy::Type | LabelBy::Call | LabelBy::Fine => {
+                let calls = match by {
+                    LabelBy::Call => self.score.as_ref().map_or_else(Vec::new, |s| s.calls()),
+                    _ => (self.labels(by == LabelBy::Fine).iter())
+                        .map(|t| Some(t.as_ref()))
+                        .collect(),
                 };
                 medians_by(cells, |i| calls.get(i).copied().flatten(), x, y)
                     .into_iter()
@@ -1955,6 +1978,36 @@ fn layouts(manifest: &RunManifest) -> Vec<(Option<String>, String)> {
     out
 }
 
+/// Each of `cells`' fine label, as `manifest` (in `dir`) keeps them
+/// (`annotate.fine_argmax`), joined by cell; none when it keeps none, they
+/// cannot be read (said in a warning), or they are `shown`, the labels the
+/// figures carry already.
+fn fine_labels(
+    manifest: &RunManifest,
+    dir: &Path,
+    cells: &[Box<str>],
+    shown: &[Box<str>],
+) -> Vec<Box<str>> {
+    let Some(rel) = manifest.annotate.fine_argmax.as_deref() else {
+        return Vec::new();
+    };
+    let path = resolve(dir, rel);
+    let fine: Vec<Box<str>> = match crate::cell_labels::read_cell_labels(&path) {
+        Ok(m) => (crate::cell_labels::labels_of(&m, cells).into_iter())
+            .map(Box::from)
+            .collect(),
+        Err(e) => {
+            log::warn!("the fine labels in {path} cannot be read ({e:#}): no fine colouring");
+            Vec::new()
+        }
+    };
+    if fine == shown {
+        Vec::new()
+    } else {
+        fine
+    }
+}
+
 /// The pseudotime table at `path`, in one read: per cell its name, type,
 /// pseudotime, component (-1 when the table has none) and the one lineage
 /// its type lies on (-1 when shared or none), from the `L0`, `L1`, …
@@ -2222,7 +2275,7 @@ pub struct TrajectoryFigureArgs {
     #[arg(
         long,
         visible_alias = "color",
-        help = "Colour the cells by pseudotime (default), type, lineage or component"
+        help = "Colour the cells by pseudotime (default), type, fine (the fine labels a coarse first round keeps), lineage or component"
     )]
     pub colour: Option<Box<str>>,
     #[command(flatten)]

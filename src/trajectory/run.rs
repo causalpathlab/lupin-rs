@@ -59,7 +59,7 @@ pub struct TrajectoryArgs {
         long,
         value_enum,
         conflicts_with = "labels",
-        help = "Which of a round's labels to order: its own (coarse), or the fine labels a coarse first round keeps (annotate.fine_argmax). Left out: fine when a --root is a fine label and not a coarse one"
+        help = "Which of a round's labels to order: its own (coarse), or the fine labels a coarse first round keeps (annotate.fine_argmax). Left out: fine when a --root is a fine label and not a coarse one. On fine labels, a --root that is one of the round's own labels stands for each fine type most of whose cells carry it"
     )]
     pub level: Option<Level>,
 
@@ -216,6 +216,7 @@ pub const PSEUDOTIME_SUFFIX: &str = ".cell_pseudotime.parquet";
 fn settings(
     args: &TrajectoryArgs,
     level: Option<Level>,
+    roots: &[&str],
     dir: &std::path::Path,
 ) -> serde_json::Value {
     let rel = |p: &Option<Box<str>>| p.as_deref().map(|p| rel_to_manifest(dir, p));
@@ -226,6 +227,9 @@ fn settings(
         "roots": args.root, "prior": rel(&args.prior), "prior_only": args.prior_only,
         "labels": rel(&args.labels), "level": level.map(Level::as_str),
         "obo": rel(&args.obo), "label_cl": rel(&args.label_cl),
+        // The roots the run ordered from: a coarse root on fine labels
+        // stands for fine types.
+        "roots_used": roots,
     })
 }
 
@@ -336,7 +340,8 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     let inputs = load_inputs(&loaded, args)?;
     STAGES.start(1);
     let mut layers = gather_statements(&loaded, args, &inputs)?;
-    let roots: Vec<&str> = args.root.iter().map(AsRef::as_ref).collect();
+    let roots = roots_of(&loaded, &inputs, &args.root)?;
+    let roots: Vec<&str> = roots.iter().map(AsRef::as_ref).collect();
     if !roots.is_empty() {
         let so_far = prior::combine(&layers);
         layers.push(prior::root_layer(
@@ -381,7 +386,7 @@ fn run_batch(args: &TrajectoryArgs, from: &str, out: &str) -> Result<()> {
     }
     STAGES.start(6);
     let written = write(&inputs, &t, out)?;
-    record(&loaded, &manifest_out, &written, args, inputs.level)?;
+    record(&loaded, &manifest_out, &written, args, inputs.level, &roots)?;
     STAGES.finish();
     let (found, run) = crate::figures::layouts_along(&loaded.manifest, &loaded.dir, &loaded.file);
     if let Some(h) = crate::figures::layout_hint(found.iter().map(|(m, _)| m.as_deref()), &run) {
@@ -448,6 +453,86 @@ pub(crate) fn label_source(
         }
         None => Ok((coarse, Some(Level::Coarse))),
     }
+}
+
+/// The roots a run on fine labels orders from: each as given when it is one
+/// of them, else, when it is a coarse label (one of the round's own, given
+/// per cell in `coarse`), the fine types it stands for: each node most of
+/// whose cells carry it. Cells with no fine label take no part.
+pub(crate) fn fine_roots(
+    names: &[Box<str>],
+    group: &[usize],
+    is_node: &[bool],
+    coarse: &[&str],
+    roots: &[Box<str>],
+) -> Result<Vec<Box<str>>> {
+    let mut out: Vec<Box<str>> = Vec::new();
+    let mut push = |r: &str| {
+        if !out.iter().any(|o| o.as_ref() == r) {
+            out.push(r.into());
+        }
+    };
+    let own = |c: &str| c != enrichment::UNASSIGNED_LABEL;
+    for r in roots {
+        if names.contains(r) && own(r) {
+            push(r);
+            continue;
+        }
+        anyhow::ensure!(
+            r.as_ref() != enrichment::UNASSIGNED_LABEL && coarse.contains(&r.as_ref()),
+            "--root {r:?} is neither a fine label of this round nor one of its own; the fine types are {} and its own labels {}",
+            names.iter().map(AsRef::as_ref).filter(|c| own(c)).collect::<Vec<_>>().join(", "),
+            coarse.iter().copied().filter(|c| own(c)).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", ")
+        );
+        // Each fine type's cells, and how many of them carry the root.
+        let mut under = vec![(0usize, 0usize); names.len()];
+        for (&g, &c) in group.iter().zip(coarse) {
+            under[g].0 += 1;
+            under[g].1 += usize::from(c == r.as_ref());
+        }
+        let (nodes, small): (Vec<usize>, Vec<usize>) = (0..names.len())
+            .filter(|&g| own(&names[g]) && 2 * under[g].1 > under[g].0)
+            .partition(|&g| is_node[g]);
+        let named = |gs: &[usize]| {
+            gs.iter()
+                .map(|&g| names[g].as_ref())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        anyhow::ensure!(
+            !nodes.is_empty(),
+            "--root {r:?} is one of the round's own labels, but no fine type with enough cells (--min-cells) lies mostly under it{}",
+            if small.is_empty() {
+                String::new()
+            } else {
+                format!(": {} lie under it, each too small", named(&small))
+            }
+        );
+        info!(
+            "--root {r} (one of the round's own labels) stands for its fine types: {}",
+            named(&nodes)
+        );
+        nodes.iter().for_each(|&g| push(&names[g]));
+    }
+    Ok(out)
+}
+
+/// The run's roots on its labels ([`fine_roots`] on fine ones): as given on
+/// the round's own labels or the user's.
+fn roots_of(loaded: &Loaded, inputs: &Inputs, roots: &[Box<str>]) -> Result<Vec<Box<str>>> {
+    if inputs.level != Some(Level::Fine) || roots.iter().all(|r| inputs.names.contains(r)) {
+        return Ok(roots.to_vec());
+    }
+    let (path, _) = label_source(loaded, Some(Level::Coarse), None, &[])?;
+    let membership = read_cell_labels(&path)?;
+    let coarse = crate::cell_labels::labels_of(&membership, &inputs.cells);
+    fine_roots(
+        &inputs.names,
+        &inputs.group,
+        &inputs.is_node,
+        &coarse,
+        roots,
+    )
 }
 
 fn load_inputs(loaded: &Loaded, args: &TrajectoryArgs) -> Result<Inputs> {
@@ -1112,9 +1197,10 @@ fn record(
     written: &BTreeMap<&'static str, String>,
     args: &TrajectoryArgs,
     level: Option<Level>,
+    roots: &[&str],
 ) -> Result<()> {
     let mut copy = loaded.copy_to(manifest_out.to_path_buf())?;
-    let settings = settings(args, level, &copy.dir);
+    let settings = settings(args, level, roots, &copy.dir);
     let rel = |k: &str| written.get(k).map(|p| rel_to_manifest(&copy.dir, p));
     let t = &mut copy.manifest.trajectory;
     t.prior = rel("prior");

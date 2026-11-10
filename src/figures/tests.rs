@@ -1434,3 +1434,70 @@ fn the_labels_moved_on_the_screen_are_drawn_where_they_were_put() {
     );
     assert_ne!(a.as_bytes(), b.as_bytes(), "the label moved");
 }
+
+/// [`round`] whose labels are coarse and which keeps fine ones: c0 `A1`,
+/// c1 `A2`, c2 `B1`, c3 none.
+fn round_with_fine(dir: &Path) -> crate::manifest::run::Loaded {
+    let l = round(dir, true);
+    std::fs::write(
+        dir.join("r.fine.tsv"),
+        "cell\tcell_type\tprobability\nc1\tA2\t0.8\nc0\tA1\t0.9\nc2\tB1\t0.7\nc3\tunassigned\t0.1\n",
+    )
+    .unwrap();
+    let mut m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&l.file).unwrap()).unwrap();
+    m["annotate"]["fine_argmax"] = "r.fine.tsv".into();
+    std::fs::write(&l.file, m.to_string()).unwrap();
+    crate::manifest::run::load(&l.file.to_string_lossy()).unwrap()
+}
+
+#[test]
+fn the_fine_labels_a_round_keeps_colour_and_label_its_cells_by_cell() {
+    use clap::ValueEnum;
+    let dir = tempfile::tempdir().unwrap();
+    let f = of_round(&round_with_fine(dir.path()));
+    assert_eq!(
+        f.fine.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+        ["A1", "A2", "B1", UNASSIGNED_LABEL],
+        "joined by cell, not by row"
+    );
+    assert!(
+        f.colourings().contains(&Colouring::Fine),
+        "{:?}",
+        f.colourings()
+    );
+    assert_eq!(Colouring::from_str("fine", true), Ok(Colouring::Fine));
+    assert_eq!(Colouring::from_str("fine type", true), Ok(Colouring::Fine));
+    let (colours, legend) = f.cell_colours(Colouring::Fine);
+    let names: Vec<&str> = legend.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["A1", "A2", "B1"]);
+    assert!(colours[3].is_none(), "a cell with no fine label is grey");
+    assert_ne!(colours[0], colours[1], "A1 and A2 apart, though both are A");
+    let style = Style {
+        colouring: Colouring::Fine,
+        ..Style::default()
+    };
+    let m = map(&f, &style);
+    assert!(labels(&m).contains(&"A2"), "{:?}", labels(&m));
+}
+
+#[test]
+fn fine_labels_the_same_as_the_ones_shown_are_not_offered_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let l = round_with_fine(dir.path());
+    std::fs::copy(
+        dir.path().join("r.argmax.tsv"),
+        dir.path().join("r.fine.tsv"),
+    )
+    .unwrap();
+    assert!(!of_round(&l).colourings().contains(&Colouring::Fine));
+}
+
+#[test]
+fn every_colouring_has_its_slot_in_the_colour_cache() {
+    use clap::ValueEnum;
+    assert_eq!(
+        Colouring::value_variants().len(),
+        CellFigures::default().colours.len()
+    );
+}
