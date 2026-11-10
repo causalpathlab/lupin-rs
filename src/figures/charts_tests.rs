@@ -718,7 +718,7 @@ fn a_page_turns_only_what_is_too_wide_across_and_short_enough_to_turn() {
         "drawn across, then turned"
     );
     let both = fit((3000, 2000));
-    assert!(!both.turn.is_some(), "too big either way: kept upright");
+    assert!(both.turn.is_none(), "too big either way: kept upright");
     assert_eq!((both.size.w, both.size.h), (w, 2000));
     let tall = fit((1500, 600));
     assert!(tall.turn.is_some());
