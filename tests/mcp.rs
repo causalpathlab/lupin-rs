@@ -645,7 +645,7 @@ fn a_rounds_charts_and_a_trajectorys_diffusion_maps_are_drawn_returned_and_recor
     let small = s
         .call(
             "trajectory_figure",
-            json!({ "run": t, "maps": ["dc1,dc3"], "labels": "off", "width": 3.5, "dpi": 100 }),
+            json!({ "run": t, "maps": ["dc1,dc3"], "labels": "off", "page": "paper", "width": 3.5, "dpi": 100 }),
         )
         .unwrap();
     let png = small["files"][0].as_str().unwrap();
@@ -677,5 +677,9 @@ fn a_rounds_charts_and_a_trajectorys_diffusion_maps_are_drawn_returned_and_recor
     assert!(
         script.contains("--labels=off --width=3.5 --dpi=100"),
         "{script}"
+    );
+    assert!(
+        script.contains("--page=slide"),
+        "an agent's figures are for the report's slides unless asked: {script}"
     );
 }

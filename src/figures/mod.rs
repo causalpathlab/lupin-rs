@@ -45,6 +45,7 @@ pub(crate) mod heatmap;
 pub(crate) mod look;
 mod maps;
 pub(crate) mod round;
+pub(crate) mod turn;
 pub(crate) use maps::Drawing;
 pub(crate) mod units;
 
@@ -967,8 +968,19 @@ impl CellFigures {
             (vec![pdf], Some(img))
         } else if panel.is_chart() {
             let pdf = PathBuf::from(format!("{b}.pdf"));
-            let img = self.write_chart(panel, size, EXPORT_DPI, &pdf)?;
-            (vec![pdf], Some(img))
+            // Fitted to what it shows, not to the screen's shape.
+            let (img, turned) = self.write_chart_fitted(panel, &look::Look::default(), &pdf)?;
+            let what = format!(
+                "{} · {}",
+                self.title(panel, style),
+                page_note(&img, EXPORT_DPI, turned)
+            );
+            return Ok(Export {
+                base,
+                files: vec![pdf],
+                what,
+                picture: Some(img),
+            });
         } else {
             let (files, fig) = self.write_svg_panel(panel, size, style, view, moved, &b)?;
             // The thumbnail is a nicety: a figure resvg cannot draw is
@@ -1653,6 +1665,18 @@ impl CellFigures {
             h: size.height_px,
         }
     }
+}
+
+/// The page a figure written as `img` at `dpi` sits on, for a log line:
+/// its inches across and down, turned onto it or not, and the dpi.
+pub(crate) fn page_note(img: &image::RgbaImage, dpi: f32, turned: bool) -> String {
+    let inches = |px: u32| px as f32 / dpi;
+    let turned = if turned { ", turned onto it" } else { "" };
+    format!(
+        "{:.1} × {:.1} in{turned} · {dpi:.0} dpi",
+        inches(img.width()),
+        inches(img.height())
+    )
 }
 
 /// The size an export draws at: [`EXPORT_WIDTH_IN`] wide, in the shape of

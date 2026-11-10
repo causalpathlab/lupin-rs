@@ -8,7 +8,7 @@ use super::charts::{HeatKind, Mixture};
 use super::look::Look;
 use super::maps::{once_each, Maps};
 use super::units::{STARS, STAR_Q};
-use super::{CellFigures, Drawing, Panel, Size};
+use super::{CellFigures, Drawing, Panel};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::Serialize;
@@ -151,8 +151,7 @@ impl CellFigures {
         legume_numeric::matrix::common_io::mkdir_parent(base)?;
         for panel in d.charts.iter().map(|c| c.panel()) {
             let files = Self::chart_files(panel, base);
-            let size = self.chart_size(panel, &d.maps.look)?;
-            let img = self.write_chart(panel, size, d.maps.look.dpi as f32, &files[1])?;
+            let (img, _) = self.write_chart_fitted(panel, &d.maps.look, &files[1])?;
             (img.save(&files[0])).with_context(|| format!("writing {}", files[0].display()))?;
             if let (Panel::Heatmap { of }, Some(json)) = (panel, files.get(2)) {
                 let heat = self.heat(of).map_err(|e| anyhow::anyhow!(e))?;
@@ -164,28 +163,25 @@ impl CellFigures {
         Ok(self.round_files(d, base))
     }
 
+    /// The charts `d` turns onto their page, being wider than it, by name.
+    pub(crate) fn round_turned(&self, d: &RoundDrawing) -> Result<Vec<String>> {
+        let turned = |c: &ChartKind| {
+            Ok(self
+                .chart_fit(c.panel(), &d.maps.look)?
+                .turn
+                .map(|_| c.name()))
+        };
+        (d.charts.iter())
+            .filter_map(|c| turned(c).transpose())
+            .collect()
+    }
+
     /// Each heatmap `d` draws under `base`, by name, and the file its
     /// numbers go to.
     pub(crate) fn round_numbers(d: &RoundDrawing, base: &str) -> Vec<(String, PathBuf)> {
         (d.charts.iter())
             .filter_map(|c| Some((c.name(), Self::chart_files(c.panel(), base).get(2)?.clone())))
             .collect()
-    }
-
-    /// The size a chart is written at: a figure's, taller for a heatmap
-    /// with more rows than it holds.
-    fn chart_size(&self, panel: Panel, look: &Look) -> Result<Size> {
-        let size = look.figure_size()?;
-        let rows = match panel {
-            Panel::Heatmap { of } => self.heat(of).map_or(0, |h| h.rows.len()),
-            _ => 0,
-        };
-        let needed = (rows + 8) as f32 * size.text_px * 1.3;
-        if needed <= size.h as f32 {
-            return Ok(size);
-        }
-        // Taller, within what a page may hold.
-        look.size(needed / size.w as f32)
     }
 }
 

@@ -268,6 +268,7 @@ lupin figure trajectory -f t1 -o t1.all --map all --colour type   # every layout
 lupin figure round -f r1 -o r1.fig --chart terms --top 5 --q 0.05   # r1.fig.heatmap_terms.{png,pdf,json}
 lupin figure round -f r1 -o r1.fig --map umap --colour cluster --focus 3 --labels large
 lupin figure trajectory -f t1 -o t1.page --map umap --width 3.5 --dpi 600
+lupin figure round -f r1 -o r1.slides --chart terms --chart markers --page slide
 lupin export -f r1 -o r1.final   # r1.final.cell_annotation.parquet and .celltype_markers.tsv
 ```
 
@@ -296,6 +297,22 @@ aligned terms), z-scored by row and blank where q is not below the cut;
 `topics` plots. A heatmap's numbers (its z, the unscaled values and their q)
 go beside it as `.json`. `--map` draws the round's cells on a layout,
 coloured by type, cluster, call or margin.
+
+A figure is drawn for where it goes, `--page paper` (the default here and on
+the screen's saves) or `--page slide`, and a chart is sized to what it shows,
+every row and column named, its text 11 pt on the page:
+
+- on paper, a journal page `--width` wide (7 in) and as tall as its rows
+  need; a chart wider than the page (many clusters, few rows) is drawn along
+  the page's length and turned a quarter left onto it, as a journal sets a
+  landscape figure;
+- on a slide, the figure box of a 16:9 deck such as the `legume` report's
+  (3.5 in tall) and as wide as it needs, up to the slide's width; a chart
+  taller than the box (many rows) is drawn across the slide and turned a
+  quarter right, so nothing on a screen reads upside down. A map is the box's
+  height at 4:3. The MCP figure tools draw for slides unless asked for paper.
+
+The PNG and the PDF are turned alike; the PDF's text stays text.
 
 Both take the screen's look: `--labels` (small, medium, large, largest or
 off), `--focus` (a cluster lit, the rest grey), on a units round's map
@@ -454,7 +471,7 @@ annotate_run and trajectory_run take `background`: on a large run set it, and th
 
 Figures: annotate_heatmap draws a round's markers × clusters and returns its numbers too; annotate_figure draws a round's other charts (each cluster's top GO/GMT terms × clusters, the cell types × clusters, structure plots) and its cells on a layout, heatmaps with their numbers; trajectory_figure draws a trajectory run's map, order and connectivity, or with `maps` any of its layouts and diffusion component pairs (`list` first: it says how well each component follows pseudotime and parts the lineages, and suggests a pair). All three write into today's results folder like any step.
 
-The figure tools take the look lupin's screen gives a map: `labels` (their size, or off), `focus` (a cluster lit, the rest grey), a units round's `overlays`, and the page's `width` and `dpi`; labels a person moved on the screen stay where they were put.
+The figure tools take the look lupin's screen gives a map: `labels` (their size, or off), `focus` (a cluster lit, the rest grey), a units round's `overlays`, and the page's `width` and `dpi`; labels a person moved on the screen stay where they were put. Figures are drawn for where they go: `page: slide` (the default, for the day's report deck: the figure box's height, as wide as needed, a chart too tall turned right across it) or `page: paper` (a journal page's width, as tall as needed, a chart too wide turned left onto it); a result's `turned` names the charts turned.
 
 Around the loops: annotate_family lists a run's rounds and trajectories; annotate_export writes a round's final annotation for use outside lupin. ontology browses the Cell Ontology over the panel; ontology_questions lists what lupin asks of it (types left alone that may join their siblings, types with no term), and ontology_answer answers one, with a note, for every later pass. A label for two types the evidence does not separate (A+B) gives them as `parts`. annotate_hide_genes keeps genes out of the specific genes; exports lists, moves and deletes the figures saved on lupin's screen.
 

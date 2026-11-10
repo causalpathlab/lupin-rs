@@ -504,7 +504,15 @@ fn a_chart_is_written_as_a_pdf_whose_text_is_text() {
     });
     let pdf = dir.path().join("chart.pdf");
     let img = f
-        .write_chart(Panel::Structure { of: Mixture::Types }, SIZE, 150.0, &pdf)
+        .write_chart(
+            Panel::Structure { of: Mixture::Types },
+            crate::figures::look::Fit {
+                size: SIZE,
+                turn: None,
+            },
+            150.0,
+            &pdf,
+        )
         .unwrap();
     assert_eq!((img.width(), img.height()), (SIZE.w, SIZE.h));
     let s = String::from_utf8_lossy(&std::fs::read(&pdf).unwrap()).into_owned();
@@ -587,4 +595,190 @@ fn a_rounds_charts_and_maps_are_written_a_heatmap_with_its_numbers() {
         f.round_files(&all, &base)[0].file_name().unwrap(),
         "r.heatmap_terms.png"
     );
+}
+
+/// [`charted`] whose markers heatmap is `rows` × `cols` (GENE0…, K0…).
+fn with_heat(dir: &Path, rows: usize, cols: usize) -> CellFigures {
+    let f = charted(dir, |_| {});
+    let names = |p: &str, n: usize| (0..n).map(|i| format!("{p}{i}")).collect();
+    let t = HeatTable {
+        title: "markers".into(),
+        rows: names("GENE", rows),
+        cols: names("K", cols),
+        z: (0..rows * cols).map(|i| (i % 5) as f32 - 2.0).collect(),
+        values: Vec::new(),
+        q: Vec::new(),
+    };
+    let slot = HeatKind::ALL
+        .iter()
+        .position(|&h| h == HeatKind::Markers)
+        .unwrap();
+    f.charts.heats[slot].set(Ok(Arc::new(t))).unwrap();
+    f
+}
+
+/// The markers heatmap of `f` written on `page`: its image and whether
+/// its PDF page is turned (left on paper, right on a slide).
+fn written_on(
+    f: &CellFigures,
+    dir: &Path,
+    page: crate::figures::look::PageKind,
+) -> (image::RgbaImage, bool) {
+    use crate::figures::look::Look;
+    let look = Look {
+        page,
+        ..Look::default()
+    };
+    let pdf = dir.join("heat.pdf");
+    let panel = Panel::Heatmap {
+        of: HeatKind::Markers,
+    };
+    let turn = f.chart_fit(panel, &look).unwrap().turn;
+    let (img, turned) = f.write_chart_fitted(panel, &look, &pdf).unwrap();
+    assert_eq!(turned, turn.is_some());
+    let bytes = String::from_utf8_lossy(&std::fs::read(&pdf).unwrap()).into_owned();
+    let rotated = turn.is_some_and(|t| bytes.contains(&format!("/Rotate {}", t.degrees())));
+    assert_eq!(rotated, turned, "the PDF says so too");
+    (img, turned)
+}
+
+/// [`written_on`] paper.
+fn written(f: &CellFigures, dir: &Path) -> (image::RgbaImage, bool) {
+    written_on(f, dir, crate::figures::look::PageKind::Paper)
+}
+
+/// [`written_on`] a slide, which is turned right, never upside down to a
+/// screen.
+fn on_slide(f: &CellFigures, dir: &Path) -> (image::RgbaImage, bool) {
+    let (img, turned) = written_on(f, dir, crate::figures::look::PageKind::Slide);
+    let pdf = std::fs::read(dir.join("heat.pdf")).unwrap();
+    assert!(!String::from_utf8_lossy(&pdf).contains("/Rotate 270"));
+    (img, turned)
+}
+
+#[test]
+fn a_heatmap_wider_than_its_page_is_turned_onto_a_tall_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (img, turned) = written(&with_heat(dir.path(), 3, 120), dir.path());
+    assert!(turned);
+    assert_eq!(img.width(), 1400, "the page's width: 7 in at 200 dpi");
+    assert!(
+        img.height() > img.width(),
+        "{}×{}",
+        img.width(),
+        img.height()
+    );
+}
+
+#[test]
+fn a_heatmap_taller_than_its_page_grows_down_upright() {
+    let dir = tempfile::tempdir().unwrap();
+    let (img, turned) = written(&with_heat(dir.path(), 90, 3), dir.path());
+    assert!(!turned);
+    assert_eq!(img.width(), 1400);
+    assert!(
+        img.height() > 1400,
+        "every row has its line: {}",
+        img.height()
+    );
+}
+
+#[test]
+fn a_heatmap_that_fits_keeps_the_page_it_opens_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = with_heat(dir.path(), 3, 3);
+    let (img, turned) = written(&f, dir.path());
+    assert!(!turned);
+    assert_eq!((img.width(), img.height()), (1400, 1050));
+    // The image (a PNG, a thumbnail) has its text drawn; the PDF sets it.
+    let panel = Panel::Heatmap {
+        of: HeatKind::Markers,
+    };
+    let size = crate::figures::look::Look::default().figure_size().unwrap();
+    let bare = f.chart_frame(panel, size, true).to_image();
+    assert!(img.as_raw() != bare.as_raw(), "names drawn into the image");
+}
+
+#[test]
+fn a_page_turns_only_what_is_too_wide_across_and_short_enough_to_turn() {
+    use crate::figures::look::Look;
+    let look = Look::default();
+    let fit = |n| look.fit(n).unwrap();
+    let (w, short) = (1400, 1050);
+    let fits = fit((900, 300));
+    assert_eq!(
+        (fits.size.w, fits.size.h, fits.turn.is_some()),
+        (w, short, false)
+    );
+    let wide = fit((3000, 600));
+    assert!(wide.turn.is_some());
+    assert_eq!(
+        (wide.size.w, wide.size.h),
+        (3000, w),
+        "drawn across, then turned"
+    );
+    let both = fit((3000, 2000));
+    assert!(!both.turn.is_some(), "too big either way: kept upright");
+    assert_eq!((both.size.w, both.size.h), (w, 2000));
+    let tall = fit((1500, 600));
+    assert!(tall.turn.is_some());
+    assert_eq!(
+        tall.size.w,
+        (w as f32 * crate::figures::look::MAX_TALL).round() as u32,
+        "a full page"
+    );
+}
+
+#[test]
+fn on_a_slide_a_wide_heatmap_stays_upright_as_wide_as_it_needs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (img, turned) = on_slide(&with_heat(dir.path(), 3, 40), dir.path());
+    assert!(!turned);
+    assert_eq!(img.height(), 700, "the slide's box: 3.5 in at 200 dpi");
+    assert!(img.width() > 933 && img.width() <= 2440, "{}", img.width());
+}
+
+#[test]
+fn on_a_slide_a_tall_heatmap_is_turned_across_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (img, turned) = on_slide(&with_heat(dir.path(), 60, 3), dir.path());
+    assert!(turned);
+    assert_eq!(img.height(), 700, "turned, it is the box's height");
+    assert!(
+        img.width() > img.height(),
+        "{}×{}",
+        img.width(),
+        img.height()
+    );
+}
+
+#[test]
+fn a_slide_draws_a_map_in_its_box_at_four_to_three() {
+    use crate::figures::look::{Look, PageKind};
+    let look = Look {
+        page: PageKind::Slide,
+        ..Look::default()
+    };
+    let s = look.figure_size().unwrap();
+    assert_eq!((s.w, s.h), (933, 700));
+    let narrow = Look {
+        width: Some(1.0),
+        ..look
+    };
+    assert_eq!(
+        narrow.figure_size().unwrap().w,
+        933,
+        "never narrower than 4:3"
+    );
+}
+
+#[test]
+fn a_structure_plot_asks_for_the_height_its_key_and_names_need() {
+    let dir = tempfile::tempdir().unwrap();
+    posterior(dir.path());
+    let f = charted(dir.path(), |m| {
+        m["annotate"]["annotation"] = "r.annotation.parquet".into();
+    });
+    let (w, h) = f.natural_size(Panel::Structure { of: Mixture::Types }, 30.0);
+    assert!(w > 0 && h > 0, "{w} × {h}");
 }

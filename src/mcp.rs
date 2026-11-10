@@ -25,7 +25,7 @@ use crate::annotate::gene_rows::CHANNELS;
 use crate::annotate::rounds::{ClusterId, DecidedBy};
 use crate::child::{lupin_command, relabel_argv};
 use crate::describe::trajectory::{self as order_text, OrderFacts};
-use crate::figures::look::{LabelSize, Look, Overlay};
+use crate::figures::look::{LabelSize, Look, Overlay, PageKind};
 use crate::manifest::family::{file_name, Tag};
 use crate::manifest::rounds::{review_json, Chain};
 use crate::manifest::run::{self, annotated_path, derive_out_prefix, manifest_file};
@@ -107,7 +107,11 @@ results folder like any step.
 The figure tools take the look lupin's screen gives a map: `labels` (their \
 size, or off), `focus` (a cluster lit, the rest grey), a units round's \
 `overlays`, and the page's `width` and `dpi`; labels a person moved on the \
-screen stay where they were put.
+screen stay where they were put. Figures are drawn for where they go: \
+`page: slide` (the default, for the day's report deck: the figure box's \
+height, as wide as needed, a chart too tall turned right across it) or \
+`page: paper` (a journal page's width, as tall as needed, a chart too wide \
+turned left onto it); a result's `turned` names the charts turned.
 
 Around the loops: annotate_family lists a run's rounds and trajectories; \
 annotate_export writes a round's final annotation for use outside lupin. \
@@ -208,7 +212,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_figure",
-            "A round's charts and cell maps (`lupin figure round`), as the screen draws them. Charts: `terms`, each cluster's top GO/GMT terms × clusters (by effect, z by row, blank where q is not below `q`; a round annotated with go, gaf or gmt); `types`, the cell types × clusters; `markers`, the panel's markers × clusters; `structure`, each cell's cell types stacked by cluster; `topics`, a topic run's topics so. Maps: the round's cells on a layout, coloured by type, cluster, call or margin. Each chart as {out}.{chart}.png and .pdf, a heatmap's numbers as .json too (rows, cols, z, the unscaled values and their q); each map as {out}.{map}.{colour}.png and .pdf. Written into today's results folder, recorded as any step; returns the files, each heatmap's numbers, the images, and what the round offers (each chart, or why it has none; its layouts and colourings). `list` returns that alone, drawing nothing. For the markers heatmap with its own options (types, value, source), use annotate_heatmap.",
+            "A round's charts and cell maps (`lupin figure round`), as the screen draws them. Charts: `terms`, each cluster's top GO/GMT terms × clusters (by effect, z by row, blank where q is not below `q`; a round annotated with go, gaf or gmt); `types`, the cell types × clusters; `markers`, the panel's markers × clusters; `structure`, each cell's cell types stacked by cluster; `topics`, a topic run's topics so. Maps: the round's cells on a layout, coloured by type, cluster, call or margin. Each chart is sized to what it shows and to its `page`: on a slide as wide as it needs at the slide's height, and one taller than the slide (many rows) turned right across it; on paper as tall as it needs at the page's width, and one wider than the page (many clusters) turned left onto it; PNG and PDF alike, listed in `turned`. Each chart as {out}.{chart}.png and .pdf, a heatmap's numbers as .json too (rows, cols, z, the unscaled values and their q); each map as {out}.{map}.{colour}.png and .pdf. Written into today's results folder, recorded as any step; returns the files, each heatmap's numbers, the images, and what the round offers (each chart, or why it has none; its layouts and colourings). `list` returns that alone, drawing nothing. For the markers heatmap with its own options (types, value, source), use annotate_heatmap.",
             schema(
                 json!({
                     "round": { "type": "string" },
@@ -217,7 +221,8 @@ fn tools() -> Vec<ToolSpec> {
                     "colour": { "type": "string", "enum": ["type", "cluster", "call", "margin"], "description": "What colours the map's cells (type)" },
                     "labels": { "type": "string", "enum": ["small", "medium", "large", "largest", "off"], "description": "The type labels on a map (medium)" },
                     "focus": { "type": "integer", "description": "Light this cluster's cells, the others grey" },
-                    "width": { "type": "number", "description": "Page width in inches (7)" },
+                    "page": { "type": "string", "enum": ["slide", "paper"], "description": "What the figures are set on: slide (default: the day's report deck, a figure box 3.5 in tall and as wide as needed; a chart too tall is turned onto it) or paper (a journal page 7 in wide, as tall as needed; a chart too wide is turned onto it)" },
+                    "width": { "type": "number", "description": "Paper: the page's width in inches (7); slide: the widest a figure gets (12.2)" },
                     "dpi": { "type": "integer", "description": "Dots per inch of the cells (200); a PDF's text stays text" },
                     "overlays": { "type": "array", "items": { "type": "string", "enum": ["go", "links", "rings", "none"] }, "description": "A units round's map: the lit cluster's GO terms as stars, the strongest links between types, each type's fitted radius as a ring (go and links; none for none)" },
                     "top": { "type": "integer", "description": "The terms heatmap: each cluster's top terms by effect (6)" },
@@ -323,7 +328,8 @@ fn tools() -> Vec<ToolSpec> {
                     "colour": { "type": "string", "enum": ["pseudotime", "type", "lineage", "component"], "description": "What colours the cells (pseudotime); type is the run's level of labels" },
                     "labels": { "type": "string", "enum": ["small", "medium", "large", "largest", "off"], "description": "The type labels on a map (medium)" },
                     "focus": { "type": "integer", "description": "Light this cluster's cells, the others grey" },
-                    "width": { "type": "number", "description": "Page width in inches (7)" },
+                    "page": { "type": "string", "enum": ["slide", "paper"], "description": "What the figures are set on: slide (default: the day's report deck, a figure box 3.5 in tall and as wide as needed; a chart too tall is turned onto it) or paper (a journal page 7 in wide, as tall as needed; a chart too wide is turned onto it)" },
+                    "width": { "type": "number", "description": "Paper: the page's width in inches (7); slide: the widest a figure gets (12.2)" },
                     "dpi": { "type": "integer", "description": "Dots per inch of the cells (200); a PDF's text stays text" },
                     "list": { "type": "boolean", "description": "Only list the maps and colourings the run offers, with each diffusion component's numbers" },
                 }),
@@ -1074,7 +1080,12 @@ fn annotate_figure(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
             .with_context(|| format!("reading {}", path.display()))?;
         numbers.insert(chart, serde_json::from_str(&text)?);
     }
-    figure_content(json!({ "numbers": numbers, "offers": offered }), &files)
+    let mut facts = json!({ "numbers": numbers, "offers": offered });
+    let turned = figures.round_turned(&drawing)?;
+    if !turned.is_empty() {
+        facts["turned"] = json!(turned);
+    }
+    figure_content(facts, &files)
 }
 
 fn trajectory_figure(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
@@ -1108,7 +1119,15 @@ fn trajectory_figure(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
 /// How a figure tool's maps look and the page they are written on, as `a`
 /// asks: what `lupin figure` takes as its look.
 fn look_arg(a: &Arguments) -> Result<Look> {
-    let mut look = Look::default();
+    // A figure an agent draws goes to the day's report, a deck of slides,
+    // unless asked for paper.
+    let mut look = Look {
+        page: PageKind::Slide,
+        ..Look::default()
+    };
+    if let Some(p) = a.str("page") {
+        look.page = PageKind::from_str(p, true).map_err(|e| anyhow::anyhow!("`page`: {e}"))?;
+    }
     if let Some(l) = a.str("labels") {
         look.labels =
             Some(LabelSize::from_str(l, true).map_err(|e| anyhow::anyhow!("`labels`: {e}"))?);
@@ -1119,7 +1138,7 @@ fn look_arg(a: &Arguments) -> Result<Look> {
             .push(Overlay::from_str(&o, true).map_err(|e| anyhow::anyhow!("`overlays`: {e}"))?);
     }
     if let Some(w) = a.parse::<f32>("width")? {
-        look.width = w;
+        look.width = Some(w);
     }
     if let Some(d) = a.parse::<u32>("dpi")? {
         look.dpi = d;
@@ -1144,8 +1163,11 @@ fn look_flags(look: &Look) -> Vec<String> {
     if !overlays.is_empty() {
         flags.push(flag("overlay", &overlays.join(",")));
     }
-    if look.width != base.width {
-        flags.push(flag("width", &look.width.to_string()));
+    if let Some(w) = look.width {
+        flags.push(flag("width", &w.to_string()));
+    }
+    if look.page != base.page {
+        flags.extend(name(look.page.to_possible_value()).map(|p| flag("page", &p)));
     }
     if look.dpi != base.dpi {
         flags.push(flag("dpi", &look.dpi.to_string()));

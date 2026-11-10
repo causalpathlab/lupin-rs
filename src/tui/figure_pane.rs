@@ -1184,6 +1184,21 @@ impl FigurePane {
 
     /// Write the map `req` asks for and log it with its thumbnail.
     fn save_map(&mut self, t: &MapTarget, req: &SaveRequest<MapScope>) -> Result<String> {
+        if t.chart {
+            // Fitted to what it shows: a chart wider than the page is
+            // turned onto it.
+            let look = figures::look::Look {
+                width: Some(req.width_in),
+                dpi: req.dpi,
+                ..Default::default()
+            };
+            let (img, turned) = (self.data).write_chart_fitted(t.panel, &look, &req.path)?;
+            // The page as written, which the chart's shape decides.
+            let page = figures::page_note(&img, req.dpi as f32, turned);
+            let what = format!("{} · {page}", t.title);
+            let logged = self.log(&req.files, &what, Some(&img), t.panel);
+            return Ok(format!("wrote {}{logged}", req.path.display()));
+        }
         let page = PageSize {
             width_in: req.width_in,
             dpi: req.dpi,
@@ -1193,12 +1208,6 @@ impl FigurePane {
             h: req.px.1 as u32,
             text_px: page.cell_px(),
         };
-        if t.chart {
-            let img = (self.data).write_chart(t.panel, size, req.dpi as f32, &req.path)?;
-            let what = format!("{} · {} in · {} dpi", t.title, req.width_in, req.dpi);
-            let logged = self.log(&req.files, &what, Some(&img), t.panel);
-            return Ok(format!("wrote {}{logged}", req.path.display()));
-        }
         let view = match req.scope {
             MapScope::Shown => t.view,
             MapScope::Whole => View::default(),
@@ -1553,7 +1562,7 @@ pub fn round_pdf(from: &str, pdf: &PdfArgs) -> Result<PathBuf> {
         );
     }
     let look = figures::look::Look {
-        width: pdf.width,
+        width: Some(pdf.width),
         dpi: pdf.dpi,
         ..Default::default()
     };

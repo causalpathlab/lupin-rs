@@ -1370,7 +1370,7 @@ fn a_look_sets_the_labels_the_cluster_lit_and_the_page() {
     let look = Look {
         labels: Some(LabelSize::Large),
         focus: Some(4),
-        width: 3.5,
+        width: Some(3.5),
         dpi: 100,
         ..Look::default()
     };
@@ -1402,7 +1402,7 @@ fn a_look_sets_the_labels_the_cluster_lit_and_the_page() {
         .to_string();
     assert!(e.contains("units"), "{e}");
     let tiny = Look {
-        width: 0.0,
+        width: Some(0.0),
         ..Look::default()
     };
     assert!(t.drawing(&["umap"], None, &tiny).is_err());

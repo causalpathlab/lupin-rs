@@ -8,6 +8,7 @@
 //! reads the table its manifest records on first use; without it the chart
 //! says which instead of drawing.
 
+use super::look::{Fit, Look};
 use super::{cell_index, cluster_name, distinct_colours, Colouring, Panel, Size, THEME};
 use crate::annotate::gene_rows::LevelRows;
 use crate::annotate::outputs::{term_prefix, CLUSTER_TERM_Q_VALUES};
@@ -18,9 +19,11 @@ use data_beans::aux::feature_rows::SPLICED;
 use legume_numeric::matrix::dense_mat_io::Mat;
 use legume_numeric::matrix::parquet::read_table_columns;
 use legume_numeric::matrix::traits::IoOps;
-use legume_tui::chart::heatmap::{draw_heat, zscore_rows, Heat, HeatStyle, CLIP};
+use legume_tui::chart::heatmap::{draw_heat, heat_size, zscore_rows, Heat, HeatStyle, CLIP};
 use legume_tui::chart::note;
-use legume_tui::chart::structure::{figure, BarStyle, Figure, Grouping, Layout, Names, Weights};
+use legume_tui::chart::structure::{
+    figure, figure_size, BarStyle, Figure, Grouping, Layout, Names, Weights,
+};
 use legume_tui::export::{write_pdf, Page};
 use legume_tui::map::colour::{to_linear, Lin};
 use legume_tui::map::raster::Frame;
@@ -43,6 +46,14 @@ pub(crate) enum Mixture {
 }
 
 impl Mixture {
+    /// Its place among the cached mixtures and layouts.
+    fn slot(self) -> usize {
+        match self {
+            Self::Types => 0,
+            Self::Topics => 1,
+        }
+    }
+
     fn slug(self) -> &'static str {
         match self {
             Self::Types => "types",
@@ -156,6 +167,8 @@ pub(crate) struct Charts {
     term_top: usize,
     term_q_max: f32,
     mixtures: [OnceLock<Result<Arc<Mix>, String>>; 2],
+    /// Each mixture's structure plot, laid out once.
+    layouts: [OnceLock<Arc<Layout>>; 2],
     heats: [OnceLock<Result<Arc<HeatTable>, String>>; 3],
 }
 
@@ -174,6 +187,7 @@ impl Default for Charts {
             term_top: STARS,
             term_q_max: STAR_Q,
             mixtures: Default::default(),
+            layouts: Default::default(),
             heats: Default::default(),
         }
     }
@@ -255,10 +269,7 @@ impl super::CellFigures {
     /// Each cell's mixture `of`, read once; why not.
     pub(crate) fn mixture(&self, of: Mixture) -> Result<Arc<Mix>, String> {
         let c = &self.charts;
-        let slot = match of {
-            Mixture::Types => 0,
-            Mixture::Topics => 1,
-        };
+        let slot = of.slot();
         c.mixtures[slot]
             .get_or_init(|| {
                 let path = match of {
@@ -271,6 +282,13 @@ impl super::CellFigures {
                 }
                 Ok(Arc::new(mix))
             })
+            .clone()
+    }
+
+    /// The structure plot of `mix`, the mixture `of`, laid out once.
+    fn layout_of(&self, of: Mixture, mix: &Mix) -> Arc<Layout> {
+        self.charts.layouts[of.slot()]
+            .get_or_init(|| Arc::new(self.structure(mix)))
             .clone()
     }
 
@@ -527,48 +545,17 @@ impl super::CellFigures {
             note(frame, &format!("no {}: {e}", panel.title()), bold, &THEME);
         };
         match panel {
-            Panel::Structure { of } => match self.mixture(of) {
-                Ok(mix) => {
-                    let palette = self.palette(of, &mix.names);
-                    let layout = self.structure(&mix);
-                    let weights = Weights {
-                        k: mix.names.len(),
-                        w: &mix.w,
-                        valid: None,
-                    };
-                    let style = BarStyle {
-                        palette: &palette,
-                        focus: None,
-                        gap: legume_tui::chart::structure::GAP,
-                        hits: false,
-                    };
-                    let fig = Figure {
-                        title: Some(of.title()),
-                        key: Some(&mix.names),
-                        names: Names::Auto,
-                        font,
-                        bold,
-                        theme: &THEME,
-                    };
-                    figure(&mut frame, &layout, &weights, &style, &fig);
+            Panel::Structure { of } => {
+                let drawn = self.with_structure(of, size.text_px, |layout, weights, style, fig| {
+                    figure(&mut frame, layout, weights, style, fig);
+                });
+                if let Err(e) = drawn {
+                    missing(&mut frame, &e);
                 }
-                Err(e) => missing(&mut frame, &e),
-            },
+            }
             Panel::Heatmap { of } => match self.heat(of) {
                 Ok(h) => {
-                    let heat = Heat {
-                        title: &h.title,
-                        rows: &h.rows,
-                        cols: &h.cols,
-                        col_swatch: None,
-                        z: &h.z,
-                        clip: CLIP,
-                        bold_row: None,
-                    };
-                    let style = HeatStyle {
-                        row_chars: 28,
-                        ..HeatStyle::for_theme(&THEME)
-                    };
+                    let (heat, style) = heat_view(&h);
                     // A heatmap with no room says so itself.
                     let _ = draw_heat(&mut frame, &heat, font, bold, &THEME, &style);
                 }
@@ -598,23 +585,131 @@ impl super::CellFigures {
 
     /// The chart `panel` as a PDF at `path`, as the map is saved: the
     /// chart as one image of `size` at `dpi`, its text set over it as
-    /// text. The image, for a thumbnail.
+    /// text, the page turned a quarter when `fit` says. The chart with
+    /// its text drawn, as it sits on the page: its PNG, or a thumbnail.
     pub(crate) fn write_chart(
         &self,
         panel: Panel,
-        size: Size,
+        fit: Fit,
         dpi: f32,
         path: &Path,
     ) -> Result<image::RgbaImage> {
+        let Fit { size, turn } = fit;
         let mut frame = self.chart_frame(panel, size, true);
-        let img = frame.to_image();
         let page = Page {
-            img: img.clone(),
+            img: frame.to_image(),
             text: frame.take_text(),
         };
-        write_pdf(&[page], dpi, path).with_context(|| format!("writing {}", path.display()))?;
-        Ok(img)
+        let written = match turn {
+            Some(t) => super::turn::write_turned_pdf(&page, dpi, t, path),
+            None => write_pdf(&[page], dpi, path).map_err(anyhow::Error::from),
+        };
+        written.with_context(|| format!("writing {}", path.display()))?;
+        let img = self.chart_frame(panel, size, false).to_image();
+        Ok(match turn {
+            Some(t) => t.image(&img),
+            None => img,
+        })
     }
+
+    /// [`Self::write_chart`] on the page `look` asks for, the frame fitted
+    /// to what the chart shows ([`Look::fit`]): its image as it sits on the
+    /// page, and whether it was turned onto it.
+    pub(crate) fn write_chart_fitted(
+        &self,
+        panel: Panel,
+        look: &Look,
+        path: &Path,
+    ) -> Result<(image::RgbaImage, bool)> {
+        let fit = self.chart_fit(panel, look)?;
+        let img = self.write_chart(panel, fit, look.dpi as f32, path)?;
+        Ok((img, fit.turn.is_some()))
+    }
+
+    /// The frame `panel` is drawn in on the page `look` asks for, and
+    /// whether it is turned onto it ([`Look::fit`]).
+    pub(crate) fn chart_fit(&self, panel: Panel, look: &Look) -> Result<Fit> {
+        look.fit(self.natural_size(panel, look.text_px()))
+    }
+
+    /// The pixels across and down `panel` needs at `text_px` to show all it
+    /// says: a heatmap's every row, column and its key ([`heat_size`]); a
+    /// structure plot's panels [`PANEL_LINES`] lines wide each, beside its
+    /// key. Nothing for a chart the round lacks.
+    pub(crate) fn natural_size(&self, panel: Panel, text_px: f32) -> (usize, usize) {
+        let font = Font::for_cell_height(text_px, false);
+        match panel {
+            Panel::Heatmap { of } => self.heat(of).map_or((0, 0), |h| {
+                let (heat, style) = heat_view(&h);
+                heat_size(&heat, font, &style, 0)
+            }),
+            Panel::Structure { of } => {
+                let sized = self.with_structure(of, text_px, |layout, _, style, fig| {
+                    let w = (layout.panels.len() * PANEL_LINES + KEY_LINES) * font.line_height();
+                    (w, figure_size(layout, style, fig, w))
+                });
+                sized.unwrap_or((0, 0))
+            }
+            _ => (0, 0),
+        }
+    }
+
+    /// `f` on the structure plot of `of` as it is drawn at `text_px`: its
+    /// layout, weights, bar style and figure; or why the round has none.
+    fn with_structure<R>(
+        &self,
+        of: Mixture,
+        text_px: f32,
+        f: impl FnOnce(&Layout, &Weights<'_, f32>, &BarStyle<'_>, &Figure<'_>) -> R,
+    ) -> Result<R, String> {
+        let mix = self.mixture(of)?;
+        let palette = self.palette(of, &mix.names);
+        let layout = self.layout_of(of, &mix);
+        let weights = Weights {
+            k: mix.names.len(),
+            w: &mix.w,
+            valid: None,
+        };
+        let style = BarStyle {
+            palette: &palette,
+            focus: None,
+            gap: legume_tui::chart::structure::GAP,
+            hits: false,
+        };
+        let fig = Figure {
+            title: Some(of.title()),
+            key: Some(&mix.names),
+            names: Names::Auto,
+            font: Font::for_cell_height(text_px, false),
+            bold: Font::for_cell_height(text_px, true),
+            theme: &THEME,
+        };
+        Ok(f(&layout, &weights, &style, &fig))
+    }
+}
+
+/// Lines across a structure plot's panel needs for its turned name.
+const PANEL_LINES: usize = 2;
+/// Lines across a structure plot's key takes.
+const KEY_LINES: usize = 12;
+
+/// How `h` is drawn: its title, rows, columns and z, row names 28
+/// characters long.
+fn heat_view(h: &HeatTable) -> (Heat<'_>, HeatStyle) {
+    let heat = Heat {
+        title: &h.title,
+        rows: &h.rows,
+        cols: &h.cols,
+        col_swatch: None,
+        z: &h.z,
+        clip: CLIP,
+        bold_row: None,
+    };
+    let style = HeatStyle {
+        row_chars: 28,
+        ..HeatStyle::for_theme(&THEME)
+    };
+    (heat, style)
 }
 
 /// Terms × clusters, row-major: each term's score and q in every cluster,
