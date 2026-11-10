@@ -290,6 +290,111 @@ fn the_terms_heatmap_shows_the_starred_terms_scores_missing_where_q_is_not_below
     );
 }
 
+/// A GO/GMT pass's test over K0 and K1 and four terms, as `annotate --go`
+/// writes it: the effect matrix, the q matrix beside it and the terms'
+/// genes, which name three of the terms.
+fn go_test(dir: &Path) {
+    let terms = ["GO:0000001", "GO:0000002", "GO:0000003", "GO:0000004"];
+    let effect = [0.9, 0.5, 0.1, 0.4, 0.1, 0.2, 0.8, 0.6];
+    let q = [0.01, 0.02, 0.5, 0.03, 0.6, 0.9, 0.01, 0.04];
+    let k = ["K0", "K1"];
+    table(
+        dir,
+        "r.ontology_term_effect.parquet",
+        "cluster",
+        &k,
+        &terms,
+        &effect,
+    );
+    // The test's q beside the effect, unrecorded, as the pass keeps it.
+    table(
+        dir,
+        "r.cluster_term_q_values.parquet",
+        "cluster",
+        &k,
+        &terms,
+        &q,
+    );
+    let mut genes = "term_id\tterm_name\tgenes\n".to_string();
+    for (t, name) in [(0, "TERM1"), (1, "TERM2"), (2, "TERM3")] {
+        genes += &format!("{}\t{name}\tGENE1,GENE2\n", terms[t]);
+    }
+    std::fs::write(dir.join("r.term_genes.tsv"), genes).unwrap();
+}
+
+fn go_charted(dir: &Path) -> CellFigures {
+    go_test(dir);
+    go_charted_again(dir)
+}
+
+/// The round [`go_charted`] made, read again.
+fn go_charted_again(dir: &Path) -> CellFigures {
+    charted(dir, |m| {
+        m["annotate"]["ontology_term_effect"] = "r.ontology_term_effect.parquet".into();
+    })
+}
+
+#[test]
+fn the_terms_heatmap_of_a_go_pass_shows_each_clusters_top_terms_by_effect() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = go_charted(dir.path());
+    assert_eq!(
+        f.chart_missing(Panel::Heatmap {
+            of: HeatKind::Terms
+        }),
+        None
+    );
+    let h = f.heat(HeatKind::Terms).unwrap();
+    assert_eq!(h.cols, ["K0", "K1"]);
+    // K0's terms with q below 0.05 by effect, then K1's not yet shown; the
+    // fourth named by its id, as the signature does not name it.
+    assert_eq!(h.rows, ["TERM1", "TERM2", "GO:0000004", "TERM3"]);
+    near(
+        &h.z,
+        &[1.0, f32::NAN, 1.0, f32::NAN, -1.0, 1.0, f32::NAN, 1.0],
+    );
+    // The numbers behind it, unscaled: each term's effect and q in every
+    // cluster.
+    near(&h.values, &[0.9, 0.1, 0.5, 0.2, 0.4, 0.6, 0.1, 0.8]);
+    near(&h.q, &[0.01, 0.6, 0.02, 0.9, 0.03, 0.04, 0.5, 0.01]);
+    assert!(h.title.contains("effect"), "{}", h.title);
+    assert!(
+        coloured(&picture(
+            &f,
+            Panel::Heatmap {
+                of: HeatKind::Terms
+            }
+        )) > 100
+    );
+}
+
+#[test]
+fn the_terms_heatmap_keeps_the_top_terms_asked_for_under_the_q_asked_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = go_charted(dir.path());
+    let _ = f.heat(HeatKind::Terms).unwrap();
+    f.set_term_cut(1, 0.05).unwrap();
+    assert_eq!(f.heat(HeatKind::Terms).unwrap().rows, ["TERM1", "TERM3"]);
+    f.set_term_cut(6, 0.025).unwrap();
+    assert_eq!(
+        f.heat(HeatKind::Terms).unwrap().rows,
+        ["TERM1", "TERM2", "TERM3"],
+        "GO:0000004 is below no cluster's q"
+    );
+    f.set_term_cut(6, 0.001).unwrap();
+    let e = f.heat(HeatKind::Terms).unwrap_err();
+    assert!(e.contains("0.001"), "{e}");
+    // A q table gone is said, not taken for terms never scored.
+    std::fs::remove_file(dir.path().join("r.cluster_term_q_values.parquet")).unwrap();
+    let f = go_charted_again(dir.path());
+    let e = f
+        .chart_missing(Panel::Heatmap {
+            of: HeatKind::Terms,
+        })
+        .unwrap();
+    assert!(e.contains("gone"), "{e}");
+}
+
 #[test]
 fn the_types_heatmap_reads_the_enrichments_q_else_the_units_membership_share() {
     let dir = tempfile::tempdir().unwrap();
@@ -407,5 +512,79 @@ fn a_chart_is_written_as_a_pdf_whose_text_is_text() {
     assert!(
         s.contains("(K0) Tj") && s.contains("(CT1) Tj"),
         "names are text"
+    );
+}
+
+#[test]
+fn a_rounds_charts_and_maps_are_written_a_heatmap_with_its_numbers() {
+    use crate::figures::round::ChartKind;
+    let dir = tempfile::tempdir().unwrap();
+    let f = go_charted(dir.path());
+    let base = dir
+        .path()
+        .join("out")
+        .join("r")
+        .to_string_lossy()
+        .into_owned();
+    // Asked for, a chart the round cannot draw is refused, saying why.
+    let e = f
+        .round_drawing(
+            &[ChartKind::Terms, ChartKind::Structure],
+            &["umap"],
+            None,
+            &Default::default(),
+        )
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("annotate.annotation"), "{e:#}");
+    let d = f
+        .round_drawing(
+            &[ChartKind::Terms],
+            &["umap"],
+            Some("cluster"),
+            &Default::default(),
+        )
+        .unwrap();
+    let planned = f.round_files(&d, &base);
+    let files = f.write_round(&d, &base).unwrap();
+    assert_eq!(files, planned);
+    let names: Vec<String> = (files.iter())
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "r.heatmap_terms.png",
+            "r.heatmap_terms.pdf",
+            "r.heatmap_terms.json",
+            "r.layout_umap.cluster.png",
+            "r.layout_umap.cluster.pdf",
+        ]
+    );
+    assert!(files.iter().all(|p| p.is_file()), "{files:?}");
+    let numbers: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&files[2]).unwrap()).unwrap();
+    assert_eq!(numbers["rows"][0], "TERM1", "{numbers}");
+    assert_eq!(numbers["q"].as_array().unwrap().len(), 8, "{numbers}");
+    // Nothing asked for: every chart the round records.
+    let all = f
+        .round_drawing::<&str>(&[], &[], None, &Default::default())
+        .unwrap();
+    let charts = f.charts_offered();
+    let offered: Vec<(&str, bool)> = (charts.iter())
+        .map(|c| (c.chart.as_str(), c.missing.is_none()))
+        .collect();
+    assert_eq!(
+        offered,
+        [
+            ("terms", true),
+            ("types", false),
+            ("markers", false),
+            ("structure", false),
+            ("topics", false)
+        ]
+    );
+    assert_eq!(
+        f.round_files(&all, &base)[0].file_name().unwrap(),
+        "r.heatmap_terms.png"
     );
 }

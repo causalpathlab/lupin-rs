@@ -230,9 +230,6 @@ pub enum MapMouse {
     Say(String),
 }
 
-/// The file beside the run that keeps its moved labels, lupin's own.
-const LABELS_SUFFIX: &str = "lupin_labels.json";
-
 /// Why a figure rasterised off the screen's thread never came.
 const NOT_DRAWN: &str = "the figure was not drawn";
 
@@ -359,7 +356,7 @@ impl FigurePane {
     fn new(data: CellFigures, picker: &Picker) -> Self {
         let exports = Exports::new(format!("{}.{}", data.prefix(), data.kind()));
         let style = Style::opening(&data);
-        let path = labels_file(&data);
+        let path = data.labels_file();
         let book = OffsetBook::load(&path).map_err(|e| {
             format!(
                 "the moved labels in {} cannot be read ({e}): the labels stay where they are and the file is left as it is",
@@ -1248,7 +1245,7 @@ impl FigurePane {
     }
 
     fn layout_id(&self, panel: Panel) -> String {
-        layout_id(&self.data, panel)
+        self.data.layout_id(panel)
     }
 
     /// The scatter on screen as drawn, when it is the panel shown.
@@ -1451,21 +1448,6 @@ impl FigurePane {
     }
 }
 
-/// `panel`'s key in the labels' book: the round and the layout, so a label
-/// moved on one round's UMAP stays off the next round's and the PHATE.
-fn layout_id(data: &CellFigures, panel: Panel) -> String {
-    let prefix = data.prefix();
-    let round = Path::new(&prefix)
-        .file_name()
-        .map_or(prefix.clone(), |n| n.to_string_lossy().into_owned());
-    format!("{round}:{}", data.slug(panel))
-}
-
-/// The file beside the run of `data` that keeps its moved labels.
-fn labels_file(data: &CellFigures) -> PathBuf {
-    PathBuf::from(format!("{}.{LABELS_SUFFIX}", data.prefix()))
-}
-
 /// What a save of a scatter takes in: the map as it is on screen (zoomed
 /// and panned, in the screen's shape), or the whole map.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1560,9 +1542,7 @@ pub fn round_pdf(from: &str, pdf: &PdfArgs) -> Result<PathBuf> {
         path.display()
     );
     crate::manifest::run::may_replace(&path)?;
-    let cells = crate::manifest::rounds::read_cells(&loaded)?;
-    let score = crate::manifest::rounds::read_score_cells(&loaded, &cells)?;
-    let data = CellFigures::of_round(&loaded, &cells, score);
+    let data = figures::round::round_figures_of(&loaded)?;
     if data.layouts.is_empty() {
         anyhow::bail!(
             "{} has no layout to draw its cells on{}",
@@ -1572,28 +1552,18 @@ pub fn round_pdf(from: &str, pdf: &PdfArgs) -> Result<PathBuf> {
                 .map_or(String::new(), |h| format!(": {h}"))
         );
     }
-    let page = pdf.size();
-    // Height over width, as the page sizes it.
-    let (w, h) = page
-        .check(3.0 / 4.0)
-        .map_err(|e| anyhow::anyhow!("--width {} --dpi {}: {e}", pdf.width, pdf.dpi))?;
+    let look = figures::look::Look {
+        width: pdf.width,
+        dpi: pdf.dpi,
+        ..Default::default()
+    };
+    let size = look.figure_size()?;
     let panel = data.panels()[0];
-    let moved = match OffsetBook::load(&labels_file(&data)) {
-        Ok(b) => b.layout(&layout_id(&data, panel)),
-        Err(e) => {
-            log::warn!("the moved labels cannot be read ({e}): drawn where they fall");
-            Offsets::default()
-        }
-    };
-    let size = Size {
-        w: w as u32,
-        h: h as u32,
-        text_px: page.cell_px(),
-    };
+    let moved = data.moved_labels(panel);
     data.write_map(
         panel,
         size,
-        page.dpi as f32,
+        look.dpi as f32,
         &Style::opening(&data),
         View::default(),
         &moved,

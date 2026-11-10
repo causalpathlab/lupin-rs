@@ -66,6 +66,8 @@ impl Server {
             .env_remove("LEGUME_MCP_RECORDS")
             .env_remove("LEGUME_MCP_PROJECT")
             .env("LEGUME_MCP_WATCH", project.join(".watch"))
+            // The user's own data files stay out of reach.
+            .env("LUPIN_CONFIG_DIR", project.join(".config"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -399,4 +401,281 @@ fn a_heatmap_is_drawn_returned_and_recorded() {
     let day = Path::new(figure).parent().unwrap();
     let script = std::fs::read_to_string(day.join("runall.sh")).unwrap();
     assert!(script.contains("lupin figure heatmap"), "{script}");
+}
+
+/// The Cell Ontology for [`round_with_profile`]: CT1 and CT2 under group1.
+const OBO: &str = "format-version: 1.2
+
+[Term]
+id: CL:0
+name: root cell
+
+[Term]
+id: CL:1
+name: group1
+subset: cellxgene_subset
+is_a: CL:0
+
+[Term]
+id: CL:10
+name: CT1
+is_a: CL:1
+
+[Term]
+id: CL:12
+name: CT2
+is_a: CL:1
+";
+
+#[test]
+fn a_mixed_label_is_named_and_the_export_places_it_recorded() {
+    let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("results");
+    std::fs::create_dir_all(&local).unwrap();
+    let project = tempfile::tempdir_in(&local).unwrap();
+    let data = project.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let r0 = round_with_profile(&data).to_string_lossy().into_owned();
+    let obo = data.join("cl.obo");
+    std::fs::write(&obo, OBO).unwrap();
+    let obo = obo.to_string_lossy().into_owned();
+    let mut s = Server::start(project.path());
+    let mix = json!([{ "cluster": 0, "action": "label", "label": "CT1+CT2",
+                       "parts": ["CT1", "CT2"], "rationale": "both" }]);
+    let short = json!([{ "cluster": 0, "action": "label", "label": "CT1+",
+                         "parts": ["CT1"], "rationale": "one" }]);
+    let refused = s.call(
+        "annotate_relabel",
+        json!({ "round": r0, "decisions": short }),
+    );
+    assert!(
+        refused.unwrap_err().contains("two or more"),
+        "a mix has parts"
+    );
+    let r1 = s
+        .call("annotate_relabel", json!({ "round": r0, "decisions": mix }))
+        .unwrap()["round"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mixed = std::fs::read_to_string(data.join("lupin/mixed_labels.tsv")).unwrap();
+    assert!(mixed.contains("CT1+CT2\tCT1\tCT2"), "{mixed}");
+    let got = s
+        .call("annotate_export", json!({ "round": r1, "obo": obo }))
+        .unwrap();
+    let cells = got["cells"].as_str().unwrap();
+    assert!(cells.ends_with("run.r1.cell_annotation.parquet"), "{got}");
+    assert!(Path::new(got["markers"].as_str().unwrap()).is_file());
+    let ct = &got["labels"]["CT1+CT2"];
+    assert_eq!(ct["cells"], 2, "{got}");
+    assert_eq!(ct["cl_id"], "CL:10|CL:12", "its parts' terms: {got}");
+    assert!(
+        ct["lineage"]
+            .as_str()
+            .unwrap()
+            .ends_with("group1 > CT1+CT2"),
+        "under their common ancestor: {got}"
+    );
+    let again = s
+        .call("annotate_export", json!({ "round": r1, "obo": obo }))
+        .unwrap();
+    assert_ne!(again["cells"], got["cells"], "never over an export");
+    let family = s.call("annotate_family", json!({ "from": r0 })).unwrap();
+    assert_eq!(family["members"].as_array().unwrap().len(), 2, "{family}");
+    s.stop();
+    let index = std::fs::read_to_string(project.path().join("results/INDEX.tsv")).unwrap();
+    assert!(index.contains("\tlupin\tannotate_export\t"), "{index}");
+    let day = Path::new(cells).parent().unwrap();
+    let script = std::fs::read_to_string(day.join("runall.sh")).unwrap();
+    assert!(
+        script.contains("lupin export --from=data/run.r1.senna.json --out=results/"),
+        "{script}"
+    );
+}
+
+/// A trajectory run in `dir` on 40 cells of CT1 and CT2 over two lineages:
+/// pseudotime along DC1, DC3 parting the lineages, and no layout.
+fn trajectory(dir: &Path) -> PathBuf {
+    use legume_numeric::matrix::parquet::{write_named_table, Column};
+    let n = 40;
+    let cells: Vec<Box<str>> = (0..n).map(|i| format!("c{i}").into()).collect();
+    let types: Vec<Box<str>> = (0..n)
+        .map(|i| if i < 20 { "CT1" } else { "CT2" }.into())
+        .collect();
+    let pt: Vec<f32> = (0..n).map(|i| i as f32 / n as f32).collect();
+    let component = vec![0i32; n];
+    let l0: Vec<f32> = (0..n).map(|i| f32::from(u8::from(i < 20))).collect();
+    let l1: Vec<f32> = l0.iter().map(|w| 1.0 - w).collect();
+    let at = |name: &str| dir.join(name).to_string_lossy().into_owned();
+    write_named_table(
+        &at("t.cell_pseudotime.parquet"),
+        "cell",
+        &cells,
+        &[
+            ("pseudotime".into(), Column::F32(&pt)),
+            ("type".into(), Column::Str(&types)),
+            ("component".into(), Column::I32(&component)),
+            ("L0".into(), Column::F32(&l0)),
+            ("L1".into(), Column::F32(&l1)),
+        ],
+    )
+    .unwrap();
+    let mut d = Mat::zeros(n, 4);
+    for i in 0..n {
+        d[(i, 0)] = 1.0;
+        d[(i, 1)] = i as f32;
+        d[(i, 2)] = (i % 7) as f32;
+        d[(i, 3)] = f32::from(u8::from(i >= 20)) + 0.01 * (i % 3) as f32;
+    }
+    let dcs: Vec<Box<str>> = (0..4).map(|j| format!("DC{j}").into()).collect();
+    d.to_parquet_with_names(
+        &at("t.diffusion.parquet"),
+        (Some(&cells), Some("cell")),
+        Some(&dcs),
+    )
+    .unwrap();
+    let manifest = dir.join("t.senna.json");
+    std::fs::write(
+        &manifest,
+        r#"{"version":2,"kind":"topic","prefix":"t",
+            "trajectory":{"pseudotime":"t.cell_pseudotime.parquet","diffusion":"t.diffusion.parquet"}}"#,
+    )
+    .unwrap();
+    manifest
+}
+
+/// The images in a tool call's result.
+fn images(r: &Value) -> usize {
+    (r["content"].as_array().unwrap().iter())
+        .filter(|c| c["type"] == "image")
+        .count()
+}
+
+#[test]
+fn a_rounds_charts_and_a_trajectorys_diffusion_maps_are_drawn_returned_and_recorded() {
+    let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("results");
+    std::fs::create_dir_all(&local).unwrap();
+    let project = tempfile::tempdir_in(&local).unwrap();
+    let data = project.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let r0 = round_with_profile(&data).to_string_lossy().into_owned();
+    let t = trajectory(&data).to_string_lossy().into_owned();
+    let mut s = Server::start(project.path());
+
+    let r = s.request(
+        "tools/call",
+        json!({ "name": "annotate_figure", "arguments": { "round": r0, "charts": ["markers"] } }),
+    );
+    let r = &r["result"];
+    assert_ne!(r["isError"], true, "{r}");
+    assert_eq!(images(r), 1, "{r}");
+    let got = &r["structuredContent"];
+    let files: Vec<&str> = (got["files"].as_array().unwrap().iter())
+        .map(|f| f.as_str().unwrap())
+        .collect();
+    assert!(
+        files[0].ends_with("run.figure.heatmap_markers.png"),
+        "{files:?}"
+    );
+    assert!(files.iter().all(|f| Path::new(f).is_file()), "{files:?}");
+    assert_eq!(
+        got["numbers"]["markers"]["rows"].as_array().unwrap().len(),
+        3,
+        "{got}"
+    );
+    let terms = (got["offers"]["charts"].as_array().unwrap().iter())
+        .find(|c| c["chart"] == "terms")
+        .unwrap();
+    assert!(
+        terms["missing"]
+            .as_str()
+            .unwrap()
+            .contains("go, gaf or gmt"),
+        "{terms}"
+    );
+
+    // What the run offers, and a map or colouring it lacks refused before
+    // anything is drawn.
+    let listed = s
+        .call("trajectory_figure", json!({ "run": t, "list": true }))
+        .unwrap();
+    let maps = &listed["maps"];
+    assert_eq!(maps["diffusion_opens_on"], "dc1,dc3", "{maps}");
+    assert_eq!(maps["components"].as_array().unwrap().len(), 3, "{maps}");
+    assert!(
+        maps["hint"].as_str().unwrap().contains("senna layout"),
+        "{maps}"
+    );
+    for (args, says) in [
+        (json!({ "run": t, "maps": ["dc0,dc1"] }), "trivial"),
+        (json!({ "run": t, "maps": ["phate"] }), "dc1..dc3"),
+        (
+            json!({ "run": t, "maps": ["diffusion"], "colour": "cluster" }),
+            "lineage",
+        ),
+    ] {
+        let e = s.call("trajectory_figure", args).unwrap_err();
+        assert!(e.contains(says), "{says} in {e}");
+    }
+    let drawn: Vec<_> = std::fs::read_dir(&data)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains("figure"))
+        .collect();
+    assert!(drawn.is_empty(), "nothing drawn: {drawn:?}");
+
+    let r = s.request(
+        "tools/call",
+        json!({ "name": "trajectory_figure",
+                "arguments": { "run": t, "maps": ["suggested", "dc2,dc3"], "colour": "lineage" } }),
+    );
+    let r = &r["result"];
+    assert_ne!(r["isError"], true, "{r}");
+    assert_eq!(images(r), 2, "one image per map: {r}");
+    let got = &r["structuredContent"];
+    let files: Vec<&str> = (got["files"].as_array().unwrap().iter())
+        .map(|f| f.as_str().unwrap())
+        .collect();
+    assert!(
+        files[0].ends_with("t.figure.diffusion_dc1_dc3.lineage.png")
+            && files[2].ends_with("t.figure.diffusion_dc2_dc3.lineage.png"),
+        "{files:?}"
+    );
+    assert_eq!(got["maps"]["diffusion_opens_on"], "dc1,dc3", "{got}");
+    // The look: the labels' size and the page, as the child is told it.
+    let small = s
+        .call(
+            "trajectory_figure",
+            json!({ "run": t, "maps": ["dc1,dc3"], "labels": "off", "width": 3.5, "dpi": 100 }),
+        )
+        .unwrap();
+    let png = small["files"][0].as_str().unwrap();
+    let (w, _) = image::image_dimensions(png).unwrap();
+    assert_eq!(w, 350, "3.5 in at 100 dpi");
+    let refused = s.call(
+        "trajectory_figure",
+        json!({ "run": t, "maps": ["dc1,dc3"], "focus": 99 }),
+    );
+    assert!(
+        refused.unwrap_err().contains("K99"),
+        "a cluster the run lacks"
+    );
+    s.stop();
+
+    let results = project.path().join("results");
+    let index = std::fs::read_to_string(results.join("INDEX.tsv")).unwrap();
+    assert!(
+        index.contains("charts and maps of run.senna.json")
+            && index.contains("trajectory figures of t.senna.json on suggested, dc2,dc3"),
+        "{index}"
+    );
+    let day = Path::new(files[0]).parent().unwrap();
+    let script = std::fs::read_to_string(day.join("runall.sh")).unwrap();
+    assert!(
+        script.contains("lupin figure round") && script.contains("--map=dc2,dc3"),
+        "{script}"
+    );
+    assert!(
+        script.contains("--labels=off --width=3.5 --dpi=100"),
+        "{script}"
+    );
 }

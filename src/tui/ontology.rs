@@ -577,13 +577,33 @@ impl Mixed {
         Ok(m)
     }
 
-    /// Name `parts` `name` from now on, and append it to `file` (once).
+    /// Where a mix named on the screen or by an agent is kept: the
+    /// project's file, else the user's.
+    #[must_use]
+    pub fn file(search: &crate::manifest::data_files::SearchPath) -> Option<std::path::PathBuf> {
+        search.amend(MIXED)
+    }
+
+    /// Whether `name` can stand for `parts`: two or more of them.
+    pub fn check(name: &str, parts: &[String]) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            parts.len() >= 2,
+            "{name}: a mixed label stands for two or more types (`parts`)"
+        );
+        Ok(())
+    }
+
+    /// Name `parts` `name` from now on, and append it to `file` (once);
+    /// the parts are kept as they are read back, by [`label_key`].
     pub fn add(
         &mut self,
         name: &str,
         parts: &[String],
         file: &std::path::Path,
     ) -> anyhow::Result<()> {
+        Self::check(name, parts)?;
+        let parts: Vec<String> = parts.iter().map(|p| label_key(p)).collect();
+        let parts = parts.as_slice();
         if self
             .by_name
             .get(&name_key(name))

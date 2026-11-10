@@ -110,6 +110,18 @@ pub fn spawn_suggest(
     out: &Path,
     log: Sender<String>,
 ) -> Result<Held> {
+    let argv = suggest_argv(from, obo, labels, Some(out));
+    spawn(&argv, log, Stopper::new())
+}
+
+/// `lupin data suggest-cl`'s arguments for `labels` on the ontology run
+/// `from` finds (`obo` first), its JSON to `out`, else to stdout.
+pub(crate) fn suggest_argv(
+    from: &Path,
+    obo: Option<&str>,
+    labels: &[String],
+    out: Option<&Path>,
+) -> Vec<String> {
     let mut argv = vec!["data".to_string(), "suggest-cl".into()];
     if from.is_file() {
         argv.extend(["-f".into(), from.to_string_lossy().into_owned()]);
@@ -117,9 +129,12 @@ pub fn spawn_suggest(
     if let Some(obo) = obo {
         argv.extend(["--obo".into(), obo.to_string()]);
     }
-    argv.extend(["-o".into(), out.to_string_lossy().into_owned(), "--".into()]);
+    if let Some(out) = out {
+        argv.extend(["-o".into(), out.to_string_lossy().into_owned()]);
+    }
+    argv.push("--".into());
     argv.extend_from_slice(labels);
-    spawn(&argv, log, Stopper::new())
+    argv
 }
 
 /// Start `lupin relabel -f <round> -d <decisions> --next` as a child: a

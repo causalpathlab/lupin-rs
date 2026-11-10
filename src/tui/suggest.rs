@@ -25,8 +25,13 @@ impl Suggestions {
     pub fn read(file: &Path) -> Result<Self> {
         let text =
             std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
-        let s: Suggested = serde_json::from_str(&text)
-            .with_context(|| format!("{} is not the suggestions' JSON", file.display()))?;
+        Self::parse(&text)
+            .with_context(|| format!("{} is not the suggestions' JSON", file.display()))
+    }
+
+    /// What a `lupin data suggest-cl` job printed.
+    pub fn parse(text: &str) -> Result<Self> {
+        let s: Suggested = serde_json::from_str(text).context("reading the suggestions")?;
         Ok(Self {
             by_label: (s.labels.into_iter())
                 .map(|(l, v)| (label_key(&l), v))

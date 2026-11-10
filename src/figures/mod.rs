@@ -27,7 +27,7 @@ use legume_tui::export::{write_pdf, Page};
 use legume_tui::map::colour::{to_linear, Lin, Srgb};
 use legume_tui::map::labels::{place, Label, Placed, Rect};
 use legume_tui::map::legend::draw_legend;
-use legume_tui::map::offsets::Offsets;
+use legume_tui::map::offsets::{OffsetBook, Offsets};
 use legume_tui::map::points::{Job, Mark, PointLayer};
 use legume_tui::map::raster::{edge, ring, stamp, Canvas, Frame, Shape};
 use legume_tui::map::text::{Font, TextRun};
@@ -42,6 +42,10 @@ use units::{GoTerm, Marks, UnitMap};
 
 pub(crate) mod charts;
 pub(crate) mod heatmap;
+pub(crate) mod look;
+mod maps;
+pub(crate) mod round;
+pub(crate) use maps::Drawing;
 pub(crate) mod units;
 
 /// Pairs outside the prior on the connectivity panel, and the pairs it
@@ -64,6 +68,9 @@ const LEGEND_MAX: usize = 20;
 const EXPORT_WIDTH_IN: f32 = 7.0;
 const EXPORT_DPI: f32 = 200.0;
 
+/// The file beside a run that keeps its moved labels, lupin's own.
+const LABELS_SUFFIX: &str = "lupin_labels.json";
+
 /// Label sizes `t` steps through, as `senna view` does: small, medium,
 /// large, largest, then off.
 pub(crate) const TEXT_SCALES: [f32; 4] = [1.0, 1.4, 1.8, 2.4];
@@ -79,17 +86,20 @@ pub(crate) fn next_in<T: Copy + PartialEq>(all: &[T], cur: T) -> T {
 }
 
 /// What the cells of a scatter are coloured by.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum Colouring {
     Pseudotime,
+    #[value(alias = "cell type")]
     Type,
     Lineage,
     Component,
     /// A round's clusters.
     Cluster,
     /// The projection score's per-cell call.
+    #[value(alias = "score call")]
     Call,
     /// The projection score's margin: how far its call leads the runner-up.
+    #[value(alias = "score margin")]
     Margin,
 }
 
@@ -517,6 +527,9 @@ pub(crate) struct CellFigures {
     /// which the run left it out of pseudotime; the figure opens on the
     /// first pair it kept.
     pub(crate) dc_min_share: f32,
+    /// Each diffusion component's spread, ρ with pseudotime and η² between
+    /// lineages ([`maps`]), made on first use.
+    pub(crate) dc_facts: OnceLock<Vec<maps::ComponentFacts>>,
     /// Each scatter's label medians over all its cells, made on first use.
     pub(crate) medians: Mutex<Vec<(MediansKey, Arc<Medians>)>>,
     /// A units round's cell types and GO terms, when it records their
@@ -676,6 +689,42 @@ impl CellFigures {
         derive_out_prefix(&self.manifest.to_string_lossy())
     }
 
+    /// The file beside the run that keeps the labels moved on its maps,
+    /// lupin's own.
+    pub(crate) fn labels_file(&self) -> PathBuf {
+        PathBuf::from(format!("{}.{LABELS_SUFFIX}", self.prefix()))
+    }
+
+    /// `panel`'s key in the labels' book: the round and the layout, so a
+    /// label moved on one round's UMAP stays off the next round's and the
+    /// PHATE.
+    pub(crate) fn layout_id(&self, panel: Panel) -> String {
+        let prefix = self.prefix();
+        let round = Path::new(&prefix)
+            .file_name()
+            .map_or(prefix.clone(), |n| n.to_string_lossy().into_owned());
+        format!("{round}:{}", self.slug(panel))
+    }
+
+    /// The labels moved on `panel` (on lupin's screen), by name; none, with
+    /// a warning, when the book cannot be read.
+    pub(crate) fn moved_labels(&self, panel: Panel) -> Offsets<String> {
+        self.moved_on(self.labels_book().as_ref(), panel)
+    }
+
+    /// The book of moved labels; none, with a warning, when it cannot be
+    /// read.
+    fn labels_book(&self) -> Option<OffsetBook> {
+        OffsetBook::load(&self.labels_file())
+            .map_err(|e| log::warn!("the moved labels cannot be read ({e}): drawn where they fall"))
+            .ok()
+    }
+
+    /// The labels `book` keeps moved on `panel`.
+    fn moved_on(&self, book: Option<&OffsetBook>, panel: Panel) -> Offsets<String> {
+        book.map_or_else(Offsets::default, |b| b.layout(&self.layout_id(panel)))
+    }
+
     /// A panel's title, naming the layout drawn and, on a scatter, the
     /// colouring and the cluster in focus.
     pub(crate) fn title(&self, panel: Panel, style: &Style) -> String {
@@ -708,16 +757,24 @@ impl CellFigures {
     }
 
     /// The coordinates a scatter can show, in the order `m` steps through
-    /// them: the layouts, then the diffusion map at its first pair spread
-    /// over the cells.
+    /// them: the layouts, then the diffusion map at the pair it opens on
+    /// ([`maps`]).
     pub(crate) fn scatters(&self) -> Vec<Panel> {
         let mut out: Vec<Panel> = (0..self.layouts.len())
             .map(|k| Panel::Layout { k })
             .collect();
-        if let Some(d) = self.diffusion.as_ref().filter(|d| d.ncols() >= 3) {
-            out.push(first_spread_pair(d, self.dc_min_share));
-        }
+        out.extend(self.opening_pair());
         out
+    }
+
+    /// The first of [`Self::scatters`], without weighing the diffusion
+    /// components when there is a layout.
+    pub(crate) fn best_scatter(&self) -> Option<Panel> {
+        if self.layouts.is_empty() {
+            self.opening_pair().ok()
+        } else {
+            Some(Panel::Layout { k: 0 })
+        }
     }
 
     /// The scatter after `panel` in [`Self::scatters`]; `None` when there is
@@ -765,7 +822,7 @@ impl CellFigures {
     /// The figures these outputs allow, in display order: one scatter (the
     /// best layout, else the diffusion map), the order and the connectivity.
     pub(crate) fn panels(&self) -> Vec<Panel> {
-        let mut out: Vec<Panel> = self.scatters().into_iter().take(1).collect();
+        let mut out: Vec<Panel> = self.best_scatter().into_iter().collect();
         if !self.pseudotime.is_empty() {
             out.push(Panel::Order);
         }
@@ -946,38 +1003,42 @@ impl CellFigures {
         [format!("{b}.{first}"), format!("{b}.pdf")].map(PathBuf::from)
     }
 
-    /// The files [`Self::write_trajectory`] writes under `base`, the map's
-    /// PNG first.
-    pub(crate) fn trajectory_files(&self, base: &str) -> Vec<PathBuf> {
-        (self.panels().into_iter())
-            .flat_map(|p| Self::panel_files(p, base))
+    /// The files [`Self::write_drawing`] writes under `base`, each figure's
+    /// PNG or SVG before its PDF.
+    pub(crate) fn drawing_files(&self, d: &Drawing, base: &str) -> Vec<PathBuf> {
+        (self.drawn_files(d, base).into_iter())
+            .flat_map(|(_, files)| files)
             .collect()
     }
 
-    /// A trajectory run's figures, whole and as it opens, as files under
-    /// `base` ([`Self::trajectory_files`]): its map (the best layout, else
-    /// the diffusion map, coloured by pseudotime, the prior's edges as
-    /// arrows); the types in pseudotime order and the connectivity between
-    /// them (the lineage graph).
-    pub(crate) fn write_trajectory(&self, base: &str) -> Result<Vec<PathBuf>> {
+    /// The figures `d` asks for, whole, as files under `base`
+    /// ([`Self::drawing_files`]): its maps, else a trajectory's as it
+    /// opens: its map (the best layout, else the diffusion map, coloured by
+    /// pseudotime), the types in pseudotime order and the connectivity
+    /// between them (the lineage graph). A map has the prior's edges as
+    /// arrows between the types.
+    pub(crate) fn write_drawing(&self, d: &Drawing, base: &str) -> Result<Vec<PathBuf>> {
         legume_numeric::matrix::common_io::mkdir_parent(base)?;
-        let size = export_size(None);
-        let style = Style::opening(self);
-        let (view, moved) = (View::default(), Offsets::default());
-        for panel in self.panels() {
-            let [first, pdf] = Self::panel_files(panel, base);
+        let size = d.look.figure_size()?;
+        let style = d.style;
+        let view = View::default();
+        // A map's labels where they were moved on the screen.
+        let book = self.labels_book();
+        for (panel, [first, pdf]) in self.drawn_files(d, base) {
             if panel.is_scatter() {
-                self.write_map(panel, size, EXPORT_DPI, &style, view, &moved, &pdf)?;
+                let moved = self.moved_on(book.as_ref(), panel);
+                self.write_map(panel, size, d.look.dpi as f32, &style, view, &moved, &pdf)?;
                 // The PDF sets its text over the image; the PNG has it drawn.
                 let drawn = self.cell_map(panel, size, &style, view, false, &moved)?;
                 (drawn.frame.to_image().save(&first))
                     .with_context(|| format!("writing {}", first.display()))?;
             } else {
                 let b = first.with_extension("");
-                self.write_svg_panel(panel, size, &style, view, &moved, &b.to_string_lossy())?;
+                let none = Offsets::default();
+                self.write_svg_panel(panel, size, &style, view, &none, &b.to_string_lossy())?;
             }
         }
-        Ok(self.trajectory_files(base))
+        Ok(self.drawing_files(d, base))
     }
 
     /// Panel `panel`, an SVG figure, written as `{base}.svg` and `.pdf`:
@@ -1270,16 +1331,21 @@ impl CellFigures {
     }
 
     /// The order `cells` are drawn in, later over earlier: grey cells first,
-    /// so coloured ones draw over them; by pseudotime, low to high, so the
-    /// few late cells are not buried under the many early ones.
+    /// so coloured ones draw over them; by group, largest first, or by
+    /// pseudotime, low to high, so the few cells of a small group or of a
+    /// late time are not buried under the many.
     fn draw_order(
         &self,
         cells: &[usize],
         colouring: Colouring,
         colour_of: &[Option<Rgb>],
     ) -> Vec<usize> {
-        if colouring != Colouring::Pseudotime || self.pseudotime.is_empty() {
-            return grey_first(cells.iter().copied(), colour_of);
+        match colouring {
+            Colouring::Pseudotime if !self.pseudotime.is_empty() => {}
+            Colouring::Pseudotime | Colouring::Margin => {
+                return grey_first(cells.iter().copied(), colour_of);
+            }
+            _ => return largest_first(cells, colour_of),
         }
         // Every cell sorted once; each figure keeps the cells it shows.
         let all = self.by_pseudotime.get_or_init(|| {
@@ -2040,6 +2106,30 @@ fn grey_first(cells: impl Iterator<Item = usize> + Clone, colour_of: &[Option<Rg
     order
 }
 
+/// `cells` in the order a categorical colouring draws them: grey first,
+/// then the groups (one per colour) largest first, so a small group is not
+/// buried under a large one; within a group, in `cells`' order.
+fn largest_first(cells: &[usize], colour_of: &[Option<Rgb>]) -> Vec<usize> {
+    let mut grey = Vec::new();
+    let mut groups: Vec<(Rgb, Vec<usize>)> = Vec::new();
+    let mut at: FxHashMap<Rgb, usize> = FxHashMap::default();
+    for &i in cells {
+        match colour_of.get(i).copied().flatten() {
+            None => grey.push(i),
+            Some(c) => {
+                let g = *at.entry(c).or_insert_with(|| {
+                    groups.push((c, Vec::new()));
+                    groups.len() - 1
+                });
+                groups[g].1.push(i);
+            }
+        }
+    }
+    groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(&b.0)));
+    grey.extend(groups.into_iter().flat_map(|(_, cells)| cells));
+    grey
+}
+
 /// Lineage, component or cluster codes as keys, -1 (none) as `None`.
 fn codes(v: &[i32]) -> Vec<Option<i32>> {
     v.iter().map(|&c| (c >= 0).then_some(c)).collect()
@@ -2099,12 +2189,27 @@ pub struct TrajectoryFigureArgs {
         help = "Output prefix: {out}.map.png and .pdf, {out}.order and {out}.connectivity as .svg and .pdf"
     )]
     pub out: Box<str>,
+    #[arg(
+        long = "map",
+        value_name = "MAP",
+        help = "Draw only these maps, each as {out}.{map}.{colour}.png and .pdf: a layout (phate, umap, …), best, all, suggested or diffusion (the diffusion map on its suggested pair), or two diffusion components as dc1,dc3; repeat for several"
+    )]
+    pub maps: Vec<Box<str>>,
+    #[arg(
+        long,
+        visible_alias = "color",
+        help = "Colour the cells by pseudotime (default), type, lineage or component"
+    )]
+    pub colour: Option<Box<str>>,
+    #[command(flatten)]
+    pub look: look::Look,
 }
 
 /// `lupin figure trajectory`: a trajectory run's figures as files.
 pub fn run_trajectory_figures(args: &TrajectoryFigureArgs) -> Result<()> {
     let figures = trajectory_figures(&args.from)?;
-    let files = figures.write_trajectory(&args.out)?;
+    let drawing = figures.drawing(&args.maps, args.colour.as_deref(), &args.look)?;
+    let files = figures.write_drawing(&drawing, &args.out)?;
     for f in files {
         log::info!("wrote {}", f.display());
     }
@@ -2161,24 +2266,6 @@ fn render_svg(fig: &Figure) -> Result<image::RgbaImage> {
         })
         .collect();
     image::RgbaImage::from_raw(fig.w, fig.h, rgba).context("the figure's pixels")
-}
-
-/// The first two diffusion components after the trivial one spread over at
-/// least `min_share` of the cells, as the run kept them: the components of a
-/// barely attached group show that group against a line of every other cell.
-/// DC1 × DC2 when fewer than two are.
-fn first_spread_pair(d: &Mat, min_share: f32) -> Panel {
-    use crate::trajectory::diffusion::participation;
-    let spread: Vec<usize> = (1..d.ncols())
-        .filter(|&j| {
-            participation(d.column(j).iter().map(|&v| f64::from(v))) >= f64::from(min_share)
-        })
-        .take(2)
-        .collect();
-    match spread[..] {
-        [x, y] => Panel::Diffusion { x, y },
-        _ => Panel::Diffusion { x: 1, y: 2 },
-    }
 }
 
 #[cfg(test)]

@@ -13,17 +13,18 @@
 
 mod app;
 mod ask;
-mod export;
+pub(crate) mod export;
 mod figure_pane;
-mod gallery;
-mod genes;
+pub(crate) mod gallery;
+pub(crate) mod genes;
+pub(crate) mod headless;
 mod menu;
-mod ontology;
+pub(crate) mod ontology;
 mod order;
 mod picker;
 mod round;
-mod runner;
-mod suggest;
+pub(crate) mod runner;
+pub(crate) mod suggest;
 mod ui;
 
 #[cfg(test)]

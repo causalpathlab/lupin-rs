@@ -3,12 +3,14 @@
 //! (its posterior over the cell types, its membership of a units round's
 //! regions, or a topic run's topics) stacked from the bottom in a panel per
 //! cluster, and heatmaps of features × clusters (the panel's markers, the
-//! GO terms a units pass aligned, the cell types), z-scored by row. Each
+//! GO/GMT terms a units pass aligned or a GO/GMT pass tested, each
+//! cluster's top terms, the cell types), z-scored by row. Each
 //! reads the table its manifest records on first use; without it the chart
 //! says which instead of drawing.
 
 use super::{cell_index, cluster_name, distinct_colours, Colouring, Panel, Size, THEME};
 use crate::annotate::gene_rows::LevelRows;
+use crate::annotate::outputs::{term_prefix, CLUSTER_TERM_Q_VALUES};
 use crate::manifest::rounds::read_table;
 use crate::manifest::run::{Loaded, RunKind};
 use anyhow::{Context, Result};
@@ -23,6 +25,7 @@ use legume_tui::export::{write_pdf, Page};
 use legume_tui::map::colour::{to_linear, Lin};
 use legume_tui::map::raster::Frame;
 use legume_tui::map::text::Font;
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -108,12 +111,17 @@ pub(crate) struct Mix {
 }
 
 /// A heatmap's features × clusters, z-scored by row; NaN where missing.
-#[derive(Debug)]
+/// Also the numbers behind it, unscaled (`values`), and each one's q when
+/// the chart tests them (else empty), row by row as `z`.
+#[derive(Debug, Serialize)]
 pub(crate) struct HeatTable {
     pub(crate) title: String,
     pub(crate) rows: Vec<String>,
     pub(crate) cols: Vec<String>,
     pub(crate) z: Vec<f32>,
+    pub(crate) values: Vec<f32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) q: Vec<f32>,
 }
 
 /// A table the round records, found; or why there is none.
@@ -124,6 +132,9 @@ const NOT_A_ROUND: &str = "charts are a round's";
 /// Why a round has no cell types per cell.
 const NO_TYPES: &str = "the round records no per-cell posterior (annotate.annotation) \
                         or units membership (annotate.celltype_membership)";
+/// Why a round has no terms per cluster.
+const NO_TERMS: &str = "the round scored no GO or GMT terms (annotate.term_alignment or \
+                        annotate.ontology_term_effect): annotate it with go, gaf or gmt";
 /// Why a round has no cell types per cluster.
 const NO_TYPE_Q: &str = "the round records no enrichment Q (annotate.cluster_celltype_q) \
                          or units membership (annotate.celltype_membership)";
@@ -137,8 +148,13 @@ pub(crate) struct Charts {
     topics: Found,
     expression: Found,
     markers: Found,
-    alignment: Found,
+    /// The terms a units pass aligned, or a GO/GMT pass tested.
+    terms: Result<TermTables, String>,
     type_q: Found,
+    /// The terms heatmap's cut: each cluster's `top` terms with q below
+    /// `q`.
+    term_top: usize,
+    term_q_max: f32,
     mixtures: [OnceLock<Result<Arc<Mix>, String>>; 2],
     heats: [OnceLock<Result<Arc<HeatTable>, String>>; 3],
 }
@@ -153,8 +169,10 @@ impl Default for Charts {
             topics: none(),
             expression: none(),
             markers: none(),
-            alignment: none(),
+            terms: Err(NOT_A_ROUND.to_string()),
             type_q: none(),
+            term_top: STARS,
+            term_q_max: STAR_Q,
             mixtures: Default::default(),
             heats: Default::default(),
         }
@@ -189,7 +207,20 @@ impl Charts {
             },
             expression: found(&a.cluster_expression, "annotate.cluster_expression"),
             markers: found(&a.markers, "annotate.markers"),
-            alignment: found(&a.term_alignment, "annotate.term_alignment"),
+            terms: if a.term_alignment.is_some() {
+                found(&a.term_alignment, "annotate.term_alignment").map(TermTables::Aligned)
+            } else if a.ontology_term_effect.is_some() {
+                found(&a.ontology_term_effect, "annotate.ontology_term_effect").and_then(|effect| {
+                    // The test's q is kept beside the effect, as `why` reads it.
+                    let q = format!("{}{CLUSTER_TERM_Q_VALUES}", term_prefix(&effect));
+                    if !Path::new(&q).is_file() {
+                        return Err(format!("{q} (the terms' q) is gone"));
+                    }
+                    Ok(TermTables::Tested(effect))
+                })
+            } else {
+                Err(NO_TERMS.into())
+            },
             type_q: found(&a.cluster_celltype_q, "annotate.cluster_celltype_q"),
             ..Self::default()
         }
@@ -277,6 +308,19 @@ impl super::CellFigures {
         (ids, of)
     }
 
+    /// Keep each cluster's `top` terms with q below `q` on the terms
+    /// heatmap (by default the map's stars: [`STARS`] below [`STAR_Q`]);
+    /// refused unless `top` is at least 1 and `q` in (0, 1].
+    pub(crate) fn set_term_cut(&mut self, top: usize, q: f32) -> Result<()> {
+        anyhow::ensure!(top >= 1, "top is at least 1");
+        anyhow::ensure!(q > 0.0 && q <= 1.0, "q is in (0, 1], not {q}");
+        let c = &mut self.charts;
+        (c.term_top, c.term_q_max) = (top, q);
+        let slot = HeatKind::ALL.iter().position(|&h| h == HeatKind::Terms);
+        c.heats[slot.expect("a kind")] = OnceLock::new();
+        Ok(())
+    }
+
     /// The heatmap `of`, read once; why not.
     pub(crate) fn heat(&self, of: HeatKind) -> Result<Arc<HeatTable>, String> {
         let slot = HeatKind::ALL.iter().position(|&h| h == of).unwrap_or(0);
@@ -319,23 +363,36 @@ impl super::CellFigures {
         if rows.is_empty() {
             return Err(format!("none of the panel's markers is in {path}"));
         }
+        let values = z.clone();
         zscore_rows(&mut z, cols, CLIP);
         Ok(HeatTable {
             title: "markers × clusters · mean expression, z by row".into(),
             rows,
             cols: t.cols.iter().map(ToString::to_string).collect(),
             z,
+            values,
+            q: Vec::new(),
         })
     }
 
-    /// The GO terms some cluster stars (as the map stars them: q below
-    /// [`STAR_Q`], the best [`STARS`]), their scores z-scored over every
-    /// cluster, missing where q is not below [`STAR_Q`].
+    /// Each cluster's top terms ([`Self::set_term_cut`]), z-scored over
+    /// every cluster and missing where q is not below the cut: a units
+    /// round's terms by their score, else a GO/GMT pass's by their effect.
     fn terms_heat(&self) -> Result<HeatTable, String> {
-        let path = self.charts.alignment.as_deref().map_err(Clone::clone)?;
+        let c = &self.charts;
+        let scored = match c.terms.as_ref().map_err(Clone::clone)? {
+            TermTables::Aligned(path) => self.aligned_terms(path),
+            TermTables::Tested(effect) => tested_terms(effect),
+        }
+        .map_err(|e| format!("{e:#}"))?;
+        top_terms(scored, c.term_top, c.term_q_max)
+    }
+
+    /// A units round's terms: each cluster's score and q against random
+    /// gene sets, named as the map lists them, else by id.
+    fn aligned_terms(&self, path: &str) -> Result<ScoredTerms> {
         let (s, v) = read_table_columns(path, &["cluster", "term"], &["score", "q"])
-            .with_context(|| format!("reading {path}"))
-            .map_err(|e| format!("{e:#}"))?;
+            .with_context(|| format!("reading {path}"))?;
         let mut clusters: Vec<u32> = (s[0].iter())
             .filter_map(|k| crate::annotate::rounds::parse_cluster_id(k))
             .collect();
@@ -362,48 +419,19 @@ impl super::CellFigures {
             score[t * m + k] = v[0][i] as f32;
             q[t * m + k] = v[1][i] as f32;
         }
-        // Each cluster's stars, cluster by cluster.
-        let mut shown: Vec<usize> = Vec::new();
-        for k in 0..m {
-            let mut best: Vec<usize> = (0..n)
-                .filter(|&t| q[t * m + k] < STAR_Q && score[t * m + k].is_finite())
-                .collect();
-            best.sort_by(|&a, &b| score[b * m + k].total_cmp(&score[a * m + k]));
-            for t in best.into_iter().take(STARS) {
-                if !shown.contains(&t) {
-                    shown.push(t);
-                }
-            }
-        }
-        if shown.is_empty() {
-            return Err(format!(
-                "no cluster has a GO term with q below {STAR_Q} in {path}"
-            ));
-        }
-        let mut z: Vec<f32> = (shown.iter())
-            .flat_map(|&t| score[t * m..(t + 1) * m].to_vec())
-            .collect();
-        zscore_rows(&mut z, m, CLIP);
-        for (r, &t) in shown.iter().enumerate() {
-            for k in 0..m {
-                let q = q[t * m + k];
-                if q.is_nan() || q >= STAR_Q {
-                    z[r * m + k] = f32::NAN;
-                }
-            }
-        }
-        // Named as the map lists them, else by id.
         let names: HashMap<&str, &str> = (self.units.iter())
             .flat_map(|u| u.by_cluster.values().flatten())
             .map(|t| (&*t.id, t.name.as_str()))
             .collect();
-        Ok(HeatTable {
-            title: format!("GO terms × clusters · score, z by row; q ≥ {STAR_Q} blank"),
-            rows: (shown.iter())
-                .map(|&t| names.get(terms[t]).unwrap_or(&terms[t]).to_string())
+        Ok(ScoredTerms {
+            what: "score",
+            path: path.to_string(),
+            terms: (terms.iter())
+                .map(|t| names.get(t).unwrap_or(t).to_string())
                 .collect(),
             cols: clusters.iter().map(|&k| cluster_name(k)).collect(),
-            z,
+            score,
+            q,
         })
     }
 
@@ -447,12 +475,15 @@ impl super::CellFigures {
             let cols: Vec<String> = ids.iter().map(|&k| cluster_name(k)).collect();
             ("units membership share", mix.names, cols, z)
         };
+        let values = z.clone();
         zscore_rows(&mut z, cols.len(), CLIP);
         Ok(HeatTable {
             title: format!("cell types × clusters · {title}, z by row"),
             rows,
             cols,
             z,
+            values,
+            q: Vec::new(),
         })
     }
 
@@ -473,7 +504,7 @@ impl super::CellFigures {
             } => found(&c.expression).and_then(|()| found(&c.markers)),
             Panel::Heatmap {
                 of: HeatKind::Terms,
-            } => found(&c.alignment),
+            } => c.terms.as_ref().map(drop).map_err(Clone::clone),
             Panel::Heatmap {
                 of: HeatKind::Types,
             } => first_found(&[&c.type_q, &c.membership], NO_TYPE_Q).map(drop),
@@ -584,6 +615,106 @@ impl super::CellFigures {
         write_pdf(&[page], dpi, path).with_context(|| format!("writing {}", path.display()))?;
         Ok(img)
     }
+}
+
+/// Terms × clusters, row-major: each term's score and q in every cluster,
+/// NaN where missing; read from `path`, scored by `what`.
+struct ScoredTerms {
+    what: &'static str,
+    path: String,
+    terms: Vec<String>,
+    cols: Vec<String>,
+    score: Vec<f32>,
+    q: Vec<f32>,
+}
+
+/// Each cluster's `top` terms by score with q below `q_max`, cluster by
+/// cluster, each shown once: z-scored over every cluster and missing where
+/// q is not below `q_max`, beside their scores and q.
+fn top_terms(s: ScoredTerms, top: usize, q_max: f32) -> Result<HeatTable, String> {
+    let (n, m) = (s.terms.len(), s.cols.len());
+    let mut shown: Vec<usize> = Vec::new();
+    for k in 0..m {
+        let mut best: Vec<usize> = (0..n)
+            .filter(|&t| s.q[t * m + k] < q_max && s.score[t * m + k].is_finite())
+            .collect();
+        best.sort_by(|&a, &b| s.score[b * m + k].total_cmp(&s.score[a * m + k]));
+        for t in best.into_iter().take(top) {
+            if !shown.contains(&t) {
+                shown.push(t);
+            }
+        }
+    }
+    if shown.is_empty() {
+        return Err(format!(
+            "no cluster has a term with q below {q_max} in {}",
+            s.path
+        ));
+    }
+    let row = |v: &[f32], t: usize| v[t * m..(t + 1) * m].to_vec();
+    let values: Vec<f32> = shown.iter().flat_map(|&t| row(&s.score, t)).collect();
+    let q: Vec<f32> = shown.iter().flat_map(|&t| row(&s.q, t)).collect();
+    let mut z = values.clone();
+    zscore_rows(&mut z, m, CLIP);
+    for (z, q) in z.iter_mut().zip(&q) {
+        if q.is_nan() || *q >= q_max {
+            *z = f32::NAN;
+        }
+    }
+    Ok(HeatTable {
+        title: format!("terms × clusters · {}, z by row; q ≥ {q_max} blank", s.what),
+        rows: shown.iter().map(|&t| s.terms[t].clone()).collect(),
+        cols: s.cols,
+        z,
+        values,
+        q,
+    })
+}
+
+/// Where a round's terms are: a units pass's alignment, or a GO/GMT
+/// pass's effect table (`cluster × term`), the test's tables beside it.
+enum TermTables {
+    Aligned(String),
+    Tested(String),
+}
+
+/// A GO/GMT pass's terms, as `why` reads them (the effect table at
+/// `effect_path` and the tables beside it): each cluster's effect and its q
+/// against random gene sets, each term by its name.
+fn tested_terms(effect_path: &str) -> Result<ScoredTerms> {
+    let t = crate::manifest::why::Terms::read_at(effect_path)?;
+    let qs =
+        t.q.as_ref()
+            .with_context(|| format!("{effect_path}: its q is gone"))?;
+    let names: HashMap<&str, &str> = (t.terms.iter())
+        .map(|g| (g.id.as_str(), g.name.as_str()))
+        .collect();
+    let e = &t.effect;
+    let (n, m) = (e.cols.len(), e.rows.len());
+    let mut score = vec![f32::NAN; n * m];
+    let mut q = vec![f32::NAN; n * m];
+    // The test's tables share the effect's rows and columns.
+    for k in 0..m {
+        for j in 0..n {
+            score[j * m + k] = e.values[k * n + j];
+            q[j * m + k] = qs.values.get(k * n + j).copied().unwrap_or(f32::NAN);
+        }
+    }
+    Ok(ScoredTerms {
+        what: "effect",
+        path: effect_path.to_string(),
+        terms: (e.cols.iter())
+            .map(|id| {
+                names
+                    .get(id.as_str())
+                    .map_or(id.as_str(), |n| n)
+                    .to_string()
+            })
+            .collect(),
+        cols: e.rows.iter().map(|&k| cluster_name(k)).collect(),
+        score,
+        q,
+    })
 }
 
 /// The marker panel at `path` as each type's genes, types and genes in

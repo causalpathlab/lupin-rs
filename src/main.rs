@@ -61,6 +61,10 @@ enum FigureCmd {
         about = "A trajectory run's figures: pseudotime on its map (a layout, else the diffusion map), the order of its types and their connectivity"
     )]
     Trajectory(figures::TrajectoryFigureArgs),
+    #[command(
+        about = "A round's charts and cell maps: its top GO/GMT terms, cell types or markers × clusters as heatmaps (numbers beside them as .json), its structure plots, its cells on a layout"
+    )]
+    Round(figures::round::RoundFigureArgs),
 }
 
 #[derive(Subcommand)]
@@ -233,12 +237,22 @@ enum Commands {
     )]
     Ask(manifest::ask::AskArgs),
     #[command(
-        about = "Write a figure without the screen: a round's marker heatmap, or a trajectory run's figures"
+        about = "Write a figure without the screen: a round's marker heatmap, charts or cell maps, or a trajectory run's figures"
     )]
     Figure {
         #[command(subcommand)]
         of: FigureCmd,
     },
+    #[command(
+        about = "Write a round's final annotation for use outside lupin: per cell and per label",
+        long_about = "Writes, as `e` on lupin's screen does, {out}.cell_annotation.parquet\n\
+                      (per cell: its cluster, label, the label's Cell Ontology term and\n\
+                      lineage, the cluster's evidence share for the label and its top type)\n\
+                      and {out}.celltype_markers.tsv (per label: its markers, from the panel\n\
+                      or added since, and the genes that set its clusters apart, each with\n\
+                      its log2 fold change)."
+    )]
+    Export(tui::headless::ExportArgs),
     #[command(
         about = "Open lupin's screen on an output: a round, or a trajectory run",
         long_about = "Opens the TUI on a manifest lupin wrote, by what it holds: a\n\
@@ -446,6 +460,10 @@ fn main() -> Result<()> {
         Commands::Figure {
             of: FigureCmd::Trajectory(a),
         } => figures::run_trajectory_figures(&a),
+        Commands::Figure {
+            of: FigureCmd::Round(a),
+        } => figures::round::run_round_figures(&a),
+        Commands::Export(a) => tui::headless::run_export(&a),
         Commands::Data(c) => manifest::data_files::run_data(&c),
         Commands::Attach(a) => Ok(legume_tui::cli::attach(&tui::TOOL, &a)?),
         Commands::Sessions => Ok(legume_tui::cli::sessions(&tui::TOOL)?),

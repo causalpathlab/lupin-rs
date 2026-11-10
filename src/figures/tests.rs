@@ -1116,7 +1116,13 @@ fn a_trajectory_without_a_layout_draws_its_map_on_the_diffusion_map() {
         .join("t")
         .to_string_lossy()
         .into_owned();
-    let files = t.write_trajectory(&base).unwrap();
+    let files = t
+        .write_drawing(
+            &t.drawing::<&str>(&[], None, &look::Look::default())
+                .unwrap(),
+            &base,
+        )
+        .unwrap();
     let names: Vec<String> = (files.iter())
         .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
@@ -1148,4 +1154,283 @@ fn the_prior_edges_are_drawn_on_the_diffusion_map_too() {
     t.edges.clear();
     let without = render(&draw(&t, panel, &style)).unwrap();
     assert_ne!(with, without, "the arrow is drawn");
+}
+
+/// [`data`] with two named layouts (PHATE, then UMAP) and four diffusion
+/// components, the last spread over a single cell.
+fn data_with_maps() -> CellFigures {
+    let mut t = data();
+    let n = t.types.len();
+    let first = t.layouts.remove(0);
+    t.layouts = vec![
+        Layout {
+            method: Some("phate".into()),
+            ..first
+        },
+        Layout {
+            method: Some("umap".into()),
+            x: (0..n).map(|i| (i % 5) as f32).collect(),
+            y: (0..n).map(|i| i as f32).collect(),
+        },
+    ];
+    // Two lineages, which DC3 parts.
+    t.lineage = (0..n).map(|i| i32::from(i >= 20)).collect();
+    let mut d = Mat::zeros(n, 5);
+    for i in 0..n {
+        d[(i, 1)] = i as f32;
+        d[(i, 2)] = (i % 7) as f32;
+        d[(i, 3)] = f32::from(u8::from(i >= 20)) + 0.01 * (i % 3) as f32;
+    }
+    d[(0, 4)] = 1.0;
+    t.diffusion = Some(d);
+    t.dc_min_share = 0.1;
+    t
+}
+
+#[test]
+fn a_map_is_named_by_its_layout_by_all_or_by_a_diffusion_pair() {
+    let t = data_with_maps();
+    let maps = |s: &str| t.map_panels(s).unwrap();
+    assert_eq!(maps("phate"), [Panel::Layout { k: 0 }]);
+    assert_eq!(maps("UMAP"), [Panel::Layout { k: 1 }], "case aside");
+    assert_eq!(maps("best"), [Panel::Layout { k: 0 }]);
+    assert_eq!(maps("dc1,dc3"), [Panel::Diffusion { x: 1, y: 3 }]);
+    assert_eq!(maps("DC3 x DC2"), [Panel::Diffusion { x: 3, y: 2 }]);
+    assert_eq!(maps("dc2_dc4"), [Panel::Diffusion { x: 2, y: 4 }]);
+    assert_eq!(
+        maps("diffusion"),
+        [Panel::Diffusion { x: 1, y: 3 }],
+        "the diffusion map opens on the kept component that follows pseudotime \
+         (DC1) against the one that parts the lineages (DC3)"
+    );
+    assert_eq!(maps("suggested"), maps("diffusion"));
+    assert_eq!(
+        maps("all"),
+        t.scatters(),
+        "every scatter the screen steps through"
+    );
+    assert_eq!(t.scatters().len(), 3);
+}
+
+#[test]
+fn an_unknown_map_is_refused_naming_the_maps_the_run_has() {
+    let t = data_with_maps();
+    let refused = |s: &str| format!("{:#}", t.map_panels(s).unwrap_err());
+    let e = refused("tsne");
+    for named in ["phate", "umap", "dc1", "dc4", "all"] {
+        assert!(e.contains(named), "{named} in {e}");
+    }
+    assert!(refused("dc0,dc1").contains("trivial"), "DC0 is constant");
+    assert!(
+        refused("dc1,dc5").contains("dc4"),
+        "the last component named"
+    );
+    assert!(refused("dc2,dc2").contains("two"), "two components");
+    assert!(refused("dc1").contains("two"), "a pair, not one");
+    let mut bare = data_with_maps();
+    bare.diffusion = None;
+    assert!(format!("{:#}", bare.map_panels("diffusion").unwrap_err()).contains("no diffusion map"));
+}
+
+#[test]
+fn a_colouring_is_named_and_one_the_run_lacks_is_refused() {
+    let t = data_with_maps();
+    assert_eq!(t.colouring_named("type").unwrap(), Colouring::Type);
+    assert_eq!(t.colouring_named("Cell Type").unwrap(), Colouring::Type);
+    assert_eq!(t.colouring_named("lineage").unwrap(), Colouring::Lineage);
+    let e = format!("{:#}", t.colouring_named("cluster").unwrap_err());
+    assert!(
+        e.contains("pseudotime") && e.contains("component"),
+        "the run's colourings named: {e}"
+    );
+    assert!(t.colouring_named("bogus").is_err());
+}
+
+#[test]
+fn the_maps_asked_for_are_written_each_in_the_colouring_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = data_with_maps();
+    let base = tmp.path().join("t").to_string_lossy().into_owned();
+    let drawing = t
+        .drawing(
+            &["umap", "dc1,dc3", "umap"],
+            Some("type"),
+            &look::Look::default(),
+        )
+        .unwrap();
+    let planned = t.drawing_files(&drawing, &base);
+    let files = t.write_drawing(&drawing, &base).unwrap();
+    assert_eq!(files, planned);
+    let names: Vec<String> = (files.iter())
+        .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "t.layout_umap.type.png",
+            "t.layout_umap.type.pdf",
+            "t.diffusion_dc1_dc3.type.png",
+            "t.diffusion_dc1_dc3.type.pdf",
+        ],
+        "a map asked for twice is drawn once"
+    );
+    assert!(files.iter().all(|f| f.is_file()), "{files:?}");
+    // In another colouring the same map is another file.
+    let by_time = t.drawing(&["umap"], None, &look::Look::default()).unwrap();
+    assert_eq!(
+        t.drawing_files(&by_time, &base)[0].file_name().unwrap(),
+        "t.layout_umap.pseudotime.png"
+    );
+    let whole = t
+        .drawing::<&str>(&[], Some("lineage"), &look::Look::default())
+        .unwrap();
+    assert_eq!(
+        t.drawing_files(&whole, &base)[0].file_name().unwrap(),
+        "t.map.png",
+        "without maps, the opening set, its map in the colouring asked"
+    );
+}
+
+#[test]
+fn the_maps_offered_are_the_layouts_the_diffusion_components_and_the_colourings() {
+    let t = data_with_maps();
+    let offered = serde_json::to_value(t.maps_offered()).unwrap();
+    assert_eq!(offered["layouts"], serde_json::json!(["phate", "umap"]));
+    assert_eq!(offered["diffusion_opens_on"], "dc1,dc3");
+    assert_eq!(
+        offered["colourings"],
+        serde_json::json!(["pseudotime", "type", "lineage", "component"])
+    );
+    assert!(offered["hint"].is_null());
+    let dcs = offered["components"].as_array().unwrap();
+    let field = |k: &str| dcs.iter().map(|c| c[k].clone()).collect::<Vec<_>>();
+    assert_eq!(
+        field("dc"),
+        serde_json::json!([1, 2, 3, 4]).as_array().unwrap()[..]
+    );
+    assert_eq!(
+        field("kept"),
+        serde_json::json!([true, true, true, false])
+            .as_array()
+            .unwrap()[..],
+        "a component on one cell is left out, as the run left it"
+    );
+    // DC1 rises with pseudotime, cell by cell.
+    let rho = |j: usize| dcs[j]["rho"].as_f64().unwrap();
+    assert!((rho(0) - 1.0).abs() < 1e-9, "{}", rho(0));
+    assert!(rho(1).abs() < 0.5 && rho(1) >= 0.0, "|rho|: {}", rho(1));
+    let eta = |j: usize| dcs[j]["lineage_eta2"].as_f64().unwrap();
+    assert!(
+        eta(2) > 0.99 && eta(1) < 0.1,
+        "DC3 parts the lineages: {dcs:?}"
+    );
+    let sd = |j: usize| dcs[j]["sd"].as_f64().unwrap();
+    assert!(sd(0) > sd(3) && sd(3) > 0.0, "{dcs:?}");
+}
+
+#[test]
+fn a_categorical_colouring_draws_its_largest_group_first() {
+    let mut t = data();
+    // 30 cells of A, then 10 of B on top of them.
+    t.types = (0..40)
+        .map(|i| if i % 4 == 0 { "B" } else { "A" }.into())
+        .collect();
+    let style = Style {
+        colouring: Colouring::Type,
+        ..Style::default()
+    };
+    let l = &t.layouts[0];
+    let layer = t.cell_layer(&l.x, &l.y, &style);
+    let drawn: Vec<&str> = (layer.order.iter())
+        .map(|&i| t.types[i as usize].as_ref())
+        .collect();
+    let first_b = drawn.iter().position(|&n| n == "B").unwrap();
+    assert!(
+        drawn[first_b..].iter().all(|&n| n == "B"),
+        "every A before any B: {drawn:?}"
+    );
+}
+
+/// [`data_with_maps`] in clusters 3 (the first half) and 4, its manifest in
+/// `dir`.
+fn clustered_in(dir: &std::path::Path) -> CellFigures {
+    let mut t = data_with_maps();
+    t.cluster = (0..t.types.len())
+        .map(|i| if i < 20 { 3 } else { 4 })
+        .collect();
+    t.manifest = dir.join("run.T1.senna.json");
+    t
+}
+
+#[test]
+fn a_look_sets_the_labels_the_cluster_lit_and_the_page() {
+    use look::{LabelSize, Look};
+    let tmp = tempfile::tempdir().unwrap();
+    let t = clustered_in(tmp.path());
+    let look = Look {
+        labels: Some(LabelSize::Large),
+        focus: Some(4),
+        width: 3.5,
+        dpi: 100,
+        ..Look::default()
+    };
+    let d = t.drawing(&["umap"], Some("type"), &look).unwrap();
+    assert_eq!(d.style.labels, Some(2));
+    assert_eq!(d.style.focus, Some(4));
+    let off = Look {
+        labels: Some(LabelSize::Off),
+        ..Look::default()
+    };
+    assert_eq!(t.drawing(&["umap"], None, &off).unwrap().style.labels, None);
+    let base = tmp.path().join("t").to_string_lossy().into_owned();
+    let files = t.write_drawing(&d, &base).unwrap();
+    let png = image::open(&files[0]).unwrap();
+    assert_eq!(png.width(), 350, "3.5 in at 100 dpi");
+    let bad = Look {
+        focus: Some(9),
+        ..Look::default()
+    };
+    let e = t.drawing(&["umap"], None, &bad).unwrap_err().to_string();
+    assert!(e.contains("K9") && e.contains("K3"), "{e}");
+    let overlays = Look {
+        overlays: vec![look::Overlay::Rings],
+        ..Look::default()
+    };
+    let e = t
+        .drawing(&["umap"], None, &overlays)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("units"), "{e}");
+    let tiny = Look {
+        width: 0.0,
+        ..Look::default()
+    };
+    assert!(t.drawing(&["umap"], None, &tiny).is_err());
+}
+
+#[test]
+fn the_labels_moved_on_the_screen_are_drawn_where_they_were_put() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = clustered_in(tmp.path());
+    let d = t
+        .drawing(&["umap"], Some("type"), &look::Look::default())
+        .unwrap();
+    let base = |n: &str| tmp.path().join(n).to_string_lossy().into_owned();
+    let before = t.write_drawing(&d, &base("a")).unwrap();
+    let panel = t.map_panels("umap").unwrap()[0];
+    let mut book = OffsetBook::load(&t.labels_file()).unwrap();
+    let mut moved = Offsets::default();
+    moved.nudge("A".to_string(), (0.3, 0.3));
+    book.set_layout(&t.layout_id(panel), &moved);
+    book.save().unwrap();
+    assert_eq!(
+        t.moved_labels(panel).get(&"A".to_string()),
+        Some((0.3, 0.3))
+    );
+    let after = t.write_drawing(&d, &base("b")).unwrap();
+    let (a, b) = (
+        image::open(&before[0]).unwrap(),
+        image::open(&after[0]).unwrap(),
+    );
+    assert_ne!(a.as_bytes(), b.as_bytes(), "the label moved");
 }

@@ -323,6 +323,10 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
 - **Scatter**: the cells on one of the run's layouts, with the prior's
   direct edges as arrows between type medians (supported edges solid, the
   rest faded), or on two diffusion components (`,`/`.` step the y axis, `[`/`]` the x axis).
+  The diffusion map opens on its suggested pair: of the components the run
+  kept, the one that follows pseudotime best (|Spearman ρ|) on x, and on y
+  the one that best parts the lineages (η², over the cells on one lineage),
+  else the next best by ρ; the first two kept without pseudotime.
   `m` steps through the coordinates: senna's PHATE first when the run has
   one (`senna layout phate`, Moon et al. 2019, in legume-numeric's
   `matrix::layout`; `layout.methods.phate`), being made to show
@@ -332,8 +336,9 @@ panels are drawn from the run's trajectory outputs, the same set the bench summa
   type's median through small, medium (the default), large, largest and
   off, and `c` colours the cells by pseudotime, cell type, lineage (a
   type on one lineage only) or component, the last two only when there are
-  several; cells without a value are grey, and a categorical colouring has
-  a legend (no more than half the figure high, none in a thumbnail). The
+  several; cells without a value are grey (drawn first), a categorical
+  colouring draws its largest group first so a small one stays visible, and
+  it has a legend (no more than half the figure high, none in a thumbnail). The
   scatter is drawn as senna view draws its map, through `legume_tui::map`:
   senna's paper page and palette (golden-angle hues at equal lightness,
   alternating lightness past a dozen groups), its point job, and its labels,
