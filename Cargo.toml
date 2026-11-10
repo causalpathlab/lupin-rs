@@ -89,6 +89,9 @@ unicode-segmentation = "1.13"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+# A figure turned onto its page, written as legume-tui writes its PDFs.
+pdf-writer = "0.15"
+miniz_oxide = "0.8"
 # Detachable sessions for the TUI, its image protocol pick and the session
 # subcommands, shared with the other legume tools; the cell map drawn as
 # senna draws its map, on the terminal and as a PDF page, saved through its

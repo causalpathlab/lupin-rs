@@ -263,6 +263,13 @@ Without the screen, `lupin figure` writes a round's or a trajectory's figures:
 lupin figure heatmap -f r1 -o r1.markers.pdf --value zscore --top 5   # its numbers in r1.markers.json
 lupin figure heatmap -f r1 -o r1.frac.svg --value frac --type CT1 --type CT2
 lupin figure trajectory -f t1 -o t1.figure   # t1.figure.map.{png,pdf}, .order and .connectivity
+lupin figure trajectory -f t1 -o t1.dc --map suggested --map dc2,dc3 --colour lineage
+lupin figure trajectory -f t1 -o t1.all --map all --colour type   # every layout and the diffusion map
+lupin figure round -f r1 -o r1.fig --chart terms --top 5 --q 0.05   # r1.fig.heatmap_terms.{png,pdf,json}
+lupin figure round -f r1 -o r1.fig --map umap --colour cluster --focus 3 --labels large
+lupin figure trajectory -f t1 -o t1.page --map umap --width 3.5 --dpi 600
+lupin figure round -f r1 -o r1.slides --chart terms --chart markers --page slide
+lupin export -f r1 -o r1.final   # r1.final.cell_annotation.parquet and .celltype_markers.tsv
 ```
 
 The heatmap shows each type's top markers in every cluster as a log2 fold
@@ -272,7 +279,48 @@ the cluster's cells the gene is detected in (counted from the raw counts);
 profile. Markers match the profile's genes by case, `ENSG…_SYMBOL` either way,
 and without a faba file's `/count/spliced` suffix (`--channel` picks the
 channel). The trajectory's map is its PHATE or other layout, else its
-diffusion map.
+diffusion map; `--map` draws the ones named instead (a layout by name, `best`,
+`all`, `suggested` or `diffusion`, or two diffusion components as `dc1,dc3`),
+each as `{out}.{map}.{colour}.png` and `.pdf`, in the colouring `--colour`
+names (pseudotime, type, lineage or component). The diffusion map opens on
+its suggested pair: of the components the run kept, the one that follows
+pseudotime best (|Spearman ρ|) on x and the one that best parts the lineages
+(η²) on y. The MCP `trajectory_figure` tool's `list` gives those numbers for
+every component. A categorical colouring draws its largest group first, so a
+small one is not buried.
+
+`lupin figure round` writes a round's charts as the screen draws them (`H`
+there): `terms`, each cluster's top GO/GMT terms by effect with q below
+`--q` (a round annotated with `--go`, `--gaf` or `--gmt`, or a units round's
+aligned terms), z-scored by row and blank where q is not below the cut;
+`types`, the cell types × clusters; `markers`; and the `structure` and
+`topics` plots. A heatmap's numbers (its z, the unscaled values and their q)
+go beside it as `.json`. `--map` draws the round's cells on a layout,
+coloured by type, cluster, call or margin.
+
+A figure is drawn for where it goes, `--page paper` (the default here and on
+the screen's saves) or `--page slide`, and a chart is sized to what it shows,
+every row and column named, its text 11 pt on the page:
+
+- on paper, a journal page `--width` wide (7 in) and as tall as its rows
+  need; a chart wider than the page (many clusters, few rows) is drawn along
+  the page's length and turned a quarter left onto it, as a journal sets a
+  landscape figure;
+- on a slide, the figure box of a 16:9 deck such as the `legume` report's
+  (3.5 in tall) and as wide as it needs, up to the slide's width; a chart
+  taller than the box (many rows) is drawn across the slide and turned a
+  quarter right, so nothing on a screen reads upside down. A map is the box's
+  height at 4:3. The MCP figure tools draw for slides unless asked for paper.
+
+The PNG and the PDF are turned alike; the PDF's text stays text.
+
+Both take the screen's look: `--labels` (small, medium, large, largest or
+off), `--focus` (a cluster lit, the rest grey), on a units round's map
+`--overlay` (go, links, rings or none), and the page's `--width` in inches and
+`--dpi`. Labels moved on the screen (kept in `{round}.lupin_labels.json`) are
+drawn where they were put. `lupin export` writes what `e` on the screen
+writes: per cell its cluster, label, the label's Cell Ontology term and
+lineage; per label its markers and the genes that set its clusters apart.
 
 ## Cell Ontology data
 
@@ -421,7 +469,11 @@ A first round's labels are coarse; give `level: fine` (or a fine type as a root)
 
 annotate_run and trajectory_run take `background`: on a large run set it, and the call returns a job id at once; the step runs on lupin's own screen in a session the user can watch with `lupin attach`, and goes on if this server ends.
 
-Figures: annotate_heatmap draws a round's markers × clusters and returns its numbers too; trajectory_figure draws a trajectory run's map, order and connectivity. Both write into today's results folder like any step.
+Figures: annotate_heatmap draws a round's markers × clusters and returns its numbers too; annotate_figure draws a round's other charts (each cluster's top GO/GMT terms × clusters, the cell types × clusters, structure plots) and its cells on a layout, heatmaps with their numbers; trajectory_figure draws a trajectory run's map, order and connectivity, or with `maps` any of its layouts and diffusion component pairs (`list` first: it says how well each component follows pseudotime and parts the lineages, and suggests a pair). All three write into today's results folder like any step.
+
+The figure tools take the look lupin's screen gives a map: `labels` (their size, or off), `focus` (a cluster lit, the rest grey), a units round's `overlays`, and the page's `width` and `dpi`; labels a person moved on the screen stay where they were put. Figures are drawn for where they go: `page: slide` (the default, for the day's report deck: the figure box's height, as wide as needed, a chart too tall turned right across it) or `page: paper` (a journal page's width, as tall as needed, a chart too wide turned left onto it); a result's `turned` names the charts turned.
+
+Around the loops: annotate_family lists a run's rounds and trajectories; annotate_export writes a round's final annotation for use outside lupin. ontology browses the Cell Ontology over the panel; ontology_questions lists what lupin asks of it (types left alone that may join their siblings, types with no term), and ontology_answer answers one, with a note, for every later pass. A label for two types the evidence does not separate (A+B) gives them as `parts`. annotate_hide_genes keeps genes out of the specific genes; exports lists, moves and deletes the figures saved on lupin's screen.
 
 docs prints the method write-ups. Paths are resolved against the server's working directory; results give the paths written.
 ```
@@ -450,7 +502,15 @@ it is refused, naming the job, before anything is written.
 | `annotate_relabel` | applies decisions as the next round of the chain; rounds are never overwritten |
 | `trajectory_run` | orders an annotated round along a prior (roots, precedence statements) and the kNN graph; `level: fine` orders a coarse first round's fine labels |
 | `trajectory_read` | the level of labels ordered, lineages, each edge's connectivity and verdict, the order in words |
-| `trajectory_figure` | a trajectory run's map (a layout, else the diffusion map), order and connectivity as figures (`lupin figure trajectory`), and the map's image |
+| `annotate_figure` | a round's charts (`lupin figure round`): each cluster's top GO/GMT terms × clusters, cell types × clusters, markers, structure plots; its cells on a layout; each heatmap's numbers and the images; `list` says what the round offers |
+| `trajectory_figure` | a trajectory run's map (a layout, else the diffusion map), order and connectivity as figures (`lupin figure trajectory`); with `maps`, any layouts and diffusion component pairs (`suggested` picks one) in a colouring; the images, and per diffusion component its spread, ρ with pseudotime and η² between lineages |
+| `annotate_family` | a run's family (`g` on the screen): the run, its rounds and trajectories, each with its kind and what it holds |
+| `annotate_export` | a round's final annotation (`lupin export`, `e` on the screen): per cell its label, term and lineage; per label its markers and the genes that set it apart |
+| `ontology` | the Cell Ontology over a round's panel: a search, a term's parents, children and lineage, or each panel type's term |
+| `ontology_questions` | what the screen asks of the panel (`Q`): types left alone that may join their siblings, types with no term; `suggest` ranks terms for them |
+| `ontology_answer` | answers one (join, alone, none or a term), with a note, where every later pass reads it |
+| `annotate_hide_genes` | hides genes from the specific genes from now on (`h`, `X` on the screen) |
+| `exports` | the figures saved on the screen (`f`): list, add, unlist, move, delete only while they are as logged |
 | `docs` | lupin's method write-ups |
 | `notebook` | (from legume-mcp) an entry in the day's lab notebook |
 | `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow or stop a background job |

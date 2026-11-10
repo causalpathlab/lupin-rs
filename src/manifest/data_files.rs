@@ -541,6 +541,14 @@ impl ClData {
     }
 }
 
+/// The header of the answers on panel types, as the screen writes it.
+pub const GROUPS_HEADER: &str = "Answers on panel types: label<TAB>join|alone|none (lupin TUI)";
+
+/// The header of the user's alias table, as the screen writes it.
+pub const ALIASES_HEADER: &str =
+    "Cell-type labels mapped to Cell Ontology terms, layered over lupin's own\n\
+     (see `lupin data where`). Columns: label, CL id, note.";
+
 /// Append `line` to `file`, creating it (and its directory) with the
 /// comment `header` first.
 pub fn append_line(file: &Path, header: &str, line: &str) -> Result<()> {

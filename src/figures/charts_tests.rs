@@ -290,6 +290,111 @@ fn the_terms_heatmap_shows_the_starred_terms_scores_missing_where_q_is_not_below
     );
 }
 
+/// A GO/GMT pass's test over K0 and K1 and four terms, as `annotate --go`
+/// writes it: the effect matrix, the q matrix beside it and the terms'
+/// genes, which name three of the terms.
+fn go_test(dir: &Path) {
+    let terms = ["GO:0000001", "GO:0000002", "GO:0000003", "GO:0000004"];
+    let effect = [0.9, 0.5, 0.1, 0.4, 0.1, 0.2, 0.8, 0.6];
+    let q = [0.01, 0.02, 0.5, 0.03, 0.6, 0.9, 0.01, 0.04];
+    let k = ["K0", "K1"];
+    table(
+        dir,
+        "r.ontology_term_effect.parquet",
+        "cluster",
+        &k,
+        &terms,
+        &effect,
+    );
+    // The test's q beside the effect, unrecorded, as the pass keeps it.
+    table(
+        dir,
+        "r.cluster_term_q_values.parquet",
+        "cluster",
+        &k,
+        &terms,
+        &q,
+    );
+    let mut genes = "term_id\tterm_name\tgenes\n".to_string();
+    for (t, name) in [(0, "TERM1"), (1, "TERM2"), (2, "TERM3")] {
+        genes += &format!("{}\t{name}\tGENE1,GENE2\n", terms[t]);
+    }
+    std::fs::write(dir.join("r.term_genes.tsv"), genes).unwrap();
+}
+
+fn go_charted(dir: &Path) -> CellFigures {
+    go_test(dir);
+    go_charted_again(dir)
+}
+
+/// The round [`go_charted`] made, read again.
+fn go_charted_again(dir: &Path) -> CellFigures {
+    charted(dir, |m| {
+        m["annotate"]["ontology_term_effect"] = "r.ontology_term_effect.parquet".into();
+    })
+}
+
+#[test]
+fn the_terms_heatmap_of_a_go_pass_shows_each_clusters_top_terms_by_effect() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = go_charted(dir.path());
+    assert_eq!(
+        f.chart_missing(Panel::Heatmap {
+            of: HeatKind::Terms
+        }),
+        None
+    );
+    let h = f.heat(HeatKind::Terms).unwrap();
+    assert_eq!(h.cols, ["K0", "K1"]);
+    // K0's terms with q below 0.05 by effect, then K1's not yet shown; the
+    // fourth named by its id, as the signature does not name it.
+    assert_eq!(h.rows, ["TERM1", "TERM2", "GO:0000004", "TERM3"]);
+    near(
+        &h.z,
+        &[1.0, f32::NAN, 1.0, f32::NAN, -1.0, 1.0, f32::NAN, 1.0],
+    );
+    // The numbers behind it, unscaled: each term's effect and q in every
+    // cluster.
+    near(&h.values, &[0.9, 0.1, 0.5, 0.2, 0.4, 0.6, 0.1, 0.8]);
+    near(&h.q, &[0.01, 0.6, 0.02, 0.9, 0.03, 0.04, 0.5, 0.01]);
+    assert!(h.title.contains("effect"), "{}", h.title);
+    assert!(
+        coloured(&picture(
+            &f,
+            Panel::Heatmap {
+                of: HeatKind::Terms
+            }
+        )) > 100
+    );
+}
+
+#[test]
+fn the_terms_heatmap_keeps_the_top_terms_asked_for_under_the_q_asked_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = go_charted(dir.path());
+    let _ = f.heat(HeatKind::Terms).unwrap();
+    f.set_term_cut(1, 0.05).unwrap();
+    assert_eq!(f.heat(HeatKind::Terms).unwrap().rows, ["TERM1", "TERM3"]);
+    f.set_term_cut(6, 0.025).unwrap();
+    assert_eq!(
+        f.heat(HeatKind::Terms).unwrap().rows,
+        ["TERM1", "TERM2", "TERM3"],
+        "GO:0000004 is below no cluster's q"
+    );
+    f.set_term_cut(6, 0.001).unwrap();
+    let e = f.heat(HeatKind::Terms).unwrap_err();
+    assert!(e.contains("0.001"), "{e}");
+    // A q table gone is said, not taken for terms never scored.
+    std::fs::remove_file(dir.path().join("r.cluster_term_q_values.parquet")).unwrap();
+    let f = go_charted_again(dir.path());
+    let e = f
+        .chart_missing(Panel::Heatmap {
+            of: HeatKind::Terms,
+        })
+        .unwrap();
+    assert!(e.contains("gone"), "{e}");
+}
+
 #[test]
 fn the_types_heatmap_reads_the_enrichments_q_else_the_units_membership_share() {
     let dir = tempfile::tempdir().unwrap();
@@ -399,7 +504,15 @@ fn a_chart_is_written_as_a_pdf_whose_text_is_text() {
     });
     let pdf = dir.path().join("chart.pdf");
     let img = f
-        .write_chart(Panel::Structure { of: Mixture::Types }, SIZE, 150.0, &pdf)
+        .write_chart(
+            Panel::Structure { of: Mixture::Types },
+            crate::figures::look::Fit {
+                size: SIZE,
+                turn: None,
+            },
+            150.0,
+            &pdf,
+        )
         .unwrap();
     assert_eq!((img.width(), img.height()), (SIZE.w, SIZE.h));
     let s = String::from_utf8_lossy(&std::fs::read(&pdf).unwrap()).into_owned();
@@ -408,4 +521,264 @@ fn a_chart_is_written_as_a_pdf_whose_text_is_text() {
         s.contains("(K0) Tj") && s.contains("(CT1) Tj"),
         "names are text"
     );
+}
+
+#[test]
+fn a_rounds_charts_and_maps_are_written_a_heatmap_with_its_numbers() {
+    use crate::figures::round::ChartKind;
+    let dir = tempfile::tempdir().unwrap();
+    let f = go_charted(dir.path());
+    let base = dir
+        .path()
+        .join("out")
+        .join("r")
+        .to_string_lossy()
+        .into_owned();
+    // Asked for, a chart the round cannot draw is refused, saying why.
+    let e = f
+        .round_drawing(
+            &[ChartKind::Terms, ChartKind::Structure],
+            &["umap"],
+            None,
+            &Default::default(),
+        )
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("annotate.annotation"), "{e:#}");
+    let d = f
+        .round_drawing(
+            &[ChartKind::Terms],
+            &["umap"],
+            Some("cluster"),
+            &Default::default(),
+        )
+        .unwrap();
+    let planned = f.round_files(&d, &base);
+    let files = f.write_round(&d, &base).unwrap();
+    assert_eq!(files, planned);
+    let names: Vec<String> = (files.iter())
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "r.heatmap_terms.png",
+            "r.heatmap_terms.pdf",
+            "r.heatmap_terms.json",
+            "r.layout_umap.cluster.png",
+            "r.layout_umap.cluster.pdf",
+        ]
+    );
+    assert!(files.iter().all(|p| p.is_file()), "{files:?}");
+    let numbers: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&files[2]).unwrap()).unwrap();
+    assert_eq!(numbers["rows"][0], "TERM1", "{numbers}");
+    assert_eq!(numbers["q"].as_array().unwrap().len(), 8, "{numbers}");
+    // Nothing asked for: every chart the round records.
+    let all = f
+        .round_drawing::<&str>(&[], &[], None, &Default::default())
+        .unwrap();
+    let charts = f.charts_offered();
+    let offered: Vec<(&str, bool)> = (charts.iter())
+        .map(|c| (c.chart.as_str(), c.missing.is_none()))
+        .collect();
+    assert_eq!(
+        offered,
+        [
+            ("terms", true),
+            ("types", false),
+            ("markers", false),
+            ("structure", false),
+            ("topics", false)
+        ]
+    );
+    assert_eq!(
+        f.round_files(&all, &base)[0].file_name().unwrap(),
+        "r.heatmap_terms.png"
+    );
+}
+
+/// [`charted`] whose markers heatmap is `rows` × `cols` (GENE0…, K0…).
+fn with_heat(dir: &Path, rows: usize, cols: usize) -> CellFigures {
+    let f = charted(dir, |_| {});
+    let names = |p: &str, n: usize| (0..n).map(|i| format!("{p}{i}")).collect();
+    let t = HeatTable {
+        title: "markers".into(),
+        rows: names("GENE", rows),
+        cols: names("K", cols),
+        z: (0..rows * cols).map(|i| (i % 5) as f32 - 2.0).collect(),
+        values: Vec::new(),
+        q: Vec::new(),
+    };
+    let slot = HeatKind::ALL
+        .iter()
+        .position(|&h| h == HeatKind::Markers)
+        .unwrap();
+    f.charts.heats[slot].set(Ok(Arc::new(t))).unwrap();
+    f
+}
+
+/// The markers heatmap of `f` written on `page`: its image and whether
+/// its PDF page is turned (left on paper, right on a slide).
+fn written_on(
+    f: &CellFigures,
+    dir: &Path,
+    page: crate::figures::look::PageKind,
+) -> (image::RgbaImage, bool) {
+    use crate::figures::look::Look;
+    let look = Look {
+        page,
+        ..Look::default()
+    };
+    let pdf = dir.join("heat.pdf");
+    let panel = Panel::Heatmap {
+        of: HeatKind::Markers,
+    };
+    let turn = f.chart_fit(panel, &look).unwrap().turn;
+    let (img, turned) = f.write_chart_fitted(panel, &look, &pdf).unwrap();
+    assert_eq!(turned, turn.is_some());
+    let bytes = String::from_utf8_lossy(&std::fs::read(&pdf).unwrap()).into_owned();
+    let rotated = turn.is_some_and(|t| bytes.contains(&format!("/Rotate {}", t.degrees())));
+    assert_eq!(rotated, turned, "the PDF says so too");
+    (img, turned)
+}
+
+/// [`written_on`] paper.
+fn written(f: &CellFigures, dir: &Path) -> (image::RgbaImage, bool) {
+    written_on(f, dir, crate::figures::look::PageKind::Paper)
+}
+
+/// [`written_on`] a slide, which is turned right, never upside down to a
+/// screen.
+fn on_slide(f: &CellFigures, dir: &Path) -> (image::RgbaImage, bool) {
+    let (img, turned) = written_on(f, dir, crate::figures::look::PageKind::Slide);
+    let pdf = std::fs::read(dir.join("heat.pdf")).unwrap();
+    assert!(!String::from_utf8_lossy(&pdf).contains("/Rotate 270"));
+    (img, turned)
+}
+
+#[test]
+fn a_heatmap_wider_than_its_page_is_turned_onto_a_tall_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (img, turned) = written(&with_heat(dir.path(), 3, 120), dir.path());
+    assert!(turned);
+    assert_eq!(img.width(), 1400, "the page's width: 7 in at 200 dpi");
+    assert!(
+        img.height() > img.width(),
+        "{}×{}",
+        img.width(),
+        img.height()
+    );
+}
+
+#[test]
+fn a_heatmap_taller_than_its_page_grows_down_upright() {
+    let dir = tempfile::tempdir().unwrap();
+    let (img, turned) = written(&with_heat(dir.path(), 90, 3), dir.path());
+    assert!(!turned);
+    assert_eq!(img.width(), 1400);
+    assert!(
+        img.height() > 1400,
+        "every row has its line: {}",
+        img.height()
+    );
+}
+
+#[test]
+fn a_heatmap_that_fits_keeps_the_page_it_opens_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = with_heat(dir.path(), 3, 3);
+    let (img, turned) = written(&f, dir.path());
+    assert!(!turned);
+    assert_eq!((img.width(), img.height()), (1400, 1050));
+    // The image (a PNG, a thumbnail) has its text drawn; the PDF sets it.
+    let panel = Panel::Heatmap {
+        of: HeatKind::Markers,
+    };
+    let size = crate::figures::look::Look::default().figure_size().unwrap();
+    let bare = f.chart_frame(panel, size, true).to_image();
+    assert!(img.as_raw() != bare.as_raw(), "names drawn into the image");
+}
+
+#[test]
+fn a_page_turns_only_what_is_too_wide_across_and_short_enough_to_turn() {
+    use crate::figures::look::Look;
+    let look = Look::default();
+    let fit = |n| look.fit(n).unwrap();
+    let (w, short) = (1400, 1050);
+    let fits = fit((900, 300));
+    assert_eq!(
+        (fits.size.w, fits.size.h, fits.turn.is_some()),
+        (w, short, false)
+    );
+    let wide = fit((3000, 600));
+    assert!(wide.turn.is_some());
+    assert_eq!(
+        (wide.size.w, wide.size.h),
+        (3000, w),
+        "drawn across, then turned"
+    );
+    let both = fit((3000, 2000));
+    assert!(!both.turn.is_some(), "too big either way: kept upright");
+    assert_eq!((both.size.w, both.size.h), (w, 2000));
+    let tall = fit((1500, 600));
+    assert!(tall.turn.is_some());
+    assert_eq!(
+        tall.size.w,
+        (w as f32 * crate::figures::look::MAX_TALL).round() as u32,
+        "a full page"
+    );
+}
+
+#[test]
+fn on_a_slide_a_wide_heatmap_stays_upright_as_wide_as_it_needs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (img, turned) = on_slide(&with_heat(dir.path(), 3, 40), dir.path());
+    assert!(!turned);
+    assert_eq!(img.height(), 700, "the slide's box: 3.5 in at 200 dpi");
+    assert!(img.width() > 933 && img.width() <= 2440, "{}", img.width());
+}
+
+#[test]
+fn on_a_slide_a_tall_heatmap_is_turned_across_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (img, turned) = on_slide(&with_heat(dir.path(), 60, 3), dir.path());
+    assert!(turned);
+    assert_eq!(img.height(), 700, "turned, it is the box's height");
+    assert!(
+        img.width() > img.height(),
+        "{}×{}",
+        img.width(),
+        img.height()
+    );
+}
+
+#[test]
+fn a_slide_draws_a_map_in_its_box_at_four_to_three() {
+    use crate::figures::look::{Look, PageKind};
+    let look = Look {
+        page: PageKind::Slide,
+        ..Look::default()
+    };
+    let s = look.figure_size().unwrap();
+    assert_eq!((s.w, s.h), (933, 700));
+    let narrow = Look {
+        width: Some(1.0),
+        ..look
+    };
+    assert_eq!(
+        narrow.figure_size().unwrap().w,
+        933,
+        "never narrower than 4:3"
+    );
+}
+
+#[test]
+fn a_structure_plot_asks_for_the_height_its_key_and_names_need() {
+    let dir = tempfile::tempdir().unwrap();
+    posterior(dir.path());
+    let f = charted(dir.path(), |m| {
+        m["annotate"]["annotation"] = "r.annotation.parquet".into();
+    });
+    let (w, h) = f.natural_size(Panel::Structure { of: Mixture::Types }, 30.0);
+    assert!(w > 0 && h > 0, "{w} × {h}");
 }

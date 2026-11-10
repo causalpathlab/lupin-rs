@@ -385,3 +385,287 @@ fn a_figure_of_a_run_with_no_trajectory_is_refused_before_anything_runs() {
         .collect();
     assert!(left.is_empty(), "{left:?}");
 }
+
+#[test]
+fn a_rounds_figures_are_listed_and_a_chart_it_lacks_refused_before_anything_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let round = round_with_profile(dir.path())
+        .to_string_lossy()
+        .into_owned();
+    let r = calls(&[
+        ("annotate_figure", json!({ "round": round, "list": true })),
+        (
+            "annotate_figure",
+            json!({ "round": round, "charts": ["terms"] }),
+        ),
+        (
+            "annotate_figure",
+            json!({ "round": round, "charts": ["bogus"] }),
+        ),
+        (
+            "annotate_figure",
+            json!({ "round": round, "charts": ["markers"], "q": 2.0 }),
+        ),
+    ]);
+    let listed: Value = serde_json::from_str(r[0]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let charts = listed["offers"]["charts"].as_array().unwrap();
+    let markers = charts.iter().find(|c| c["chart"] == "markers").unwrap();
+    assert!(markers.get("missing").is_none(), "{markers}");
+    assert!(error_text(&r[1]).contains("go, gaf or gmt"), "{}", r[1]);
+    assert!(error_text(&r[2]).contains("bogus"), "{}", r[2]);
+    assert!(error_text(&r[3]).contains("(0, 1]"), "{}", r[3]);
+    let left: Vec<_> = std::fs::read_dir(dir.path().join("r0"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .filter(|n| n.to_string_lossy().contains("figure"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn the_watcher_opens_the_round_or_run_a_call_made_else_the_one_it_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let made = dir.path().join("r.L1.senna.json");
+    let read = dir.path().join("r.senna.json");
+    std::fs::write(&made, "{}").unwrap();
+    std::fs::write(&read, "{}").unwrap();
+    let (made_s, read_s) = (made.to_string_lossy(), read.to_string_lossy());
+    // The result names what the call made; a note may follow it.
+    let text = format!("{}\nnote: look at K2", json!({ "round": made_s }));
+    assert_eq!(
+        call_manifest(&json!({ "from": read_s }), &text),
+        Some(made.clone())
+    );
+    // A trajectory run, as trajectory_read names it.
+    let text = json!({ "run": made_s }).to_string();
+    assert_eq!(call_manifest(&json!({}), &text), Some(made.clone()));
+    // A result cut short, or one with no manifest: the arguments say.
+    assert_eq!(
+        call_manifest(&json!({ "round": read_s }), "{\"clusters\": [1, 2"),
+        Some(read.clone())
+    );
+    // A background job's round is not there until it ends: its source is.
+    let job = json!({ "job": "job-1", "round": dir.path().join("r.L2").to_string_lossy() });
+    assert_eq!(
+        call_manifest(&json!({ "from": read_s }), &job.to_string()),
+        Some(read)
+    );
+    assert_eq!(call_manifest(&json!({}), "docs"), None);
+}
+
+/// A tool's structured result, or its first item's JSON text.
+fn result(r: &Value) -> Value {
+    assert_ne!(r["isError"], true, "{r}");
+    match r.get("structuredContent") {
+        Some(v) => v.clone(),
+        None => serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap(),
+    }
+}
+
+#[test]
+fn the_family_lists_the_run_its_rounds_and_trajectories() {
+    let dir = tempfile::tempdir().unwrap();
+    let round = round_with_profile(dir.path());
+    std::fs::copy(&round, dir.path().join("r0/run.L1.senna.json")).unwrap();
+    let r = calls(&[(
+        "annotate_family",
+        json!({ "from": round.to_string_lossy() }),
+    )]);
+    let v = result(&r[0]);
+    let members = v["members"].as_array().unwrap();
+    let names: Vec<&str> = members
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["run", "run.L1"], "{v}");
+    assert_eq!(members[1]["kind"], "round");
+    assert_eq!(members[1]["labelled"], true);
+    assert!(members[1]["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("run.L1.senna.json"));
+}
+
+#[test]
+fn the_ontology_is_searched_walked_and_shows_the_panel_on_it() {
+    use crate::tui::headless::tests::round_on_ontology;
+    let dir = tempfile::tempdir().unwrap();
+    let (round, obo) = round_on_ontology(dir.path());
+    let at = json!({ "round": round.to_string_lossy(), "obo": obo.to_string_lossy() });
+    let with = |extra: Value| {
+        let mut a = at.clone();
+        a.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        a
+    };
+    let r = calls(&[
+        ("ontology", with(json!({ "search": "type one" }))),
+        ("ontology", with(json!({ "term": "CL:1" }))),
+        ("ontology", at.clone()),
+        ("ontology", with(json!({ "term": "CL:999" }))),
+        ("ontology", with(json!({ "term": "CL:1", "search": "CT" }))),
+    ]);
+    let found = result(&r[0]);
+    assert_eq!(found["terms"][0]["id"], "CL:10", "{found}");
+    assert_eq!(found["terms"][0]["name"], "CT1");
+    let term = result(&r[1]);
+    let ids = |k: &str| -> Vec<String> {
+        (term[k].as_array().unwrap().iter())
+            .map(|t| t["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(ids("children"), ["CL:10", "CL:12"], "{term}");
+    assert_eq!(ids("parents"), ["CL:0"]);
+    assert_eq!(term["name"], "group1");
+    assert_eq!(
+        term["types"],
+        json!(["CT1", "CT2"]),
+        "the panel's types under it"
+    );
+    let panel = result(&r[2]);
+    let ct1 = &panel["types"]["CT1"];
+    assert_eq!(ct1["term"], "CL:10", "{panel}");
+    assert_eq!(ct1["lineage"][0]["id"], "CL:0", "top first");
+    assert_eq!(panel["unmatched"], json!(["CT3"]));
+    assert!(error_text(&r[3]).contains("CL:999"), "{}", r[3]);
+    assert!(error_text(&r[4]).contains("not both"), "{}", r[4]);
+}
+
+#[test]
+fn a_panel_question_answered_is_kept_and_the_ontology_reads_it() {
+    use crate::tui::headless::tests::round_on_ontology;
+    let dir = tempfile::tempdir().unwrap();
+    let (round, obo) = round_on_ontology(dir.path());
+    let at = |extra: Value| {
+        let mut a = json!({ "round": round.to_string_lossy(), "obo": obo.to_string_lossy() });
+        a.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        a
+    };
+    let r = calls(&[
+        ("ontology_questions", at(json!({}))),
+        (
+            "ontology_answer",
+            at(json!({ "type": "CT3", "answer": "CL:2" })),
+        ),
+        (
+            "ontology_answer",
+            at(json!({ "type": "CT3", "answer": "CL:999", "note": "n" })),
+        ),
+        (
+            "ontology_answer",
+            at(json!({ "type": "CT3", "answer": "join", "note": "n" })),
+        ),
+        (
+            "ontology_answer",
+            at(json!({ "type": "CT3", "answer": "CL:2", "note": "its markers" })),
+        ),
+        ("ontology", at(json!({}))),
+        ("ontology_questions", at(json!({}))),
+    ]);
+    let asked = result(&r[0]);
+    assert_eq!(asked["terms"], json!([{ "type": "CT3" }]), "{asked}");
+    assert!(error_text(&r[1]).contains("note"), "{}", r[1]);
+    assert!(error_text(&r[2]).contains("CL:999"), "{}", r[2]);
+    assert!(error_text(&r[3]).contains("join"), "{}", r[3]);
+    let written = result(&r[4]);
+    let file = PathBuf::from(written["written"].as_str().unwrap());
+    assert_eq!(
+        file,
+        dir.path().join("r0/lupin/cl_aliases.tsv"),
+        "{written}"
+    );
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("CT3\tCL:2\tits markers"), "{text}");
+    let panel = result(&r[5]);
+    assert_eq!(panel["types"]["CT3"]["term"], "CL:2", "{panel}");
+    assert_eq!(panel["unmatched"], json!([]));
+    assert_eq!(result(&r[6])["terms"], json!([]), "asked once");
+}
+
+#[test]
+fn hidden_genes_leave_the_specific_genes_until_asked_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let round = round_with_profile(dir.path())
+        .to_string_lossy()
+        .into_owned();
+    let genes = |extra: Value| {
+        let mut a = json!({ "round": round, "clusters": [1], "top": 5 });
+        a.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        ("annotate_genes", a)
+    };
+    let r = calls(&[
+        (
+            "annotate_hide_genes",
+            json!({ "round": round, "patterns": ["GENE2"] }),
+        ),
+        (
+            "annotate_hide_genes",
+            json!({ "round": round, "patterns": [" "] }),
+        ),
+        genes(json!({})),
+        genes(json!({ "show_hidden": true })),
+    ]);
+    let hid = result(&r[0]);
+    let file = PathBuf::from(hid["written"].as_str().unwrap());
+    assert_eq!(file, dir.path().join("r0/lupin/hidden_genes.txt"), "{hid}");
+    assert!(error_text(&r[1]).contains("pattern"), "{}", r[1]);
+    let specific = |v: &Value| -> Vec<String> {
+        (v["1"]["specific"].as_array().unwrap().iter())
+            .map(|g| g[0].as_str().unwrap().to_string())
+            .collect()
+    };
+    let shown = result(&r[2]);
+    assert_eq!(specific(&shown), ["GENE4"], "{shown}");
+    assert_eq!(shown["1"]["hidden"], 1);
+    assert_eq!(specific(&result(&r[3])), ["GENE2", "GENE4"]);
+}
+
+#[test]
+fn an_export_is_logged_listed_moved_and_deleted_only_as_logged() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join(".lupin-view");
+    let pdf = dir.path().join("r.map.pdf");
+    std::fs::write(&pdf, "pdf").unwrap();
+    std::fs::write(dir.path().join("r.map.png"), "png").unwrap();
+    let call = |args: Value| exports(&log, &Arguments(args));
+    let entries = |c: Vec<Content>| -> Vec<Value> {
+        let Content::Json(v) = &c[0] else { panic!() };
+        v["entries"].as_array().unwrap().clone()
+    };
+    let p = pdf.to_string_lossy().into_owned();
+    let added = entries(call(json!({ "action": "add", "path": p, "what": "the map" })).unwrap());
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0]["what"], "the map");
+    assert_eq!(added[0]["status"], "ok");
+    assert_eq!(
+        added[0]["files"].as_array().unwrap().len(),
+        2,
+        "with its png"
+    );
+    let moved_to = dir.path().join("kept");
+    std::fs::create_dir(&moved_to).unwrap();
+    let moved = entries(
+        call(json!({ "action": "move", "path": p, "to": moved_to.to_string_lossy() })).unwrap(),
+    );
+    let now = moved[0]["path"].as_str().unwrap().to_string();
+    assert!(now.ends_with("kept/r.map.pdf"), "{now}");
+    assert!(moved_to.join("r.map.png").is_file() && !pdf.exists());
+    // Changed on disk since logged: not deleted.
+    std::fs::write(&now, "changed").unwrap();
+    let e = call(json!({ "action": "delete", "path": now }))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("confirm"), "{e}");
+    assert!(call(json!({ "action": "delete", "path": now, "confirm": true })).is_err());
+    assert!(Path::new(&now).is_file());
+    let left = entries(call(json!({ "action": "unlist", "path": now })).unwrap());
+    assert!(left.is_empty());
+    assert!(Path::new(&now).is_file(), "unlisting keeps the files");
+    assert!(call(json!({ "action": "bogus" })).is_err());
+}

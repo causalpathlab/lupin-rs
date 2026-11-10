@@ -289,15 +289,24 @@ pub fn marker_rows(
     out
 }
 
-/// Write both files next to the round; returns their paths.
+/// The two files [`write`] writes under `stem`: the cells', the markers'.
+pub fn files(stem: &str) -> (PathBuf, PathBuf) {
+    (
+        PathBuf::from(format!("{stem}.cell_annotation.parquet")),
+        PathBuf::from(format!("{stem}.celltype_markers.tsv")),
+    )
+}
+
+/// Write both files under `stem`; returns their paths.
 pub fn write(
     round: &RoundView,
     tree: &PanelTree,
     cl: Option<&ClTerms>,
     mixed: &super::ontology::Mixed,
     original: &BTreeMap<String, BTreeSet<String>>,
+    stem: &str,
 ) -> Result<(PathBuf, PathBuf)> {
-    let stem = crate::manifest::run::derive_out_prefix(&round.manifest.to_string_lossy());
+    legume_numeric::matrix::common_io::mkdir_parent(stem)?;
     let calls = cluster_calls(round, tree, cl, mixed, &[]);
 
     let n = round.cell_names.len();
@@ -319,7 +328,7 @@ pub fn write(
         top.push(text(|c| &c.top, ""));
         share.push(call.map_or(f32::NAN, |c| c.share));
     }
-    let cells = PathBuf::from(format!("{stem}.cell_annotation.parquet"));
+    let (cells, markers) = files(stem);
     write_named_table(
         &cells.to_string_lossy(),
         "cell",
@@ -334,7 +343,6 @@ pub fn write(
         ],
     )?;
 
-    let markers = PathBuf::from(format!("{stem}.celltype_markers.tsv"));
     let mut lines: Vec<Box<str>> = vec!["celltype\tgene\tsource\tlog2fc".into()];
     lines.extend(
         marker_rows(round, tree, mixed, &calls, original)

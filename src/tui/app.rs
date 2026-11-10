@@ -1542,7 +1542,7 @@ impl App {
             said.join(" + ")
         );
         // Every mix is listed, so a `+` in a type's own name is never read as one.
-        if let Some(file) = self.data_search.amend(super::ontology::MIXED) {
+        if let Some(file) = super::ontology::Mixed::file(&self.data_search) {
             if let Err(e) = self.mixed.add(&name, &parts, &file) {
                 self.status = format!("could not record the mix: {e:#}");
             }
@@ -1908,7 +1908,9 @@ impl App {
         let Some(r) = &self.round else {
             return Err("nothing to export".into());
         };
-        match super::export::write(r, &self.tree, self.cl.as_ref(), &self.mixed, &self.original) {
+        let stem = crate::manifest::run::derive_out_prefix(&r.manifest.to_string_lossy());
+        let (tree, cl) = (&self.tree, self.cl.as_ref());
+        match super::export::write(r, tree, cl, &self.mixed, &self.original, &stem) {
             Ok((cells, markers)) => {
                 self.push_log(format!(
                     "exported {} and {}",
@@ -4841,7 +4843,7 @@ impl App {
                 format!("none taken for {label}; no user or project folder to keep it in");
             return;
         };
-        let header = "Answers on panel types: label<TAB>join|alone|none (lupin TUI)";
+        let header = crate::manifest::data_files::GROUPS_HEADER;
         match crate::manifest::data_files::append_row(&file, header, &[label, "none"]) {
             Ok(()) => {
                 if let Some(cl) = self.cl.as_mut() {
@@ -4867,7 +4869,7 @@ impl App {
     /// build the tree again with it.
     fn answer_join(&mut self, label: &str, join: bool, file: &Path) {
         let answer = if join { "join" } else { "alone" };
-        let header = "Answers on panel types: label<TAB>join|alone|none (lupin TUI)";
+        let header = crate::manifest::data_files::GROUPS_HEADER;
         match crate::manifest::data_files::append_row(file, header, &[label, answer]) {
             Ok(()) => {
                 if let Some(cl) = self.cl.as_mut() {
@@ -5240,8 +5242,7 @@ const ROOT_TERM: &str = "CL:0000000";
 fn remember_alias(file: &Path, label: &str, id: &str, note: &str) -> anyhow::Result<()> {
     crate::manifest::data_files::append_row(
         file,
-        "Cell-type labels mapped to Cell Ontology terms, layered over lupin's own\n\
-         (see `lupin data where`). Columns: label, CL id, note.",
+        crate::manifest::data_files::ALIASES_HEADER,
         &[label, id, note],
     )
 }

@@ -222,10 +222,11 @@ impl Answer {
 /// term effect, z, p and q.
 pub struct Terms {
     pub terms: Vec<TermGenes>,
-    effect: Table,
+    pub(crate) effect: Table,
     z: Option<Table>,
     p: Option<Table>,
-    q: Option<Table>,
+    /// Kept as the effect is, in its rows and columns.
+    pub(crate) q: Option<Table>,
     /// Each term id's column in the tables.
     col: BTreeMap<String, usize>,
     /// Each cluster's row in the tables.
@@ -237,9 +238,14 @@ impl Terms {
         let Some(rel) = loaded.manifest.annotate.ontology_term_effect.as_deref() else {
             return Ok(None);
         };
-        let path = resolve(&loaded.dir, rel);
-        let effect = read_table(&path)?;
-        let prefix = term_prefix(&path);
+        Self::read_at(&resolve(&loaded.dir, rel)).map(Some)
+    }
+
+    /// The terms whose effect table is at `path`, with the tables and
+    /// genes kept beside it.
+    pub(crate) fn read_at(path: &str) -> Result<Self> {
+        let effect = read_table(path)?;
+        let prefix = term_prefix(path);
         let at = |suffix: &str| {
             let p = format!("{prefix}{suffix}");
             std::path::Path::new(&p).is_file().then_some(p)
@@ -256,7 +262,7 @@ impl Terms {
             Some(p) => read_term_genes(&p)?,
             None => Vec::new(),
         };
-        Ok(Some(Self {
+        Ok(Self {
             terms,
             z: table(CLUSTER_TERM_Z)?,
             p: table(CLUSTER_TERM_P)?,
@@ -264,7 +270,7 @@ impl Terms {
             effect,
             col,
             row,
-        }))
+        })
     }
 
     /// The term named `name` (an id, or a name in any case).

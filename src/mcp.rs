@@ -6,7 +6,9 @@
 //! lupin states the facts (calls, q, ranks, edges, verdicts, all written by
 //! code); the agent brings the judgment, as `relabel` decisions with a
 //! rationale or as precedence statements with a note, both kept with the
-//! round or run they made. Passes, relabels, `ask` and trajectories run as
+//! round or run they made. A person follows the server with `lupin mcp
+//! watch`, stops a call or leaves the agent a note there, and opens what a
+//! call made on lupin's screen. Passes, relabels, `ask` and trajectories run as
 //! child `lupin` processes, as from the TUI: stdout carries the protocol,
 //! and their log lines come back as progress. No tool replaces an existing
 //! manifest: a new output takes the next free name, in today's results
@@ -23,15 +25,17 @@ use crate::annotate::gene_rows::CHANNELS;
 use crate::annotate::rounds::{ClusterId, DecidedBy};
 use crate::child::{lupin_command, relabel_argv};
 use crate::describe::trajectory::{self as order_text, OrderFacts};
+use crate::figures::look::{LabelSize, Look, Overlay, PageKind};
 use crate::manifest::family::{file_name, Tag};
 use crate::manifest::rounds::{review_json, Chain};
 use crate::manifest::run::{self, annotated_path, derive_out_prefix, manifest_file};
+use crate::tui::headless::PanelState;
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use data_beans::aux::feature_rows::SPLICED;
 use legume_mcp::{Call, Content, Handler, ServerInfo, ToolSpec};
 use serde_json::{json, Map, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -92,8 +96,31 @@ a session the user can watch with `lupin attach`, and goes on if this server \
 ends.
 
 Figures: annotate_heatmap draws a round's markers × clusters and returns its \
-numbers too; trajectory_figure draws a trajectory run's map, order and \
-connectivity. Both write into today's results folder like any step.
+numbers too; annotate_figure draws a round's other charts (each cluster's top \
+GO/GMT terms × clusters, the cell types × clusters, structure plots) and its \
+cells on a layout, heatmaps with their numbers; trajectory_figure draws a \
+trajectory run's map, order and connectivity, or with `maps` any of its layouts and diffusion component \
+pairs (`list` first: it says how well each component follows pseudotime \
+and parts the lineages, and suggests a pair). All three write into today's \
+results folder like any step.
+
+The figure tools take the look lupin's screen gives a map: `labels` (their \
+size, or off), `focus` (a cluster lit, the rest grey), a units round's \
+`overlays`, and the page's `width` and `dpi`; labels a person moved on the \
+screen stay where they were put. Figures are drawn for where they go: \
+`page: slide` (the default, for the day's report deck: the figure box's \
+height, as wide as needed, a chart too tall turned right across it) or \
+`page: paper` (a journal page's width, as tall as needed, a chart too wide \
+turned left onto it); a result's `turned` names the charts turned.
+
+Around the loops: annotate_family lists a run's rounds and trajectories; \
+annotate_export writes a round's final annotation for use outside lupin. \
+ontology browses the Cell Ontology over the panel; ontology_questions lists \
+what lupin asks of it (types left alone that may join their siblings, types \
+with no term), and ontology_answer answers one, with a note, for every later \
+pass. A label for two types the evidence does not separate (A+B) gives them \
+as `parts`. annotate_hide_genes keeps genes out of the specific genes; \
+exports lists, moves and deletes the figures saved on lupin's screen.
 
 docs prints the method write-ups. Paths are resolved against the server's \
 working directory; results give the paths written.";
@@ -109,8 +136,12 @@ fn tools() -> Vec<ToolSpec> {
     });
     let decisions = json!({
         "type": "array",
-        "description": "Decisions, one object each: {cluster or clusters, action: label|merge|keep|markers_add|markers_drop, label?, features?, evidence?: [..], alternatives?: [{label, why_not}], rationale (required)}. decided_by defaults to agent (your own decision); give agent_proposed_user_accepted only when the user accepted it.",
+        "description": "Decisions, one object each: {cluster or clusters, action: label|merge|keep|markers_add|markers_drop, label?, parts?, features?, evidence?: [..], alternatives?: [{label, why_not}], rationale (required)}. A label that stands for two or more types the evidence does not separate (A+B) gives them as `parts`: it is named so for the export, which places it under their common ancestor. decided_by defaults to agent (your own decision); give agent_proposed_user_accepted only when the user accepted it.",
         "items": { "type": "object" }
+    });
+    let obo = json!({
+        "type": "string",
+        "description": "The Cell Ontology OBO file; the one lupin's data files find when omitted"
     });
     let background = json!({
         "type": "boolean",
@@ -149,7 +180,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_genes",
-            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. A merged cluster's genes are its parts' together (their cell-weighted mean profile). A coarse label (a Cell Ontology group of the panel's types) is measured on its members' markers, listed in `group_of`. Markers match genes by case, ENSG..._SYMBOL either way and without a faba file's /count/spliced suffix; when under half the panel's markers are measured, a second item warns, with names that did not match. For why one label, gene or term rather than another, use annotate_why.",
+            "Per cluster of a round, the genes behind its calls: the genes that set it apart (log2 fold change over the other clusters; those hidden by annotate_hide_genes left out and counted in `hidden`), and for its label, each method's top type and any `types` given, those types' panel markers: how many, how many are up (log2 fold change ≥ 1) and the `top` highest with their log2 fold change. A merged cluster's genes are its parts' together (their cell-weighted mean profile). A coarse label (a Cell Ontology group of the panel's types) is measured on its members' markers, listed in `group_of`. Markers match genes by case, ENSG..._SYMBOL either way and without a faba file's /count/spliced suffix; when under half the panel's markers are measured, a second item warns, with names that did not match. For why one label, gene or term rather than another, use annotate_why.",
             schema(
                 json!({
                     "round": { "type": "string" },
@@ -157,6 +188,7 @@ fn tools() -> Vec<ToolSpec> {
                     "types": { "type": "array", "items": { "type": "string" }, "description": "More cell types whose markers to show" },
                     "top": { "type": "integer", "description": "Genes listed per cluster and per type (20)" },
                     "channel": { "type": "string", "enum": CHANNELS, "description": "Where a gene has several rows (a faba file's GENE/count/spliced and GENE/count/unspliced), the count channel its level is read from (spliced)" },
+                    "show_hidden": { "type": "boolean", "description": "List the hidden genes (annotate_hide_genes) among the specific genes too" },
                 }),
                 &["round"],
             ),
@@ -174,6 +206,29 @@ fn tools() -> Vec<ToolSpec> {
                     "order": { "type": "string", "enum": ["label", "id"], "description": "Clusters by label, following the types' rows (default), or by lupin's cluster id" },
                     "channel": { "type": "string", "enum": CHANNELS, "description": "Where a gene has several rows, the count channel its level is read from (spliced)" },
                     "out": { "type": "string", "description": "The figure, ending .pdf, .svg or .png; {round}.heatmap.pdf in today's results folder when omitted" },
+                }),
+                &["round"],
+            ),
+        ),
+        ToolSpec::new(
+            "annotate_figure",
+            "A round's charts and cell maps (`lupin figure round`), as the screen draws them. Charts: `terms`, each cluster's top GO/GMT terms × clusters (by effect, z by row, blank where q is not below `q`; a round annotated with go, gaf or gmt); `types`, the cell types × clusters; `markers`, the panel's markers × clusters; `structure`, each cell's cell types stacked by cluster; `topics`, a topic run's topics so. Maps: the round's cells on a layout, coloured by type, cluster, call or margin. Each chart is sized to what it shows and to its `page`: on a slide as wide as it needs at the slide's height, and one taller than the slide (many rows) turned right across it; on paper as tall as it needs at the page's width, and one wider than the page (many clusters) turned left onto it; PNG and PDF alike, listed in `turned`. Each chart as {out}.{chart}.png and .pdf, a heatmap's numbers as .json too (rows, cols, z, the unscaled values and their q); each map as {out}.{map}.{colour}.png and .pdf. Written into today's results folder, recorded as any step; returns the files, each heatmap's numbers, the images, and what the round offers (each chart, or why it has none; its layouts and colourings). `list` returns that alone, drawing nothing. For the markers heatmap with its own options (types, value, source), use annotate_heatmap.",
+            schema(
+                json!({
+                    "round": { "type": "string" },
+                    "charts": { "type": "array", "items": { "type": "string", "enum": ["terms", "types", "markers", "structure", "topics"] }, "description": "The charts to draw; every one the round records when neither charts nor maps is given" },
+                    "maps": { "type": "array", "items": { "type": "string" }, "description": "Layouts to draw the cells on: phate, umap, …, best or all" },
+                    "colour": { "type": "string", "enum": ["type", "cluster", "call", "margin"], "description": "What colours the map's cells (type)" },
+                    "labels": { "type": "string", "enum": ["small", "medium", "large", "largest", "off"], "description": "The type labels on a map (medium)" },
+                    "focus": { "type": "integer", "description": "Light this cluster's cells, the others grey" },
+                    "page": { "type": "string", "enum": ["slide", "paper"], "description": "What the figures are set on: slide (default: the day's report deck, a figure box 3.5 in tall and as wide as needed; a chart too tall is turned onto it) or paper (a journal page 7 in wide, as tall as needed; a chart too wide is turned onto it)" },
+                    "width": { "type": "number", "description": "Paper: the page's width in inches (7); slide: the widest a figure gets (12.2)" },
+                    "dpi": { "type": "integer", "description": "Dots per inch of the cells (200); a PDF's text stays text" },
+                    "overlays": { "type": "array", "items": { "type": "string", "enum": ["go", "links", "rings", "none"] }, "description": "A units round's map: the lit cluster's GO terms as stars, the strongest links between types, each type's fitted radius as a ring (go and links; none for none)" },
+                    "top": { "type": "integer", "description": "The terms heatmap: each cluster's top terms by effect (6)" },
+                    "q": { "type": "number", "description": "The terms heatmap: only terms with q below this (0.05)" },
+                    "out": { "type": "string", "description": "Output prefix; {round}.figure in today's results folder when omitted" },
+                    "list": { "type": "boolean", "description": "Only list the charts and maps the round offers" },
                 }),
                 &["round"],
             ),
@@ -264,13 +319,106 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "trajectory_figure",
-            "A trajectory run's figures (`lupin figure trajectory`): pseudotime on its map (PHATE or another layout, else the diffusion map) with the prior's edges as arrows between the types, as PNG and PDF; the types in pseudotime order and the connectivity between them (the lineage graph), as SVG and PDF. Written into today's results folder, recorded as any step; returns the files and the map's image.",
+            "A trajectory run's figures (`lupin figure trajectory`). Without `maps`: pseudotime on its best map (PHATE or another layout, else the diffusion map), as PNG and PDF; the types in pseudotime order and the connectivity between them (the lineage graph), as SVG and PDF. With `maps`: only those maps, each as {out}.{map}.{colour}.png and .pdf. A map has the prior's edges as arrows between the types; a categorical colouring draws its largest group first, so small ones stay visible. Written into today's results folder, recorded as any step; returns the files, each map's image, and `maps`: what the run offers (its layouts; per diffusion component its sd, share of cells, whether pseudotime kept it, |Spearman ρ| with pseudotime and η² between the lineages; the pair the diffusion map opens on; the colourings). `list` returns `maps` alone, drawing nothing.",
             schema(
                 json!({
                     "run": { "type": "string", "description": "Trajectory manifest or its prefix" },
                     "out": { "type": "string", "description": "Output prefix; {run}.figure in today's results folder when omitted" },
+                    "maps": { "type": "array", "items": { "type": "string" }, "description": "The maps to draw: a layout by name (phate, umap, …), best, all (every layout and the diffusion map), suggested or diffusion (the diffusion map on its suggested pair: of the kept components, the one following pseudotime best on x, the one parting the lineages best on y), or two diffusion components as dc1,dc3 (DC0 is trivial and refused)" },
+                    "colour": { "type": "string", "enum": ["pseudotime", "type", "lineage", "component"], "description": "What colours the cells (pseudotime); type is the run's level of labels" },
+                    "labels": { "type": "string", "enum": ["small", "medium", "large", "largest", "off"], "description": "The type labels on a map (medium)" },
+                    "focus": { "type": "integer", "description": "Light this cluster's cells, the others grey" },
+                    "page": { "type": "string", "enum": ["slide", "paper"], "description": "What the figures are set on: slide (default: the day's report deck, a figure box 3.5 in tall and as wide as needed; a chart too tall is turned onto it) or paper (a journal page 7 in wide, as tall as needed; a chart too wide is turned onto it)" },
+                    "width": { "type": "number", "description": "Paper: the page's width in inches (7); slide: the widest a figure gets (12.2)" },
+                    "dpi": { "type": "integer", "description": "Dots per inch of the cells (200); a PDF's text stays text" },
+                    "list": { "type": "boolean", "description": "Only list the maps and colourings the run offers, with each diffusion component's numbers" },
                 }),
                 &["run"],
+            ),
+        ),
+        ToolSpec::new(
+            "annotate_family",
+            "The family of a run, round or trajectory (`g` on lupin's screen): the run itself, its annotated rounds and its trajectories, each with its path, kind (run, round, trajectory), whether it carries labels, what it holds and when it last changed (seconds since the epoch). Any member is what the other tools take as `round`, `from` or `run`.",
+            schema(
+                json!({ "from": { "type": "string", "description": "A run, round or trajectory manifest or its prefix" } }),
+                &["from"],
+            ),
+        ),
+        ToolSpec::new(
+            "annotate_export",
+            "A round's final annotation for use outside lupin (`lupin export`, `e` on lupin's screen): {out}.cell_annotation.parquet, per cell its cluster, label, the label's Cell Ontology term and lineage, the cluster's evidence share for the label and its top type; and {out}.celltype_markers.tsv, per label its markers (from the panel, or added since) and the genes that set its clusters apart, each with its log2 fold change. Written into today's results folder, recorded as any step; returns the files and each label's cells and term.",
+            schema(
+                json!({
+                    "round": { "type": "string" },
+                    "out": { "type": "string", "description": "Output prefix; {round} in today's results folder when omitted" },
+                    "obo": obo.clone(),
+                }),
+                &["round"],
+            ),
+        ),
+        ToolSpec::new(
+            "ontology",
+            "The Cell Ontology as lupin's screen browses it, over a round's marker panel. With `search`: the terms whose names, synonyms or abbreviations hold it. With `term` (an id): its name, parents, children, lineage from the top, what it develops from, and the panel's types at or under it. With neither: each panel type's term and lineage, and the types with none (`unmatched`; ontology_questions asks about them).",
+            schema(
+                json!({
+                    "round": { "type": "string" },
+                    "search": { "type": "string" },
+                    "term": { "type": "string", "description": "A term's id (CL:…)" },
+                    "limit": { "type": "integer", "description": "Terms a search returns (10)" },
+                    "obo": obo.clone(),
+                }),
+                &["round"],
+            ),
+        ),
+        ToolSpec::new(
+            "ontology_questions",
+            "The questions lupin's screen asks of a round's marker panel until they are answered: `join`, types left alone (their siblings went under a nearer class) that may join them under `class`; `terms`, types with no Cell Ontology term. With `suggest`, each such type's nearest terms by text embedding, with their scores (the first time fetches the text model and encodes the ontology: a minute or two; none offline without the model). Answer each with ontology_answer.",
+            schema(
+                json!({
+                    "round": { "type": "string" },
+                    "suggest": { "type": "boolean", "description": "Rank terms for the types with none" },
+                    "obo": obo.clone(),
+                }),
+                &["round"],
+            ),
+        ),
+        ToolSpec::new(
+            "ontology_answer",
+            "Answer one of ontology_questions for a panel type, kept with your note where every later pass reads it and records it (the user's answers, else the project's): `join` or `alone` for a type left alone; a term's id (CL:…) for a type with none, kept in the alias table; `none` when no term fits. The next pass groups and places the type so; nothing already written changes. Returns the file written and, for a term, the type's reading now.",
+            schema(
+                json!({
+                    "round": { "type": "string" },
+                    "type": { "type": "string", "description": "The panel type asked about" },
+                    "answer": { "type": "string", "description": "join, alone, none, or a term's id (CL:…)" },
+                    "note": { "type": "string", "description": "Why; kept with the answer" },
+                    "obo": obo.clone(),
+                }),
+                &["round", "type", "answer", "note"],
+            ),
+        ),
+        ToolSpec::new(
+            "annotate_hide_genes",
+            "Hide genes from the specific genes annotate_genes and lupin's screen list, from now on (`h` and `X` on the screen): exact names or patterns (PFX-* for every gene starting PFX-). Kept in the project's hidden_genes.txt (else the user's); the markers are never hidden. Returns the file written.",
+            schema(
+                json!({
+                    "round": { "type": "string" },
+                    "patterns": { "type": "array", "items": { "type": "string" } },
+                }),
+                &["round", "patterns"],
+            ),
+        ),
+        ToolSpec::new(
+            "exports",
+            "The exports log lupin's screen keeps of the figures saved (`f` on the screen, in .lupin-view/ under the server's working directory), each figure set with its files, size and hash checked against the disk. `list`: each entry, newest first, with its status (ok, changed since export, missing) and the manifest and figure it was drawn from. `add`: log a figure file (its .pdf, with its .png or .svg beside it). `unlist`: take one off the log. `move`: move its files to `to` (a folder, or a new name), never over a file. `delete`: delete its files for good, only while they are as logged and with `confirm` (ask the user first, as the screen asks twice).",
+            schema(
+                json!({
+                    "action": { "type": "string", "enum": ["list", "add", "unlist", "move", "delete"] },
+                    "path": { "type": "string", "description": "The figure's file, as listed (not for list)" },
+                    "to": { "type": "string", "description": "For move: a folder, or the new name" },
+                    "what": { "type": "string", "description": "For add: what the figure shows" },
+                    "confirm": { "type": "boolean", "description": "For delete: true, once the user agrees; the files cannot be brought back" },
+                }),
+                &["action"],
             ),
         ),
         ToolSpec::new(
@@ -285,12 +433,41 @@ fn tools() -> Vec<ToolSpec> {
 }
 
 /// `lupin mcp watch`: follow the server in `dir` (else the one running, or
-/// one picked among several), read-only: a person sees what the agent
-/// does, and stops nothing.
+/// one picked among several). A person sees what the agent does, can stop
+/// a call or job and leave the agent a note, and opens on lupin's own
+/// screen (`lupin view`) the round or trajectory a call made or read.
 pub fn watch(dir: Option<PathBuf>) -> Result<()> {
     // The log stays off the screen while it is up.
     let _quiet = legume_tui::logs::quiet_stderr();
-    legume_mcp::watch::view::run(&crate::tui::TOOL, dir, false, |_| None)
+    legume_mcp::watch::view::run(&crate::tui::TOOL, dir, true, |call| {
+        let manifest = call_manifest(&call.args, &call.text)?;
+        let mut view = legume_mcp::own_command(["view"]).ok()?;
+        view.arg(manifest);
+        Some(view)
+    })
+}
+
+/// The round or trajectory run a call made or read: the one its result
+/// names (`round`, `run`), else the one its arguments name; only once its
+/// manifest is there (a background job's is not until it ends). The feed
+/// cuts a result at 4 KB: past that, the arguments name it.
+fn call_manifest(args: &Value, text: &str) -> Option<PathBuf> {
+    // The first value: a note the person left may follow it.
+    let result = serde_json::Deserializer::from_str(text)
+        .into_iter::<Value>()
+        .next()
+        .and_then(Result::ok)
+        .unwrap_or(Value::Null);
+    let named = |v: &Value| {
+        ["round", "run"]
+            .into_iter()
+            .find_map(|k| v.get(k)?.as_str().map(manifest_file))
+    };
+    let source = args.get("from").and_then(Value::as_str).map(manifest_file);
+    [named(&result), named(args), source]
+        .into_iter()
+        .flatten()
+        .find(|m| m.is_file())
 }
 
 pub fn run_mcp() -> Result<()> {
@@ -338,9 +515,22 @@ impl Handler for Lupin {
             "annotate_ask" => annotate_ask(&a, cx),
             "annotate_why" => annotate_why(&a),
             "annotate_heatmap" => annotate_heatmap(&a, cx),
+            "annotate_figure" => annotate_figure(&a, cx),
             "trajectory_figure" => trajectory_figure(&a, cx),
             "trajectory_run" => trajectory_run(&a, cx),
             "trajectory_read" => Ok(vec![Content::Json(trajectory_read(&a.req_path("run")?)?)]),
+            "annotate_family" => annotate_family(&a),
+            "annotate_export" => annotate_export(&a, cx),
+            "ontology" => ontology(&a),
+            "ontology_questions" => ontology_questions(&a, cx),
+            "ontology_answer" => ontology_answer(&a),
+            "annotate_hide_genes" => {
+                let patterns: Vec<String> = a.parse("patterns")?.unwrap_or_default();
+                let file =
+                    crate::tui::headless::hide_genes(&run::parent_dir(&round_arg(&a)?), &patterns)?;
+                Ok(vec![Content::Json(json!({ "written": absolute(&file) }))])
+            }
+            "exports" => exports(Path::new(crate::tui::gallery::DIR), &a),
             "docs" => Ok(vec![Content::Text(match a.str("topic") {
                 Some(t) => crate::docs::text(
                     crate::docs::Topic::from_str(t, true).map_err(|e| anyhow::anyhow!(e))?,
@@ -370,6 +560,11 @@ impl Arguments {
     /// the project's root is.
     fn path(&self, key: &str) -> Option<String> {
         self.str(key).map(|p| absolute(Path::new(p)))
+    }
+
+    fn req_str(&self, key: &str) -> Result<&str> {
+        self.str(key)
+            .with_context(|| format!("`{key}` is required"))
     }
 
     fn req_path(&self, key: &str) -> Result<String> {
@@ -634,6 +829,13 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
     let expr = expr.context("the round records no expression profile")?;
     let warnings = unmatched_warning(&expr, &panel);
     let specific = specific_genes(&expr);
+    // The genes the screen hides from them, unless asked for.
+    let hidden = if a.parse::<bool>("show_hidden")?.unwrap_or(false) {
+        None
+    } else {
+        let search = crate::manifest::data_files::SearchPath::new(Some(&loaded.dir));
+        Some(crate::tui::genes::GeneFilter::load(&search)?)
+    };
     // A coarse label is a Cell Ontology group of the panel's types: its
     // markers are its members'.
     let tree = crate::manifest::rounds::read_tree(&loaded).ok().flatten();
@@ -669,14 +871,18 @@ fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {
                     (t, entry)
                 })
                 .collect();
-            let specific: Vec<Value> = specific
-                .get(&id)
-                .into_iter()
-                .flatten()
-                .take(top)
-                .map(|(g, f)| json!([g, f]))
-                .collect();
-            let entry = json!({ "specific": specific, "markers": markers });
+            let (mut listed, mut hid) = (Vec::new(), 0);
+            for (g, f) in specific.get(&id).into_iter().flatten() {
+                if hidden.as_ref().is_some_and(|h| h.hides(g)) {
+                    hid += 1;
+                } else if listed.len() < top {
+                    listed.push(json!([g, f]));
+                }
+            }
+            let mut entry = json!({ "specific": listed, "markers": markers });
+            if hid > 0 {
+                entry["hidden"] = json!(hid);
+            }
             (id.to_string(), entry)
         })
         .collect();
@@ -737,6 +943,26 @@ fn free_name(
         cx.free_prefix(base, plan, |_| false)
     } else {
         legume_mcp::free_prefix(&run::parent_dir(beside), base, plan, |_| false)
+    }
+}
+
+/// The output prefix `a` names, none of whose files (`plan`) may exist, else
+/// the next free `base` beside `beside` (in today's results folder when
+/// records are kept); and its files.
+fn out_prefix(
+    a: &Arguments,
+    cx: &Call,
+    beside: &Path,
+    base: &str,
+    plan: impl Fn(&str) -> Result<Vec<PathBuf>>,
+) -> Result<(String, Vec<PathBuf>)> {
+    match a.path("out") {
+        Some(o) => {
+            let files = plan(&o)?;
+            none_exist(&files)?;
+            Ok((o, files))
+        }
+        None => free_name(cx, beside, base, plan),
     }
 }
 
@@ -807,40 +1033,370 @@ fn annotate_heatmap(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     Ok(vec![Content::Json(v), Content::Png(heatmap::png(&data)?)])
 }
 
+fn annotate_figure(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
+    use crate::figures::round::{round_figures, ChartKind};
+    use crate::figures::units::{STARS, STAR_Q};
+    let from = a.req_path("round")?;
+    let mut figures = round_figures(&from)?;
+    let offered = json!({
+        "charts": figures.charts_offered(),
+        "maps": figures.maps_offered(),
+    });
+    if a.parse::<bool>("list")?.unwrap_or(false) {
+        return Ok(vec![Content::Json(json!({ "offers": offered }))]);
+    }
+    let charts: Vec<String> = a.parse("charts")?.unwrap_or_default();
+    let kinds: Vec<ChartKind> = (charts.iter())
+        .map(|c| ChartKind::from_str(c, true).map_err(|e| anyhow::anyhow!("chart {c:?}: {e}")))
+        .collect::<Result<_>>()?;
+    let maps: Vec<String> = a.parse("maps")?.unwrap_or_default();
+    let colour = a.str("colour");
+    let (top, q) = (a.parse::<usize>("top")?, a.parse::<f32>("q")?);
+    figures.set_term_cut(top.unwrap_or(STARS), q.unwrap_or(STAR_Q))?;
+    // A chart the round lacks, a map or a colouring is refused here, saying
+    // why, before anything runs.
+    let look = look_arg(a)?;
+    let drawing = figures.round_drawing(&kinds, &maps, colour, &look)?;
+    let mut flags: Vec<String> = (drawing.charts.iter())
+        .map(|k| flag("chart", &k.name()))
+        .collect();
+    flags.extend(
+        figures
+            .map_specs(&drawing.maps)
+            .iter()
+            .map(|m| flag("map", m)),
+    );
+    flags.extend(colour.map(|c| flag("colour", c)));
+    flags.extend(look_flags(&look));
+    flags.extend(top.map(|t| flag("top", &t.to_string())));
+    flags.extend(q.map(|q| flag("q", &q.to_string())));
+    let summary = format!("charts and maps of {}", file_name(Path::new(&from)));
+    let (out, files) = draw_figures(a, cx, "round", &from, flags, &summary, |b| {
+        figures.round_files(&drawing, b)
+    })?;
+    let mut numbers = Map::new();
+    for (chart, path) in crate::figures::CellFigures::round_numbers(&drawing, &out) {
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        numbers.insert(chart, serde_json::from_str(&text)?);
+    }
+    let mut facts = json!({ "numbers": numbers, "offers": offered });
+    let turned = figures.round_turned(&drawing)?;
+    if !turned.is_empty() {
+        facts["turned"] = json!(turned);
+    }
+    figure_content(facts, &files)
+}
+
 fn trajectory_figure(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let from = a.req_path("run")?;
     let figures = crate::figures::trajectory_figures(&from)?;
-    let file = manifest_file(&from);
-    let (out, files) = match a.path("out") {
-        Some(o) => {
-            let files = figures.trajectory_files(&o);
-            none_exist(&files)?;
-            (o, files)
-        }
-        None => {
-            let base = format!("{}.figure", stem(&file));
-            free_name(cx, &file, &base, |b| Ok(figures.trajectory_files(b)))?
-        }
+    let offered = serde_json::to_value(figures.maps_offered())?;
+    if a.parse::<bool>("list")?.unwrap_or(false) {
+        return Ok(vec![Content::Json(json!({ "maps": offered }))]);
+    }
+    let maps: Vec<String> = a.parse("maps")?.unwrap_or_default();
+    let colour = a.str("colour");
+    // A map or colouring the run lacks is refused here, naming what it has.
+    let look = look_arg(a)?;
+    let drawing = figures.drawing(&maps, colour, &look)?;
+    // The maps as the child reads them back, `suggested` as its pair.
+    let mut flags: Vec<String> = (figures.map_specs(&drawing).iter())
+        .map(|m| flag("map", m))
+        .collect();
+    flags.extend(colour.map(|c| flag("colour", c)));
+    flags.extend(look_flags(&look));
+    let mut summary = format!("trajectory figures of {}", file_name(Path::new(&from)));
+    if !maps.is_empty() {
+        summary += &format!(" on {}", maps.join(", "));
+    }
+    let (_, files) = draw_figures(a, cx, "trajectory", &from, flags, &summary, |b| {
+        figures.drawing_files(&drawing, b)
+    })?;
+    figure_content(json!({ "maps": offered }), &files)
+}
+
+/// How a figure tool's maps look and the page they are written on, as `a`
+/// asks: what `lupin figure` takes as its look.
+fn look_arg(a: &Arguments) -> Result<Look> {
+    // A figure an agent draws goes to the day's report, a deck of slides,
+    // unless asked for paper.
+    let mut look = Look {
+        page: PageKind::Slide,
+        ..Look::default()
     };
-    let argv = vec![
+    if let Some(p) = a.str("page") {
+        look.page = PageKind::from_str(p, true).map_err(|e| anyhow::anyhow!("`page`: {e}"))?;
+    }
+    if let Some(l) = a.str("labels") {
+        look.labels =
+            Some(LabelSize::from_str(l, true).map_err(|e| anyhow::anyhow!("`labels`: {e}"))?);
+    }
+    look.focus = a.parse("focus")?;
+    for o in a.parse::<Vec<String>>("overlays")?.unwrap_or_default() {
+        look.overlays
+            .push(Overlay::from_str(&o, true).map_err(|e| anyhow::anyhow!("`overlays`: {e}"))?);
+    }
+    if let Some(w) = a.parse::<f32>("width")? {
+        look.width = Some(w);
+    }
+    if let Some(d) = a.parse::<u32>("dpi")? {
+        look.dpi = d;
+    }
+    Ok(look)
+}
+
+/// `look` as `lupin figure`'s flags, those it changes from the default.
+fn look_flags(look: &Look) -> Vec<String> {
+    let name = |v: Option<clap::builder::PossibleValue>| v.map(|v| v.get_name().to_string());
+    let base = Look::default();
+    let mut flags = Vec::new();
+    if let Some(l) = look.labels.and_then(|l| name(l.to_possible_value())) {
+        flags.push(flag("labels", &l));
+    }
+    if let Some(k) = look.focus {
+        flags.push(flag("focus", &k.to_string()));
+    }
+    let overlays: Vec<String> = (look.overlays.iter())
+        .filter_map(|o| name(o.to_possible_value()))
+        .collect();
+    if !overlays.is_empty() {
+        flags.push(flag("overlay", &overlays.join(",")));
+    }
+    if let Some(w) = look.width {
+        flags.push(flag("width", &w.to_string()));
+    }
+    if look.page != base.page {
+        flags.extend(name(look.page.to_possible_value()).map(|p| flag("page", &p)));
+    }
+    if look.dpi != base.dpi {
+        flags.push(flag("dpi", &look.dpi.to_string()));
+    }
+    flags
+}
+
+/// `lupin figure {sub}` of `from` with `flags`, into the `out` `a` names
+/// (none of whose files may exist) or the next free `{stem}.figure`, as
+/// `plan` names the files it writes; recorded as `summary`. The output
+/// prefix and the files.
+fn draw_figures(
+    a: &Arguments,
+    cx: &Call,
+    sub: &str,
+    from: &str,
+    flags: Vec<String>,
+    summary: &str,
+    plan: impl Fn(&str) -> Vec<PathBuf>,
+) -> Result<(String, Vec<PathBuf>)> {
+    let file = manifest_file(from);
+    let (out, files) = out_prefix(a, cx, &file, &format!("{}.figure", stem(&file)), |b| {
+        Ok(plan(b))
+    })?;
+    let mut argv = vec![
         "figure".into(),
-        "trajectory".into(),
-        flag("from", &from),
+        sub.into(),
+        flag("from", from),
         flag("out", &out),
     ];
-    let summary = format!("trajectory figures of {}", file_name(&file));
-    cx.run_making(lupin(&argv)?, &files, &summary)?;
-    let shown: Vec<String> = files.iter().map(|f| absolute(f)).collect();
-    let mut content = vec![Content::Json(json!({ "files": shown }))];
-    if let Some(png) = files
-        .first()
+    argv.extend(flags);
+    cx.run_making(lupin(&argv)?, &files, summary)?;
+    Ok((out, files))
+}
+
+/// A figure tool's result: `facts` with the files written, then each PNG
+/// among them as an image.
+fn figure_content(mut facts: Value, files: &[PathBuf]) -> Result<Vec<Content>> {
+    facts["files"] = json!(files.iter().map(|f| absolute(f)).collect::<Vec<_>>());
+    let mut content = vec![Content::Json(facts)];
+    for png in files
+        .iter()
         .filter(|f| f.extension().is_some_and(|e| e == "png"))
     {
-        content.push(Content::Png(
-            std::fs::read(png).with_context(|| format!("reading {}", png.display()))?,
-        ));
+        let bytes = std::fs::read(png).with_context(|| format!("reading {}", png.display()))?;
+        content.push(Content::Png(bytes));
     }
     Ok(content)
+}
+
+/// A round's panel as lupin's screen holds it, on the ontology `obo` names
+/// when it names one.
+fn panel_state(a: &Arguments) -> Result<PanelState> {
+    let round = round_arg(a)?;
+    PanelState::load(&round.to_string_lossy(), a.path("obo").as_deref())
+}
+
+fn annotate_family(a: &Arguments) -> Result<Vec<Content>> {
+    let from = manifest_file(&a.req_path("from")?);
+    anyhow::ensure!(from.is_file(), "{}: no such manifest", from.display());
+    let members: Vec<Value> = (crate::manifest::family::family(&from).iter())
+        .map(|m| {
+            let mut v = json!({
+                "name": m.name(),
+                "path": absolute(&m.pick.path),
+                "kind": m.pick.kind.name(),
+                "labelled": m.pick.labelled,
+                "holds": m.holds,
+                "modified": m.modified,
+            });
+            if let Some(b) = &m.borrowed {
+                v["borrowed"] = json!(b);
+            }
+            v
+        })
+        .collect();
+    Ok(vec![Content::Json(json!({ "members": members }))])
+}
+
+fn annotate_export(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
+    use legume_numeric::matrix::parquet::read_parquet_string_columns_by_name;
+    let round = round_arg(a)?;
+    let (out, files) = out_prefix(a, cx, &round, &stem(&round), |b| {
+        let (cells, markers) = crate::tui::export::files(b);
+        Ok(vec![cells, markers])
+    })?;
+    let mut argv = vec![
+        "export".into(),
+        flag("from", &round.to_string_lossy()),
+        flag("out", &out),
+    ];
+    if let Some(obo) = a.path("obo") {
+        argv.push(flag("obo", &obo));
+    }
+    cx.run_making(
+        lupin(&argv)?,
+        &files,
+        &format!("export of {}", file_name(&round)),
+    )?;
+    let cols = read_parquet_string_columns_by_name(
+        &files[0].to_string_lossy(),
+        &["label", "cl_id", "lineage"],
+    )?;
+    let [label, cl_id, lineage] = &cols[..] else {
+        anyhow::bail!("{}: not the export's columns", files[0].display());
+    };
+    // Each label's cells, counted on the columns as read.
+    let mut counted: BTreeMap<&str, (u64, &str, &str)> = BTreeMap::new();
+    for ((l, id), line) in label.iter().zip(cl_id).zip(lineage) {
+        counted.entry(l).or_insert((0, id, line)).0 += 1;
+    }
+    let labels: Map<String, Value> = (counted.into_iter())
+        .map(|(l, (n, id, line))| {
+            (
+                l.into(),
+                json!({ "cells": n, "cl_id": id, "lineage": line }),
+            )
+        })
+        .collect();
+    Ok(vec![Content::Json(json!({
+        "cells": absolute(&files[0]),
+        "markers": absolute(&files[1]),
+        "labels": labels,
+    }))])
+}
+
+fn ontology(a: &Arguments) -> Result<Vec<Content>> {
+    let state = panel_state(a)?;
+    let v = match (a.str("search"), a.str("term")) {
+        (Some(_), Some(_)) => anyhow::bail!("give `search` or `term`, not both"),
+        (Some(q), None) => state.search(q, a.parse::<usize>("limit")?.unwrap_or(10))?,
+        (None, Some(id)) => state.term_facts(id)?,
+        (None, None) => state.on_ontology()?,
+    };
+    Ok(vec![Content::Json(v)])
+}
+
+fn ontology_questions(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
+    let state = panel_state(a)?;
+    let mut v = state.questions()?;
+    let types: Vec<String> = (v["terms"].as_array().into_iter().flatten())
+        .filter_map(|t| t["type"].as_str().map(str::to_string))
+        .collect();
+    if a.parse::<bool>("suggest")?.unwrap_or(false) && !types.is_empty() {
+        let obo = a.path("obo");
+        let argv =
+            crate::tui::runner::suggest_argv(&state.loaded.file, obo.as_deref(), &types, None);
+        let ranked = crate::tui::suggest::Suggestions::parse(&cx.run_reading(lupin(&argv)?)?)?;
+        for t in v["terms"].as_array_mut().into_iter().flatten() {
+            let found = t["type"].as_str().and_then(|ty| ranked.of(ty));
+            t["suggestions"] = json!(found.unwrap_or_default());
+        }
+    }
+    Ok(vec![Content::Json(v)])
+}
+
+fn ontology_answer(a: &Arguments) -> Result<Vec<Content>> {
+    let state = panel_state(a)?;
+    let (ty, answer) = (a.req_str("type")?, a.req_str("answer")?);
+    let file = state.answer(ty, answer, a.str("note").unwrap_or_default())?;
+    let mut v = json!({ "written": absolute(&file) });
+    // Read as the next pass reads it: a later table may map the type too.
+    let now = panel_state(a)?.on_ontology()?;
+    if let Some(on) = now["types"].get(ty) {
+        v["now"] = on.clone();
+    }
+    Ok(vec![Content::Json(v)])
+}
+
+/// The `exports` tool on the log `g`.
+fn exports(g: &Path, a: &Arguments) -> Result<Vec<Content>> {
+    use crate::tui::gallery;
+    let mut log = gallery::open(g);
+    // As the log keeps it: resolved, once the file is there.
+    let path = || {
+        let p = PathBuf::from(a.req_path("path")?);
+        Ok::<_, anyhow::Error>(p.canonicalize().unwrap_or(p))
+    };
+    let what = a.req_str("action")?;
+    match what {
+        "list" => {}
+        "add" => {
+            let pdf = path()?;
+            anyhow::ensure!(pdf.is_file(), "{}: no such file", pdf.display());
+            let files: Vec<PathBuf> = std::iter::once(pdf.clone())
+                .chain(
+                    ["png", "svg"]
+                        .map(|e| pdf.with_extension(e))
+                        .into_iter()
+                        .filter(|f| f.is_file() && *f != pdf),
+                )
+                .collect();
+            let note = a
+                .str("what")
+                .map_or_else(|| file_name(&pdf), str::to_string);
+            log.add(&files, &note, None, gallery::Trace::default())?;
+        }
+        "unlist" => log.remove(&path()?, false)?,
+        "delete" => {
+            anyhow::ensure!(
+                a.parse::<bool>("confirm")?.unwrap_or(false),
+                "delete removes the figure's files for good: give `confirm: true` once the user agrees"
+            );
+            log.remove(&path()?, true)?;
+        }
+        "move" => {
+            let to = a.req_path("to")?;
+            log.relocate(&path()?, Path::new(&to))?;
+        }
+        other => anyhow::bail!("`action` is list, add, unlist, move or delete, not {other:?}"),
+    }
+    let now = gallery::now();
+    let entries: Vec<Value> = (log.entries().iter().zip(log.check()))
+        .map(|(e, status)| {
+            json!({
+                "path": e.path,
+                "what": e.what,
+                "when": e.when,
+                "ago": gallery::ago(e.when, now),
+                "status": status.as_str(),
+                "figure": e.extra.panel,
+                "manifest": e.extra.manifest,
+                "files": e.files.iter().map(|f| &f.path).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(vec![Content::Json(
+        json!({ "log": absolute(log.dir()), "entries": entries }),
+    )])
 }
 
 /// The round `a` names, which must exist.
@@ -854,17 +1410,17 @@ fn round_arg(a: &Arguments) -> Result<PathBuf> {
 /// `round`: each names the round (by its file name, so relative to that
 /// file, whatever the agent wrote there), so it cannot land on renumbered
 /// ids, and is the agent's unless it says otherwise.
-fn decisions_text(a: &Arguments, round: &Path) -> Result<String> {
+fn decisions_text(a: &Arguments, round: &Path) -> Result<(String, Vec<Map<String, Value>>)> {
     let decisions: Vec<Map<String, Value>> = a.parse("decisions")?.unwrap_or_default();
     anyhow::ensure!(!decisions.is_empty(), "no decisions");
     let mut text = String::new();
-    for mut d in decisions {
+    for mut d in decisions.iter().cloned() {
         d.insert("round".into(), json!(file_name(round)));
         d.entry("decided_by")
             .or_insert_with(|| json!(DecidedBy::Agent.as_str()));
         text += &format!("{}\n", Value::Object(d));
     }
-    Ok(text)
+    Ok((text, decisions))
 }
 
 /// `lupin relabel --preview` with the decisions in a temporary file beside
@@ -872,7 +1428,7 @@ fn decisions_text(a: &Arguments, round: &Path) -> Result<String> {
 /// of the driver script.
 fn relabel_preview(a: &Arguments, cx: &Call) -> Result<Value> {
     let round = round_arg(a)?;
-    let text = decisions_text(a, &round)?;
+    let (text, _) = decisions_text(a, &round)?;
     let tmp = tempfile::Builder::new()
         .prefix(".mcp-preview-")
         .suffix(".jsonl")
@@ -890,7 +1446,7 @@ fn relabel_preview(a: &Arguments, cx: &Call) -> Result<Value> {
 /// know of the new round that the child's log alone would say.
 fn relabel_apply(a: &Arguments, cx: &Call) -> Result<(PathBuf, Vec<String>)> {
     let round = round_arg(a)?;
-    let text = decisions_text(a, &round)?;
+    let (text, decisions) = decisions_text(a, &round)?;
     // Refused here before anything is written; relabel checks again under
     // the chain's lock.
     let chain = Chain::of(&round);
@@ -901,6 +1457,18 @@ fn relabel_apply(a: &Arguments, cx: &Call) -> Result<(PathBuf, Vec<String>)> {
         round.display(),
         latest.display()
     );
+    // A mixed label, checked now, is named with its parts once the round is
+    // written.
+    let mut mixes = Vec::new();
+    for d in &decisions {
+        if let (Some(name), Some(parts)) = (d.get("label").and_then(Value::as_str), d.get("parts"))
+        {
+            let parts: Vec<String> = serde_json::from_value(parts.clone())
+                .with_context(|| format!("reading `parts` of {name}"))?;
+            crate::tui::ontology::Mixed::check(name, &parts)?;
+            mixes.push((name, parts));
+        }
+    }
     let file = claim_decisions_file(&round)?;
     cx.write_file(&file, &text)?;
     let prefix = chain.next_prefix();
@@ -912,6 +1480,9 @@ fn relabel_apply(a: &Arguments, cx: &Call) -> Result<(PathBuf, Vec<String>)> {
         text.lines().count()
     );
     cx.run_making(lupin(&argv)?, std::slice::from_ref(&next), &summary)?;
+    for (name, parts) in &mixes {
+        crate::tui::headless::remember_mix(&run::parent_dir(&round), name, parts)?;
+    }
     cx.state(&json!({ "round": absolute(&next), "from": absolute(&round) }));
     // The round is written: what it says of itself is extra, not the result.
     let warnings = run::load(&next.to_string_lossy())
