@@ -202,7 +202,7 @@ fn the_latest_round_is_said_where_it_is_seen() {
     let mut t = start();
     t.wait_screen("CT2");
     let pid = dir.program_pid();
-    t.type_(b"\x1b\x04");
+    t.type_(&legume_tui::Key::DETACH.bytes());
     t.answer(1, b"\r");
     assert_eq!(t.exit_code(), 0);
     dir.wait_listed("lupin-trajectory-1\tdetached");
@@ -229,7 +229,7 @@ fn the_main_screen_comes_back_on_attach_and_stops_on_kill() {
     let pid = dir.program_pid();
 
     // Detached by the key: asked for a name, Enter keeps the id.
-    first.type_(b"\x1b\x04");
+    first.type_(&legume_tui::Key::DETACH.bytes());
     first.answer(1, b"\r");
     assert_eq!(first.exit_code(), 0);
     assert!(first.cooked(), "terminal restored after detach");
@@ -246,8 +246,8 @@ fn the_main_screen_comes_back_on_attach_and_stops_on_kill() {
     second.wait_screen("any other key closes");
     // At its end.
     second.type_(b"\x1b[F");
-    second.wait_screen("ctrl+alt+d");
-    second.wait_screen("ctrl+alt+s");
+    second.wait_screen(&legume_tui::Key::DETACH.display());
+    second.wait_screen(&legume_tui::Key::SWITCH.display());
     second.wait_screen("switch: leave it running and pick another session");
 
     // Killed: it quits as q does, without asking, and leaves nothing.
@@ -277,7 +277,7 @@ fn an_error_while_detached_waits_for_an_attach_to_be_seen() {
     let mut first = term(&dir, home.path(), &["trajectory", "-f", &run], &[]);
     first.wait_for("reading");
     let pid = dir.program_pid();
-    first.type_(b"\x1b\x04");
+    first.type_(&legume_tui::Key::DETACH.bytes());
     first.answer(1, b"\r");
     assert_eq!(first.exit_code(), 0);
     dir.wait_listed("lupin-trajectory-1\tdetached");

@@ -82,11 +82,13 @@ fn the_tui_commands_help_ends_with_their_session_in_lupins_words() {
         let help = long_help(name);
         // Wrapped to lines, so read as one.
         let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        let detaches = format!("{} detaches", legume_tui::detach_key());
+        let switch = legume_tui::switch_key();
         for said in [
             goes_on,
             resume,
-            "ctrl+alt+d detaches",
-            "ctrl+alt+s",
+            &detaches,
+            &switch,
             "`lupin attach`",
             "--no-detach",
             "`?` in the TUI shows the keys",

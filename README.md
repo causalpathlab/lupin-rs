@@ -49,7 +49,7 @@ lupin describe -f out.T1.senna.json -o out.T1          # a trajectory's order in
 In an interactive terminal the TUI (`lupin annotate` without `-o`, `lupin
 trajectory` without both `-f` and `-o`) runs as a detachable session, so a
 pass, a save or a trajectory run goes on when the connection drops.
-ctrl+alt+d detaches (the first time, it asks for a name), ctrl+alt+s
+`ctrl+]` detaches (the first time, it asks for a name), `ctrl+\`
 switches to another session, and starting the TUI again with no `--from`
 offers the live sessions to return to. `lupin view <manifest>` opens the
 screen on an output: a trajectory run on the order view, a round on the
