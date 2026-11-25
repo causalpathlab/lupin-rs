@@ -154,7 +154,7 @@ fn a_background_pass_runs_on_lupin_s_screen_and_is_recorded() {
     // lupin waits on its panel); detached again, it runs on.
     let mut t = sessions.term_sized(&["attach", &session], &[], size);
     sessions.wait_listed(&format!("{session})\tattached"));
-    t.type_(b"\x1b\x04");
+    t.type_(&legume_tui::Key::DETACH.bytes());
     assert_eq!(t.exit_code(), 0);
     sessions.wait_listed(&format!("{session})\tdetached"));
     // The panel comes: through the pipe to lupin waiting on it, and as a
