@@ -97,9 +97,10 @@ cells, not a type. To root it on this run's types, pick the type the evidence \
 puts first: ask annotate_why which type is least differentiated (its \
 markers), and give trajectory_run the same type as its root. Then, in \
 senna's server, view_open this round, view_cells that type, and run_fit ode \
-with flag root-cells set to the list, its `why` giving the choice and \
-annotate_why's `cite` as `cites`. When senna's run_fit returns needs_input \
-naming root options, they are typed by this run's newest lupin round.
+with flag root-cells set to the list, its `why` giving the choice, `by` who \
+made it (user, agent or agent_accepted) and annotate_why's `cite` in \
+`cites`. When senna's run_fit returns needs_input naming root options, they \
+are labelled by the types of this run's newest lupin round.
 
 annotate_run and trajectory_run take `background`: on a large run set it, \
 and the call returns a job id at once; the step runs on lupin's own screen in \
@@ -625,13 +626,11 @@ fn lupin(argv: &[String]) -> Result<Command> {
 }
 
 /// The way back to senna from a round made from a senna run: `senna
-/// view_open` on it, its types on senna's map. None for a pinto run's round.
+/// view_open` on it, its types on senna's map. None for a pinto run's round
+/// (its kind, `pinto-*`, carried from the run), which senna does not read.
 fn senna_view_next(round: &Path) -> Option<Content> {
-    let (manifest, dir) = run::RunManifest::load(round).ok()?;
-    let origin = run::source_chain(&manifest, &dir)
-        .pop()
-        .map_or_else(|| round.to_path_buf(), |l| l.file);
-    origin.to_string_lossy().ends_with(".senna.json").then(|| {
+    let (manifest, _) = run::RunManifest::load(round).ok()?;
+    (!manifest.kind.is_pinto()).then(|| {
         Content::Next(vec![Next::new(
             "senna view_open",
             json!({ "run": absolute(round) }),

@@ -93,6 +93,13 @@ impl RunKind {
         }
     }
 
+    /// A pinto run lupin read (`pinto-{command}`), and so every round
+    /// annotated from one.
+    #[must_use]
+    pub fn is_pinto(&self) -> bool {
+        matches!(self, RunKind::Other(k) if k.starts_with("pinto-"))
+    }
+
     /// The whole gene-side model is a frozen `gene × H` table in `feature_embedding`.
     #[must_use]
     pub fn has_frozen_gene_table(&self) -> bool {
@@ -563,13 +570,12 @@ impl RunManifest {
             );
         }
         // A `pinto-*` kind is a pinto run lupin annotated, not a stranger.
-        if let RunKind::Other(k) = &m.kind {
-            if !k.starts_with("pinto-") {
-                log::warn!(
-                    "manifest {}: run kind `{k}` is unknown to lupin; treating its cells as signed scores",
-                    path.display()
-                );
-            }
+        match &m.kind {
+            RunKind::Other(k) if !m.kind.is_pinto() => log::warn!(
+                "manifest {}: run kind `{k}` is unknown to lupin; treating its cells as signed scores",
+                path.display()
+            ),
+            _ => {}
         }
         Ok((m, parent_dir(path)))
     }

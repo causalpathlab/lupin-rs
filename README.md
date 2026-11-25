@@ -467,7 +467,7 @@ Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence statements (from, to, precedes|unrelated, note), writes a run.
 A first round's labels are coarse; give `level: fine` (or a fine type as a root) to order its fine labels. On fine labels a coarse root stands for the fine types mostly under it.
 2. trajectory_read returns its lineages, each edge's connectivity and verdict (supported; weak: joined by the kNN graph, thinly; unsupported: not joined; candidate; inferred) and the order in words. Revise the statements where the data disagree and run again.
-3. senna's ODE (`senna ode`) fits a continuous time and takes its root as cells, not a type. To root it on this run's types, pick the type the evidence puts first: ask annotate_why which type is least differentiated (its markers), and give trajectory_run the same type as its root. Then, in senna's server, view_open this round, view_cells that type, and run_fit ode with flag root-cells set to the list, its `why` giving the choice and annotate_why's `cite` as `cites`. When senna's run_fit returns needs_input naming root options, they are typed by this run's newest lupin round.
+3. senna's ODE (`senna ode`) fits a continuous time and takes its root as cells, not a type. To root it on this run's types, pick the type the evidence puts first: ask annotate_why which type is least differentiated (its markers), and give trajectory_run the same type as its root. Then, in senna's server, view_open this round, view_cells that type, and run_fit ode with flag root-cells set to the list, its `why` giving the choice, `by` who made it (user, agent or agent_accepted) and annotate_why's `cite` in `cites`. When senna's run_fit returns needs_input naming root options, they are labelled by the types of this run's newest lupin round.
 
 annotate_run and trajectory_run take `background`: on a large run set it, and the call returns a job id at once; the step runs on lupin's own screen in a session the user can watch with `lupin attach`, and goes on if this server ends.
 
@@ -534,7 +534,8 @@ organizing computational biology projects [1] (see `legume-mcp`):
   work without the agent. A relabel runs `--next --expect {chain}.r<k>`, so it
   replays to the same round.
 - `results/<YYYY-MM-DD>/notebook.md`: the agent's plan, observations and
-  conclusions, written through the `legume` server; the plan names the question, the data and the check, after [2].
+  conclusions, written through the `legume` server; the plan names the
+  question, the data and the check, after [2].
 - `results/INDEX.tsv`: one row per output with a one-line summary, for `grep`.
 
 `LEGUME_MCP_RECORDS=off` keeps none.

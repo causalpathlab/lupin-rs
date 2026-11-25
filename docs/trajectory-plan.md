@@ -268,8 +268,8 @@ compared directly:
   to the nearest root.
   senna's ODE (`senna ode`) takes its root as cells, not a type: root it on
   the same type as this run, through senna's server (view_open the round,
-  view_cells that type, run_fit ode with flag root-cells, citing
-  annotate_why's `cite` for the choice).
+  view_cells that type, run_fit ode with flag root-cells, its `why` and
+  `by` saying who chose the root, citing annotate_why's `cite`).
 - **Lineages**: each root-to-leaf path of the direct-edge graph, listed in
   `{out}.trajectory_lineages.tsv`; a cell's lineage weights (`L0`, `L1`, …)
   are uniform over the paths through its type, zero for a cell of no node
