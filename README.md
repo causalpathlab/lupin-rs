@@ -461,12 +461,13 @@ Annotation loop:
 1. annotate_run on a run manifest (senna or pinto) writes a new round; or, without a marker panel, annotate_ask writes an unlabelled round and lists each cluster's specific genes for you to label. With one of `go` (the species' GO annotations), `gaf` or `gmt` (a pathway file), it also tests GO or pathway terms per cluster: evidence of what a cluster does, beside its cell type.
 2. annotate_review shows each cluster: its calls with q, its top terms, each method's top type, its Cell Ontology placement and its history. annotate_genes adds the genes: what sets each cluster apart, and how the panel markers of its label and of each method's top type fare in it. Where the methods disagree, weigh their evidence, terms included; do not label beyond it. A cluster's terms rank by effect, what sets it apart (killing, clotting, antigen presentation); their q tests that effect against random gene sets and discounts programmes many clusters share (ribosome, spliceosome), so a cell type split over several clusters tests weaker in each than its effect reads: weigh effect and q together. A round's `caveats`, when it has any, say what its statistics lack: read them first.
    Ask why in contrasts: why X rather than Y, given Z. The answer weighs lines of evidence that rest on different data, says which side each favours, and holds the gene and term questions behind them. A tie or a disagreement is an answer: the evidence does not separate them. Before you label, relabel or merge, put the choice to annotate_why: why a cluster is A rather than B (left out: its label against its strongest rival), why a gene is shown rather than another, why one term rather than another. Base your rationale on its verdict and name the lines it rests on, and put its `cite` in the decision's `evidence`; where the evidence does not separate A and B, keep a label over both or say so.
-3. annotate_preview with your decisions shows what they would change, rescored; then annotate_relabel applies them and returns the next round. For a merge, the preview lists the merged cluster's top terms with their effect and q, so weigh whether the parts share a function before merging. A merge that would leave one cluster is refused (each cluster is scored against the others): label the clusters the same type instead. annotate_relabel's `warnings` say what the new round lacks, such as terms not scored again. Rounds are never overwritten, so a decision can always be revisited.
+3. annotate_preview with your decisions shows what they would change, rescored; then annotate_relabel applies them and returns the next round. For a merge, the preview lists the merged cluster's top terms with their effect and q, so weigh whether the parts share a function before merging. A merge that would leave one cluster is refused (each cluster is scored against the others): label the clusters the same type instead. A cluster whose review shows two types mixed is split by clustering again in senna (its run_step clustering, finer: leiden at a higher resolution or more k, into a new out) and annotating that anew; merges stay annotate_relabel's. annotate_relabel's `warnings` say what the new round lacks, such as terms not scored again. Rounds are never overwritten, so a decision can always be revisited.
 
 Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence statements (from, to, precedes|unrelated, note), writes a run.
 A first round's labels are coarse; give `level: fine` (or a fine type as a root) to order its fine labels. On fine labels a coarse root stands for the fine types mostly under it.
 2. trajectory_read returns its lineages, each edge's connectivity and verdict (supported; weak: joined by the kNN graph, thinly; unsupported: not joined; candidate; inferred) and the order in words. Revise the statements where the data disagree and run again.
+3. senna's ODE (`senna ode`) fits a continuous time and takes its root as cells, not a type. To root it on this run's types, pick the type the evidence puts first: ask annotate_why which type is least differentiated (its markers), and give trajectory_run the same type as its root. Then, in senna's server, view_open this round, view_cells that type, and run_fit ode with flag root-cells set to the list, its `why` giving the choice and annotate_why's `cite` as `cites`. When senna's run_fit returns needs_input naming root options, they are typed by this run's newest lupin round.
 
 annotate_run and trajectory_run take `background`: on a large run set it, and the call returns a job id at once; the step runs on lupin's own screen in a session the user can watch with `lupin attach`, and goes on if this server ends.
 
@@ -479,10 +480,11 @@ Around the loops: annotate_family lists a run's rounds and trajectories; annotat
 docs prints the method write-ups. Paths are resolved against the server's working directory; results give the paths written.
 ```
 
-With records kept (the default), legume-mcp adds where they are and asks the
-agent to open with a `notebook` plan (the question, the data, how the result
-will be checked) and to close with its conclusions. Records or not, it also
-tells the agent how to follow background jobs.
+With records kept (the default), legume-mcp adds where they are and that the
+notebook is the `legume` server's (`legume init` connects it): the agent
+records there the plan (the question, the data, how the result will be
+checked), what it did and saw, and what the person decides. Records or not,
+it also tells the agent how to follow background jobs.
 
 A large `annotate_run` or `trajectory_run` can outlast a client's wait on one
 call: with `background: true` it returns `{job, round}` or `{job, run}` at
@@ -513,7 +515,6 @@ it is refused, naming the job, before anything is written.
 | `annotate_hide_genes` | hides genes from the specific genes from now on (`h`, `X` on the screen) |
 | `exports` | the figures saved on the screen (`f`): list, add, unlist, move, delete only while they are as logged |
 | `docs` | lupin's method write-ups |
-| `notebook` | (from legume-mcp) an entry in the day's lab notebook |
 | `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow or stop a background job |
 
 Decisions use the `relabel` format (`lupin review --help`). They are recorded
@@ -533,7 +534,7 @@ organizing computational biology projects [1] (see `legume-mcp`):
   work without the agent. A relabel runs `--next --expect {chain}.r<k>`, so it
   replays to the same round.
 - `results/<YYYY-MM-DD>/notebook.md`: the agent's plan, observations and
-  conclusions; the plan names the question, the data and the check, after [2].
+  conclusions, written through the `legume` server; the plan names the question, the data and the check, after [2].
 - `results/INDEX.tsv`: one row per output with a one-line summary, for `grep`.
 
 `LEGUME_MCP_RECORDS=off` keeps none.
