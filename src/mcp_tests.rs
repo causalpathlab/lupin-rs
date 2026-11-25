@@ -669,3 +669,27 @@ fn an_export_is_logged_listed_moved_and_deleted_only_as_logged() {
     assert!(Path::new(&now).is_file(), "unlisting keeps the files");
     assert!(call(json!({ "action": "bogus" })).is_err());
 }
+
+#[test]
+fn a_round_of_a_senna_run_offers_senna_view_open_and_a_pinto_rounds_does_not() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    // A pinto run's round carries the run's kind; the run itself need not
+    // be there to tell.
+    let round = |run: &str, kind: &str, source: &str| {
+        let path = dir.join(format!("{run}.L0.lupin.json"));
+        let body = format!(
+            r#"{{"version":2,"kind":"{kind}","prefix":"{run}.L0",
+                "annotate":{{"argmax":"{run}.L0.argmax.tsv","source":"{source}"}}}}"#
+        );
+        std::fs::write(&path, body).unwrap();
+        path
+    };
+    let senna = round("S", "topic", "S.senna.json");
+    let Some(Content::Next(next)) = senna_view_next(&senna) else {
+        panic!("no Next for a senna run's round");
+    };
+    assert_eq!(next[0].tool, "senna view_open");
+    assert_eq!(next[0].args["run"], absolute(&senna));
+    assert!(senna_view_next(&round("P", "pinto-cage", "P.pinto.json")).is_none());
+}

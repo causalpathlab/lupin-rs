@@ -33,7 +33,7 @@ use crate::tui::headless::PanelState;
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use data_beans::aux::feature_rows::SPLICED;
-use legume_mcp::{Call, Content, Handler, ServerInfo, ToolSpec};
+use legume_mcp::{Call, Content, Handler, Next, ServerInfo, ToolSpec};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -77,7 +77,10 @@ rescored; then annotate_relabel applies them and returns the next round. \
 For a merge, the preview lists the merged cluster's top terms with their \
 effect and q, so weigh whether the parts share a function before merging. A merge that would leave one cluster is \
 refused (each cluster is scored against the others): label the clusters \
-the same type instead. annotate_relabel's `warnings` say what the new round \
+the same type instead. A cluster whose review shows two types mixed is \
+split by clustering again in senna (its run_step clustering, finer: leiden \
+at a higher resolution or more k, into a new out) and annotating that anew; \
+merges stay annotate_relabel's. annotate_relabel's `warnings` say what the new round \
 lacks, such as terms not scored again. \
 Rounds are never overwritten, so a decision can always be revisited.
 
@@ -89,6 +92,15 @@ A first round's labels are coarse; give `level: fine` (or a fine type as a root)
 verdict (supported; weak: joined by the kNN graph, thinly; unsupported: not \
 joined; candidate; inferred) and the order in words. \
 Revise the statements where the data disagree and run again.
+3. senna's ODE (`senna ode`) fits a continuous time and takes its root as \
+cells, not a type. To root it on this run's types, pick the type the evidence \
+puts first: ask annotate_why which type is least differentiated (its \
+markers), and give trajectory_run the same type as its root. Then, in \
+senna's server, view_open this round, view_cells that type, and run_fit ode \
+with flag root-cells set to the list, its `why` giving the choice, `by` who \
+made it (user, agent or agent_accepted) and annotate_why's `cite` in \
+`cites`. When senna's run_fit returns needs_input naming root options, they \
+are labelled by the types of this run's newest lupin round.
 
 annotate_run and trajectory_run take `background`: on a large run set it, \
 and the call returns a job id at once; the step runs on lupin's own screen in \
@@ -510,7 +522,9 @@ impl Handler for Lupin {
                 if !warnings.is_empty() {
                     out["warnings"] = json!(warnings);
                 }
-                Ok(vec![Content::Json(out)])
+                Ok(std::iter::once(Content::Json(out))
+                    .chain(senna_view_next(&round))
+                    .collect())
             }
             "annotate_ask" => annotate_ask(&a, cx),
             "annotate_why" => annotate_why(&a),
@@ -609,6 +623,20 @@ fn lupin(argv: &[String]) -> Result<Command> {
         anyhow::bail!("{}", said.join("\n").trim_start_matches("error: "));
     }
     lupin_command(argv)
+}
+
+/// The way back to senna from a round made from a senna run: `senna
+/// view_open` on it, its types on senna's map. None for a pinto run's round
+/// (its kind, `pinto-*`, carried from the run), which senna does not read.
+fn senna_view_next(round: &Path) -> Option<Content> {
+    let (manifest, _) = run::RunManifest::load(round).ok()?;
+    (!manifest.kind.is_pinto()).then(|| {
+        Content::Next(vec![Next::new(
+            "senna view_open",
+            json!({ "run": absolute(round) }),
+            "look at the types on senna's map",
+        )])
+    })
 }
 
 fn absolute(p: &Path) -> String {
@@ -787,9 +815,10 @@ fn annotate_run(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
             (id.to_string(), brief)
         })
         .collect();
-    Ok(vec![Content::Json(
-        json!({ "round": absolute(&round), "clusters": clusters }),
-    )])
+    let out = Content::Json(json!({ "round": absolute(&round), "clusters": clusters }));
+    Ok(std::iter::once(out)
+        .chain(senna_view_next(&round))
+        .collect())
 }
 
 fn annotate_why(a: &Arguments) -> Result<Vec<Content>> {

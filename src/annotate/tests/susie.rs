@@ -236,8 +236,8 @@ fn empty_clusters_neither_shift_the_background_nor_get_a_call() {
     for f in &fits.clusters[10..] {
         assert!(f.call().is_none() && f.pip.iter().all(|&p| p == 0.0));
     }
-    for k in 1..10 {
-        assert_eq!(fits.clusters[k].call(), Some((k - 1) % 4), "cluster {k}");
+    for (k, f) in fits.clusters.iter().enumerate().take(10).skip(1) {
+        assert_eq!(f.call(), Some((k - 1) % 4), "cluster {k}");
     }
 }
 
