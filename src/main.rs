@@ -280,13 +280,13 @@ enum Commands {
                       terminal.\n\
                       \n\
                       A session keeps running when the terminal goes (a dropped connection,\n\
-                      or the detach key: ctrl+alt+d unless LEGUME_TUI_DETACH_KEY sets\n\
+                      or the detach key: ctrl+] unless LEGUME_TUI_DETACH_KEY sets\n\
                       another; `?` shows it) and is picked up again here, or by starting it\n\
                       again with no --from. The first detach by the key asks for a label\n\
                       (Enter keeps the id); `lupin rename` or `r` in the picker changes it\n\
                       later. A session is found by its label or its id; with one live the\n\
                       name is optional, with several a picker opens. `lupin sessions` lists\n\
-                      them. Inside one, ctrl+alt+s (or LEGUME_TUI_SWITCH_KEY) switches to\n\
+                      them. Inside one, ctrl+\\ (or LEGUME_TUI_SWITCH_KEY) switches to\n\
                       another. --no-detach on either starts it plain."
     )]
     Attach(legume_tui::cli::AttachArgs),

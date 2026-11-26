@@ -1,6 +1,6 @@
 [package]
 name = "lupin-rs"
-version = "0.9.9"
+version = "0.9.13"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -70,7 +70,7 @@ legume-plot = { version = "0.3" }
 # The MCP server under `lupin mcp`.
 # The agent's server; background steps in a session of lupin's own
 # screen (`sessions`), and its read-only watch (`tui`).
-legume-mcp = { version = "0.4", features = ["sessions", "tui"] }
+legume-mcp = { version = "0.7", features = ["sessions", "tui"] }
 # Rasterises figures in memory for the TUI; the version legume-plot uses.
 resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts"] }
 
@@ -96,8 +96,8 @@ miniz_oxide = "0.8"
 # subcommands, shared with the other legume tools; the cell map drawn as
 # senna draws its map, on the terminal and as a PDF page, saved through its
 # dialog and logged in its gallery with every file traced.
-legume-tui = { version = "0.3", features = ["map-display", "export", "save", "gallery-trace", "chart"] }
+legume-tui = { version = "0.5", features = ["map-display", "export", "save", "gallery-trace", "chart"] }
 
 [dev-dependencies]
 # Drives the TUI through pseudo-terminals in the session tests.
-legume-tui = { version = "0.3", features = ["testing"] }
+legume-tui = { version = "0.5", features = ["testing"] }

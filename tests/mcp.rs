@@ -150,19 +150,9 @@ fn an_agents_relabel_is_recorded_and_replays() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    for t in [
-        "annotate_run",
-        "annotate_relabel",
-        "trajectory_run",
-        "notebook",
-    ] {
+    for t in ["annotate_run", "annotate_relabel", "trajectory_run"] {
         assert!(names.contains(&t), "{t} in {names:?}");
     }
-    s.call(
-        "notebook",
-        json!({ "kind": "plan", "text": "Relabel cluster 2." }),
-    )
-    .unwrap();
 
     let decisions =
         json!([{ "cluster": 2, "action": "label", "label": "CT9", "rationale": "test" }]);
@@ -291,11 +281,6 @@ fn an_agents_relabel_is_recorded_and_replays() {
     );
     let index = std::fs::read_to_string(results.join("INDEX.tsv")).unwrap();
     assert!(index.contains("\tlupin\tannotate_relabel\tdata/run.r1.senna.json\trelabel run.senna.json with 1 decision(s)"), "{index}");
-    let notebook = std::fs::read_to_string(day.join("notebook.md")).unwrap();
-    assert!(
-        notebook.contains("· lupin · plan\n\nRelabel cluster 2."),
-        "{notebook}"
-    );
 
     // Replay: without the new round and its decisions file, the script
     // writes both again, with this lupin first on the path.
