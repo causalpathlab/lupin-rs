@@ -1983,8 +1983,17 @@ pub(crate) fn evidence_by_cluster(loaded: &Loaded) -> Result<(ClusterEvidence, O
 
 /// Each cluster's label as review shows it, without the rest of the review.
 pub(crate) fn cluster_labels(loaded: &Loaded) -> Result<BTreeMap<ClusterId, Option<String>>> {
+    Ok(labels_and_tree(loaded)?.0)
+}
+
+/// Each cluster's label as review shows it.
+pub(crate) type Labels = BTreeMap<ClusterId, Option<String>>;
+
+/// [`cluster_labels`], and the round's type tree.
+pub(crate) fn labels_and_tree(loaded: &Loaded) -> Result<(Labels, Option<TypeTree>)> {
     let r = Reviewed::read(loaded, false, false)?;
-    Ok(r.digests.into_iter().map(|(id, d)| (id, d.label)).collect())
+    let labels = r.digests.into_iter().map(|(id, d)| (id, d.label)).collect();
+    Ok((labels, r.tree))
 }
 
 /// `review --json`: per cluster (all, or those in `clusters`), its digest,

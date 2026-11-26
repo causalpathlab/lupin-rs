@@ -866,6 +866,20 @@ pub struct Loaded {
     pub file: PathBuf,
 }
 
+/// Cells of `space` prepared for kNN distances in place: unit rows for an
+/// embedding, `exp` then z-scored columns for `log θ`, z-scored columns for
+/// signed scores.
+pub fn prepare_cells(space: CellSpace, x: &mut Mat) {
+    match space {
+        CellSpace::Embedding => l2_normalize_rows_inplace(x),
+        CellSpace::LogSimplex => {
+            x.apply(|v| *v = v.exp());
+            x.scale_columns_inplace();
+        }
+        CellSpace::Signed => x.scale_columns_inplace(),
+    }
+}
+
 /// The geometry table of the run `manifest` describes, read and prepared for
 /// kNN distances by the run's cell space: rows L2-normalised for an embedding
 /// (Euclidean distance then ranks as cosine), `exp` then column z-scores for
@@ -878,14 +892,7 @@ pub fn prepare_geometry(manifest: &RunManifest, dir: &Path) -> anyhow::Result<Ma
     let path = resolve(dir, rel);
     let mut x = Mat::from_parquet_with_row_names(&path, Some(0))
         .map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?;
-    match manifest.kind.cell_space() {
-        CellSpace::Embedding => l2_normalize_rows_inplace(&mut x.mat),
-        CellSpace::LogSimplex => {
-            x.mat.apply(|v| *v = v.exp());
-            x.mat.scale_columns_inplace();
-        }
-        CellSpace::Signed => x.mat.scale_columns_inplace(),
-    }
+    prepare_cells(manifest.kind.cell_space(), &mut x.mat);
     info!(
         "{} cells × {} dims from {path}",
         x.rows.len(),

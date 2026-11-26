@@ -93,6 +93,15 @@ it is evidence beside the methods', placed on the Cell Ontology, and \
 annotate_why weighs it as a line of its own. A reading that cites no blind \
 prompt is kept as not blind and said to be so. Several fresh readers of one \
 prompt show how stable the reading is.
+5. annotate_confirm checks a round's calls on data that did not make its \
+clusters: it splits the cell embedding in two by data fission, clusters one \
+half, and tests the panel on the other, a type standing only where its \
+markers are up beyond random gene sets and beyond their own correlation; \
+each call is tested again with half of every type's markers held out. It \
+changes nothing in the round; annotate_why then weighs it as the fission \
+line. Its `dependence` near 1 says the halves are independent; well above, \
+read the line with care. The counts are not split, so the round's \
+enrichment and SuSiE stay post-selection.
 
 Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence \
@@ -270,6 +279,21 @@ fn tools() -> Vec<ToolSpec> {
                     "depth": { "type": "integer", "description": "For a label: levels of gene and term questions under its lines (2)" },
                 }),
                 &["round", "cluster"],
+            ),
+        ),
+        ToolSpec::new(
+            "annotate_confirm",
+            "Check a round's calls on half of its cell embedding that did not make the clusters (`lupin confirm --json`): data fission, f = z + τw clustered by Leiden, g = z − w/τ tested, Σ fitted so that f and g do not co-vary within the clusters of f. Each cluster of f ranks the genes by its mean logit on g; each type is tested on that ranking against random gene sets (q) and by its markers' mean (up p), and stands on both; each call is tested again with half its markers, picked on f and tested on g. Writes {round}.confirm.json beside the round, which annotate_why reads as its fission line; changes no label. Returns per cluster of f its cells, the round cluster most of them are in and its label, the call, every type's test and the held-out halves, and `dependence` (about 1 when the halves are independent).",
+            schema(
+                json!({
+                    "round": { "type": "string" },
+                    "tau": { "type": "number", "description": "f = z + τw, g = z − w/τ (1); smaller keeps more for the clusters" },
+                    "sigma": { "type": "string", "enum": ["fitted", "total", "within"], "description": "The noise's covariance (fitted)" },
+                    "resolution": { "type": "number", "description": "Leiden's resolution on f (1)" },
+                    "num_clusters": { "type": "integer", "description": "Aim Leiden on f at this many clusters (default: by resolution alone)" },
+                    "seed": { "type": "integer" },
+                }),
+                &["round"],
             ),
         ),
         ToolSpec::new(
@@ -539,6 +563,7 @@ impl Handler for Lupin {
             }
             "annotate_ask" => annotate_ask(&a, cx),
             "annotate_why" => annotate_why(&a),
+            "annotate_confirm" => annotate_confirm(&a),
             "annotate_heatmap" => annotate_heatmap(&a, cx),
             "annotate_figure" => annotate_figure(&a, cx),
             "trajectory_figure" => trajectory_figure(&a, cx),
@@ -856,6 +881,26 @@ fn annotate_why(a: &Arguments) -> Result<Vec<Content>> {
     let mut v = serde_json::to_value(&answer)?;
     v["cite"] = why::citation(&answer);
     Ok(vec![Content::Json(v)])
+}
+
+fn annotate_confirm(a: &Arguments) -> Result<Vec<Content>> {
+    use crate::manifest::confirm::{confirm, ConfirmArgs, Sigma};
+    let mut args = ConfirmArgs::new(&a.req_path("round")?);
+    if let Some(t) = a.parse("tau")? {
+        args.tau = t;
+    }
+    if let Some(s) = a.str("sigma") {
+        args.sigma = <Sigma as clap::ValueEnum>::from_str(s, true)
+            .map_err(|e| anyhow::anyhow!("sigma: {e}"))?;
+    }
+    if let Some(r) = a.parse("resolution")? {
+        args.resolution = r;
+    }
+    args.num_clusters = a.parse("num_clusters")?;
+    if let Some(s) = a.parse("seed")? {
+        args.seed = s;
+    }
+    Ok(vec![Content::Json(serde_json::to_value(confirm(&args)?)?)])
 }
 
 fn annotate_genes(a: &Arguments) -> Result<Vec<Content>> {

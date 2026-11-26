@@ -91,6 +91,19 @@ has none, the line notes that the reader may have seen the panel or the
 labels, so it is not independent of the others. A cluster no reader read
 has no reader line.
 
+**The fission line**, when the round was confirmed (`lupin confirm`; `lupin
+docs fission`): the panel tested again on half of the embedding that did not
+make the clusters, in each cluster of that split mostly made of this
+cluster's cells. In each one, a side stands when its best type beats random
+gene sets (q < 0.05) and its markers are up beyond their own correlation (up
+p < 0.05); it favours the side that alone stands, or the one of higher NES
+when both do. Over the clusters, it favours the side they agree on. Its
+notes give each cluster's held-out markers (one half picks the call on one
+half of the embedding, the other half tests it on the other) and remind that
+the halves are independent only as far as the embedding is asymptotically
+normal. It rests on the same panel as the panel line, on other data: the
+round's clusters are not the ones it tests.
+
 **The verdict** counts the lines: it favours the fact when some line does
 and none favours the foil, the foil likewise, split when lines favour both,
 and neither otherwise, in which case a label over both (their group) says no
@@ -133,3 +146,6 @@ back.
   size alone; the answer shows the counts.
 - The test reads the clusters' pooled profiles, as the GO terms' does: no
   sample permutation.
+- Only the fission line is free of the double dip of clustering and
+  testing on one embedding; the counts are not split, so the panel line's
+  enrichment, which reads them, is not.

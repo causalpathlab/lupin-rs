@@ -88,6 +88,7 @@ fn round() -> Round {
         evidence: [(0, (digest, types))].into(),
         terms: Some(terms),
         readings: Vec::new(),
+        confirm: None,
         method: Method::Enrichment,
         caveats: Vec::new(),
     }

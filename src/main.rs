@@ -181,6 +181,20 @@ enum Commands {
     )]
     Why(manifest::why::WhyArgs),
     #[command(
+        about = "Check a round's calls on half of the embedding its clusters were not made from",
+        long_about = "Data fission (Leiner et al. 2024) of the round's cell embedding: f = z + τw\n\
+                      is clustered by Leiden, g = z − w/τ tests, w ~ N(0, Σ) with Σ the cells'\n\
+                      covariance within the round's clusters. Each cluster of f ranks the genes\n\
+                      by its mean logit on g (through the decoder's gene table), and the round's\n\
+                      panel is tested on that ranking as the enrichment pass tests it. Each\n\
+                      call is checked again with half of every type's markers, tested on the\n\
+                      other half. f and g are independent as far as the embedding is\n\
+                      asymptotically normal. Writes {round}.confirm.tsv, .confirm.json and\n\
+                      .confirm.clusters.parquet beside the round, which `lupin why`\n\
+                      reads as its fission line; `lupin docs fission` has the method."
+    )]
+    Confirm(manifest::confirm::ConfirmArgs),
+    #[command(
         about = "Apply a decisions file to an annotation round and write the next round",
         long_about = "Reads a round and a decisions file (JSONL; see `lupin review --help`),\n\
                       relabels or merges clusters, and writes a new manifest at `-o`\n\
@@ -449,6 +463,7 @@ fn main() -> Result<()> {
         Commands::Describe(c) => run_describe(&c),
         Commands::Review(c) => manifest::rounds::run_review(&c),
         Commands::Why(c) => manifest::why::run_why(&c),
+        Commands::Confirm(c) => manifest::confirm::run_confirm(&c),
         Commands::Relabel(c) => manifest::rounds::run_relabel(&c),
         Commands::Ask(c) => manifest::ask::run_ask(&c),
         Commands::Docs(c) => docs::run_docs(&c),

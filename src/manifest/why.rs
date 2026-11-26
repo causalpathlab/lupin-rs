@@ -131,6 +131,19 @@ impl Favours {
         }
     }
 
+    /// Two sides' tests, each whether it stands and its statistic (`None`:
+    /// not tested): the higher statistic when both stand, the one that
+    /// alone stands, `CannotTell` when neither stands and a side was not
+    /// tested, else `Neither`.
+    fn by_tests(fact: Option<(bool, Option<f32>)>, foil: Option<(bool, Option<f32>)>) -> Favours {
+        let stands = |t: Option<(bool, Option<f32>)>| t.is_some_and(|t| t.0);
+        match (stands(fact), stands(foil)) {
+            (true, true) => Favours::higher(fact.and_then(|t| t.1), foil.and_then(|t| t.1)),
+            (false, false) if fact.is_none() || foil.is_none() => Favours::CannotTell,
+            (a, b) => Favours::either(a, b),
+        }
+    }
+
     /// The side that alone holds: `Neither` for both or none.
     fn either(fact: bool, foil: bool) -> Favours {
         match (fact, foil) {
@@ -353,6 +366,9 @@ pub struct Round {
     terms: Option<Terms>,
     /// Readers' labels for the clusters ([`super::reading`]).
     readings: Vec<super::reading::Reading>,
+    /// The round's calls tested on half of the embedding its clusters were
+    /// not made from ([`super::confirm`]).
+    confirm: Option<super::confirm::Confirmation>,
     method: Method,
     caveats: Vec<String>,
 }
@@ -371,6 +387,7 @@ impl Round {
             evidence,
             terms: Terms::read(loaded)?,
             readings: super::reading::read(loaded)?,
+            confirm: super::confirm::read(loaded)?,
             method: super::rounds::called_by(&loaded.manifest.annotate).unwrap_or_default(),
             caveats: caveats(loaded),
         })
@@ -861,12 +878,8 @@ fn panel_line(
             json!({ "distinct": s.len(), "up": up, "z": t.map(|t| t.z), "p": t.map(|t| t.p), "top": top })
         };
         let (ta, tb) = (tested[0], tested[1]);
-        let stands = |t: Option<Test>| t.is_some_and(|t| t.p < ALPHA);
-        let f = match (stands(ta), stands(tb)) {
-            (true, true) => Favours::higher(ta.map(|t| t.z), tb.map(|t| t.z)),
-            (false, false) if ta.is_none() || tb.is_none() => Favours::CannotTell,
-            (a, b) => Favours::either(a, b),
-        };
+        let read = |t: Option<Test>| t.map(|t| (t.p < ALPHA, Some(t.z)));
+        let f = Favours::by_tests(read(ta), read(tb));
         readings.push(("markers", f));
         fa.insert("markers".into(), side(&d.fact, ta));
         fo.insert("markers".into(), side(&d.foil, tb));
@@ -1123,6 +1136,75 @@ fn reader_line(r: &Round, k: ClusterId, (fact, foil): (&str, &str)) -> Result<Op
     Ok(Some(line))
 }
 
+/// The fission line: the panel tested again on `g`, in each cluster of `f`
+/// most of whose cells are in `k`; each side by its best type's q there.
+/// `None` when the round was not confirmed.
+fn fission_line(r: &Round, k: ClusterId, (fact, foil): (&str, &str)) -> Option<Answer> {
+    use super::confirm::{Confirmed, TypeTest};
+    let c = r.confirm.as_ref()?;
+    let parts: Vec<&Confirmed> = (c.clusters.iter())
+        .filter(|x| x.round_cluster == Some(k))
+        .collect();
+    // A side's best type in a cluster of f: one that stands on both tests
+    // (random gene sets, q; the markers' mean up, which counts markers that
+    // move together as such) first, then by q.
+    let best = |x: &Confirmed, label: &str| -> Option<(String, TypeTest)> {
+        (r.types_of(label).iter())
+            .filter_map(|t| Some((t.clone(), *x.types.get(&label_key(t))?)))
+            .filter(|(_, t)| t.q.is_some())
+            .min_by(|a, b| {
+                (!a.1.stands())
+                    .cmp(&!b.1.stands())
+                    .then_with(|| a.1.q.unwrap_or(1.0).total_cmp(&b.1.q.unwrap_or(1.0)))
+            })
+    };
+    let at: Vec<_> = (parts.iter())
+        .map(|x| (x, best(x, fact), best(x, foil)))
+        .collect();
+    // The fact's side, or the foil's.
+    let side = |of_fact: bool| -> Value {
+        let clusters: Vec<Value> = (at.iter())
+            .map(|(x, a, b)| {
+                let b = if of_fact { a } else { b };
+                let t = b.as_ref().map(|b| b.1).unwrap_or_default();
+                json!({ "cluster": x.cluster, "cells": x.cells, "overlap": x.overlap, "type": b.as_ref().map(|b| &b.0), "nes": t.nes, "q": t.q, "p_up": t.p_up })
+            })
+            .collect();
+        json!({ "clusters": clusters })
+    };
+    let read = |b: &Option<(String, TypeTest)>| b.as_ref().map(|(_, t)| (t.stands(), t.nes));
+    let per = at
+        .iter()
+        .map(|(_, a, b)| Favours::by_tests(read(a), read(b)));
+    let mut line = Answer::new(
+        "the panel again, on half of the embedding (data fission): clusters made on one half f, each side's best type tested on the genes ranked by the other half g, against random gene sets (q) and by its markers' mean logit against the centre (up p), in the clusters of f mostly in this one",
+        side(true),
+        side(false),
+        Favours::of(per),
+    );
+    line.line = Some("fission".into());
+    line.sources = vec!["confirm"];
+    if parts.is_empty() {
+        line.notes.push(format!(
+            "no cluster of f is mostly K{k}: its cells are split among clusters that hold more of others"
+        ));
+    }
+    for x in &parts {
+        let [a, b] = &x.held_out;
+        line.notes.push(format!(
+            "F{} held-out markers, each half's call on f tested by the other half on g: {} / {}",
+            x.cluster,
+            a.summary(),
+            b.summary()
+        ));
+    }
+    line.notes.push(format!(
+        "g is independent of the clusters of f only as far as the embedding is asymptotically normal (τ = {}); it rests on the same marker panel as the panel line, and the counts were not split",
+        c.tau
+    ));
+    Some(line)
+}
+
 /// A label, with the panel types it stands for when it is coarse.
 fn label_side(r: &Round, label: &str) -> Value {
     let types = r.types_of(label);
@@ -1199,13 +1281,23 @@ pub fn why_label(
         panel_line(r, k, (&fact, &foil), &d, depth)?,
         terms_line(r, k, &d, depth)?,
     ];
-    let reader = reader_line(r, k, (&fact, &foil))?;
+    let mut said = vec![
+        "the marker panel",
+        "the GO/GMT terms without the panel's genes",
+    ];
+    if let Some(l) = reader_line(r, k, (&fact, &foil))? {
+        lines.push(l);
+        said.push("a reader's labels from the top genes");
+    }
+    if let Some(l) = fission_line(r, k, (&fact, &foil)) {
+        lines.push(l);
+        said.push("the panel on half of the embedding the clusters were not made from");
+    }
+    let last = said.pop().unwrap_or_default();
     let rule = format!(
-        "the lines of evidence that rest on different data: the marker panel, {}the GO/GMT terms without the panel's genes{}",
-        if reader.is_some() { "" } else { "and " },
-        if reader.is_some() { ", and a reader's labels from the top genes" } else { "" },
+        "the lines of evidence that rest on different data: {}, and {last}",
+        said.join(", ")
     );
-    lines.extend(reader);
     let count = |f: Favours| lines.iter().filter(|l| l.favours == f).count();
     let (n_fact, n_foil) = (count(Favours::Fact), count(Favours::Foil));
     let read = lines.iter().any(|l| l.favours != Favours::CannotTell);
