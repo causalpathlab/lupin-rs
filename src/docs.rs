@@ -21,6 +21,8 @@ pub enum Topic {
     TrajectoryPlan,
     /// Asking why: contrasts of a round's labels, genes and terms.
     Why,
+    /// Confirming a round by data fission and held-out markers.
+    Fission,
 }
 
 /// Every write-up with its one-line blurb, so the listing can never advertise
@@ -50,6 +52,11 @@ const DOCS: &[(Topic, &str, &str)] = &[
         Topic::Why,
         "METHOD  asking why: contrasts of a round's labels, genes and GO/GMT terms",
         include_str!("../docs/why-contrasts.md"),
+    ),
+    (
+        Topic::Fission,
+        "METHOD  confirming a round: data fission of the embedding, held-out markers",
+        include_str!("../docs/fission.md"),
     ),
 ];
 

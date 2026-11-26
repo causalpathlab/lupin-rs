@@ -131,6 +131,38 @@ flag, and `lupin why` weighs it as a line of its own, apart from the panel.
 A merge drops the readings of the clusters it joins: the reader never saw the
 merged cells.
 
+## Confirming a round
+
+A check on data that did not make the clusters. The round clustered the
+cells on their embedding and tested the panel on the same embedding;
+`lupin confirm` splits the embedding in two by data fission, clusters one
+half and tests on the other:
+
+```sh
+lupin confirm -f r1            # writes r1.confirm.json, .confirm.tsv, .confirm.clusters.parquet
+lupin why -f r1 -c 3           # now with a fission line
+```
+
+`f = z + τw` is clustered by Leiden, `g = z − w/τ` is tested, and `w` is
+noise drawn with covariance `Σ`, fitted so that `f` and `g` do not co-vary
+within the clusters of `f`. They are then independent as far as the
+embedding is asymptotically normal. Each cluster of `f` ranks the genes by
+its mean logit on `g`, through the decoder's gene table. A type stands where
+its markers beat random gene sets (q) and are up beyond their own
+correlation (up p). Each call is tested again with half its markers: one
+half picks the call on `f`, the other tests it on `g`.
+
+It changes no label and leaves every other line of evidence as it was:
+`lupin why` weighs it as a line of its own, **fission**. The report says
+how much dependence is left (`dependence`, about 1 when the halves are
+independent). The counts are not split, so the round's enrichment and SuSiE
+stay post-selection.
+
+On a homogeneous population, where every call is false, a type's markers
+came out up at p < 0.05 in 44% of pairs when clustered and tested on one
+embedding, and in 6.1% after fission (nominal 5%). `lupin docs fission` has the method,
+its calibration and its limits.
+
 ## Annotation rounds
 
 An annotated manifest is a round. `lupin review` prints each cluster's evidence
@@ -496,6 +528,7 @@ Annotation loop:
    Ask why in contrasts: why X rather than Y, given Z. The answer weighs lines of evidence that rest on different data, says which side each favours, and holds the gene and term questions behind them. A tie or a disagreement is an answer: the evidence does not separate them. Before you label, relabel or merge, put the choice to annotate_why: why a cluster is A rather than B (left out: its label against its strongest rival), why a gene is shown rather than another, why one term rather than another. Base your rationale on its verdict and name the lines it rests on, and put its `cite` in the decision's `evidence`; where the evidence does not separate A and B, keep a label over both or say so.
 3. annotate_preview with your decisions shows what they would change, rescored; then annotate_relabel applies them and returns the next round. For a merge, the preview lists the merged cluster's top terms with their effect and q, so weigh whether the parts share a function before merging. A merge that would leave one cluster is refused (each cluster is scored against the others): label the clusters the same type instead. A cluster whose review shows two types mixed is split by clustering again in senna (its run_step clustering, finer: leiden at a higher resolution or more k, into a new out) and annotating that anew; merges stay annotate_relabel's. annotate_relabel's `warnings` say what the new round lacks, such as terms not scored again. Rounds are never overwritten, so a decision can always be revisited.
 4. A blind reading checks the labels from outside the panel. annotate_ask with `blind` on an annotated round returns its blind prompt: each cluster's most specific genes and nothing of the panel, the labels or the methods. You have seen those, so do not answer it yourself: give the prompt, and nothing else, to a fresh subagent with no other context, and pass its `reading` lines unchanged to annotate_relabel. A reading changes no label; it is evidence beside the methods', placed on the Cell Ontology, and annotate_why weighs it as a line of its own. A reading that cites no blind prompt is kept as not blind and said to be so. Several fresh readers of one prompt show how stable the reading is.
+5. annotate_confirm checks a round's calls on data that did not make its clusters: it splits the cell embedding in two by data fission, clusters one half, and tests the panel on the other, a type standing only where its markers are up beyond random gene sets and beyond their own correlation; each call is tested again with half of every type's markers held out. It changes nothing in the round; annotate_why then weighs it as the fission line. Its `dependence` near 1 says the halves are independent; well above, read the line with care. The counts are not split, so the round's enrichment and SuSiE stay post-selection.
 
 Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence statements (from, to, precedes|unrelated, note), writes a run.
@@ -535,6 +568,7 @@ it is refused, naming the job, before anything is written.
 | `annotate_review` | per cluster: calls with q, terms, each method's top type, Cell Ontology placement, history; `types` adds every type's evidence |
 | `annotate_genes` | per cluster: the genes that set it apart, and how the panel markers of its label and of each method's top type fare; warns when few markers match the profile's genes |
 | `annotate_heatmap` | a round's markers × clusters (`lupin figure heatmap`): log2fc, mean, z or share detected, observed or the topic model's expected level; the figure, its numbers and the image |
+| `annotate_confirm` | a round's calls on half of the embedding that did not make the clusters (data fission) and with half the markers held out; `annotate_why` then weighs it as its fission line |
 | `annotate_preview` | what decisions would change, rescored; writes nothing |
 | `annotate_relabel` | applies decisions as the next round of the chain; rounds are never overwritten |
 | `trajectory_run` | orders an annotated round along a prior (roots, precedence statements) and the kNN graph; `level: fine` orders a coarse first round's fine labels |
@@ -591,7 +625,8 @@ project", PLoS Comput Biol 19(1): e1010786 (2023). doi:10.1371/journal.pcbi.1010
 ## Method write-ups
 
 `lupin docs` lists them; `lupin docs <topic>` prints one (compiled into the
-binary): `annotation`, `grouping`, `ontology-plan`, `trajectory-plan`, `why`.
+binary): `annotation`, `grouping`, `ontology-plan`, `trajectory-plan`, `why`,
+`fission`.
 
 ## Related crates
 

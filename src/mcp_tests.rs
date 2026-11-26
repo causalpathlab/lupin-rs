@@ -730,3 +730,29 @@ fn a_blind_ask_returns_the_rounds_prompt_and_writes_no_round() {
     assert_eq!(rounds.len(), 1, "no round written");
     assert!(error_text(&r[1]).contains("writes no round"));
 }
+
+#[test]
+fn confirm_splits_a_round_and_why_then_weighs_the_fission_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let round = crate::manifest::confirm::tests::round(dir.path());
+    let r = calls(&[
+        ("annotate_confirm", json!({ "round": round })),
+        (
+            "annotate_why",
+            json!({ "round": round, "cluster": 0, "over": "B" }),
+        ),
+        (
+            "annotate_confirm",
+            json!({ "round": round, "sigma": "neither" }),
+        ),
+    ]);
+    let c = &r[0]["structuredContent"];
+    assert!(c["dependence"].is_number(), "{}", r[0]);
+    assert!(
+        c["clusters"].as_array().is_some_and(|a| !a.is_empty()),
+        "{c}"
+    );
+    let lines = r[1]["structuredContent"]["children"].as_array().unwrap();
+    assert!(lines.iter().any(|l| l["line"] == "fission"), "{}", r[1]);
+    assert!(error_text(&r[2]).contains("sigma"), "{}", r[2]);
+}

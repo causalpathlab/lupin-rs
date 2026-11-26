@@ -4,6 +4,7 @@
 
 pub mod annotate;
 pub mod ask;
+pub mod confirm;
 pub mod data_files;
 pub mod family;
 pub mod first_round;

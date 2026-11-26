@@ -250,7 +250,7 @@ pub fn annotate_by_units(args: &UnitsArgs, loaded: &Loaded) -> Result<()> {
 }
 
 /// What the score reads: the run's decoder gene table and its cell embedding.
-fn score_tables(loaded: &Loaded) -> Result<(MatWithNames<Mat>, MatWithNames<Mat>)> {
+pub(super) fn score_tables(loaded: &Loaded) -> Result<(MatWithNames<Mat>, MatWithNames<Mat>)> {
     let run = loaded.file.display().to_string();
     let feat = load_feature_embedding(&loaded.manifest, &loaded.dir, &run)?;
     let cell_path = loaded.geometry_latent_path()?;
@@ -918,6 +918,45 @@ fn aggregate_expression(
     ))
 }
 
+/// Leiden (legume-numeric's) on cells already prepared for kNN distances
+/// ([`crate::manifest::run::prepare_cells`]): angular for an embedding,
+/// Euclidean otherwise; clusters under `args.min_cluster_size` left out
+/// (`usize::MAX`). The labels and the clusters kept.
+pub(super) fn leiden_on(
+    x: &Mat,
+    space: CellSpace,
+    args: &LeidenArgs,
+) -> Result<(Vec<usize>, usize)> {
+    // An embedding is trained with a dot-product / cosine-style objective, so the
+    // kNN graph fed to Leiden should reflect ANGULAR distance. Plain Euclidean on
+    // a raw embedding is dominated by the depth axis — senna documents that for gem
+    // about its own output — which is why the choice follows the space rather
+    // than a hand-listed pair of kinds.
+    let cosine = space == CellSpace::Embedding;
+    let metric = if cosine {
+        "cosine"
+    } else {
+        "z-scored euclidean"
+    };
+    info!(
+        "Internal Leiden: knn={}, resolution={:.3}, target_k={:?}, min_cluster_size={}, metric={metric}",
+        args.knn,
+        args.resolution,
+        args.num_clusters,
+        args.min_cluster_size
+    );
+    let mut labels = legume_numeric::matrix::clustering::leiden_clustering(
+        x,
+        args.knn,
+        args.resolution,
+        args.num_clusters,
+        args.seed,
+        cosine,
+    )?;
+    let k = drop_small_clusters(&mut labels, args.min_cluster_size);
+    Ok((labels, k))
+}
+
 /// Run Leiden on the manifest's latent matrix. For topic kinds, log-space
 /// latents are exponentiated to probabilities first. Aligns labels back to
 /// the data column order.
@@ -930,36 +969,7 @@ pub fn compute_clusters_from_latent(
     // Prepared as every kNN graph of a run is; Leiden's own normalisation
     // below then changes nothing (unit rows stay unit, z-scores stay z-scores).
     let latent = crate::manifest::run::prepare_geometry(manifest, manifest_dir)?;
-
-    // An embedding is trained with a dot-product / cosine-style objective, so the
-    // kNN graph fed to Leiden should reflect ANGULAR distance. Plain Euclidean on
-    // a raw embedding is dominated by the depth axis — senna documents that for gem
-    // about its own output — which is why the choice follows the space rather
-    // than a hand-listed pair of kinds.
-    let cosine = manifest.kind.cell_space() == CellSpace::Embedding;
-    let metric = if cosine {
-        "cosine"
-    } else {
-        "z-scored euclidean"
-    };
-
-    info!(
-        "Internal Leiden: knn={}, resolution={:.3}, target_k={:?}, min_cluster_size={}, metric={metric}",
-        args.knn,
-        args.resolution,
-        args.num_clusters,
-        args.min_cluster_size
-    );
-
-    let mut leiden = legume_numeric::matrix::clustering::leiden_clustering(
-        &latent.mat,
-        args.knn,
-        args.resolution,
-        args.num_clusters,
-        args.seed,
-        cosine,
-    )?;
-    let n_clusters = drop_small_clusters(&mut leiden, args.min_cluster_size);
+    let (leiden, n_clusters) = leiden_on(&latent.mat, manifest.kind.cell_space(), args)?;
 
     // Align by name. The training pipeline writes latents in data column
     // order, so name-mismatched cases are rare but worth diagnosing
