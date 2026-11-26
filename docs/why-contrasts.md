@@ -82,6 +82,15 @@ still stands out (p < 0.05). A term that holds the markers and little else
 repeats the panel rather than confirming it. Its child asks why the fact's
 best term rather than the foil's.
 
+**The reader line**, when a reader read the cluster (`lupin ask --blind`,
+then `reading` lines through `lupin relabel`): the share of its readings that
+agree with each side, a coarse side by its best type, from the cluster's
+most specific genes alone. It favours the side with the larger share, by at
+least 0.01. Where the cluster has blind readings only those count; where it
+has none, the line notes that the reader may have seen the panel or the
+labels, so it is not independent of the others. A cluster no reader read
+has no reader line.
+
 **The verdict** counts the lines: it favours the fact when some line does
 and none favours the foil, the foil likewise, split when lines favour both,
 and neither otherwise, in which case a label over both (their group) says no
@@ -113,7 +122,10 @@ back.
 ## Limits
 
 - The lines are only as independent as their data: the terms line uses the
-  same expression profile as the panel line, but different genes.
+  same expression profile as the panel line, but different genes. The
+  reader reads that profile's top genes too, through its own knowledge
+  rather than the panel; it is often surer of broad lineages than of fine
+  subtypes, where the panel's methods are most likely to split as well.
 - A term's genes are its GO annotations: a term with an unexpected name can
   back a type through its genes (one shared gene can put a term named for
   another tissue among a cluster's terms).

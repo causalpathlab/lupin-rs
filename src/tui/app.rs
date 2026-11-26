@@ -228,7 +228,7 @@ impl Setting {
                 }
             }
             Self::Call => {
-                let all = crate::annotate::rounds::Method::ALL;
+                let all = crate::annotate::rounds::Method::PANEL;
                 // The default, then each method in turn.
                 let at = a.call.and_then(|m| all.iter().position(|&x| x == m));
                 let n = all.len() + 1;

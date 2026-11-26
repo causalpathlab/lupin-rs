@@ -80,6 +80,16 @@ refused (each cluster is scored against the others): label the clusters \
 the same type instead. annotate_relabel's `warnings` say what the new round \
 lacks, such as terms not scored again. \
 Rounds are never overwritten, so a decision can always be revisited.
+4. A blind reading checks the labels from outside the panel. annotate_ask \
+with `blind` on an annotated round returns its blind prompt: each cluster's \
+most specific genes and nothing of the panel, the labels or the methods. \
+You have seen those, so do not answer it yourself: give the prompt, and \
+nothing else, to a fresh subagent with no other context, and pass its \
+`reading` lines unchanged to annotate_relabel. A reading changes no label; \
+it is evidence beside the methods', placed on the Cell Ontology, and \
+annotate_why weighs it as a line of its own. A reading that cites no blind \
+prompt is kept as not blind and said to be so. Several fresh readers of one \
+prompt show how stable the reading is.
 
 Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence \
@@ -136,7 +146,7 @@ fn tools() -> Vec<ToolSpec> {
     });
     let decisions = json!({
         "type": "array",
-        "description": "Decisions, one object each: {cluster or clusters, action: label|merge|keep|markers_add|markers_drop, label?, parts?, features?, evidence?: [..], alternatives?: [{label, why_not}], rationale (required)}. A label that stands for two or more types the evidence does not separate (A+B) gives them as `parts`: it is named so for the export, which places it under their common ancestor. decided_by defaults to agent (your own decision); give agent_proposed_user_accepted only when the user accepted it.",
+        "description": "Decisions, one object each: {cluster or clusters, action: label|merge|keep|markers_add|markers_drop|reading, label?, parts?, features?, evidence?: [..], alternatives?: [{label, why_not}], rationale (required)}. A `reading` (a blind reader's answer to annotate_ask's blind prompt, passed on unchanged) also carries cl, prompt and model. A label that stands for two or more types the evidence does not separate (A+B) gives them as `parts`: it is named so for the export, which places it under their common ancestor. decided_by defaults to agent (your own decision); give agent_proposed_user_accepted only when the user accepted it.",
         "items": { "type": "object" }
     });
     let obo = json!({
@@ -268,11 +278,12 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "annotate_ask",
-            "Without a marker panel: write an unlabelled first round and return each cluster's most specific genes (`lupin ask`). Label the clusters with annotate_relabel on the round it names.",
+            "Without a marker panel: write an unlabelled first round and return each cluster's most specific genes (`lupin ask`). Label the clusters with annotate_relabel on the round it names. With `blind` on an annotated round: write no round, and return its blind prompt for a fresh subagent to answer with `reading` lines.",
             schema(
                 json!({
-                    "from": { "type": "string", "description": "Run manifest or its prefix" },
-                    "out": { "type": "string", "description": "Output prefix; the next free {stem}.L{k} when omitted" },
+                    "from": { "type": "string", "description": "Run manifest or its prefix; with `blind`, an annotated round" },
+                    "out": { "type": "string", "description": "Output prefix; the next free {stem}.L{k} when omitted (not with `blind`)" },
+                    "blind": { "type": "boolean", "description": "Return the round's blind prompt instead of writing a round" },
                     "context": { "type": "string", "description": "What the cells are: tissue, species, condition" },
                     "top": { "type": "integer", "description": "Specific genes listed per cluster (15)" },
                 }),
@@ -1512,6 +1523,24 @@ fn claim_decisions_file(round: &Path) -> Result<PathBuf> {
 
 fn annotate_ask(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let from = a.req_path("from")?;
+    if a.parse::<bool>("blind")?.unwrap_or(false) {
+        anyhow::ensure!(
+            a.str("out").is_none() && a.str("clusters").is_none(),
+            "`blind` writes no round and reads the round's own clusters: leave out `out` and `clusters`"
+        );
+        let top = a
+            .parse::<usize>("top")?
+            .unwrap_or(crate::manifest::ask::DEFAULT_TOP);
+        let loaded = crate::manifest::run::load(&from)?;
+        let prompt = crate::manifest::ask::write_blind(&loaded, a.str("context"), top)?;
+        return Ok(vec![
+            Content::Json(json!({
+                "round": absolute(&loaded.file),
+                "next": "give the prompt, and nothing else, to a fresh subagent; pass its reading lines unchanged to annotate_relabel on this round",
+            })),
+            Content::Text(prompt),
+        ]);
+    }
     let Output {
         out,
         manifest: round,

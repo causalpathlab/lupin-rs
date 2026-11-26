@@ -101,6 +101,36 @@ code fences are skipped), records who decided (`agent_proposed_user_accepted`)
 and rescores the round against the suggested markers. lupin sends nothing
 anywhere.
 
+## A blind reading
+
+A check from outside the panel: a reader given only each cluster's most
+specific genes, as people label clusters from their top genes.
+
+```sh
+lupin ask --blind -f r1 --context "tissue, species"   # prints r1's blind prompt
+# give the prompt, and nothing else, to a reader that has seen nothing of the analysis;
+# its answer is `reading` lines:
+lupin relabel -f r1 -d - --next < readings.jsonl
+```
+
+`--blind` writes no round: it writes `{round}.blind_prompt.md` beside the
+round and prints it with its id. The prompt lists each cluster's genes and
+nothing of the panel, the labels or the methods' readings, and asks for one
+`reading` line per cluster: a label, its Cell Ontology term, the genes relied
+on, the prompt's id and the model. `relabel` keeps the readings in the next
+round (`{out}.agent_readings.jsonl`, `annotate.agent_readings`) and changes no
+label. Each is placed on the Cell Ontology (the term given, when the ontology
+has it, else its label by the matching rules) and agrees with a panel type
+whose term is its own or above it, or below it within the type's coarse group;
+a broader reading agrees with none. A reading that cites the round's prompt
+is blind; any other is kept and said not to be. Readers of one prompt are
+repeats: a cluster's `agent` evidence is the share of its readings (the blind
+ones, where it has any) that agree with each type. It goes beside the
+methods' in `cluster_evidence`, the screen's per-method calls and their `?`
+flag, and `lupin why` weighs it as a line of its own, apart from the panel.
+A merge drops the readings of the clusters it joins: the reader never saw the
+merged cells.
+
 ## Annotation rounds
 
 An annotated manifest is a round. `lupin review` prints each cluster's evidence
@@ -237,13 +267,16 @@ lupin why -f r1 -c 0 --gene GENE1 --over GENE2 --list markers:CT1
 lupin why -f r1 -c 0 --term 'inflammatory response'
 ```
 
-A label's answer has two lines of evidence. The panel line holds every
+A label's answer has two lines of evidence, and a third when a reader read
+the cluster (above). The panel line holds every
 reading that rests on the marker panel: each method's order, a test of the
 markers only one of the two types has (against random gene sets matched to
 their expression, as GO terms are tested; shared markers say nothing of the
 contrast) and the ontology walk's placement. The terms line is the check
 from outside it: GO/GMT terms that back one type, counted only where they
-still stand out once every panel gene is taken out of them. The verdict
+still stand out once every panel gene is taken out of them. The reader line
+is the share of a blind reader's readings that agree with each side, and says
+so when no reading answers the round's blind prompt. The verdict
 counts the lines; where they do not separate the two types, a label over both
 says no more than the evidence holds: a cluster the enrichment alone ties
 between two types can come back one of them on both lines, and a cluster's
@@ -462,6 +495,7 @@ Annotation loop:
 2. annotate_review shows each cluster: its calls with q, its top terms, each method's top type, its Cell Ontology placement and its history. annotate_genes adds the genes: what sets each cluster apart, and how the panel markers of its label and of each method's top type fare in it. Where the methods disagree, weigh their evidence, terms included; do not label beyond it. A cluster's terms rank by effect, what sets it apart (killing, clotting, antigen presentation); their q tests that effect against random gene sets and discounts programmes many clusters share (ribosome, spliceosome), so a cell type split over several clusters tests weaker in each than its effect reads: weigh effect and q together. A round's `caveats`, when it has any, say what its statistics lack: read them first.
    Ask why in contrasts: why X rather than Y, given Z. The answer weighs lines of evidence that rest on different data, says which side each favours, and holds the gene and term questions behind them. A tie or a disagreement is an answer: the evidence does not separate them. Before you label, relabel or merge, put the choice to annotate_why: why a cluster is A rather than B (left out: its label against its strongest rival), why a gene is shown rather than another, why one term rather than another. Base your rationale on its verdict and name the lines it rests on, and put its `cite` in the decision's `evidence`; where the evidence does not separate A and B, keep a label over both or say so.
 3. annotate_preview with your decisions shows what they would change, rescored; then annotate_relabel applies them and returns the next round. For a merge, the preview lists the merged cluster's top terms with their effect and q, so weigh whether the parts share a function before merging. A merge that would leave one cluster is refused (each cluster is scored against the others): label the clusters the same type instead. annotate_relabel's `warnings` say what the new round lacks, such as terms not scored again. Rounds are never overwritten, so a decision can always be revisited.
+4. A blind reading checks the labels from outside the panel. annotate_ask with `blind` on an annotated round returns its blind prompt: each cluster's most specific genes and nothing of the panel, the labels or the methods. You have seen those, so do not answer it yourself: give the prompt, and nothing else, to a fresh subagent with no other context, and pass its `reading` lines unchanged to annotate_relabel. A reading changes no label; it is evidence beside the methods', placed on the Cell Ontology, and annotate_why weighs it as a line of its own. A reading that cites no blind prompt is kept as not blind and said to be so. Several fresh readers of one prompt show how stable the reading is.
 
 Trajectory loop:
 1. trajectory_run on an annotated round, with roots and any precedence statements (from, to, precedes|unrelated, note), writes a run.
@@ -495,7 +529,7 @@ it is refused, naming the job, before anything is written.
 | Tool | Does |
 |---|---|
 | `annotate_run` | a pass (`lupin annotate`) on a run manifest; returns the round and each cluster's label and each method's top type |
-| `annotate_ask` | without a panel: an unlabelled round and each cluster's most specific genes |
+| `annotate_ask` | without a panel: an unlabelled round and each cluster's most specific genes; with `blind`, an annotated round's blind prompt for a fresh reader |
 | `annotate_review` | per cluster: calls with q, terms, each method's top type, Cell Ontology placement, history; `types` adds every type's evidence |
 | `annotate_genes` | per cluster: the genes that set it apart, and how the panel markers of its label and of each method's top type fare; warns when few markers match the profile's genes |
 | `annotate_heatmap` | a round's markers × clusters (`lupin figure heatmap`): log2fc, mean, z or share detected, observed or the topic model's expected level; the figure, its numbers and the image |

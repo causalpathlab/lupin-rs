@@ -375,6 +375,7 @@ fn take_call(
             return Ok(());
         }
         Some(Method::Enrichment) | None => return Ok(()),
+        Some(Method::Agent) => anyhow::bail!("a reader's readings make no call"),
     };
     let name = call.map_or("", Method::name);
     let path = table
@@ -545,6 +546,8 @@ fn record(
         }
     }
     if let Some(c) = &out.clusters {
+        // Readings were of the clusters this pass replaces.
+        loaded.manifest.annotate.agent_readings = None;
         let c = crate::manifest::run::rel_to_manifest(dir, c);
         if out.cluster_expression.is_some() {
             loaded.manifest.annotate.expression_clusters = Some(c.clone());

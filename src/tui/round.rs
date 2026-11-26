@@ -115,8 +115,10 @@ const CHOICE_DEPTH: usize = 3;
 #[must_use]
 pub fn choices(candidates: &[Candidate]) -> Vec<&Candidate> {
     use std::cmp::Reverse;
-    let best = |c: &Candidate| c.ranks.iter().flatten().min().copied();
-    let firsts = |c: &Candidate| c.ranks.iter().filter(|r| **r == Some(0)).count();
+    // The methods that call: a reader's labels are not offered.
+    let ranks = |c: &Candidate| Method::PANEL.map(|m| c.ranks[m.index()]);
+    let best = |c: &Candidate| ranks(c).into_iter().flatten().min();
+    let firsts = |c: &Candidate| ranks(c).iter().filter(|r| **r == Some(0)).count();
     let score_top = |c: &Candidate| c.ranks[Method::Score.index()] == Some(0);
     let mut offered: Vec<&Candidate> = candidates
         .iter()
@@ -194,15 +196,24 @@ impl ClusterView {
             .collect()
     }
 
-    /// The methods call different types.
+    /// The methods call different types, or a reader agrees with none of
+    /// their calls. A reader's best is every type tied at its largest
+    /// share: a broad reading agrees with each type under it alike.
     #[must_use]
     pub fn disagree(&self) -> bool {
-        let tops: BTreeSet<String> = self
-            .calls()
-            .into_iter()
+        let tops: BTreeSet<String> = (self.calls().into_iter())
+            .filter(|(m, _)| Method::PANEL.contains(m))
             .map(|(_, c)| label_key(&c.label))
             .collect();
-        tops.len() > 1
+        let read = |c: &Candidate| c.evidence.agent.filter(|s| *s > 0.0);
+        let most = (self.candidates.iter())
+            .filter_map(read)
+            .fold(0.0, f32::max);
+        let reader: BTreeSet<String> = (self.candidates.iter())
+            .filter(|c| read(c) == Some(most))
+            .map(|c| label_key(&c.label))
+            .collect();
+        tops.len() > 1 || (!tops.is_empty() && !reader.is_empty() && tops.is_disjoint(&reader))
     }
 
     /// Needs a look: unassigned, or its methods call different types; or,
@@ -663,6 +674,7 @@ pub fn decisions(edits: &[Edit], round: &RoundView, recorded: Option<&Scores>) -
         rationale: rationale.to_string(),
         decided_by: DecidedBy::User,
         timestamp: None,
+        reading: Default::default(),
         round: None,
     };
     let mut last: BTreeMap<ClusterId, &Edit> = BTreeMap::new();
@@ -737,9 +749,11 @@ pub fn decisions(edits: &[Edit], round: &RoundView, recorded: Option<&Scores>) -
 fn decided_in(path: &str) -> Result<BTreeSet<ClusterId>> {
     let text = std::fs::read_to_string(path)?;
     let history: BTreeMap<String, serde_json::Value> = serde_json::from_str(&text)?;
+    // A reading is evidence on the cluster, not a decision on it.
+    let decision = |e: &serde_json::Value| e["action"] != Action::Reading.as_str();
     Ok(history
         .into_iter()
-        .filter(|(_, v)| v.as_array().is_some_and(|a| !a.is_empty()))
+        .filter(|(_, v)| v.as_array().is_some_and(|a| a.iter().any(decision)))
         .filter_map(|(k, _)| k.parse().ok())
         .collect())
 }
