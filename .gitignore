@@ -20,3 +20,4 @@ __pycache__/
 
 # Outputs, and the folders tests work in
 /results/
+/target-cuda*/
