@@ -158,10 +158,13 @@ pub enum Stat {
     Score,
     /// The gene-set units' share of the cluster's cells called the type.
     Units,
+    /// The share of a reader's readings of the cluster that agree with the
+    /// type ([`crate::manifest::reading::shares`]).
+    Agent,
 }
 
 impl Stat {
-    pub const ALL: [Stat; 9] = [
+    pub const ALL: [Stat; 10] = [
         Stat::Share,
         Stat::Nes,
         Stat::P,
@@ -171,6 +174,7 @@ impl Stat {
         Stat::Explained,
         Stat::Score,
         Stat::Units,
+        Stat::Agent,
     ];
 
     /// Its column in `cluster_evidence.parquet` and its key in `review --json`.
@@ -186,6 +190,7 @@ impl Stat {
             Stat::Explained => "explained",
             Stat::Score => "score",
             Stat::Units => "units",
+            Stat::Agent => "agent",
         }
     }
 }
@@ -217,6 +222,8 @@ pub struct TypeEvidence {
     pub score: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub units: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<f32>,
 }
 
 impl TypeEvidence {
@@ -237,6 +244,7 @@ impl TypeEvidence {
             Stat::Explained => &self.explained,
             Stat::Score => &self.score,
             Stat::Units => &self.units,
+            Stat::Agent => &self.agent,
         }
     }
 
@@ -251,6 +259,7 @@ impl TypeEvidence {
             Stat::Explained => &mut self.explained,
             Stat::Score => &mut self.score,
             Stat::Units => &mut self.units,
+            Stat::Agent => &mut self.agent,
         }
     }
 }
@@ -302,10 +311,25 @@ pub enum Method {
     Score,
     /// The gene-set units' share of the cluster's cells.
     Units,
+    /// A reader's share of its readings of the cluster: evidence from
+    /// outside the panel, which no pass runs and which makes no call (so
+    /// `--call` does not offer it).
+    #[value(skip)]
+    Agent,
 }
 
 impl Method {
-    pub const ALL: [Method; 4] = [
+    pub const ALL: [Method; 5] = [
+        Method::Enrichment,
+        Method::Susie,
+        Method::Score,
+        Method::Units,
+        Method::Agent,
+    ];
+
+    /// The methods that read the marker panel, and so may make a round's
+    /// call (`--call`): every one but a reader's.
+    pub const PANEL: [Method; 4] = [
         Method::Enrichment,
         Method::Susie,
         Method::Score,
@@ -325,6 +349,7 @@ impl Method {
             Method::Susie => "susie",
             Method::Score => "score",
             Method::Units => "units",
+            Method::Agent => "agent",
         }
     }
 
@@ -338,6 +363,7 @@ impl Method {
             Method::Susie => e.explained,
             Method::Score => e.score,
             Method::Units => e.units,
+            Method::Agent => e.agent,
         }
     }
 
@@ -544,6 +570,10 @@ pub enum Action {
     MarkersAdd,
     /// Remove features from a cell type's markers.
     MarkersDrop,
+    /// A reader's label for one cluster, recorded as evidence beside the
+    /// methods' readings; it changes no label. A blind agent's answer to
+    /// `lupin ask --blind` is one ([`crate::manifest::reading`]).
+    Reading,
 }
 
 impl Action {
@@ -557,6 +587,7 @@ impl Action {
             Action::Split => "split",
             Action::MarkersAdd => "markers_add",
             Action::MarkersDrop => "markers_drop",
+            Action::Reading => "reading",
         }
     }
 
@@ -626,11 +657,28 @@ pub struct Decision {
     /// Filled in when the decision is applied, if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
+    /// A reading's own fields; empty for any other decision.
+    #[serde(flatten)]
+    pub reading: ReadingMeta,
     /// The round whose cluster ids this decision names, relative to the
     /// decisions file. When given, it must be the round being relabelled, so a
     /// decision made on a stale view cannot land on renumbered ids.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round: Option<String>,
+}
+
+/// What a `reading` decision gives beside a label.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct ReadingMeta {
+    /// The Cell Ontology term the reader gave with its label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cl: Option<String>,
+    /// The id of the blind prompt it answers (`lupin ask --blind`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// The model that read the prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 fn de_ids<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ClusterId>, D::Error> {
@@ -772,6 +820,24 @@ pub fn apply(
             );
             continue;
         }
+        // A reading is evidence, not a decision on the cluster: a cluster
+        // takes several (repeats), and a decision beside them.
+        if d.action == Action::Reading {
+            ensure!(
+                d.cluster.len() == 1,
+                "decision {line}: a `reading` names one cluster"
+            );
+            ensure!(
+                present.contains(&d.cluster[0]),
+                "decision {line}: cluster {} is not in this round",
+                d.cluster[0]
+            );
+            ensure!(
+                d.label.as_deref().is_some_and(|l| !l.trim().is_empty()),
+                "decision {line}: a `reading` needs the reader's label"
+            );
+            continue;
+        }
         ensure!(!d.cluster.is_empty(), "decision {line}: no cluster named");
         for id in &d.cluster {
             ensure!(
@@ -803,7 +869,9 @@ pub fn apply(
                 "decision {line}: `split` is not supported yet; re-cluster that cluster's \
                  cells and pass the result to `lupin annotate --clusters`"
             ),
-            Action::MarkersAdd | Action::MarkersDrop => unreachable!("handled above"),
+            Action::MarkersAdd | Action::MarkersDrop | Action::Reading => {
+                unreachable!("handled above")
+            }
         }
     }
 
@@ -858,6 +926,14 @@ pub fn apply(
             Action::Split => unreachable!("refused above"),
             // Applied by [`apply_markers`].
             Action::MarkersAdd | Action::MarkersDrop => {}
+            // Kept as evidence ([`crate::manifest::reading`]), in the history
+            // of the cluster it reads.
+            Action::Reading => {
+                history
+                    .entry(d.cluster[0])
+                    .or_default()
+                    .push(entry(d.label.clone()));
+            }
         }
     }
     Ok(history)

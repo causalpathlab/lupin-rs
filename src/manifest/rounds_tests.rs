@@ -1246,3 +1246,132 @@ fn a_rounds_labels_are_written_as_parquet_beside_the_tsv_and_read_from_either() 
     assert!(from_parquet["c1"].1.is_nan());
     assert_eq!(from_tsv["c0"], from_parquet["c0"]);
 }
+
+#[test]
+fn blind_readings_are_evidence_beside_the_methods_and_change_no_label() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = round_with_profile(tmp.path());
+    let loaded = run::load(&src.to_string_lossy()).unwrap();
+    let prompt = crate::manifest::ask::write_blind(&loaded, Some("blood"), 2).unwrap();
+    // The genes, and nothing of the panel's types or the labels.
+    assert!(prompt.contains("- cluster 0 (2 cells): GENE1"), "{prompt}");
+    assert!(
+        !prompt.contains("CT1") && !prompt.contains("CT2"),
+        "{prompt}"
+    );
+    let id = prompt
+        .trim_end()
+        .rsplit("Prompt id: ")
+        .next()
+        .unwrap()
+        .to_string();
+
+    let reading = |cluster: u32, label: &str, prompt: Option<&str>| {
+        let mut d = json!({"cluster": cluster, "action": "reading", "label": label,
+            "features": ["GENE1"], "rationale": "r", "decided_by": "agent", "model": "m"});
+        if let Some(p) = prompt {
+            d["prompt"] = json!(p);
+        }
+        d
+    };
+    let text = lines(&[
+        reading(0, "CT1", Some(&id)),
+        reading(0, "CT2", Some(&id)),
+        reading(1, "Something else", None),
+        // A decision beside readings of the same cluster.
+        json!({"cluster": 0, "action": "keep", "rationale": "r", "decided_by": "user"}),
+    ]);
+    let next = next_from(&src, &text).unwrap();
+    let after = run::load(&next.to_string_lossy()).unwrap();
+    let readings = crate::manifest::reading::read(&after).unwrap();
+    let blind: Vec<(u32, bool)> = readings.iter().map(|r| (r.cluster, r.blind)).collect();
+    assert_eq!(blind, [(0, true), (0, true), (1, false)]);
+    assert_eq!(readings[0].agrees_with, ["CT1"]);
+    assert!(readings[2].agrees_with.is_empty());
+
+    let cells = read_cells(&after).unwrap();
+    assert_eq!(
+        cells.labels,
+        read_cells(&loaded).unwrap().labels,
+        "no label changed"
+    );
+    let ev = type_evidence(&after, &cells).unwrap();
+    let agent = |k: u32, t: &str| {
+        ev.iter()
+            .find(|e| e.cluster == k && e.label == t)
+            .and_then(|e| e.agent)
+    };
+    assert_eq!((agent(0, "CT1"), agent(0, "CT2")), (Some(0.5), Some(0.5)));
+    assert_eq!(agent(1, "Something_else"), Some(1.0));
+
+    // A merge drops the readings of the clusters it joins.
+    let merged = next_from(
+        &next,
+        &line(
+            json!({"clusters": [0, 1], "action": "merge", "rationale": "r", "decided_by": "user"}),
+        ),
+    )
+    .unwrap();
+    let merged = run::load(&merged.to_string_lossy()).unwrap();
+    assert!(crate::manifest::reading::read(&merged).unwrap().is_empty());
+    assert_eq!(merged.manifest.annotate.agent_readings, None);
+}
+
+#[test]
+fn a_reading_names_one_cluster_and_a_label() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = round_with_profile(tmp.path());
+    let two = line(
+        json!({"clusters": [0, 1], "action": "reading", "label": "CT1",
+        "rationale": "r", "decided_by": "agent"}),
+    );
+    assert!(next_from(&src, &two)
+        .unwrap_err()
+        .to_string()
+        .contains("one cluster"));
+    let none =
+        line(json!({"cluster": 0, "action": "reading", "rationale": "r", "decided_by": "agent"}));
+    assert!(next_from(&src, &none)
+        .unwrap_err()
+        .to_string()
+        .contains("reader's label"));
+}
+
+#[test]
+fn the_prompt_file_holds_its_id_and_a_merge_in_the_same_batch_drops_its_reading() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = round_with_profile(tmp.path());
+    let loaded = run::load(&src.to_string_lossy()).unwrap();
+    let prompt = crate::manifest::ask::write_blind(&loaded, None, 2).unwrap();
+    let file = fs::read_to_string(tmp.path().join("r0/run.blind_prompt.md")).unwrap();
+    assert_eq!(file, prompt, "the reader is given the file, id and all");
+    let round = loaded.file.canonicalize().unwrap();
+    assert!(prompt.contains(&format!("\"round\": \"{}\"", round.display())));
+
+    let text = lines(&[
+        json!({"cluster": 0, "action": "reading", "label": "CT1", "rationale": "r", "decided_by": "agent"}),
+        json!({"cluster": 2, "action": "reading", "label": "CT4", "rationale": "r", "decided_by": "agent"}),
+        json!({"clusters": [0, 1], "action": "merge", "rationale": "r", "decided_by": "user"}),
+    ]);
+    let next = next_from(&src, &text).unwrap();
+    let after = run::load(&next.to_string_lossy()).unwrap();
+    let kept: Vec<u32> = crate::manifest::reading::read(&after)
+        .unwrap()
+        .iter()
+        .map(|r| r.cluster)
+        .collect();
+    assert_eq!(kept, [2]);
+
+    // A type the panel gains later is one the reading agrees with.
+    let edited = next_from(
+        &next,
+        &line(
+            json!({"action": "markers_add", "label": "CT4", "features": ["GENE4"],
+            "rationale": "r", "decided_by": "user"}),
+        ),
+    )
+    .unwrap();
+    let edited = run::load(&edited.to_string_lossy()).unwrap();
+    let r = crate::manifest::reading::read(&edited).unwrap();
+    assert_eq!(r[0].agrees_with, ["CT4"]);
+}

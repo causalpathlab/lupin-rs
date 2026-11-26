@@ -6,17 +6,26 @@
 //! chat, the prompt asks for decision lines only; pasting the answer into
 //! `lupin relabel -f <round> -d - --next` applies it, with every decision's
 //! rationale kept in the round's history. Nothing is sent anywhere by lupin.
+//!
+//! With `--blind`, on an annotated round, it writes no round: it writes the
+//! round's blind prompt beside it ([`crate::manifest::reading::BLIND_PROMPT`])
+//! and prints it. The prompt lists each cluster's most specific genes and
+//! nothing of the panel, the labels or the methods, and asks for `reading`
+//! lines: a reader's labels, recorded as evidence beside the methods'
+//! (`lupin relabel`), never as decisions.
 
+use crate::annotate::rounds::ClusterId;
 use crate::manifest::annotate::load_enrichment_inputs;
 use crate::manifest::recalibrate::write_cache;
 use crate::manifest::rounds::{self, write_argmax, write_clusters, write_summary, CLUSTERS};
 use crate::manifest::run::{self, annotated_path, rel_to_manifest, StatsCache};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::dense_mat_io::Mat;
 use legume_numeric::matrix::traits::IoOps;
 use log::info;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 
@@ -28,9 +37,19 @@ pub struct AskArgs {
     #[arg(
         long,
         short = 'o',
+        required_unless_present = "blind",
         help = "Output prefix for the first round and the prompt"
     )]
-    pub out: Box<str>,
+    pub out: Option<Box<str>>,
+
+    #[arg(
+        long,
+        conflicts_with_all = ["out", "clusters"],
+        help = "On an annotated round: write no round, and print the round's blind prompt \
+                (its clusters' most specific genes, nothing of its panel or labels), \
+                answered with `reading` lines for `lupin relabel`"
+    )]
+    pub blind: bool,
 
     #[arg(
         long,
@@ -40,7 +59,7 @@ pub struct AskArgs {
 
     #[arg(
         long,
-        default_value_t = 15,
+        default_value_t = DEFAULT_TOP,
         help = "Top specific genes listed per cluster"
     )]
     pub top: usize,
@@ -54,10 +73,22 @@ pub struct AskArgs {
 
 const PROMPT: &str = ".ask_prompt.md";
 
+/// Specific genes listed per cluster unless asked otherwise.
+pub const DEFAULT_TOP: usize = 15;
+
 /// Write the first round and print the prompt.
 pub fn run_ask(args: &AskArgs) -> Result<()> {
     let loaded = run::load(&args.from)?;
-    let out = args.out.to_string();
+    if args.blind {
+        let prompt = write_blind(&loaded, args.context.as_deref(), args.top)?;
+        println!("{prompt}");
+        return Ok(());
+    }
+    let out = args
+        .out
+        .as_deref()
+        .context("--out names the first round to write")?
+        .to_string();
     run::may_replace(&annotated_path(&loaded.file, &out))?;
     mkdir_parent(&out)?;
     let mut eargs = crate::annotate_cmd::default_enrichment_args(&out);
@@ -110,6 +141,7 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
         &mut a.cluster_celltype_nes,
         &mut a.marker_score,
         &mut a.units_call,
+        &mut a.agent_readings,
     ] {
         *p = None;
     }
@@ -134,6 +166,82 @@ pub fn run_ask(args: &AskArgs) -> Result<()> {
     );
     println!("{prompt}");
     Ok(())
+}
+
+/// Write the round `loaded`'s blind prompt beside it and return it, with
+/// its id: each cluster's `top` most specific genes from the round's
+/// profile (over its clusters as they now are), and nothing of its panel,
+/// labels or methods' readings.
+pub fn write_blind(loaded: &run::Loaded, context: Option<&str>, top: usize) -> Result<String> {
+    use super::reading::{blind_prompt_path, prompt_id, PROMPT_ID};
+    let cells = rounds::read_cells(loaded)?;
+    let profile = rounds::round_profile(loaded, &cells)?.with_context(|| {
+        format!(
+            "{} records no cluster expression profile to read genes from",
+            loaded.file.display()
+        )
+    })?;
+    let ids: Vec<ClusterId> = (profile.cols.iter())
+        .map(|c| {
+            crate::annotate::rounds::parse_cluster_id(c)
+                .context("a profile column is not a cluster")
+        })
+        .collect::<Result<_>>()?;
+    let mut sizes: BTreeMap<ClusterId, usize> = BTreeMap::new();
+    for id in cells.clusters.iter().flatten() {
+        *sizes.entry(*id).or_default() += 1;
+    }
+    let genes = top_specific_genes(&profile.mat, &profile.rows, top);
+    // Absolute, so a reading names it from wherever its answer is saved.
+    let file = loaded
+        .file
+        .canonicalize()
+        .unwrap_or_else(|_| loaded.file.clone());
+    let round = file.to_string_lossy();
+    let body = blind_prompt(&round, context, &ids, &sizes, &genes);
+    let prompt = format!("{body}{PROMPT_ID}{}\n", prompt_id(&body));
+    let path = blind_prompt_path(loaded);
+    fs::write(&path, &prompt).with_context(|| format!("writing {path}"))?;
+    info!(
+        "wrote {path}; give it to a reader that has seen nothing else of this analysis, then \
+         `lupin relabel -f {round} -d - --next` with its answer"
+    );
+    Ok(prompt)
+}
+
+/// The blind prompt's text: context, the answer format, then the clusters.
+/// Its id goes after it ([`super::reading::PROMPT_ID`]).
+fn blind_prompt(
+    round: &str,
+    context: Option<&str>,
+    ids: &[ClusterId],
+    sizes: &BTreeMap<ClusterId, usize>,
+    top: &[Vec<(String, f32)>],
+) -> String {
+    let mut p = String::new();
+    let _ = writeln!(
+        p,
+        "You are reading cell clusters from single-cell RNA-seq.{}",
+        context.map_or(String::new(), |c| format!(" The cells are: {c}."))
+    );
+    let _ = writeln!(
+        p,
+        "For each cluster below, say what cell type it is from its most specific genes alone \
+         (in brackets: log fold change of its expression over the other clusters'), with the \
+         Cell Ontology term for it. Use only these genes and what you know; do not look at any \
+         other output of this analysis. Very small clusters may be noise or doublets: say so \
+         rather than guess.\n\n\
+         Answer ONLY with JSON lines, one per cluster, no other text:\n\
+         {{\"cluster\": 0, \"action\": \"reading\", \"label\": \"<cell type>\", \"cl\": \"CL:<7 digits>\", \"features\": [\"<gene>\", \"<gene>\"], \"rationale\": \"<one sentence naming the genes>\", \"prompt\": \"<the prompt id at the end>\", \"model\": \"<your model>\", \"decided_by\": \"agent\", \"round\": \"{round}\"}}\n\
+         If the genes name no cell type, give your best broad label and say why in the rationale.\n\n\
+         Clusters:"
+    );
+    cluster_list(
+        &mut p,
+        (ids.iter().zip(top))
+            .map(|(id, g)| (id, sizes.get(id).copied().unwrap_or(0), g.as_slice())),
+    );
+    p
 }
 
 fn cluster_sizes(labels: &[usize], k: usize) -> Vec<usize> {
@@ -203,11 +311,25 @@ fn prompt(
          {{\"action\": \"markers_add\", \"label\": \"<cell type>\", \"features\": [\"<gene>\", \"<gene>\"], \"rationale\": \"<why>\", \"decided_by\": \"agent_proposed_user_accepted\"}}\n\n\
          (Round: {round})\n\nClusters:"
     );
-    for (c, genes) in top.iter().enumerate() {
-        let list: Vec<String> = genes.iter().map(|(g, z)| format!("{g} ({z:.1})")).collect();
-        let _ = writeln!(p, "- cluster {c} ({} cells): {}", sizes[c], list.join(", "));
-    }
+    cluster_list(
+        &mut p,
+        top.iter()
+            .enumerate()
+            .map(|(c, g)| (c, sizes[c], g.as_slice())),
+    );
     p
+}
+
+/// A prompt's clusters, one line each: id, cells, and the most specific
+/// genes with their log fold change.
+fn cluster_list<'a, I: std::fmt::Display>(
+    p: &mut String,
+    clusters: impl IntoIterator<Item = (I, usize, &'a [(String, f32)])>,
+) {
+    for (id, n, genes) in clusters {
+        let list: Vec<String> = genes.iter().map(|(g, z)| format!("{g} ({z:.1})")).collect();
+        let _ = writeln!(p, "- cluster {id} ({n} cells): {}", list.join(", "));
+    }
 }
 
 #[cfg(test)]

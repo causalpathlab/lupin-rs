@@ -693,6 +693,8 @@ pub fn methods_run(
             Method::Susie => !args.no_susie && counts,
             Method::Score => beside(ProjectionMethod::Score),
             Method::Units => beside(ProjectionMethod::Units),
+            // Recorded by `relabel`, never by a pass.
+            Method::Agent => false,
         })
         .collect()
 }

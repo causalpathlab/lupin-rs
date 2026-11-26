@@ -87,6 +87,7 @@ fn round() -> Round {
         universe: (0..GENES).collect(),
         evidence: [(0, (digest, types))].into(),
         terms: Some(terms),
+        readings: Vec::new(),
         method: Method::Enrichment,
         caveats: Vec::new(),
     }
@@ -303,4 +304,85 @@ fn a_foil_inside_a_coarse_fact_is_asked_against_its_other_type() {
         "{:?}",
         a.notes
     );
+}
+
+/// A reading of K0 agreeing with `agrees`, blind or not.
+fn read_as(label: &str, agrees: &[&str], blind: bool) -> crate::manifest::reading::Reading {
+    crate::manifest::reading::reading(0, label, agrees, blind)
+}
+
+/// `r` with `readings` of K0, their shares in its evidence as a round
+/// tables them.
+fn with_readings(mut r: Round, readings: Vec<crate::manifest::reading::Reading>) -> Round {
+    let t = crate::manifest::reading::shares(&readings);
+    let (_, types) = r.evidence.get_mut(&0).unwrap();
+    for e in types.iter_mut() {
+        e.agent = t
+            .cols
+            .iter()
+            .position(|c| *c == e.label)
+            .map(|j| t.row(0).unwrap()[j]);
+    }
+    r.readings = readings;
+    r
+}
+
+#[test]
+fn a_reader_is_a_line_of_its_own_beside_the_panel() {
+    let r = with_readings(
+        round(),
+        vec![
+            read_as("a", &["a"], true),
+            read_as("a", &["a"], true),
+            read_as("b", &["b"], true),
+        ],
+    );
+    let a = why_label(&r, 0, Some("a"), Some("b"), 1).unwrap();
+    let lines: Vec<&str> = a
+        .children
+        .iter()
+        .filter_map(|c| c.line.as_deref())
+        .collect();
+    assert_eq!(lines, ["panel", "terms", "reader"]);
+    // The panel line reads the panel's methods only.
+    assert!(
+        a.children[0].fact.get("agent").is_none(),
+        "{}",
+        a.children[0].fact
+    );
+    let reader = &a.children[2];
+    assert_eq!(reader.favours, Favours::Fact);
+    assert_eq!(reader.fact["readings"], json!(3));
+    assert!(reader.notes[0].contains("a ×2, b ×1"), "{:?}", reader.notes);
+    assert_eq!(a.verdict.as_ref().unwrap().fact, 3);
+}
+
+#[test]
+fn a_reader_that_is_not_blind_is_said_to_be_so() {
+    let r = with_readings(round(), vec![read_as("b", &["b"], false)]);
+    let a = why_label(&r, 0, Some("a"), Some("b"), 1).unwrap();
+    let reader = &a.children[2];
+    assert_eq!(reader.favours, Favours::Foil);
+    assert!(
+        reader.notes.iter().any(|n| n.contains("not independent")),
+        "{:?}",
+        reader.notes
+    );
+    assert_eq!(a.favours, Favours::Split);
+}
+
+#[test]
+fn a_cluster_no_reader_read_has_no_reader_line() {
+    let a = why_label(&round(), 0, Some("a"), Some("b"), 1).unwrap();
+    assert!(a
+        .children
+        .iter()
+        .all(|c| c.line.as_deref() != Some("reader")));
+}
+
+#[test]
+fn a_reader_that_named_neither_side_cannot_tell_them_apart() {
+    let r = with_readings(round(), vec![read_as("doublet", &[], true)]);
+    let a = why_label(&r, 0, Some("a"), Some("b"), 1).unwrap();
+    assert_eq!(a.children[2].favours, Favours::CannotTell);
 }

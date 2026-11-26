@@ -175,24 +175,39 @@ pub(super) fn row_names(ids: &[ClusterId]) -> Vec<Box<str>> {
 /// The Cell Ontology data `source`'s pass used, read from the files it
 /// recorded; failing that, found beside the run without downloading.
 fn pass_cl_data(source: &Loaded, args: &AnnotateArgs) -> Result<ClData> {
-    let search = || SearchPath::new(Some(&source.dir));
+    if let Some(d) = recorded_cl_data(source)? {
+        return Ok(d);
+    }
+    ClData::load(
+        SearchPath::new(Some(&source.dir)).with_panel(&args.markers),
+        args.obo.as_deref(),
+        args.label_cl.as_deref(),
+        Fetch::Never,
+    )
+}
+
+/// The Cell Ontology data `source`'s pass recorded, read from exactly those
+/// files; `None` when it recorded none or a file is gone.
+fn recorded_cl_data(source: &Loaded) -> Result<Option<ClData>> {
     let recorded = source
         .manifest
         .annotate
         .settings
         .as_ref()
         .and_then(|s| s.pointer("/enrichment/cell_ontology"));
-    if let Some(r) = recorded {
-        if let Some(d) = ClData::from_record(r, search())? {
-            return Ok(d);
-        }
+    match recorded {
+        Some(r) => ClData::from_record(r, SearchPath::new(Some(&source.dir))),
+        None => Ok(None),
     }
-    ClData::load(
-        search().with_panel(&args.markers),
-        args.obo.as_deref(),
-        args.label_cl.as_deref(),
-        Fetch::Never,
-    )
+}
+
+/// The Cell Ontology data for reading a round: what its pass recorded, else
+/// what is found beside it without downloading.
+pub(super) fn round_cl_data(source: &Loaded) -> Result<ClData> {
+    match recorded_cl_data(source)? {
+        Some(d) => Ok(d),
+        None => ClData::load(SearchPath::new(Some(&source.dir)), None, None, Fetch::Never),
+    }
 }
 
 /// Rescore the clusters of `after` against `panel` from `source`'s cached

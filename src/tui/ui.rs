@@ -1315,6 +1315,7 @@ fn method_label(m: crate::annotate::rounds::Method) -> &'static str {
         Method::Susie => "SuSiE",
         Method::Score => "score",
         Method::Units => "units",
+        Method::Agent => "agent",
     }
 }
 
@@ -1341,10 +1342,13 @@ fn draw_calls(f: &mut Frame, area: Rect, app: &App, c: &super::round::ClusterVie
                 Method::Enrichment => format!("q {}", pval(t.q)),
                 Method::Susie => format!("PIP {}", num(t.pip, 2)),
                 Method::Score | Method::Units => format!("share {}", num(m.reading(t), 2)),
+                Method::Agent => format!("reads {}", num(m.reading(t), 2)),
             };
             let of_cells = match m {
                 Method::Score | Method::Units => m.reading(t),
-                Method::Enrichment | Method::Susie => t.score.or(t.units),
+                // A whole-cluster reading: the share of cells by the
+                // per-cell methods' reading of the type.
+                Method::Enrichment | Method::Susie | Method::Agent => t.score.or(t.units),
             };
             let cells = of_cells.map_or_else(
                 || "—".to_string(),
@@ -1735,6 +1739,7 @@ fn value_header(by: crate::annotate::rounds::Method) -> &'static str {
         Method::Susie => "susie",
         Method::Score => "score",
         Method::Units => "units",
+        Method::Agent => "agent",
     }
 }
 

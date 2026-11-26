@@ -295,7 +295,7 @@ fn rescored_scores_replace_a_clusters_and_swap_back() {
     assert_eq!(shares.len(), 3, "every rescored type has its share");
     assert_eq!(
         candidates[0].ranks,
-        [Some(0), None, None, None],
+        [Some(0), None, None, None, None],
         "an enrichment round is ranked by the rescored enrichment"
     );
 
@@ -512,7 +512,7 @@ fn a_rounds_candidates_carry_the_scores_share_beside_the_enrichments() {
 
 fn ranked(label: &str, share: f32, [e, s, sc]: [Option<usize>; 3]) -> Candidate {
     Candidate {
-        ranks: [e, s, sc, None],
+        ranks: [e, s, sc, None, None],
         ..candidate(label, share)
     }
 }
@@ -559,8 +559,8 @@ fn a_rounds_candidates_know_where_each_method_ranks_them() {
     let view = RoundView::load(&round.file).unwrap();
     let k0 = &view.clusters[0].candidates;
     let ranks = |l: &str| k0.iter().find(|c| c.label == l).unwrap().ranks;
-    assert_eq!(ranks("A"), [Some(0), None, Some(0), None]);
-    assert_eq!(ranks("B"), [Some(1), None, None, None]);
+    assert_eq!(ranks("A"), [Some(0), None, Some(0), None, None]);
+    assert_eq!(ranks("B"), [Some(1), None, None, None, None]);
 }
 
 #[test]
@@ -679,7 +679,7 @@ fn a_rescore_keeps_the_rounds_method_and_the_readings_it_did_not_redo() {
 /// puts at that place, with the score's and the units' share of cells.
 fn called(
     label: &str,
-    ranks: [Option<usize>; 4],
+    ranks: [Option<usize>; 5],
     score: Option<f32>,
     units: Option<f32>,
 ) -> Candidate {
@@ -696,8 +696,13 @@ fn each_methods_call_is_its_top_and_a_round_without_units_has_no_units_call() {
     use crate::annotate::rounds::Method;
     let c = ClusterView {
         candidates: vec![
-            called("CT1", [Some(0), Some(0), Some(1), None], Some(0.3), None),
-            called("CT2", [Some(1), None, Some(0), None], Some(0.6), None),
+            called(
+                "CT1",
+                [Some(0), Some(0), Some(1), None, None],
+                Some(0.3),
+                None,
+            ),
+            called("CT2", [Some(1), None, Some(0), None, None], Some(0.6), None),
         ],
         ..cluster(0, 10, Some("CT1"))
     };
@@ -725,11 +730,11 @@ fn a_cluster_whose_methods_call_different_types_is_flagged() {
     let agree = with(vec![
         called(
             "CT1",
-            [Some(0), None, Some(0), Some(0)],
+            [Some(0), None, Some(0), Some(0), None],
             Some(0.8),
             Some(0.7),
         ),
-        called("CT2", [Some(1), None, Some(1), None], Some(0.1), None),
+        called("CT2", [Some(1), None, Some(1), None, None], Some(0.1), None),
     ]);
     assert!(
         !agree.disagree() && !agree.flagged(),
@@ -738,12 +743,61 @@ fn a_cluster_whose_methods_call_different_types_is_flagged() {
     let split = with(vec![
         called(
             "CT1",
-            [Some(0), None, Some(1), Some(0)],
+            [Some(0), None, Some(1), Some(0), None],
             Some(0.3),
             Some(0.7),
         ),
-        called("CT2", [Some(1), None, Some(0), None], Some(0.6), None),
+        called("CT2", [Some(1), None, Some(0), None, None], Some(0.6), None),
     ]);
     assert!(split.disagree(), "the score calls CT2");
     assert!(split.flagged(), "a well-held call the methods dispute");
+}
+
+#[test]
+fn a_broad_reading_agrees_with_each_type_under_it_and_a_narrow_one_can_dispute() {
+    // Every panel method calls CD4.
+    let with_reader = |cd4: Option<f32>, cd8: Option<f32>| {
+        let mut c = cluster(0, 10, Some("CD4"));
+        let mut a = ranked("CD4", 0.6, [Some(0), None, None]);
+        let mut b = ranked("CD8", 0.3, [Some(1), None, None]);
+        (a.evidence.agent, b.evidence.agent) = (cd4, cd8);
+        // The reader's own ranks, as a round gives them.
+        a.ranks[4] = cd4.map(|_| 0);
+        b.ranks[4] = cd8.map(|_| usize::from(cd4.is_some()));
+        c.candidates = vec![a, b];
+        c
+    };
+    assert!(
+        !with_reader(Some(1.0), Some(1.0)).disagree(),
+        "T cell: both alike"
+    );
+    assert!(!with_reader(Some(1.0), None).disagree());
+    assert!(
+        with_reader(None, Some(1.0)).disagree(),
+        "the reader says CD8"
+    );
+    // A reader's label is not offered to take.
+    let c = with_reader(None, Some(1.0));
+    let offered: Vec<&str> = choices(&c.candidates)
+        .iter()
+        .map(|c| c.label.as_str())
+        .collect();
+    assert_eq!(offered[0], "CD4");
+}
+
+#[test]
+fn a_cluster_with_only_readings_is_not_decided() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("h.json");
+    let entry = |action: &str| {
+        serde_json::json!({"round": "r1", "action": action, "rationale": "r",
+            "decided_by": "agent", "timestamp": "t"})
+    };
+    let history = serde_json::json!({
+        "0": [entry("reading"), entry("reading")],
+        "1": [entry("reading"), entry("label")],
+    });
+    std::fs::write(&path, history.to_string()).unwrap();
+    let decided = decided_in(&path.to_string_lossy()).unwrap();
+    assert_eq!(decided.into_iter().collect::<Vec<_>>(), [1]);
 }

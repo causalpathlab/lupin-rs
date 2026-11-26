@@ -10,6 +10,7 @@ pub mod first_round;
 pub mod no_counts;
 pub mod ontology;
 pub mod pinto;
+pub mod reading;
 pub mod recalibrate;
 pub mod rounds;
 pub mod run;

@@ -693,3 +693,40 @@ fn a_round_of_a_senna_run_offers_senna_view_open_and_a_pinto_rounds_does_not() {
     assert_eq!(next[0].args["run"], absolute(&senna));
     assert!(senna_view_next(&round("P", "pinto-cage", "P.pinto.json")).is_none());
 }
+
+#[test]
+fn a_blind_ask_returns_the_rounds_prompt_and_writes_no_round() {
+    let dir = tempfile::tempdir().unwrap();
+    let round = round_with_profile(dir.path())
+        .to_string_lossy()
+        .into_owned();
+    let r = calls(&[
+        (
+            "annotate_ask",
+            json!({ "from": round, "blind": true, "top": 2 }),
+        ),
+        (
+            "annotate_ask",
+            json!({ "from": round, "blind": true, "out": "x" }),
+        ),
+    ]);
+    let content = &r[0]["content"];
+    let meta: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+    assert!(
+        meta["next"].as_str().unwrap().contains("fresh subagent"),
+        "{meta}"
+    );
+    let prompt = content[1]["text"].as_str().unwrap();
+    assert!(
+        prompt.contains("\"action\": \"reading\"") && prompt.contains("Prompt id: "),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("CT1"), "{prompt}");
+    let rounds: Vec<_> = std::fs::read_dir(dir.path().join("r0"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".senna.json"))
+        .collect();
+    assert_eq!(rounds.len(), 1, "no round written");
+    assert!(error_text(&r[1]).contains("writes no round"));
+}

@@ -2619,11 +2619,11 @@ fn capital_s_sorts_the_candidates_by_the_next_method_and_a_number_picks_what_is_
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     c.candidates = vec![
         Candidate {
-            ranks: [Some(0), None, Some(1), None],
+            ranks: [Some(0), None, Some(1), None, None],
             ..Candidate::new("CT1", 0.6)
         },
         Candidate {
-            ranks: [Some(1), None, Some(0), None],
+            ranks: [Some(1), None, Some(0), None, None],
             ..Candidate::new("CT2", 0.3)
         },
     ];
@@ -2648,7 +2648,7 @@ fn app_with_two_readings() -> App {
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     let cand = |label: &str, share, [e, s, sc]: [Option<usize>; 3]| {
         let mut c = Candidate {
-            ranks: [e, s, sc, None],
+            ranks: [e, s, sc, None, None],
             ..Candidate::new(label, share)
         };
         (c.evidence.enrichment, c.evidence.score) = (Some(share), sc.map(|_| 0.5));
@@ -3381,7 +3381,7 @@ fn app_with_candidates(n: usize) -> App {
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     c.candidates = (0..n)
         .map(|k| Candidate {
-            ranks: [Some(k), None, None, None],
+            ranks: [Some(k), None, None, None, None],
             ..Candidate::new(&format!("CT{}", k + 1), 0.5 / (k + 1) as f32)
         })
         .collect();
@@ -3497,7 +3497,7 @@ fn the_candidates_value_column_follows_the_method_they_are_sorted_by() {
     let mut app = app_with_terms(false);
     let c = &mut app.round.as_mut().unwrap().clusters[0];
     let mut cand = Candidate {
-        ranks: [Some(0), Some(0), None, None],
+        ranks: [Some(0), Some(0), None, None, None],
         ..Candidate::new("CT1", 0.61)
     };
     (
@@ -4076,7 +4076,7 @@ fn on_a_round_without_units_g_and_r_keep_their_meaning() {
 /// The app with cluster 0 called by every method of `ranks` (rows CT1, CT2;
 /// columns [`Method::ALL`]'s order): each with an enrichment share and q, a
 /// PIP, and the score's and units' share of cells where they rank it.
-fn app_with_calls(ranks: [[Option<usize>; 4]; 2]) -> App {
+fn app_with_calls(ranks: [[Option<usize>; 5]; 2]) -> App {
     use super::super::round::Candidate;
     let mut app = app_with_terms(false);
     let c = &mut app.round.as_mut().unwrap().clusters[0];
@@ -4129,14 +4129,17 @@ fn s_cycles_the_methods_the_cluster_has_units_last_and_only_when_present() {
             })
             .collect()
     };
-    let all = [[Some(0); 4], [Some(1), None, Some(1), Some(1)]];
+    let all = [
+        [Some(0), Some(0), Some(0), Some(0), None],
+        [Some(1), None, Some(1), Some(1), None],
+    ];
     assert_eq!(
         order(&mut app_with_calls(all)),
         ["susie", "score", "units", "enrichment"]
     );
     let no_units = [
-        [Some(0), Some(0), Some(0), None],
-        [Some(1), None, Some(1), None],
+        [Some(0), Some(0), Some(0), None, None],
+        [Some(1), None, Some(1), None, None],
     ];
     assert_eq!(
         order(&mut app_with_calls(no_units)),
@@ -4147,8 +4150,8 @@ fn s_cycles_the_methods_the_cluster_has_units_last_and_only_when_present() {
 #[test]
 fn the_calls_block_lists_each_methods_call_side_by_side() {
     let mut app = app_with_calls([
-        [Some(0), Some(0), Some(1), Some(0)],
-        [Some(1), None, Some(0), Some(1)],
+        [Some(0), Some(0), Some(1), Some(0), None],
+        [Some(1), None, Some(0), Some(1), None],
     ]);
     let rows = calls_block(&app);
     let row = |m: &str| {
@@ -4174,8 +4177,8 @@ fn the_calls_block_lists_each_methods_call_side_by_side() {
 #[test]
 fn a_round_without_units_shows_no_units_call() {
     let app = app_with_calls([
-        [Some(0), Some(0), Some(0), None],
-        [Some(1), None, Some(1), None],
+        [Some(0), Some(0), Some(0), None, None],
+        [Some(1), None, Some(1), None, None],
     ]);
     let rows = calls_block(&app);
     assert!(rows.iter().any(|r| r.contains("score")), "{rows:#?}");
@@ -4185,8 +4188,8 @@ fn a_round_without_units_shows_no_units_call() {
 #[test]
 fn methods_that_disagree_flag_the_cluster_and_the_next_flagged_key_reaches_it() {
     let mut app = app_with_calls([
-        [Some(0), None, Some(0), None],
-        [Some(1), None, Some(1), None],
+        [Some(0), None, Some(0), None, None],
+        [Some(1), None, Some(1), None, None],
     ]);
     // K1: the enrichment calls CT1, the score CT2.
     let r = app.round.as_mut().unwrap();

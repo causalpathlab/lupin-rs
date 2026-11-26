@@ -321,10 +321,14 @@ pub struct RunAnnotate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_summary: Option<String>,
     /// Long table: every cluster's types with every method's statistic
-    /// (share, nes, p, q, pip, fold, explained, score, units; NaN where
-    /// none).
+    /// (share, nes, p, q, pip, fold, explained, score, units, agent; NaN
+    /// where none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_evidence: Option<String>,
+    /// Readers' labels for its clusters, kept as evidence (JSONL; see
+    /// [`crate::manifest::reading`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_readings: Option<String>,
     /// The method whose reading made the round's call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub called_by: Option<crate::annotate::rounds::Method>,

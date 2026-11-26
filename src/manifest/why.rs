@@ -351,6 +351,8 @@ pub struct Round {
     universe: Vec<usize>,
     evidence: ClusterEvidence,
     terms: Option<Terms>,
+    /// Readers' labels for the clusters ([`super::reading`]).
+    readings: Vec<super::reading::Reading>,
     method: Method,
     caveats: Vec<String>,
 }
@@ -368,6 +370,7 @@ impl Round {
             universe,
             evidence,
             terms: Terms::read(loaded)?,
+            readings: super::reading::read(loaded)?,
             method: super::rounds::called_by(&loaded.manifest.annotate).unwrap_or_default(),
             caveats: caveats(loaded),
         })
@@ -817,7 +820,7 @@ fn panel_line(
     let (digest, types) = r.cluster(k)?;
     let mut readings = Vec::new();
     let (mut fa, mut fo) = (serde_json::Map::new(), serde_json::Map::new());
-    for m in Method::ALL {
+    for m in Method::PANEL {
         let (a, b) = (reading(r, types, m, fact), reading(r, types, m, foil));
         if a.is_none() && b.is_none() {
             continue;
@@ -1067,6 +1070,59 @@ fn terms_line(r: &Round, k: ClusterId, d: &Distinct, depth: usize) -> Result<Ans
     Ok(a)
 }
 
+/// The reader line: the share of a reader's readings of the cluster that
+/// agree with each side (a coarse side by its best type), from outside the
+/// panel. `None` when no reader read the cluster.
+fn reader_line(r: &Round, k: ClusterId, (fact, foil): (&str, &str)) -> Result<Option<Answer>> {
+    let read: Vec<&super::reading::Reading> =
+        r.readings.iter().filter(|x| x.cluster == k).collect();
+    if read.is_empty() {
+        return Ok(None);
+    }
+    let (_, types) = r.cluster(k)?;
+    // A side no reading agrees with has a share of none.
+    let share = |label: &str| -> f32 {
+        let names: BTreeSet<String> = r.types_of(label).iter().map(|t| label_key(t)).collect();
+        (types.iter())
+            .filter(|e| names.contains(&label_key(&e.label)))
+            .filter_map(|e| e.agent)
+            .fold(0.0, f32::max)
+    };
+    let (a, b) = (share(fact), share(foil));
+    let counted = super::reading::counted(read.iter().copied());
+    let blind = counted.iter().any(|x| x.blind);
+    let mut labels: BTreeMap<&str, usize> = BTreeMap::new();
+    for x in &counted {
+        *labels.entry(x.label.as_str()).or_default() += 1;
+    }
+    let favours = if a == 0.0 && b == 0.0 {
+        // The reader named something else (another type, noise): it says
+        // nothing between these two.
+        Favours::CannotTell
+    } else if (a - b).abs() < READING_TIE {
+        Favours::Neither
+    } else {
+        Favours::higher(Some(a), Some(b))
+    };
+    let mut line = Answer::new(
+        "a reader's labels from the cluster's most specific genes alone, placed on the Cell Ontology: the share of its readings that agree with each side",
+        json!({ "agrees": a, "readings": counted.len() }),
+        json!({ "agrees": b, "readings": counted.len() }),
+        favours,
+    );
+    line.line = Some("reader".into());
+    line.sources = vec!["agent_readings"];
+    let given: Vec<String> = labels.iter().map(|(l, n)| format!("{l} ×{n}")).collect();
+    line.notes
+        .push(format!("the reader said: {}", given.join(", ")));
+    if !blind {
+        line.notes.push(
+            "no reading answers the round's blind prompt: the reader may have seen the panel or the labels, so this line is not independent of the others".into(),
+        );
+    }
+    Ok(Some(line))
+}
+
 /// A label, with the panel types it stands for when it is coarse.
 fn label_side(r: &Round, label: &str) -> Value {
     let types = r.types_of(label);
@@ -1139,10 +1195,17 @@ pub fn why_label(
         fact
     };
     let d = Distinct::of(r, &fact, &foil);
-    let lines = vec![
+    let mut lines = vec![
         panel_line(r, k, (&fact, &foil), &d, depth)?,
         terms_line(r, k, &d, depth)?,
     ];
+    let reader = reader_line(r, k, (&fact, &foil))?;
+    let rule = format!(
+        "the lines of evidence that rest on different data: the marker panel, {}the GO/GMT terms without the panel's genes{}",
+        if reader.is_some() { "" } else { "and " },
+        if reader.is_some() { ", and a reader's labels from the top genes" } else { "" },
+    );
+    lines.extend(reader);
     let count = |f: Favours| lines.iter().filter(|l| l.favours == f).count();
     let (n_fact, n_foil) = (count(Favours::Fact), count(Favours::Foil));
     let read = lines.iter().any(|l| l.favours != Favours::CannotTell);
@@ -1161,12 +1224,7 @@ pub fn why_label(
     if favours == Favours::Neither {
         notes.push(format!("the evidence does not separate {fact} and {foil}: a label over both (their group) says no more than it holds"));
     }
-    let mut a = Answer::new(
-        "the lines of evidence that rest on different data: the marker panel, and the GO/GMT terms without the panel's genes",
-        label_side(r, &fact),
-        label_side(r, &foil),
-        favours,
-    );
+    let mut a = Answer::new(rule, label_side(r, &fact), label_side(r, &foil), favours);
     a.verdict = Some(Verdict {
         fact: n_fact,
         foil: n_foil,

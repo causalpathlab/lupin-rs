@@ -233,7 +233,12 @@ enum Commands {
                       Paste it into an AI chat; the prompt asks for decision lines only.\n\
                       Paste the answer into `lupin relabel -f <round> -d - --next`:\n\
                       labels, rationales and suggested markers become the next round,\n\
-                      rescored like any enrichment run. Nothing is sent anywhere by lupin."
+                      rescored like any enrichment run. Nothing is sent anywhere by lupin.\n\n\
+                      With --blind on an annotated round, it writes no round: it prints the\n\
+                      round's blind prompt (its clusters' most specific genes, nothing of\n\
+                      its panel or labels). A reader that has seen nothing else answers it\n\
+                      with `reading` lines; `lupin relabel` keeps them as evidence beside\n\
+                      the methods' readings, and changes no label."
     )]
     Ask(manifest::ask::AskArgs),
     #[command(

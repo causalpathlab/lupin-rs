@@ -419,6 +419,15 @@ pub(crate) fn read_type_tables(loaded: &Loaded, mut shares: CellShares) -> Resul
                 tables.extend(shares.units.take().map(|t| (stat, t)));
                 continue;
             }
+            Stat::Agent => {
+                // An unreadable file costs the readings, never the round.
+                match super::reading::read(loaded) {
+                    Ok(r) if !r.is_empty() => tables.push((stat, super::reading::shares(&r))),
+                    Ok(_) => {}
+                    Err(e) => log::warn!("no agent evidence: {e:#}"),
+                }
+                continue;
+            }
         };
         match rel.as_deref().map(|r| (r, loaded.recorded(r))) {
             Some((_, Some(path))) => tables.push((stat, read_table(&path)?)),
@@ -757,7 +766,7 @@ pub(crate) fn supersede_later(round: &Path) -> Result<usize> {
 }
 
 /// A text's lines, numbered from 1.
-fn numbered(raw: &str) -> impl Iterator<Item = (usize, &str)> {
+pub(super) fn numbered(raw: &str) -> impl Iterator<Item = (usize, &str)> {
     raw.lines().enumerate().map(|(n, l)| (n + 1, l))
 }
 
@@ -1128,6 +1137,12 @@ fn relabel(
         next.manifest.annotate.markers = rel(panel);
         next.manifest.annotate.marker_history = rel(hist);
     }
+    // Readings: the source's and this round's, of clusters still here.
+    let present: BTreeSet<ClusterId> = p.cells.clusters.iter().flatten().copied().collect();
+    let readings =
+        super::reading::next_readings(source, &p.decisions, &p.markers, &round, &present)?;
+    next.manifest.annotate.agent_readings =
+        super::reading::write(out, &readings)?.and_then(|path| rel(&path));
     next.manifest.cluster.clusters = rel(&clusters_path);
     next.manifest.annotate.argmax = rel(&argmax_path);
     next.manifest.annotate.log = rel(&log_path);
@@ -1851,7 +1866,12 @@ Decisions file for `lupin relabel -d`: one JSON object per line.
 
 action:     label (one cluster), merge (\"clusters\": [..], fresh id), keep,
             markers_add / markers_drop (\"label\": cell type, \"features\": [..];
-            edits the round's marker panel, which the next annotate uses)
+            edits the round's marker panel, which the next annotate uses),
+            reading (one cluster, \"label\": a reader's label; also \"cl\": its
+            Cell Ontology term, \"prompt\": the id of the blind prompt it
+            answers (`lupin ask --blind`), \"model\"; kept as evidence beside
+            the methods' readings, never a decision; a cluster may have
+            several, and a decision beside them)
 decided_by: user | agent_proposed_user_accepted | user_override | agent
 round:      optional; the round whose ids the decision names, relative to the
             decisions file. A decision on any other round is refused.
