@@ -4,10 +4,10 @@
 //! value in every cluster: log2 fold change over the other clusters, mean
 //! level, that level z-scored across the clusters, or the share of the
 //! cluster's cells the gene is detected in. The level is the round's
-//! observed profile, or the topic model's expected level. A cell is coloured
-//! only where the gene is up in the cluster against the cluster's other
-//! genes of like abundance ([`up_q`]), so a colour is not a gene's own
-//! range alone. Markers match the
+//! observed profile, or the topic model's expected level. A dot marks the
+//! cells where the gene is up in the cluster against the cluster's other
+//! genes of like abundance ([`up_q`]), so a colour is not read as a test
+//! (`--only-up` blanks the rest instead). Markers match the
 //! profile's genes as every gene view of a round matches them
 //! ([`crate::annotate::gene_rows::LevelRows`]). The figure is one SVG,
 //! written as `.svg`, `.pdf` or `.png`, and the numbers go beside it as
@@ -134,9 +134,14 @@ pub struct HeatmapArgs {
     #[arg(
         long,
         default_value_t = 0.05,
-        help = "Colour a cell only where its gene is up in the cluster at this q, against the cluster's genes of like abundance; 1 colours every cell"
+        help = "Dot a cell where its gene is up in the cluster at this q, against the cluster's genes of like abundance; 1 marks none"
     )]
     pub q: f32,
+    #[arg(
+        long,
+        help = "Colour only the cells up at --q, the others blank, instead of every cell"
+    )]
+    pub only_up: bool,
 }
 
 /// A heatmap's numbers.
@@ -149,10 +154,13 @@ pub struct HeatData {
     pub clusters: Vec<HeatCluster>,
     /// Top to bottom, grouped by type.
     pub rows: Vec<HeatRow>,
-    /// A cell is coloured where its row's q is below this; every cell when
+    /// A cell is marked up where its row's q is below this; none when
     /// `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub q_below: Option<f32>,
+    /// Whether only the cells marked up are coloured, the others blank.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub only_up: bool,
     /// Types none of whose markers is measured, so they have no rows.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unmeasured: Vec<String>,
@@ -340,6 +348,7 @@ pub fn heat_data(loaded: &Loaded, args: &HeatmapArgs) -> Result<HeatData> {
         clusters,
         rows,
         q_below: (args.q < 1.0).then_some(args.q),
+        only_up: args.only_up,
         unmeasured,
     })
 }
@@ -609,9 +618,10 @@ pub(crate) fn svg(data: &HeatData) -> Figure {
         s,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Helvetica, Arial, sans-serif" font-size="{FONT}"><rect width="100%" height="100%" fill="white"/>"#
     );
-    let shown = match data.q_below {
-        Some(a) => format!(" · coloured where up at q < {a}"),
-        None => String::new(),
+    let shown = match (data.q_below, data.only_up) {
+        (Some(a), true) => format!(" · coloured where up at q < {a}"),
+        (Some(a), false) => format!(" · dot where up at q < {a}"),
+        (None, _) => String::new(),
     };
     let title = format!(
         "markers × clusters · {} · {}{shown}",
@@ -644,17 +654,26 @@ pub(crate) fn svg(data: &HeatData) -> Figure {
         for (j, v) in row.values.iter().enumerate() {
             let up = data
                 .q_below
-                .is_none_or(|a| row.q.get(j).copied().flatten().is_some_and(|q| q < a));
-            let fill = if v.is_some() && !up {
+                .map(|a| row.q.get(j).copied().flatten().is_some_and(|q| q < a));
+            let fill = if v.is_some() && data.only_up && up == Some(false) {
                 NOT_UP.into()
             } else {
                 colour(*v)
             };
+            let x = left + j as u32 * CELL;
             let _ = write!(
                 s,
-                r#"<rect x="{}" y="{y}" width="{CELL}" height="{CELL}" fill="{fill}"/>"#,
-                left + j as u32 * CELL,
+                r#"<rect x="{x}" y="{y}" width="{CELL}" height="{CELL}" fill="{fill}"/>"#,
             );
+            if up == Some(true) && !data.only_up {
+                let half = CELL as f32 / 2.0;
+                let _ = write!(
+                    s,
+                    r#"<circle class="up" cx="{:.1}" cy="{:.1}" r="2.2" fill="black"/>"#,
+                    x as f32 + half,
+                    y as f32 + half
+                );
+            }
         }
         // A line between one type's rows and the next's.
         if i > 0 && data.rows[i - 1].type_ != row.type_ {
