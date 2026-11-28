@@ -3,6 +3,7 @@
 //! caller — see [`crate::manifest::annotate`]).
 
 use super::args::{AnnotateArgs, MIN_CONFIDENCE, NUM_DRAWS};
+use super::geneset_units::normal_upper_tail;
 use super::inputs::EnrichmentInputs;
 use super::outputs::{clean_outputs, AnnotationOutputs, ENRICHMENT_OUTPUT_SUFFIXES};
 use super::outputs::{
@@ -10,6 +11,7 @@ use super::outputs::{
     CLUSTER_CELLTYPE_P, CLUSTER_CELLTYPE_Q, CLUSTER_CELLTYPE_Q_VALUES, CLUSTER_CELLTYPE_Z,
     CLUSTER_TERM_P, CLUSTER_TERM_Q_VALUES, CLUSTER_TERM_Z, ONTOLOGY_TERM_EFFECT, TERM_GENES,
 };
+use super::size_null::{self, SizeNull, SizeTrend, TypeValues};
 use crate::progress::Stages;
 use enrichment::{
     annotate, annotate_types, AnnotateConfig, AnnotateOutputs, GroupInputs, SpecificityMode,
@@ -123,7 +125,14 @@ pub fn null_config(
 /// cluster against the gene-set null, and FDR.
 /// Writes nothing; [`run`] writes the outputs, and a relabel round rescores
 /// through this on its merged clusters and edited panel.
-pub fn score(args: &AnnotateArgs, inputs: &EnrichmentInputs) -> anyhow::Result<AnnotateOutputs> {
+///
+/// `pvalue_kc` stays the random-set test's p; the q-values, probit z, Q and
+/// the per-cell call are read against the size null when `args.size_null`
+/// asks ([`finish`]), whose fit comes back beside them.
+pub fn score(
+    args: &AnnotateArgs,
+    inputs: &EnrichmentInputs,
+) -> anyhow::Result<(AnnotateOutputs, SizeTrend)> {
     let (group, markers_gc, config) = prepare(args, inputs)?;
     info!(
         "Running cluster × marker enrichment: {} clusters × {} celltypes, \
@@ -132,7 +141,97 @@ pub fn score(args: &AnnotateArgs, inputs: &EnrichmentInputs) -> anyhow::Result<A
         inputs.celltype_names.len(),
         NUM_DRAWS,
     );
-    annotate(&group, &markers_gc, &inputs.celltype_names, &config)
+    let mut out = annotate(&group, &markers_gc, &inputs.celltype_names, &config)?;
+    // `annotate` has run the raw FDR step already: start from its tables.
+    let raw = enrichment::Adjusted {
+        pvalue_kc: out.pvalue_kc.clone(),
+        qvalue_kc: out.qvalue_kc.clone(),
+        z_kc: out.z_kc.clone(),
+        q_kc: out.q_kc.clone(),
+    };
+    let (adjusted, trend) = finish_adjusted(raw, &markers_gc, &config, args.size_null)?;
+    let trend = trend.named(&inputs.celltype_names);
+    trend.report("enrichment");
+    if trend.moves() {
+        let (posterior, labels) = enrichment::label_cells(
+            &group.cell_membership_nk,
+            &adjusted.q_kc,
+            &group.cell_names,
+            &inputs.celltype_names,
+            config.min_confidence,
+        );
+        out.cell_annotation_nc = posterior;
+        out.argmax_labels = labels;
+    }
+    out.qvalue_kc = adjusted.qvalue_kc;
+    out.z_kc = adjusted.z_kc;
+    out.q_kc = adjusted.q_kc;
+    Ok((out, trend))
+}
+
+/// The FDR and Q step on the random-set test's p-values `pvalue_kc`, read
+/// against the size null ([`super::size_null`]) under [`SizeNull::Trend`]:
+/// each type's probit z over the clusters where its score is positive (the
+/// rest are depletion, p = 1, which a call does not test) gives its chance
+/// level; the trend of those over the panels' effective sizes (Kish, over
+/// `markers_gc`'s weights) moves every z by its size dependence, and BH or
+/// TreeBH and Q run on what that leaves. `pvalue_kc` in the result is the
+/// test's own, with the untested types at 1.
+pub fn finish(
+    pvalue_kc: &Mat,
+    markers_gc: &Mat,
+    config: &AnnotateConfig,
+    size_null: SizeNull,
+) -> anyhow::Result<(enrichment::Adjusted, SizeTrend)> {
+    finish_adjusted(
+        enrichment::adjust(pvalue_kc, markers_gc, config)?,
+        markers_gc,
+        config,
+        size_null,
+    )
+}
+
+/// [`finish`] from the raw FDR step's tables `raw`.
+fn finish_adjusted(
+    raw: enrichment::Adjusted,
+    markers_gc: &Mat,
+    config: &AnnotateConfig,
+    size_null: SizeNull,
+) -> anyhow::Result<(enrichment::Adjusted, SizeTrend)> {
+    let live = enrichment::live_types(markers_gc, config);
+    let sizes: Vec<f64> = (0..markers_gc.ncols())
+        .map(|c| size_null::effective_size(markers_gc.column(c).iter().map(|&w| f64::from(w))))
+        .collect();
+    if size_null == SizeNull::Off {
+        return Ok((raw, SizeTrend::none("off", &sizes)));
+    }
+    let tested = |kk: usize, c: usize| live[c] && raw.pvalue_kc[(kk, c)] < 1.0;
+    let k = raw.pvalue_kc.nrows();
+    let columns: Vec<TypeValues> = (0..sizes.len())
+        .map(|c| TypeValues {
+            size: if live[c] { sizes[c] } else { 0.0 },
+            values: (0..k)
+                .filter(|&kk| tested(kk, c))
+                .map(|kk| f64::from(raw.z_kc[(kk, c)]))
+                .collect(),
+        })
+        .collect();
+    // A type the test left out goes in at size 0, which the log and
+    // review's ρ leave out.
+    let trend = size_null::fit(&columns);
+    if !trend.moves() {
+        return Ok((raw, trend));
+    }
+    let mut p = raw.pvalue_kc.clone();
+    for c in 0..sizes.len() {
+        for kk in (0..k).filter(|&kk| tested(kk, c)) {
+            let z = trend.calibrate(c, f64::from(raw.z_kc[(kk, c)]));
+            p[(kk, c)] = normal_upper_tail(z as f32).max(f32::MIN_POSITIVE);
+        }
+    }
+    let mut adjusted = enrichment::adjust(&p, markers_gc, config)?;
+    adjusted.pvalue_kc = raw.pvalue_kc;
+    Ok((adjusted, trend))
 }
 
 /// [`score`] for the cell types `types` (indices into
@@ -275,20 +374,23 @@ pub fn run(
         return run_ontology_gene_sets(args, out, inputs, &cluster_names);
     }
 
-    let AnnotateOutputs {
-        q_kc,
-        es_kc,
-        es_restandardized_kc,
-        nes_kc,
-        z_kc,
-        p_log2err_kc: _,
-        perm_z_kc: _,
-        pvalue_kc,
-        qvalue_kc,
-        cell_annotation_nc,
-        argmax_labels,
-        bootstrap: _,
-    } = {
+    let (
+        AnnotateOutputs {
+            q_kc,
+            es_kc,
+            es_restandardized_kc,
+            nes_kc,
+            z_kc,
+            p_log2err_kc: _,
+            perm_z_kc: _,
+            pvalue_kc,
+            qvalue_kc,
+            cell_annotation_nc,
+            argmax_labels,
+            bootstrap: _,
+        },
+        size_trend,
+    ) = {
         stages.start(stages.named(STAGE_SCORE));
         score(args, inputs)?
     };
@@ -402,6 +504,7 @@ pub fn run(
         cluster_expression: Some(cell_expr_path),
         ontology_assignment: ontology_assign,
         ontology_node_mass: ontology_mass,
+        size_null: Some(size_trend),
         ..AnnotationOutputs::default()
     })
 }

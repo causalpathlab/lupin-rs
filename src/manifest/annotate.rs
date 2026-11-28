@@ -576,6 +576,10 @@ fn record(
         .settings
         .get_or_insert_with(|| serde_json::json!({}));
     if let serde_json::Value::Object(m) = recorded {
+        let mut settings = settings;
+        if let (Some(fit), serde_json::Value::Object(s)) = (&out.size_null, &mut settings) {
+            s.insert(super::rounds::SIZE_NULL_FIT.into(), serde_json::json!(fit));
+        }
         m.insert(method.into(), settings);
     }
     // Derived from what was just written; a failure here should not cost the pass.

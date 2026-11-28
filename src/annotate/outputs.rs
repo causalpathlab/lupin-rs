@@ -188,6 +188,9 @@ pub struct AnnotationOutputs {
     pub cluster_celltype_q_values: Option<String>,
     pub cluster_celltype_p: Option<String>,
     pub cluster_celltype_nes: Option<String>,
+    /// The enrichment's size-null fit ([`super::size_null::SizeTrend`]),
+    /// recorded under `annotate.settings.enrichment.size_null_fit`.
+    pub size_null: Option<super::size_null::SizeTrend>,
     /// The cell types as gene-set units, and the cells each pair shares.
     pub celltype_units: Option<String>,
     pub celltype_links: Option<String>,

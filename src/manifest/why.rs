@@ -810,6 +810,15 @@ fn rival(r: &Round, types: &[TypeEvidence], fact: &str) -> Option<(String, bool)
         .map(|e| (e.label.clone(), false))
 }
 
+/// `label`'s place among `types` by the enrichment's raw p (before the size
+/// null), smallest first, over the types it tested; `None` untested.
+fn raw_rank(types: &[TypeEvidence], label: &str) -> Option<usize> {
+    let key = label_key(label);
+    (super::size_check::raw_order(types).iter())
+        .position(|e| label_key(&e.label) == key)
+        .map(|i| i + 1)
+}
+
 /// Coarse label `label`'s two best types in the cluster: those the round's
 /// method puts forward, best first, then the others in the group's order.
 fn inner_pair(r: &Round, types: &[TypeEvidence], label: &str) -> Option<(String, String)> {
@@ -844,7 +853,14 @@ fn panel_line(
         }
         let side = |x: Option<(&TypeEvidence, usize)>| match x {
             Some((e, i)) => {
-                json!({ "type": e.label, "rank": i + 1, "reading": m.reading(e), "q": e.q })
+                let mut v =
+                    json!({ "type": e.label, "rank": i + 1, "reading": m.reading(e), "q": e.q });
+                // The enrichment's place by the random-set test's own p,
+                // before the size null moved it.
+                if m == Method::Enrichment {
+                    v["raw_rank"] = json!(raw_rank(types, &e.label));
+                }
+                v
             }
             None => json!({ "rank": null }),
         };

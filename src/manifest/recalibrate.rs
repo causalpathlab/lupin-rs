@@ -155,8 +155,11 @@ pub struct Rescored {
     pub z: Mat,
     /// fgsea's normalized enrichment score.
     pub nes: Mat,
-    /// z = Φ⁻¹(1 − p), which the Q probabilities are a softmax of.
+    /// z = Φ⁻¹(1 − p) after the size null, which the Q probabilities are a
+    /// softmax of.
     pub probit_z: Mat,
+    /// The size null's fit over these rows.
+    pub size_null: crate::annotate::size_null::SizeTrend,
 }
 
 impl Rescored {
@@ -259,7 +262,7 @@ fn score_all(
         ids.len(),
         inputs.celltype_names.len()
     );
-    let out = by_enrichment::score(args, inputs)?;
+    let (out, size_null) = by_enrichment::score(args, inputs)?;
     Ok(Rescored {
         ids,
         types: inputs.celltype_names.clone(),
@@ -269,6 +272,7 @@ fn score_all(
         z: out.es_restandardized_kc,
         nes: out.nes_kc,
         probit_z: out.z_kc,
+        size_null,
     })
 }
 
@@ -353,7 +357,8 @@ pub(super) fn rescore_types(
         }
         (m, cfg)
     };
-    let adjusted = enrichment::adjust(&p, &markers_gc, &config)?;
+    let (adjusted, size_null) = by_enrichment::finish(&p, &markers_gc, &config, args.size_null)?;
+    let size_null = size_null.named(&inputs.celltype_names);
     Ok(Some(Rescored {
         ids,
         types: inputs.celltype_names,
@@ -363,6 +368,7 @@ pub(super) fn rescore_types(
         z,
         nes,
         probit_z: adjusted.z_kc,
+        size_null,
     }))
 }
 
