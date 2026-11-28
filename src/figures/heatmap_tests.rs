@@ -12,6 +12,7 @@ fn args(round: &Path, value: HeatValue) -> HeatmapArgs {
         source: HeatSource::Observed,
         order: ClusterOrder::Label,
         channel: "spliced".into(),
+        q: 1.0,
     }
 }
 
@@ -236,7 +237,9 @@ fn a_long_last_cluster_label_fits_inside_the_figure() {
             row: "G".into(),
             type_: "T".into(),
             values: vec![Some(1.0)],
+            q: Vec::new(),
         }],
+        q_below: None,
         unmeasured: Vec::new(),
     };
     let fig = svg(&d);
@@ -272,9 +275,9 @@ fn diagonal_puts_each_cluster_under_the_type_whose_markers_peak_there() {
 }
 
 #[test]
-fn diagonal_sends_a_cluster_with_no_values_last() {
-    let z = vec![vec![Some(1.0), None, Some(2.0)]];
-    assert_eq!(diagonal(&["A"], &z), [2, 0, 1]);
+fn diagonal_sends_a_cluster_with_nothing_up_or_no_values_last() {
+    let z = vec![vec![Some(1.0), None, Some(2.0), Some(0.0)]];
+    assert_eq!(diagonal(&["A"], &z), [2, 0, 3, 1]);
 }
 
 #[test]
@@ -292,4 +295,57 @@ fn the_diagonal_order_moves_each_rows_values_with_its_cluster() {
             assert_eq!(r.values[k], s.values[at], "{} in cluster {}", r.gene, c.id);
         }
     }
+}
+
+/// A profile of `genes` × 4 clusters: every gene flat at its own level
+/// with a little noise, gene 0 eight times its level in cluster 1.
+fn flat_profile(genes: usize) -> Expression {
+    let mut mat = Mat::zeros(genes, 4);
+    for g in 0..genes {
+        let level = 1.0 + (g % 7) as f32;
+        for k in 0..4 {
+            let wobble = 1.0 + 0.05 * (((g * 31 + k * 17) % 11) as f32 - 5.0) / 5.0;
+            mat[(g, k)] = level * wobble;
+        }
+    }
+    mat[(0, 1)] *= 8.0;
+    Expression::new(MatWithNames {
+        rows: (0..genes).map(|g| format!("G{g}").into()).collect(),
+        cols: (0..4).map(|k| format!("K{k}").into()).collect(),
+        mat,
+    })
+}
+
+#[test]
+fn a_gene_far_above_its_like_genes_is_up_and_the_rest_are_not() {
+    let expr = flat_profile(400);
+    let cols: Vec<Option<usize>> = vec![Some(0), Some(1), None];
+    let q = up_q(&expr, &cols, &[0, 1]);
+    assert!(q[0][1].unwrap() < 0.01, "{:?}", q[0]);
+    assert!(q[0][0].unwrap() > 0.05, "{:?}", q[0]);
+    assert!(q[1][1].unwrap() > 0.05, "{:?}", q[1]);
+    assert_eq!(q[0][2], None);
+}
+
+#[test]
+fn a_cell_not_up_at_the_figures_q_is_drawn_blank() {
+    let row = |q: f32| HeatRow {
+        gene: "G".into(),
+        row: "G".into(),
+        type_: "T".into(),
+        values: vec![Some(2.0)],
+        q: vec![Some(q)],
+    };
+    let d = |q: f32, below: Option<f32>| HeatData {
+        round: "r".into(),
+        value: HeatValue::Log2fc,
+        source: HeatSource::Observed,
+        clusters: vec![HeatCluster { id: 0, label: None }],
+        rows: vec![row(q)],
+        q_below: below,
+        unmeasured: Vec::new(),
+    };
+    assert!(svg(&d(0.5, Some(0.05))).svg.contains(NOT_UP));
+    assert!(!svg(&d(0.01, Some(0.05))).svg.contains(NOT_UP));
+    assert!(!svg(&d(0.5, None)).svg.contains(NOT_UP));
 }

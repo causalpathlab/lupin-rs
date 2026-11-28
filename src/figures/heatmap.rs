@@ -4,7 +4,10 @@
 //! value in every cluster: log2 fold change over the other clusters, mean
 //! level, that level z-scored across the clusters, or the share of the
 //! cluster's cells the gene is detected in. The level is the round's
-//! observed profile, or the topic model's expected level. Markers match the
+//! observed profile, or the topic model's expected level. A cell is coloured
+//! only where the gene is up in the cluster against the cluster's other
+//! genes of like abundance ([`up_q`]), so a colour is not a gene's own
+//! range alone. Markers match the
 //! profile's genes as every gene view of a round matches them
 //! ([`crate::annotate::gene_rows::LevelRows`]). The figure is one SVG,
 //! written as `.svg`, `.pdf` or `.png`, and the numbers go beside it as
@@ -91,8 +94,10 @@ pub enum ClusterOrder {
     /// By cluster id, as lupin numbers them.
     Id,
     /// By the data, not the labels: each cluster under the type whose shown
-    /// markers have the highest mean z there, the strongest first, so the
-    /// diagonal shows what the markers say whatever the round called it.
+    /// markers have the highest mean fold change there where they are up
+    /// (at the figure's q), the strongest first; a cluster with none up goes
+    /// last. The diagonal shows what the markers say whatever the round
+    /// called it.
     Diagonal,
 }
 
@@ -113,7 +118,7 @@ pub struct HeatmapArgs {
     pub types: Vec<Box<str>>,
     #[arg(long, default_value_t = 5, help = "Markers shown per type")]
     pub top: usize,
-    #[arg(long, value_enum, default_value_t = HeatValue::Zscore)]
+    #[arg(long, value_enum, default_value_t = HeatValue::Log2fc)]
     pub value: HeatValue,
     #[arg(long, value_enum, default_value_t = HeatSource::Observed)]
     pub source: HeatSource,
@@ -126,6 +131,12 @@ pub struct HeatmapArgs {
         help = "Where a gene has several rows (a faba file's), the count channel its level is read from"
     )]
     pub channel: String,
+    #[arg(
+        long,
+        default_value_t = 0.05,
+        help = "Colour a cell only where its gene is up in the cluster at this q, against the cluster's genes of like abundance; 1 colours every cell"
+    )]
+    pub q: f32,
 }
 
 /// A heatmap's numbers.
@@ -138,6 +149,10 @@ pub struct HeatData {
     pub clusters: Vec<HeatCluster>,
     /// Top to bottom, grouped by type.
     pub rows: Vec<HeatRow>,
+    /// A cell is coloured where its row's q is below this; every cell when
+    /// `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub q_below: Option<f32>,
     /// Types none of whose markers is measured, so they have no rows.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unmeasured: Vec<String>,
@@ -160,6 +175,10 @@ pub struct HeatRow {
     /// Per cluster, in [`HeatData::clusters`] order; `None` where it has
     /// no value.
     pub values: Vec<Option<f32>>,
+    /// Per cluster, the q of its being up there ([`up_q`]); `None` where
+    /// it has no test.
+    #[serde(default)]
+    pub q: Vec<Option<f32>>,
 }
 
 /// `lupin figure heatmap`.
@@ -280,22 +299,38 @@ pub fn heat_data(loaded: &Loaded, args: &HeatmapArgs) -> Result<HeatData> {
             .collect(),
         HeatValue::Frac => frac[i].clone(),
     });
+    let picked: Vec<usize> = chosen.iter().map(|&(_, _, r)| r).collect();
+    let q = up_q(&expr, &cols, &picked);
     let mut rows: Vec<HeatRow> = (chosen.iter().cloned())
         .zip(values)
-        .map(|((type_, gene, r), values)| HeatRow {
+        .zip(q)
+        .map(|(((type_, gene, r), values), q)| HeatRow {
             gene,
             row: expr.table.rows[r].to_string(),
             type_,
             values,
+            q,
         })
         .collect();
     if args.order == ClusterOrder::Diagonal {
-        let z: Vec<Vec<Option<f32>>> = chosen.iter().map(|&(_, _, r)| zscored(&level(r))).collect();
+        // What the figure colours: the fold change where the gene is up.
+        let shown: Vec<Vec<Option<f32>>> = (picked.iter().zip(&rows))
+            .map(|(&r, row)| {
+                (cols.iter().zip(&row.q))
+                    .map(|(k, q)| {
+                        let lfc = k.and_then(|k| expr.log2fc(r, &[k]))?;
+                        let up = args.q >= 1.0 || q.is_some_and(|q| q < args.q);
+                        Some(if up { lfc.max(0.0) } else { 0.0 })
+                    })
+                    .collect()
+            })
+            .collect();
         let types: Vec<&str> = rows.iter().map(|r| r.type_.as_str()).collect();
-        let perm = diagonal(&types, &z);
+        let perm = diagonal(&types, &shown);
         clusters = perm.iter().map(|&k| clusters[k].clone()).collect();
         for row in &mut rows {
             row.values = perm.iter().map(|&k| row.values[k]).collect();
+            row.q = perm.iter().map(|&k| row.q[k]).collect();
         }
     }
     Ok(HeatData {
@@ -304,14 +339,84 @@ pub fn heat_data(loaded: &Loaded, args: &HeatmapArgs) -> Result<HeatData> {
         source: args.source,
         clusters,
         rows,
+        q_below: (args.q < 1.0).then_some(args.q),
         unmeasured,
     })
 }
 
+/// Abundance strata of [`up_q`]'s null.
+const NULL_BINS: usize = 10;
+
+/// Each of `rows`' q of being up in each of `cols` (the profile's columns,
+/// `None` where a cluster has none). The null is the cluster's own genes:
+/// most are not specific to it, so a gene's log2 fold change there is read
+/// against the median and MAD of the genes of like overall abundance (one
+/// of [`NULL_BINS`] strata), its p the normal's upper tail, and q
+/// Benjamini–Hochberg over every gene the cluster tests. A gene the profile
+/// never measures has no test.
+pub(crate) fn up_q(
+    expr: &Expression,
+    cols: &[Option<usize>],
+    rows: &[usize],
+) -> Vec<Vec<Option<f32>>> {
+    use crate::annotate::geneset_units::{bh_where_finite, mad_sd, normal_upper_tail};
+    use legume_numeric::matrix::utils::median;
+    let mat = &expr.table.mat;
+    let total: Vec<f32> = (0..mat.nrows()).map(|g| mat.row(g).sum()).collect();
+    let mut live: Vec<usize> = (0..mat.nrows()).filter(|&g| total[g] > 0.0).collect();
+    live.sort_by(|&a, &b| total[a].total_cmp(&total[b]));
+    let mut bin = vec![usize::MAX; mat.nrows()];
+    for (i, &g) in live.iter().enumerate() {
+        bin[g] = i * NULL_BINS / live.len();
+    }
+    let per_col: Vec<Option<Vec<f32>>> = (cols.iter())
+        .map(|k| {
+            let k = (*k)?;
+            let lfc: Vec<f32> = (live.iter())
+                .map(|&g| expr.log2fc(g, &[k]).unwrap_or(f32::NAN))
+                .collect();
+            let mut null = [(0.0f32, 0.0f32); NULL_BINS];
+            for (b, centre_sd) in null.iter_mut().enumerate() {
+                let x: Vec<f32> = (live.iter().zip(&lfc))
+                    .filter(|&(&g, v)| bin[g] == b && v.is_finite())
+                    .map(|(_, &v)| v)
+                    .collect();
+                if !x.is_empty() {
+                    *centre_sd = (median(&x), mad_sd(&x));
+                }
+            }
+            let p: Vec<f32> = (live.iter().zip(&lfc))
+                .map(|(&g, &v)| {
+                    let (centre, sd) = null[bin[g]];
+                    if sd > 0.0 {
+                        normal_upper_tail((v - centre) / sd)
+                    } else {
+                        f32::NAN
+                    }
+                })
+                .collect();
+            let q_live = bh_where_finite(&p);
+            let mut q = vec![f32::NAN; mat.nrows()];
+            for (&g, v) in live.iter().zip(q_live) {
+                q[g] = v;
+            }
+            Some(q)
+        })
+        .collect();
+    (rows.iter())
+        .map(|&r| {
+            (per_col.iter())
+                .map(|q| q.as_ref().map(|q| q[r]).filter(|v| v.is_finite()))
+                .collect()
+        })
+        .collect()
+}
+
 /// The columns of `z` (rows × clusters, each row's type in `types`, a
 /// type's rows together) in diagonal order: each column under the first
-/// type whose rows have its highest mean z, by the types' order, and within
-/// a type the highest mean first. A column with no values goes last.
+/// type whose rows have its highest mean, by the types' order, and within
+/// a type the highest mean first. A column whose highest mean is not above
+/// zero, or that has no values, goes last.
 pub(crate) fn diagonal(types: &[&str], z: &[Vec<Option<f32>>]) -> Vec<usize> {
     let mut blocks: Vec<Vec<usize>> = Vec::new();
     for (i, t) in types.iter().enumerate() {
@@ -336,7 +441,12 @@ pub(crate) fn diagonal(types: &[&str], z: &[Vec<Option<f32>>]) -> Vec<usize> {
                 }
             })
     };
-    let keys: Vec<(usize, f32)> = (0..cols).map(best).collect();
+    let keys: Vec<(usize, f32)> = (0..cols)
+        .map(|k| match best(k) {
+            (_, m) if m <= 0.0 => (usize::MAX, m),
+            b => b,
+        })
+        .collect();
     let mut perm: Vec<usize> = (0..cols).collect();
     perm.sort_by(|&a, &b| {
         (keys[a].0.cmp(&keys[b].0))
@@ -454,6 +564,8 @@ const CHAR_W: f32 = 6.4;
 /// A z-score's colours stop here.
 const Z_CLIP: f32 = 3.0;
 const MISSING: &str = "#e6e6e6";
+/// A cell whose gene is not up there at the figure's q.
+const NOT_UP: &str = "#f7f7f7";
 
 /// The heatmap of `data` as an SVG: rows `GENE · type` grouped by type,
 /// clusters `K{id} · label` across the top, a colour key on the right.
@@ -497,8 +609,12 @@ pub(crate) fn svg(data: &HeatData) -> Figure {
         s,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" font-family="Helvetica, Arial, sans-serif" font-size="{FONT}"><rect width="100%" height="100%" fill="white"/>"#
     );
+    let shown = match data.q_below {
+        Some(a) => format!(" · coloured where up at q < {a}"),
+        None => String::new(),
+    };
     let title = format!(
-        "markers × clusters · {} · {}",
+        "markers × clusters · {} · {}{shown}",
         data.value.title(),
         data.source.as_str()
     );
@@ -526,11 +642,18 @@ pub(crate) fn svg(data: &HeatData) -> Figure {
             escape_xml(label)
         );
         for (j, v) in row.values.iter().enumerate() {
+            let up = data
+                .q_below
+                .is_none_or(|a| row.q.get(j).copied().flatten().is_some_and(|q| q < a));
+            let fill = if v.is_some() && !up {
+                NOT_UP.into()
+            } else {
+                colour(*v)
+            };
             let _ = write!(
                 s,
-                r#"<rect x="{}" y="{y}" width="{CELL}" height="{CELL}" fill="{}"/>"#,
+                r#"<rect x="{}" y="{y}" width="{CELL}" height="{CELL}" fill="{fill}"/>"#,
                 left + j as u32 * CELL,
-                colour(*v)
             );
         }
         // A line between one type's rows and the next's.
