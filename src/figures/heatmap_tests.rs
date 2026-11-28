@@ -257,3 +257,39 @@ fn a_type_the_panel_does_not_have_is_refused_by_name() {
     let e = heat(&round, HeatValue::Zscore, |a| a.types = vec!["CT1x".into()]).unwrap_err();
     assert!(format!("{e:#}").contains("CT1x"), "{e:#}");
 }
+
+#[test]
+fn diagonal_puts_each_cluster_under_the_type_whose_markers_peak_there() {
+    // Rows: two of A, one of B; clusters 0..4.
+    let types = ["A", "A", "B"];
+    let z = vec![
+        vec![Some(0.0), Some(2.0), Some(-1.0), Some(1.0)],
+        vec![Some(0.0), Some(2.0), Some(-1.0), Some(0.5)],
+        vec![Some(3.0), Some(0.0), Some(1.0), None],
+    ];
+    // A tops 1 (2.0) then 3 (0.75); B tops 0 (3.0) then 2 (1.0).
+    assert_eq!(diagonal(&types, &z), [1, 3, 0, 2]);
+}
+
+#[test]
+fn diagonal_sends_a_cluster_with_no_values_last() {
+    let z = vec![vec![Some(1.0), None, Some(2.0)]];
+    assert_eq!(diagonal(&["A"], &z), [2, 0, 1]);
+}
+
+#[test]
+fn the_diagonal_order_moves_each_rows_values_with_its_cluster() {
+    let dir = tempfile::tempdir().unwrap();
+    let round = round_with_profile(dir.path());
+    let by_id = heat(&round, HeatValue::Log2fc, |a| a.order = ClusterOrder::Id).unwrap();
+    let diag = heat(&round, HeatValue::Log2fc, |a| {
+        a.order = ClusterOrder::Diagonal
+    })
+    .unwrap();
+    for (k, c) in diag.clusters.iter().enumerate() {
+        let at = by_id.clusters.iter().position(|d| d.id == c.id).unwrap();
+        for (r, s) in diag.rows.iter().zip(&by_id.rows) {
+            assert_eq!(r.values[k], s.values[at], "{} in cluster {}", r.gene, c.id);
+        }
+    }
+}

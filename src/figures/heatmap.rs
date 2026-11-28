@@ -90,6 +90,10 @@ pub enum ClusterOrder {
     Label,
     /// By cluster id, as lupin numbers them.
     Id,
+    /// By the data, not the labels: each cluster under the type whose shown
+    /// markers have the highest mean z there, the strongest first, so the
+    /// diagonal shows what the markers say whatever the round called it.
+    Diagonal,
 }
 
 #[derive(clap::Args, Debug)]
@@ -113,7 +117,7 @@ pub struct HeatmapArgs {
     pub value: HeatValue,
     #[arg(long, value_enum, default_value_t = HeatSource::Observed)]
     pub source: HeatSource,
-    #[arg(long, value_enum, default_value_t = ClusterOrder::Label)]
+    #[arg(long, value_enum, default_value_t = ClusterOrder::Diagonal)]
     pub order: ClusterOrder,
     #[arg(
         long,
@@ -247,7 +251,7 @@ pub fn heat_data(loaded: &Loaded, args: &HeatmapArgs) -> Result<HeatData> {
                 .map(|(g, r, _)| (t.clone(), g, r)),
         );
     }
-    let clusters = ordered(&labels, &types, tree.as_ref(), &panel, args.order);
+    let mut clusters = ordered(&labels, &types, tree.as_ref(), &panel, args.order);
     let cols: Vec<Option<usize>> = clusters.iter().map(|c| expr.col(c.id)).collect();
     let level = |r: usize| -> Vec<Option<f32>> {
         (cols.iter())
@@ -276,7 +280,7 @@ pub fn heat_data(loaded: &Loaded, args: &HeatmapArgs) -> Result<HeatData> {
             .collect(),
         HeatValue::Frac => frac[i].clone(),
     });
-    let rows = (chosen.iter().cloned())
+    let mut rows: Vec<HeatRow> = (chosen.iter().cloned())
         .zip(values)
         .map(|((type_, gene, r), values)| HeatRow {
             gene,
@@ -285,6 +289,15 @@ pub fn heat_data(loaded: &Loaded, args: &HeatmapArgs) -> Result<HeatData> {
             values,
         })
         .collect();
+    if args.order == ClusterOrder::Diagonal {
+        let z: Vec<Vec<Option<f32>>> = chosen.iter().map(|&(_, _, r)| zscored(&level(r))).collect();
+        let types: Vec<&str> = rows.iter().map(|r| r.type_.as_str()).collect();
+        let perm = diagonal(&types, &z);
+        clusters = perm.iter().map(|&k| clusters[k].clone()).collect();
+        for row in &mut rows {
+            row.values = perm.iter().map(|&k| row.values[k]).collect();
+        }
+    }
     Ok(HeatData {
         round: loaded.file.to_string_lossy().into_owned(),
         value: args.value,
@@ -293,6 +306,44 @@ pub fn heat_data(loaded: &Loaded, args: &HeatmapArgs) -> Result<HeatData> {
         rows,
         unmeasured,
     })
+}
+
+/// The columns of `z` (rows × clusters, each row's type in `types`, a
+/// type's rows together) in diagonal order: each column under the first
+/// type whose rows have its highest mean z, by the types' order, and within
+/// a type the highest mean first. A column with no values goes last.
+pub(crate) fn diagonal(types: &[&str], z: &[Vec<Option<f32>>]) -> Vec<usize> {
+    let mut blocks: Vec<Vec<usize>> = Vec::new();
+    for (i, t) in types.iter().enumerate() {
+        match blocks.last_mut() {
+            Some(b) if types[b[0]] == *t => b.push(i),
+            _ => blocks.push(vec![i]),
+        }
+    }
+    let cols = z.first().map_or(0, Vec::len);
+    let best = |k: usize| -> (usize, f32) {
+        let mean = |b: &[usize]| {
+            let v: Vec<f32> = b.iter().filter_map(|&i| z[i][k]).collect();
+            (!v.is_empty()).then(|| v.iter().sum::<f32>() / v.len() as f32)
+        };
+        (blocks.iter().enumerate())
+            .filter_map(|(j, b)| Some((j, mean(b)?)))
+            .fold((usize::MAX, f32::NEG_INFINITY), |a, (j, m)| {
+                if m > a.1 {
+                    (j, m)
+                } else {
+                    a
+                }
+            })
+    };
+    let keys: Vec<(usize, f32)> = (0..cols).map(best).collect();
+    let mut perm: Vec<usize> = (0..cols).collect();
+    perm.sort_by(|&a, &b| {
+        (keys[a].0.cmp(&keys[b].0))
+            .then(keys[b].1.total_cmp(&keys[a].1))
+            .then(a.cmp(&b))
+    });
+    perm
 }
 
 /// `v` z-scored over its values, as the screen's heatmaps z-score a row.
