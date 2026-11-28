@@ -53,6 +53,40 @@ its own call. Under auto, a run whose enrichment has no expression to read (no r
 no earlier pass's cache, no decoder to stand in) is projected instead: by the score where it
 decodes cells, else by the units.
 
+## The enrichment's size null (`--size-null`)
+
+Panels are of very unequal sizes (a brain panel's deep-layer excitatory neurons have 381
+markers, its VLMCs 18), and the enrichment's random sets, which match a panel's size and
+abundance (GOseq's fix), do not hold a large panel to its size: their genes are independent,
+while a panel's markers co-vary as one programme. That widens a large panel's null as CAMERA's
+variance inflation does, σ² ∝ 1 + ρ(m − 1), so the large panel tops clusters by chance and a
+small one loses the clusters that are its.
+
+Under `--size-null trend` (the default) the round corrects for this from its own clusters,
+with no further pass over the data. Most cluster × type pairs are not the type, so each type's
+probit z over the clusters it scores positively on shows its chance spread (read from the 10th
+to the 40th percentile, where those pairs dominate). Across types, one curve σ²(m) = a + b·m on
+the panels' effective sizes (Kish, over the IDF weights), by Theil–Sen, kept only where
+Kendall's τ says the spread rises with size (one-sided 0.05). Each z is divided by its size's
+inflation relative to the panel's median size, √(σ²(m_c) / σ²(m_ref)); BH or TreeBH, Q and the
+per-cell call run on what that leaves. A flat curve changes nothing. One curve over every type
+lets the mid-sized panels explain the largest, but a panel with a single large type cannot
+tell size from a type truly present nearly everywhere: read the fit before trusting a
+dominant large type.
+
+`cluster_celltype_p` keeps the random-set test's own p; the q-values, z and Q are the size
+null's. The fit (each type's size, chance spread and scale) is recorded at
+`annotate.settings.enrichment.size_null_fit`. Review's header says how far the clusters each
+type tops follow its panel size (Spearman ρ, raw and calibrated) and how many clusters the size
+null moved (among the called clusters); each moved cluster says `raw top X → Y`, and `why`'s panel line gives the raw rank
+beside the calibrated. `--size-null off` gives the raw statistics. SuSiE is not adjusted: it
+stays a separate line of evidence.
+
+**Q is not q.** `cluster_celltype_q` holds each cluster's softmax share Q over the types, not
+q-values: its 0 means not significant (q ≥ α, or z ≤ 0). The q-values are
+`cluster_celltype_q_values`. A "best q" taken over Q picks a zero, which is the first type
+alphabetically.
+
 ---
 
 ## 0. The embedding marker score (`--projection score`)

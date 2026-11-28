@@ -15,5 +15,6 @@ pub mod reading;
 pub mod recalibrate;
 pub mod rounds;
 pub mod run;
+pub mod size_check;
 pub mod staging;
 pub mod why;

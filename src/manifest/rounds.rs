@@ -1104,6 +1104,7 @@ fn relabel(
         if let Some(e) = a.settings.as_mut().and_then(|s| s.get_mut("enrichment")) {
             let batches = e.pointer("/null/batches").cloned().unwrap_or(Value::Null);
             e["null"] = super::annotate::null_record(batches);
+            e[SIZE_NULL_FIT] = json!(t.size_null);
         }
         let rounds = source
             .manifest
@@ -1152,12 +1153,17 @@ fn relabel(
     Ok(next.file)
 }
 
+/// Where a round records its enrichment's size-null fit, under
+/// `annotate.settings.enrichment`.
+pub const SIZE_NULL_FIT: &str = "size_null_fit";
+
 /// The tables a rescored round writes under its prefix.
 struct RescoredTables {
     q: String,
     q_values: String,
     p: String,
     nes: String,
+    size_null: crate::annotate::size_null::SizeTrend,
 }
 
 /// Write a rescored round's cluster × type tables under `out`, as a pass
@@ -1184,6 +1190,7 @@ fn write_rescored(r: &super::recalibrate::Rescored, out: &str) -> Result<Rescore
         q_values,
         p,
         nes,
+        size_null: r.size_null.clone(),
     })
 }
 
@@ -2008,6 +2015,7 @@ pub(crate) fn review_json(
 ) -> Result<BTreeMap<ClusterId, Value>> {
     let r = Reviewed::read(loaded, with_types, true)?;
     let (digests, history, tables) = (&r.digests, &r.history, &r.tables);
+    let fit = super::size_check::recorded_fit(loaded);
     Ok(digests
         .iter()
         .filter(|(id, _)| clusters.is_empty() || clusters.contains(id))
@@ -2028,6 +2036,12 @@ pub(crate) fn review_json(
             if let Some(cl) = r.placement(d) {
                 v["cl"] = json!(cl);
             }
+            if let Some(m) = fit
+                .as_ref()
+                .and_then(|f| super::size_check::moved(f, &types))
+            {
+                v["size_null"] = json!(m);
+            }
             (*id, v)
         })
         .collect())
@@ -2039,15 +2053,30 @@ pub(crate) fn review_text(loaded: &Loaded, clusters: &[ClusterId]) -> Result<Str
     let caveats = caveats(loaded)
         .into_iter()
         .map(|c| format!("caveat: {c}\n"));
+    let fit = super::size_check::recorded_fit(loaded);
+    let follow = fit.as_ref().map(|f| {
+        let evidence: BTreeMap<ClusterId, Vec<TypeEvidence>> = (r.digests.keys())
+            .map(|&id| (id, r.tables.evidence(id)))
+            .collect();
+        super::size_check::follow(f, &evidence)
+    });
+    let size = follow.as_ref().map(super::size_check::SizeFollow::line);
     let clusters = r
         .digests
         .iter()
         .filter(|(id, _)| clusters.is_empty() || clusters.contains(id))
         .map(|(id, d)| {
             let history = r.history.get(id).map_or(&[][..], Vec::as_slice);
-            render(*id, d, r.placement(d).as_ref(), history)
+            let mut s = render(*id, d, r.placement(d).as_ref(), history);
+            if let Some(m) = follow.as_ref().and_then(|f| f.moved.get(id)) {
+                s.push_str(&format!(
+                    "  size  raw top {} → {}: the size null moved it\n",
+                    m.raw_top, m.top
+                ));
+            }
+            s
         });
-    Ok(caveats.chain(clusters).collect())
+    Ok(caveats.chain(size).chain(clusters).collect())
 }
 
 /// What `loaded`'s readers should know of its statistics

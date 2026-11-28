@@ -326,6 +326,7 @@ Without the screen, `lupin figure` writes a round's or a trajectory's figures:
 
 ```sh
 lupin figure heatmap -f r1 -o r1.markers.pdf --value zscore --top 5   # its numbers in r1.markers.json
+lupin figure heatmap -f r1 -o r1.bylabel.pdf --order label   # clusters by their labels, not diagonal by the data
 lupin figure heatmap -f r1 -o r1.frac.svg --value frac --type CT1 --type CT2
 lupin figure trajectory -f t1 -o t1.figure   # t1.figure.map.{png,pdf}, .order and .connectivity
 lupin figure trajectory -f t1 -o t1.dc --map suggested --map dc2,dc3 --colour lineage

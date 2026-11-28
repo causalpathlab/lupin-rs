@@ -142,6 +142,11 @@ pub struct AnnotateArgs {
     /// for SuSiE's where it ran, else the enrichment's.
     #[serde(default)]
     pub call: Option<crate::annotate::rounds::Method>,
+
+    /// Read the panel calls against the size null (`--size-null`). A record
+    /// from before it reads as `off`, so its rescoring matches it.
+    #[serde(default)]
+    pub size_null: crate::annotate::size_null::SizeNull,
 }
 
 impl AnnotateArgs {

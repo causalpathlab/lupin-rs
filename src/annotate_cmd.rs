@@ -3,6 +3,7 @@
 use crate::annotate::args::{
     AnnotateArgs, AnnotateOntologyArgs, MarkerScoreArgs, ProjectionMethod,
 };
+use crate::annotate::size_null::SizeNull;
 use crate::annotate::susie::SusieConfig;
 use crate::manifest::annotate::{
     annotate_by_enrichment, annotate_by_marker_score, annotate_ontology, LeidenArgs,
@@ -93,6 +94,11 @@ pub struct AnnotateCliArgs {
     pub fdr_alpha: f32,
     #[arg(long = "q-temperature", default_value_t = 1.0)]
     pub q_temperature: f32,
+    /// Read the enrichment's calls against the size null: each type's z moved
+    /// by how far panels of its size score by chance on this round's clusters
+    /// (`off`: the raw statistics)
+    #[arg(long = "size-null", value_enum, default_value_t = SizeNull::Trend)]
+    pub size_null: SizeNull,
     #[arg(long = "no-clean")]
     pub no_clean: bool,
 
@@ -276,6 +282,7 @@ impl AnnotateCliArgs {
         val("min-markers", self.min_markers.to_string());
         val("fdr-alpha", self.fdr_alpha.to_string());
         val("q-temperature", self.q_temperature.to_string());
+        val("size-null", self.size_null.as_str().into());
         val("min-cluster-size", self.min_cluster_size.to_string());
         val("ontology-fdr-q", self.ontology_fdr_q.to_string());
         val("susie-effects", self.susie_effects.to_string());
@@ -849,6 +856,7 @@ pub(crate) fn build_enrichment_args(args: &AnnotateCliArgs) -> AnnotateArgs {
         device: args.device,
         device_no: args.device_no,
         call: args.call,
+        size_null: args.size_null,
     }
 }
 
