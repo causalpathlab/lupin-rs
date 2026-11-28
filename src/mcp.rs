@@ -234,7 +234,8 @@ fn tools() -> Vec<ToolSpec> {
                     "top": { "type": "integer", "description": "Markers per type (5)" },
                     "value": { "type": "string", "enum": ["log2fc", "mean", "zscore", "frac"], "description": "log2 fold change over the other clusters (default), mean level, that level z-scored across clusters, or the share of the cluster's cells the gene is detected in (read from the run's raw counts)" },
                     "source": { "type": "string", "enum": ["observed", "expected"], "description": "The round's observed profile (default), or the topic model's expected level (a topic run's)" },
-                    "q": { "type": "number", "description": "Colour a cell only where its gene is up in the cluster at this q, against the cluster's genes of like abundance (0.05); 1 colours every cell" },
+                    "q": { "type": "number", "description": "Dot a cell where its gene is up in the cluster at this q, against the cluster's genes of like abundance (0.05); 1 marks none" },
+                    "only_up": { "type": "boolean", "description": "Colour only the cells up at q, the others blank, instead of every cell" },
                     "order": { "type": "string", "enum": ["label", "id", "diagonal"], "description": "Clusters diagonal, each under the type whose markers are highest there whatever its label (default); by label, following the types' rows; or by lupin's cluster id" },
                     "channel": { "type": "string", "enum": CHANNELS, "description": "Where a gene has several rows, the count channel its level is read from (spliced)" },
                     "out": { "type": "string", "description": "The figure, ending .pdf, .svg or .png; {round}.heatmap.pdf in today's results folder when omitted" },
@@ -1106,6 +1107,9 @@ fn annotate_heatmap(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     }
     if let Some(q) = a.parse::<f32>("q")? {
         argv.push(flag("q", &q.to_string()));
+    }
+    if a.parse::<bool>("only_up")? == Some(true) {
+        argv.push("--only-up".into());
     }
     let summary = format!(
         "marker heatmap ({}) of {}",

@@ -13,6 +13,7 @@ fn args(round: &Path, value: HeatValue) -> HeatmapArgs {
         order: ClusterOrder::Label,
         channel: "spliced".into(),
         q: 1.0,
+        only_up: false,
     }
 }
 
@@ -240,6 +241,7 @@ fn a_long_last_cluster_label_fits_inside_the_figure() {
             q: Vec::new(),
         }],
         q_below: None,
+        only_up: false,
         unmeasured: Vec::new(),
     };
     let fig = svg(&d);
@@ -328,24 +330,31 @@ fn a_gene_far_above_its_like_genes_is_up_and_the_rest_are_not() {
 }
 
 #[test]
-fn a_cell_not_up_at_the_figures_q_is_drawn_blank() {
-    let row = |q: f32| HeatRow {
-        gene: "G".into(),
-        row: "G".into(),
-        type_: "T".into(),
-        values: vec![Some(2.0)],
-        q: vec![Some(q)],
-    };
-    let d = |q: f32, below: Option<f32>| HeatData {
+fn every_cell_is_coloured_and_a_cell_up_at_the_figures_q_is_dotted_or_with_only_up_the_rest_blank()
+{
+    let d = |q: f32, below: Option<f32>, only_up: bool| HeatData {
         round: "r".into(),
         value: HeatValue::Log2fc,
         source: HeatSource::Observed,
         clusters: vec![HeatCluster { id: 0, label: None }],
-        rows: vec![row(q)],
+        rows: vec![HeatRow {
+            gene: "G".into(),
+            row: "G".into(),
+            type_: "T".into(),
+            values: vec![Some(2.0)],
+            q: vec![Some(q)],
+        }],
         q_below: below,
+        only_up,
         unmeasured: Vec::new(),
     };
-    assert!(svg(&d(0.5, Some(0.05))).svg.contains(NOT_UP));
-    assert!(!svg(&d(0.01, Some(0.05))).svg.contains(NOT_UP));
-    assert!(!svg(&d(0.5, None)).svg.contains(NOT_UP));
+    let dotted = |d: &HeatData| svg(d).svg.contains(r#"class="up""#);
+    let blank = |d: &HeatData| svg(d).svg.contains(NOT_UP);
+    // Every cell coloured; the up one dotted.
+    assert!(dotted(&d(0.01, Some(0.05), false)) && !blank(&d(0.01, Some(0.05), false)));
+    assert!(!dotted(&d(0.5, Some(0.05), false)) && !blank(&d(0.5, Some(0.05), false)));
+    // Only up: the rest blank, no dots.
+    assert!(blank(&d(0.5, Some(0.05), true)) && !dotted(&d(0.01, Some(0.05), true)));
+    // No q: neither.
+    assert!(!dotted(&d(0.01, None, false)) && !blank(&d(0.5, None, true)));
 }
